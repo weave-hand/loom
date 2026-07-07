@@ -5192,4 +5192,22 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
         None,
         "other tables unaffected"
     );
+    // CDC declaration: kind='cdc', bucket_key recorded, idempotent first-wins.
+    cp.declare_cdc(2, 4, "id").await.expect("declare cdc");
+    let meta = cp.stream_meta(2).await.expect("meta").expect("declared");
+    assert_eq!(meta.bucket_count, 4);
+    assert_eq!(meta.kind, control_plane_core::StreamKind::Cdc);
+    assert_eq!(meta.bucket_key.as_deref(), Some("id"));
+    cp.declare_cdc(2, 8, "other")
+        .await
+        .expect("idempotent redeclare no-ops");
+    let meta2 = cp.stream_meta(2).await.expect("meta").expect("declared");
+    assert_eq!(meta2.bucket_count, 4, "first declaration's fields stand");
+    assert_eq!(meta2.bucket_key.as_deref(), Some("id"));
+    // A log table reports kind=Log with no bucket_key.
+    let log_meta = cp.stream_meta(1).await.expect("meta").expect("declared");
+    assert_eq!(log_meta.kind, control_plane_core::StreamKind::Log);
+    assert_eq!(log_meta.bucket_key, None);
+    // Unknown table → None.
+    assert!(cp.stream_meta(999).await.expect("meta").is_none());
 }

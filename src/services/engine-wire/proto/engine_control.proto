@@ -146,6 +146,8 @@ message WriteDeltaRequest {
   string columns_json = 6;    // Vec<ColumnSpec> describing ipc
   string lineage_json = 7;    // LineageWire
   int64  expected_version = 8;
+  bytes  before_ipc = 9;             // optional before-image: full one-row Arrow IPC of the prior row; empty => absent
+  string before_columns_json = 10;  // Vec<ColumnSpec> describing before_ipc (positionally aligned)
 }
 message WriteDeltaResponse { int64 snapshot_id = 1; }
 

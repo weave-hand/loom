@@ -154,6 +154,7 @@ async fn flush_is_suppressed_after_a_mutation() {
         "id",
         false,
         &full_row_batch(1, 9),
+        None,
         lineage(run, &table),
         v0,
     )

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bucket_count, kind, bucket_key from stream.stream_table where table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bucket_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "stream.stream_table",
+            "name": "bucket_count"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stream.stream_table",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "bucket_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stream.stream_table",
+            "name": "bucket_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c3bf448b511e451583e8864ec36f7c273e8e8fbddd41f775d539e6be3556f9bc"
+}

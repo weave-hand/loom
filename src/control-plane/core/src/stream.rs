@@ -3,8 +3,28 @@
 //! slice stamps appended rows with `(bucket, offset)`.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
+
+/// The flavor of a declared stream table. `Log` = append-only (slice 1);
+/// `Cdc` = PK table emitting +I/−U/+U/−D on mutation (slice 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamKind {
+    Log,
+    Cdc,
+}
+
+/// A declared stream table's metadata: its fixed bucket count, its kind, and —
+/// for a CDC table — the identity column it buckets on (`hash(bucket_key) %
+/// bucket_count`). `bucket_key` is `None` for a log table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamMeta {
+    pub bucket_count: i32,
+    pub kind: StreamKind,
+    pub bucket_key: Option<String>,
+}
 
 #[async_trait]
 pub trait BucketOffsets {
@@ -25,4 +45,9 @@ pub trait StreamTables {
     async fn declare_stream(&self, table_id: i64, bucket_count: i32) -> Result<()>;
     /// The bucket count if table_id is a declared log table, else None.
     async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>>;
+    /// Declare table_id as a PK/CDC table with bucket_count buckets keyed on
+    /// `bucket_key` (the identity column). Idempotent, first-wins on all fields.
+    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()>;
+    /// Full stream metadata for table_id if it is a declared stream table, else None.
+    async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>>;
 }

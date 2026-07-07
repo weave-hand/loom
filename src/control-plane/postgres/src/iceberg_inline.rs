@@ -405,6 +405,12 @@ async fn ensure_inline_schema(
 /// come from the landing's schema, so they agree by construction; a batch that
 /// violates the contract (arrow type != declared logical type) is rejected with
 /// `Validation`, never a panic.
+///
+/// Thin wrapper over [`inline_append_decl`] for the (many) callers that only ever
+/// request a log declaration or none — preserves this function's signature
+/// exactly so none of them need to change for the `StreamDecl` widening. The
+/// `/models/{type}?mode=cdc` path (the only CDC-declaring caller) goes through
+/// `inline_append_decl` directly, via `iceberg_landing::land`.
 pub async fn inline_append(
     pool: &PgPool,
     table: &TableRef,
@@ -413,6 +419,25 @@ pub async fn inline_append(
     lineage: LineageEvent,
     flush_threshold: Option<i64>,
     stream_buckets: Option<i32>,
+) -> Result<SnapshotId> {
+    let decl = match stream_buckets {
+        Some(n) => crate::stream::StreamDecl::Log(n),
+        None => crate::stream::StreamDecl::None,
+    };
+    inline_append_decl(pool, table, columns, batch, lineage, flush_threshold, &decl).await
+}
+
+/// The actual inline-append implementation, parameterized by the full stream-mode
+/// declaration (log bucket count, or a cdc declaration with its bucket key).
+/// See [`inline_append`] (the stable public entrypoint) for the contract.
+pub(crate) async fn inline_append_decl(
+    pool: &PgPool,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batch: &RecordBatch,
+    lineage: LineageEvent,
+    flush_threshold: Option<i64>,
+    decl: &crate::stream::StreamDecl,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
@@ -437,15 +462,16 @@ pub async fn inline_append(
     let existing = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
     // Whether framing should be registered in the mirror for THIS append: either the
     // table is already a declared stream table (`existing.is_some()`), or this call
-    // is declaring it for the first time (`stream_buckets.is_some()` on a BRAND NEW
-    // table, `!pre_existing`). Deliberately excludes the "existing BATCH table asked
-    // to become a stream table" case (`stream_buckets.is_some() && pre_existing &&
-    // existing.is_none()`) — that conversion is rejected below with its own
+    // is declaring it for the first time (`decl` is not `None` on a BRAND NEW table,
+    // `!pre_existing`). Deliberately excludes the "existing BATCH table asked to
+    // become a stream table" case (`!matches!(decl, StreamDecl::None) && pre_existing
+    // && existing.is_none()`) — that conversion is rejected below with its own
     // `Validation` message, and must reach that check via the ORIGINAL identical-
     // schema comparison, not get relabeled as a same-transaction non-nullable
     // "additive" column error by the mismatched pcols/live lengths this would
     // otherwise cause.
-    let is_stream = existing.is_some() || (stream_buckets.is_some() && !pre_existing);
+    let is_stream =
+        existing.is_some() || (!matches!(decl, crate::stream::StreamDecl::None) && !pre_existing);
 
     let mut pcols = columns
         .iter()
@@ -512,8 +538,7 @@ pub async fn inline_append(
     // batch->stream conversion (Validation), and a bucket-count mismatch (Conflict),
     // all BEFORE any declare — on this same transaction.
     let effective: Option<i32> =
-        crate::stream::reconcile_stream_mode(&mut *conn, tid, stream_buckets, pre_existing, table)
-            .await?;
+        crate::stream::reconcile_stream_mode(&mut *conn, tid, decl, pre_existing, table).await?;
 
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
@@ -524,18 +549,53 @@ pub async fn inline_append(
         .join(", ");
 
     if let Some(bc) = effective {
-        // Per-row bucket = row_index % bc (v1 simplification; bc >= 1).
+        // Per-row bucket: CDC tables hash on identity (`hash(id) % bc`, so a
+        // key's whole history stays in one bucket); log tables use row_index %
+        // bc (v1 simplification; bc >= 1).
         let n = batch.num_rows();
+        let bc_usize = usize::try_from(bc).map_err(|e| {
+            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+        })?;
+        let meta = crate::stream::pg_stream_meta(&mut *conn, tid).await?;
+        let cdc_key: Option<String> = match &meta {
+            Some(m) if m.kind == control_plane_core::StreamKind::Cdc => m.bucket_key.clone(),
+            _ => None,
+        };
+        // Compute each row's bucket up front (so offset runs can be reserved per
+        // bucket before any row is inserted).
+        let mut row_bucket = vec![0usize; n];
+        for row in 0..n {
+            let b = match &cdc_key {
+                Some(key) => {
+                    let idx = columns.iter().position(|c| &c.name == key).ok_or_else(|| {
+                        ControlPlaneError::Backend(
+                            format!("cdc bucket_key `{key}` not in appended columns").into(),
+                        )
+                    })?;
+                    let spec = columns.get(idx).ok_or_else(|| {
+                        ControlPlaneError::Backend("bucket_key column index out of range".into())
+                    })?;
+                    let cell = cell_from_arrow(batch, idx, row, &spec.ty)?;
+                    usize::try_from(cdc_bucket(&cell, bc)?).map_err(|e| {
+                        ControlPlaneError::Backend(format!("bucket overflow: {e}").into())
+                    })?
+                }
+                None => row % bc_usize,
+            };
+            let slot = row_bucket
+                .get_mut(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
+            *slot = b;
+        }
         // Count rows per bucket and reserve a contiguous offset run per touched
         // bucket, up front, so the per-row loop only needs to hand out offsets
         // from an already-reserved cursor (panic-free bucket indexing: `Vec::get`/
         // `get_mut` instead of `[]`, even though `b` is always `< bc` by construction).
-        let bc_usize = usize::try_from(bc).map_err(|e| {
-            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
-        })?;
         let mut counts = vec![0i64; bc_usize];
         for row in 0..n {
-            let b = row % bc_usize;
+            let b = *row_bucket
+                .get(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
             let c = counts
                 .get_mut(b)
                 .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
@@ -567,7 +627,9 @@ pub async fn inline_append(
             inline_table_name(tid),
         );
         for row in 0..n {
-            let b = row % bc_usize;
+            let b = *row_bucket
+                .get(row)
+                .ok_or_else(|| ControlPlaneError::Backend("row index out of range".into()))?;
             let offset = *cursor
                 .get(b)
                 .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
@@ -758,7 +820,8 @@ async fn read_max_version(
     }
     let sql = format!(
         "select coalesce(max(begin_snapshot), 0) as v from {} \
-         where \"{}\" = $1 and end_snapshot is null",
+         where \"{}\" = $1 and end_snapshot is null \
+           and (loom_change_kind is null or loom_change_kind <> '-U')",
         inline_table_name(tid),
         id_column.replace('"', "\"\""),
     );
@@ -820,6 +883,28 @@ fn advisory_key_for_id(tid: i64, id: &Cell) -> i64 {
         }
     }
     h.finish() as i64
+}
+
+/// The bucket for one identity of a CDC table: `stable_hash(id) % bucket_count`,
+/// so a key's whole change history (+I/-U/+U/-D) stays in one bucket (LastRow
+/// merge and per-key ordering depend on it). Reuses `advisory_key_for_id`'s
+/// deterministic, `rand`-free hash family; the modulus is taken on the unsigned
+/// value so the result is always in `0..bucket_count`.
+fn cdc_bucket(id: &Cell, bucket_count: i32) -> Result<i32> {
+    if bucket_count < 1 {
+        return Err(ControlPlaneError::Validation(format!(
+            "cdc bucket_count must be >= 1, got {bucket_count}"
+        )));
+    }
+    // advisory_key_for_id returns an i64 already tagged-per-variant; take it as u64
+    // and mod by bucket_count. `as u64` reinterprets the bits (no sign bias), and
+    // `% bucket_count` (bucket_count >= 1) yields 0..bucket_count.
+    let h = advisory_key_for_id(0, id) as u64;
+    let bc = u64::try_from(bucket_count).map_err(|e| {
+        ControlPlaneError::Backend(format!("invalid bucket_count {bucket_count}: {e}").into())
+    })?;
+    let b = (h % bc) as i32;
+    Ok(b)
 }
 
 /// The current inline version of one identity: `coalesce(max(begin_snapshot), 0)`
@@ -898,7 +983,7 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
 /// distinct keys and never contend. Inline delta rows are never end-capped here.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + lineage + CAS witness; a params struct would only obscure the call sites"
+    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness; a params struct would only obscure the call sites"
 )]
 pub async fn write_inline_delta(
     pool: &PgPool,
@@ -907,9 +992,12 @@ pub async fn write_inline_delta(
     id_column: &str,
     tombstone: bool,
     batch: &RecordBatch,
+    before: Option<(&[ColumnSpec], &RecordBatch)>,
     lineage: LineageEvent,
     expected_version: i64,
 ) -> Result<SnapshotId> {
+    // `before` (the prior row with its OWN positionally-aligned ColumnSpecs) is USED
+    // by the CDC emit branch below; a non-CDC table ignores it and stays byte-identical.
     let mut tx = pool.begin().await.map_err(backend)?;
 
     // The mutation targets an existing object, so a live mirror row must exist.
@@ -954,9 +1042,74 @@ pub async fn write_inline_delta(
     // iceberg_mirror.snapshot row that makes the delta read-visible).
     let at = next_snapshot(&mut tx, None).await?;
 
-    // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
-    // (partition by <id>) shadows/hides the file row for that id.
-    if tombstone {
+    // On a CDC table, a mutation emits the FULL change sequence — an update writes an
+    // adjacent (-U before-image, +U after-image) pair, a delete writes a -D carrying
+    // the full prior image — each stamped with a hash-on-identity bucket and gapless
+    // per-bucket offsets. Non-CDC tables fall through to the existing single-row inserts.
+    let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
+    let cdc = matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc);
+
+    // Emit the delta row(s). Every row carries the identity value so merge-on-read
+    // (partition by <id>) shadows/hides the file row for that id. A CDC table emits
+    // the multi-row change sequence (below); a non-CDC table writes a single tombstone
+    // or version row (the `else if`/`else` arms).
+    if cdc {
+        let m = meta
+            .as_ref()
+            .ok_or_else(|| ControlPlaneError::Backend("cdc meta vanished after check".into()))?;
+        let bucket = cdc_bucket(&id_cell, m.bucket_count)?;
+        // The before-image carries its OWN columns (positionally aligned with its
+        // batch) — never `full_cols`, whose order need not match.
+        let (before_cols, before_batch) = before.ok_or_else(|| {
+            ControlPlaneError::Backend("cdc mutation requires a before-image".into())
+        })?;
+        if tombstone {
+            // Delete → one -D carrying the FULL prior image, so the changelog event is
+            // complete. loom_tombstone=true still hides the base row in merge-on-read.
+            let off = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 1).await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "-D",
+                true,
+                bucket,
+                off,
+                before_cols,
+                before_batch,
+            )
+            .await?;
+        } else {
+            // Update → adjacent (-U before-image, +U after-image), -U first, at
+            // consecutive offsets in the identity's single bucket. -U uses the
+            // before-image (its own cols+batch); +U uses the caller's after-image.
+            let first = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 2).await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "-U",
+                false,
+                bucket,
+                first,
+                before_cols,
+                before_batch,
+            )
+            .await?;
+            write_cdc_row(
+                &mut tx,
+                tid,
+                at,
+                "+U",
+                false,
+                bucket,
+                first + 1,
+                columns,
+                batch,
+            )
+            .await?;
+        }
+    } else if tombstone {
         // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
         // "<id_col>"=id; data NULL.
         let sql = format!(
@@ -1009,6 +1162,59 @@ pub async fn write_inline_delta(
     .await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
+}
+
+/// Insert one framed CDC inline row for the given change kind: `begin_snapshot`,
+/// `loom_tombstone`, `loom_change_kind`, `loom_bucket`, `loom_offset`, then the data
+/// columns read positionally from `cols`/`batch` row 0. The caller picks the
+/// (cols, batch) pair per row — the before-image's OWN pair for `-U`/`-D`, the
+/// after-image for `+U` — so cells always bind to the matching columns.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one framed inline-row insert; a struct would obscure the two call sites"
+)]
+async fn write_cdc_row(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    change_kind: &str, // '-U' | '+U' | '-D'
+    tombstone: bool,
+    bucket: i32,
+    offset: i64,
+    cols: &[ColumnSpec],
+    batch: &RecordBatch,
+) -> Result<()> {
+    let col_list = cols
+        .iter()
+        .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // $1 begin_snapshot, $2 tombstone, $3 change_kind, $4 bucket, $5 offset, then data from $6.
+    let placeholders = (0..cols.len())
+        .map(|i| format!("${}", i + 6))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, loom_bucket, loom_offset, {col_list}) \
+         values ($1, $2, $3, $4, $5, {placeholders})",
+        inline_table_name(tid),
+    );
+    let cells = cols
+        .iter()
+        .enumerate()
+        .map(|(c, spec)| cell_from_arrow(batch, c, 0, &spec.ty))
+        .collect::<Result<Vec<_>>>()?;
+    let mut q = sqlx::query(AssertSqlSafe(sql))
+        .bind(at.0)
+        .bind(tombstone)
+        .bind(change_kind)
+        .bind(bucket)
+        .bind(offset);
+    for cell in &cells {
+        q = bind_cell(q, cell);
+    }
+    q.execute(&mut *tx).await.map_err(backend)?;
+    Ok(())
 }
 
 /// Arrow field for a logical column. Delegates to core's authoritative
@@ -1141,7 +1347,8 @@ impl IcebergCatalog {
             .join(", ");
 
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select loom_row_id, {col_list} from {} where {} order by loom_row_id",
+            "select loom_row_id, {col_list} from {} where {} \
+             and (loom_change_kind is null or loom_change_kind <> '-U') order by loom_row_id",
             inline_table_name(tid),
             mvcc_live_pred(at.0),
         )))

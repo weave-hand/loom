@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables};
+use control_plane_core::{
+    BucketOffsets, ControlPlaneError, Result, StreamKind, StreamMeta, StreamTables,
+};
 
 use crate::MemoryControlPlane;
 
@@ -38,12 +40,38 @@ impl StreamTables for MemoryControlPlane {
         self.stream_tables
             .lock()
             .entry(table_id)
-            .or_insert(bucket_count);
+            .or_insert(StreamMeta {
+                bucket_count,
+                kind: StreamKind::Log,
+                bucket_key: None,
+            });
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()> {
+        self.stream_tables
+            .lock()
+            .entry(table_id)
+            .or_insert(StreamMeta {
+                bucket_count,
+                kind: StreamKind::Cdc,
+                bucket_key: Some(bucket_key.to_string()),
+            });
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>> {
-        Ok(self.stream_tables.lock().get(&table_id).copied())
+        Ok(self
+            .stream_tables
+            .lock()
+            .get(&table_id)
+            .map(|m| m.bucket_count))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>> {
+        Ok(self.stream_tables.lock().get(&table_id).cloned())
     }
 }

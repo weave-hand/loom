@@ -17,6 +17,7 @@ rust_library(
         "//third-party:datafusion",
         "//third-party:iceberg",
         "//third-party:object_store",
+        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:thiserror",
         "//third-party:time",

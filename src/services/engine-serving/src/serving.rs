@@ -369,7 +369,8 @@ async fn build_inline_provider(
     // trusted integer; spliced via AssertSqlSafe in the provider (iceberg_inline
     // precedent).
     let base = format!(
-        "begin_snapshot <= {0} and (end_snapshot is null or end_snapshot > {0})",
+        "begin_snapshot <= {0} and (end_snapshot is null or end_snapshot > {0}) \
+         and (loom_change_kind is null or loom_change_kind <> '-U')",
         at.0
     );
     // Resolve every column's logical type ONCE at provider construction — an
