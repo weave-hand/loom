@@ -502,6 +502,17 @@ pub async fn inline_append(
     // 2. Ensure inline storage exists (transactional DDL).
     ensure_inline_schema(&mut *conn, tid, columns).await?;
 
+    // Validate the REQUESTED bucket count BEFORE any declare: a `< 1` request must
+    // surface as `Validation`, not as the raw `bucket_count_positive` CHECK violation
+    // that `pg_declare_stream` below would otherwise raise (an opaque `Backend` error).
+    if let Some(n) = stream_buckets
+        && n < 1
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream bucket_count must be >= 1, got {n}"
+        )));
+    }
+
     // Reconcile stream mode. `effective` = Some(bucket_count) iff this table is a
     // (now-)declared log table; None => batch table (no offset stamping).
     let effective: Option<i32> = match (stream_buckets, existing) {
