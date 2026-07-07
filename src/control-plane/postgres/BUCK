@@ -272,6 +272,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-bucket-check",
+    crate = "stream_bucket_check",
+    srcs = ["tests/stream_bucket_check.rs"],
+    crate_root = "tests/stream_bucket_check.rs",
+    deps = [":postgres", "//third-party:sqlx", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "ontology",
     crate = "ontology",
     srcs = ["tests/ontology.rs"],
