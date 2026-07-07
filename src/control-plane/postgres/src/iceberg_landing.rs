@@ -152,6 +152,15 @@ fn align_to_columns(
 /// `batches` (bare arrow — re-wrapped under the table's field-id schema) as a
 /// real Parquet snapshot running `extras` in the commit tx, and return the mirror
 /// snapshot id. Shared by the landing Parquet path and the flush path.
+///
+/// `include_framing`: `true` for a stream/log table — the physical schema (Iceberg
+/// creation, the mirror-reconcile "incoming" comparison, and the field-id rewrap)
+/// is computed from `columns` PLUS [`framing_column_specs`] (appended after, same
+/// order stream declaration registers them in the mirror — see `iceberg_inline`).
+/// This is computed HERE (not by the caller) so callers keep passing their plain
+/// logical `columns` — `flush_locked` in particular does not need to build a
+/// framing-aware column list itself. `false` (batch tables) makes every step below
+/// behave exactly as before this parameter existed (`full_columns == columns`).
 pub(crate) async fn append_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -159,14 +168,31 @@ pub(crate) async fn append_parquet_snapshot(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     extras: CommitExtras<'_>,
+    include_framing: bool,
 ) -> Result<SnapshotId> {
-    ensure_iceberg_table(catalog, table, columns).await?;
+    ensure_iceberg_table(catalog, table, columns, include_framing).await?;
+
+    // The physical column view this commit reconciles/writes against: for a stream
+    // table this is `columns` (user) + the reserved framing specs, in the exact
+    // order `ensure_iceberg_table` built the Iceberg schema in and `iceberg_inline`
+    // registered them in the mirror at declaration — so `incoming` below matches
+    // `live` (already carrying framing from declaration) instead of looking like a
+    // dropped-columns schema change.
+    let full_columns: Vec<ColumnSpec> = if include_framing {
+        columns
+            .iter()
+            .cloned()
+            .chain(framing_column_specs())
+            .collect()
+    } else {
+        columns.to_vec()
+    };
 
     // Decide identical/create vs additive vs reject against the live mirror. We need a
     // snapshot to read live columns "as of"; live columns have begin_snapshot <= the
     // current snapshot, so the current snapshot is the read point — or an empty set if
     // there is no snapshot yet (a fresh creation).
-    let incoming = projected_columns(columns)?;
+    let incoming = projected_columns(&full_columns)?;
     let icb = IcebergCatalog::new(pool.clone());
     let (live, current) = match icb.current_snapshot(table).await {
         Ok(snap) => {
@@ -201,7 +227,7 @@ pub(crate) async fn append_parquet_snapshot(
                         ));
                     }
                 }
-                return land_additive(pool, catalog, table, columns, batches, extras).await;
+                return land_additive(pool, catalog, table, &full_columns, batches, extras).await;
             }
             Err(e) => return Err(ControlPlaneError::Validation(e.to_string())),
         }
@@ -215,15 +241,16 @@ pub(crate) async fn append_parquet_snapshot(
     // the table's arrow schema (which carries the iceberg field-id metadata) or it
     // can't map columns to field ids. Re-wrap each batch's columns under that
     // field-id-bearing schema. Positional alignment is safe here because `batches`
-    // were already projected to `columns` order (= the table schema order) by
-    // `align_to_columns` upstream.
+    // were already projected to `full_columns` order (= the table schema order) by
+    // `align_to_columns` upstream (batch path) or by the physical mirror read
+    // (stream flush path).
     let ice_arrow = Arc::new(
         iceberg::arrow::schema_to_arrow_schema(ice_table.metadata().current_schema())
             .map_err(backend)?,
     );
     let batches = batches
         .into_iter()
-        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, columns))
+        .map(|b| coerce_batch_to_ice(&b, &ice_arrow, &full_columns))
         .collect::<Result<Vec<_>>>()?;
 
     append_batches_with_extras(catalog, &ice_table, batches, extras)
@@ -440,7 +467,8 @@ pub async fn write_steps(
             });
             continue;
         }
-        ensure_iceberg_table(catalog, &step.table, &step.columns).await?;
+        // Multi-target writes don't carry stream framing (out of this slice's scope).
+        ensure_iceberg_table(catalog, &step.table, &step.columns, false).await?;
         let files =
             write_object_data_files(catalog, &step.table, &step.columns, step.batches).await?;
         staged.push(Staged {
@@ -476,10 +504,19 @@ pub async fn write_steps(
 /// `columns`. Writes only the Iceberg catalog pointer — it does NOT project the
 /// mirror (the mirror is projected when files are registered/appended). Shared by
 /// the landing Parquet path and the transform [`register_files`] path.
+///
+/// `include_framing`: when `true` (a stream/log table), the three reserved log
+/// framing columns ([`framing_column_specs`]) are appended AFTER `columns` in the
+/// created Iceberg schema, so they land in the physical schema (and therefore the
+/// mirror, via `columns_of` on the commit path) while staying invisible to logical
+/// reads (`is_reserved`). Only matters on table CREATION — a pre-existing table's
+/// schema is untouched. Batch tables pass `false`, leaving `ice_schema(columns)`
+/// byte-identical to before this parameter existed.
 pub(crate) async fn ensure_iceberg_table(
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
+    include_framing: bool,
 ) -> Result<()> {
     let ns = NamespaceIdent::new(table.schema.clone());
     if !catalog.namespace_exists(&ns).await.map_err(backend)? {
@@ -490,13 +527,43 @@ pub(crate) async fn ensure_iceberg_table(
     }
     let ident = TableIdent::new(ns.clone(), table.name.clone());
     if !catalog.table_exists(&ident).await.map_err(backend)? {
+        let mut cols = columns.to_vec();
+        if include_framing {
+            cols.extend(framing_column_specs());
+        }
         let creation = TableCreation::builder()
             .name(table.name.clone())
-            .schema(ice_schema(columns)?)
+            .schema(ice_schema(&cols)?)
             .build();
         catalog.create_table(&ns, creation).await.map_err(backend)?;
     }
     Ok(())
+}
+
+/// The three reserved log-framing columns a stream/log table's Iceberg physical
+/// schema carries, in fixed order, appended AFTER a table's user columns. Hidden
+/// from every logical read by `is_reserved` (`iceberg_catalog::is_reserved`);
+/// present in the physical read (`IcebergCatalog::physical_columns`) that the
+/// flush path uses to carry them into Parquet. A batch table never gets these —
+/// `ice_schema`/the mirror stay exactly as before this column existed.
+pub(crate) fn framing_column_specs() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "loom_change_kind".into(),
+            ty: "string".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "loom_bucket".into(),
+            ty: "integer".into(),
+            nullable: true,
+        },
+        ColumnSpec {
+            name: "loom_offset".into(),
+            ty: "long".into(),
+            nullable: true,
+        },
+    ]
 }
 
 /// How [`register_files`] folds new files into the table's live set.
@@ -641,6 +708,8 @@ async fn land_parquet(
             .is_some()
     };
 
+    // Framing persistence on the direct-write Parquet path is future scope
+    // (Plan 1b Task 5) — this path never stamps/persists framing yet.
     let snapshot = append_parquet_snapshot(
         pool,
         catalog,
@@ -652,6 +721,7 @@ async fn land_parquet(
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
+        false,
     )
     .await?;
 
@@ -703,6 +773,8 @@ pub async fn overwrite_parquet_snapshot(
     if batches.iter().all(|b| b.num_rows() == 0) {
         return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
     }
+    // Framing persistence on the overwrite/replace path is future scope
+    // (Plan 1b Task 5) — this path never stamps/persists framing yet.
     append_parquet_snapshot(
         pool,
         catalog,
@@ -716,6 +788,7 @@ pub async fn overwrite_parquet_snapshot(
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
+        false,
     )
     .await
 }
