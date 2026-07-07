@@ -396,6 +396,15 @@ pub trait Transforms {
     async fn mark_run_running(&self, run_id: Uuid) -> Result<()>;
     /// Apply a [`RunOutcome`]. `NotFound` if unknown.
     async fn finish_run(&self, run_id: Uuid, outcome: RunOutcome) -> Result<()>;
+    /// Sweep runs stuck `Running` whose queue job is no longer live (neither
+    /// `available` nor in-flight `running`) and whose `started_at` predates
+    /// `running_since_before`: mark each `Failed("reporting lost")`. Returns the
+    /// swept run ids. Runs with a live job are left untouched — they self-heal on
+    /// retry or crashed-worker reclaim.
+    async fn reconcile_stranded_runs(
+        &self,
+        running_since_before: OffsetDateTime,
+    ) -> Result<Vec<Uuid>>;
     /// `NotFound` if unknown.
     async fn get_run(&self, run_id: Uuid) -> Result<TransformRun>;
     /// Runs (optionally of one transform), newest first (`queued_at` desc,

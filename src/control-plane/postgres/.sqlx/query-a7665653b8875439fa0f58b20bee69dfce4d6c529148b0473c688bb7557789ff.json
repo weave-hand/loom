@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update transforms.run as r set state = 'failed', error = 'reporting lost', finished_at = now() where r.state = 'running' and r.started_at <= $1 and not exists ( select 1 from queue.jobs j where j.state in ('available', 'running') and (j.payload->>'run_id')::uuid = r.run_id ) returning r.run_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "transforms.run",
+            "name": "run_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a7665653b8875439fa0f58b20bee69dfce4d6c529148b0473c688bb7557789ff"
+}

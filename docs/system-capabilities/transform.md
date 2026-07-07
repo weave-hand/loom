@@ -195,8 +195,18 @@ once, with `snapshot_id` populated from the committed snapshot. Lifecycle
 methods carry no state-transition guards by design: the queue is
 at-least-once, so a retried job that already committed may legitimately
 re-mark a terminal run, and the record follows execution rather than gating
-it. Runs are listed newest-first (`queued_at` desc, `run_id` desc tiebreak),
-optionally filtered to one transform's history.
+it. Because the terminal `finish_run_failed` report is best-effort and
+non-masking (a reporting failure never overturns the queue's abandon
+decision), a *lost* terminal report could otherwise strand a run reading
+`Running` forever after its job has terminally `failed`. A **reconciliation
+sweep** closes that gap: the engine's `reconcile_loop` periodically calls
+`Transforms::reconcile_stranded_runs`, which marks `Failed("reporting lost")`
+every run still `Running` whose queue job is no longer live (neither
+`available` nor in-flight `running`) and whose `started_at` predates a grace
+cutoff — so a stranded run self-heals within a tick, while a genuinely
+in-flight or retrying run (its job still live) is left untouched (#392). Runs
+are listed newest-first (`queued_at` desc, `run_id` desc tiebreak), optionally
+filtered to one transform's history.
 
 ## Cron schedules
 

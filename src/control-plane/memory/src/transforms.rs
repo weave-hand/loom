@@ -147,6 +147,41 @@ impl Transforms for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn reconcile_stranded_runs(
+        &self,
+        running_since_before: OffsetDateTime,
+    ) -> Result<Vec<Uuid>> {
+        // Snapshot the run_ids that still have a LIVE queue job (available or
+        // running). run_id rides in the job payload as a string.
+        let live: std::collections::HashSet<String> = {
+            let rows = self.rows.lock();
+            rows.iter()
+                .filter(|r| matches!(r.state, "available" | "running"))
+                .filter_map(|r| {
+                    r.payload
+                        .get("run_id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
+                .collect()
+        };
+        let mut swept = Vec::new();
+        let mut st = self.transforms.lock();
+        for run in st.runs.values_mut() {
+            if run.state == RunState::Running
+                && run.started_at.is_some_and(|s| s <= running_since_before)
+                && !live.contains(&run.run_id.to_string())
+            {
+                run.state = RunState::Failed;
+                run.error = Some("reporting lost".into());
+                run.finished_at = Some(OffsetDateTime::now_utc());
+                swept.push(run.run_id);
+            }
+        }
+        Ok(swept)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn get_run(&self, run_id: Uuid) -> Result<TransformRun> {
         self.transforms
             .lock()
