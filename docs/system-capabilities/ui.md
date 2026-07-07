@@ -87,6 +87,12 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   locally, custom RBE image on RE) provides it. amd64-only for now.
 - **Generic `DataTable<R>` via a `TableRow` trait** — rows map themselves to
   cells, sidestepping yew's `PartialEq`-props constraint on closures.
+- **Generation-guarded selection-scoped fetches** — the Catalog drawer's lazy
+  detail/preview/lineage `spawn_local` fetches are guarded by a single shared
+  `FetchGeneration` counter (in `loom_ui_core`, `rust_test`'d) bumped on dataset
+  selection change; each fetch captures the generation it was spawned under and
+  commits its result only if the selection hasn't advanced — so an out-of-order
+  network arrival from a superseded selection can't stale the drawer body.
 
 ## Known gaps
 
