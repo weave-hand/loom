@@ -365,16 +365,13 @@ async fn stream_append_rejects_non_positive_bucket_count() {
 /// count post-declare and returns `Conflict` if it disagrees with the request.
 ///
 /// Under this specific brand-new-table race, the two writers ALSO race
-/// `ensure_table`'s creation of the `iceberg_mirror.table` row itself (a separate,
-/// orthogonal race over `iceberg_table_one_live_idx`, unguarded today): depending
-/// on scheduling, the loser is rejected either at that earlier stage (a `Backend`
-/// wrapping a Postgres `23505` duplicate-key error on `iceberg_mirror.table` — a
-/// clean, if unpolished, rejection with nothing committed) or — whenever both
-/// writers reach the declare with the SAME table id — at the stream-declare stage
-/// fixed here (`Conflict`). Either shape is an acceptable "loser never desyncs"
-/// outcome; assert the loser is one of exactly those two, and — regardless of
-/// which — pin down the invariant that actually matters: no stamped `loom_bucket`
-/// ever exceeds the recorded `stream_table.bucket_count`.
+/// `ensure_table`'s creation of the `iceberg_mirror.table` row itself — but that
+/// race is now resolved by a savepoint retry (the loser absorbs the winner's
+/// `table_id` instead of surfacing a raw `23505`), so both writers ALWAYS reach
+/// the declare with the SAME resolved `table_id`. The loser is therefore
+/// deterministically rejected at the stream-declare stage fixed here
+/// (`Conflict`). Pin down the invariant that actually matters: no stamped
+/// `loom_bucket` ever exceeds the recorded `stream_table.bucket_count`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_declare_with_differing_counts_does_not_desync() {
     let fx = PgFixture::shared();
@@ -405,32 +402,14 @@ async fn concurrent_first_declare_with_differing_counts_does_not_desync() {
     let result_a = handle_a.await.expect("task a join");
     let result_b = handle_b.await.expect("task b join");
 
-    // A loser rejected at the (orthogonal, pre-existing) `ensure_table` race: a
-    // Backend error wrapping Postgres 23505 on the live-table unique index.
-    fn is_benign_ensure_table_race(e: &ControlPlaneError) -> bool {
-        match e {
-            ControlPlaneError::Backend(err) => err
-                .downcast_ref::<sqlx::Error>()
-                .and_then(sqlx::Error::as_database_error)
-                .and_then(|db| db.code())
-                .is_some_and(|code| code.as_ref() == "23505"),
-            _ => false,
-        }
-    }
-
     // Exactly one of the two concurrent first-declares succeeds; the other must be
-    // rejected — either as the stream-declare Conflict this fix adds, or as the
-    // benign ensure_table race above — never silently proceeding with a
-    // mismatched count.
+    // rejected as the stream-declare Conflict this fix adds — never silently
+    // proceeding with a mismatched count.
     let outcomes = [&result_a, &result_b];
     let ok_count = outcomes.iter().filter(|r| r.is_ok()).count();
     let clean_rejection_count = outcomes
         .iter()
-        .filter(|r| match r {
-            Err(ControlPlaneError::Conflict(_)) => true,
-            Err(e) => is_benign_ensure_table_race(e),
-            Ok(_) => false,
-        })
+        .filter(|r| matches!(r, Err(ControlPlaneError::Conflict(_))))
         .count();
     assert_eq!(
         ok_count, 1,
@@ -438,8 +417,8 @@ async fn concurrent_first_declare_with_differing_counts_does_not_desync() {
     );
     assert_eq!(
         clean_rejection_count, 1,
-        "the losing first-declare must fail cleanly (Conflict, or the benign ensure_table \
-         race), not desync: a={result_a:?} b={result_b:?}"
+        "the losing first-declare must fail cleanly with Conflict, not desync: \
+         a={result_a:?} b={result_b:?}"
     );
 
     // Whichever count won, every stamped row must be `< bucket_count` — i.e. no row
@@ -465,4 +444,51 @@ async fn concurrent_first_declare_with_differing_counts_does_not_desync() {
             "stamped bucket {b} must be < recorded bucket_count {bucket_count} (desync)"
         );
     }
+}
+
+/// Two concurrent FIRST writes to the same brand-new `(ns, name)` both resolve to
+/// the single live `iceberg_mirror.table` row: the loser of the unique-index race
+/// absorbs the winner's `table_id` via the savepoint retry, instead of surfacing a
+/// raw `23505`. Exactly one live table row exists afterward.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_ensure_table_resolves_to_one_id() {
+    use control_plane_postgres::iceberg_mirror;
+
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    async fn first_write(pool: sqlx::PgPool) -> control_plane_core::Result<i64> {
+        let mut tx = pool.begin().await.expect("begin");
+        let snap = iceberg_mirror::next_snapshot(&mut tx, None)
+            .await
+            .expect("allocate snapshot");
+        let tid = iceberg_mirror::ensure_table(&mut tx, "ns", "brand_new", snap).await?;
+        tx.commit().await.expect("commit");
+        Ok(tid)
+    }
+
+    let handle_a = tokio::spawn(first_write(pool.clone()));
+    let handle_b = tokio::spawn(first_write(pool.clone()));
+    let tid_a = handle_a
+        .await
+        .expect("join a")
+        .expect("writer a resolves ensure_table");
+    let tid_b = handle_b
+        .await
+        .expect("join b")
+        .expect("writer b resolves ensure_table");
+
+    assert_eq!(tid_a, tid_b, "both first-writers resolve to one table_id");
+
+    let live: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
+        "select count(*) from iceberg_mirror.\"table\" where end_snapshot is null",
+    ))
+    .fetch_one(&pool)
+    .await
+    .expect("live row count");
+    assert_eq!(
+        live, 1,
+        "exactly one live table row after concurrent first writes"
+    );
 }

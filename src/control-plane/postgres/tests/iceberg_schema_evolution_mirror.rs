@@ -20,7 +20,10 @@ async fn reconcile_creates_then_appends_then_stamps() {
     let fixture = PgFixture::shared();
     let (cp, _db) = fixture.fresh_db().await;
     let pool = cp.pool().clone();
-    let mut conn = pool.acquire().await.unwrap();
+    // `ensure_table`'s savepoint retry requires an explicit transaction (SAVEPOINT
+    // is illegal outside one), so use `pool.begin()` rather than a bare
+    // `pool.acquire()` connection.
+    let mut conn = pool.begin().await.unwrap();
 
     // Creation: empty live → project all (incl. a required column).
     let s1 = next_snapshot(&mut conn, None).await.unwrap();
@@ -79,7 +82,8 @@ async fn reconcile_rejects_drop() {
     let fixture = PgFixture::shared();
     let (cp, _db) = fixture.fresh_db().await;
     let pool = cp.pool().clone();
-    let mut conn = pool.acquire().await.unwrap();
+    // See the transaction note in `reconcile_creates_then_appends_then_stamps`.
+    let mut conn = pool.begin().await.unwrap();
     let s1 = next_snapshot(&mut conn, None).await.unwrap();
     let tid = ensure_table(&mut conn, "s", "t", s1).await.unwrap();
     reconcile_and_project(

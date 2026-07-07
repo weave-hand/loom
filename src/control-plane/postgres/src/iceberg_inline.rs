@@ -307,7 +307,7 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
 /// object now exists. All four codes are the same race surfacing at whichever
 /// catalog layer the loser happens to collide on first (relation, column, row
 /// type, or the backing unique index).
-fn is_duplicate_object_race(e: &sqlx::Error) -> bool {
+pub(crate) fn is_duplicate_object_race(e: &sqlx::Error) -> bool {
     e.as_database_error()
         .and_then(|db| db.code())
         .is_some_and(|code| matches!(code.as_ref(), "42P07" | "42701" | "42710" | "23505"))

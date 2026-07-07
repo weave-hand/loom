@@ -27,14 +27,17 @@ async fn schema_hides_reserved_columns() {
     };
 
     // Seed a table whose mirror carries a user column AND a synthetic reserved
-    // `loom_` column at the same snapshot.
-    let mut conn = pool.acquire().await.expect("acquire");
-    let at = next_snapshot(&mut conn, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut conn, &table.schema, &table.name, at)
+    // `loom_` column at the same snapshot. `ensure_table`'s savepoint retry
+    // requires an explicit transaction (SAVEPOINT is illegal outside one), so use
+    // `pool.begin()` rather than a bare `pool.acquire()` connection, and commit
+    // before reading back through the catalog's own (separate) connection.
+    let mut tx = pool.begin().await.expect("begin");
+    let at = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, &table.schema, &table.name, at)
         .await
         .expect("ensure_table");
     project_columns(
-        &mut conn,
+        &mut tx,
         tid,
         at,
         &[
@@ -44,7 +47,7 @@ async fn schema_hides_reserved_columns() {
     )
     .await
     .expect("project_columns");
-    drop(conn);
+    tx.commit().await.expect("commit");
 
     let ice = IcebergCatalog::new(pool.clone());
 
