@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into stream.bucket_offset (table_id, bucket, next) values ($1, $2, $3) on conflict (table_id, bucket) do update set next = stream.bucket_offset.next + $3 returning next - $3 as \"first!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "first!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a7bb046d95dc6d2945f3521157f96e2e413c2ea081d252c3ae4645d9669081fc"
+}

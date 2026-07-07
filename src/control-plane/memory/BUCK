@@ -139,6 +139,15 @@ rust_test(
 )
 
 rust_test(
+    name = "stream",
+    crate = "stream",
+    srcs = ["tests/stream.rs"],
+    crate_root = "tests/stream.rs",
+    edition = "2024",
+    deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+rust_test(
     name = "auth",
     crate = "auth",
     srcs = ["tests/auth.rs"],

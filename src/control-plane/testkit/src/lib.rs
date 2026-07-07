@@ -4916,3 +4916,105 @@ where
         "compaction does not fire data triggers"
     );
 }
+
+use control_plane_core::BucketOffsets;
+
+/// Contract for the per-`(table, bucket)` offset allocator. `cp` must be freshly
+/// empty. Offsets start at 0, are gapless and monotonic per bucket, and buckets
+/// and tables are independent sequences.
+pub async fn bucket_offsets_contract<CP: BucketOffsets>(cp: &CP) {
+    // a fresh (table, bucket) has high-water 0 and hands out 0 first
+    assert_eq!(
+        cp.peek_offset(1, 0).await.expect("peek"),
+        0,
+        "fresh high-water is 0"
+    );
+    assert_eq!(
+        cp.allocate_offset(1, 0, 1).await.expect("alloc"),
+        0,
+        "first offset is 0"
+    );
+    assert_eq!(
+        cp.allocate_offset(1, 0, 1).await.expect("alloc"),
+        1,
+        "offsets are contiguous"
+    );
+    assert_eq!(
+        cp.peek_offset(1, 0).await.expect("peek"),
+        2,
+        "high-water advanced to 2"
+    );
+    // a batch allocation returns the first offset of the run and advances by count
+    assert_eq!(
+        cp.allocate_offset(1, 0, 3).await.expect("alloc"),
+        2,
+        "batch returns its first offset"
+    );
+    assert_eq!(
+        cp.peek_offset(1, 0).await.expect("peek"),
+        5,
+        "high-water advanced by count"
+    );
+    assert_eq!(
+        cp.allocate_offset(1, 0, 1).await.expect("alloc"),
+        5,
+        "next offset after the batch"
+    );
+    // buckets are independent
+    assert_eq!(
+        cp.allocate_offset(1, 1, 1).await.expect("alloc"),
+        0,
+        "bucket 1 has its own sequence"
+    );
+    // tables are independent
+    assert_eq!(
+        cp.allocate_offset(2, 0, 1).await.expect("alloc"),
+        0,
+        "table 2 has its own sequence"
+    );
+    // a non-positive count is rejected and does not advance the high-water
+    assert!(
+        cp.allocate_offset(9, 0, 0).await.is_err(),
+        "count = 0 is rejected"
+    );
+    assert!(
+        cp.allocate_offset(9, 0, -1).await.is_err(),
+        "negative count is rejected"
+    );
+    assert_eq!(
+        cp.peek_offset(9, 0).await.expect("peek"),
+        0,
+        "rejected allocations do not advance the high-water"
+    );
+}
+
+/// Concurrency contract (run against a real database): N concurrent single-row
+/// allocations on one bucket must yield a gapless `0..N` with no gaps or dups.
+pub async fn bucket_offsets_concurrency_contract<CP>(cp: CP)
+where
+    CP: BucketOffsets + Clone + Send + Sync + 'static,
+{
+    const N: i64 = 64;
+    let mut handles = Vec::new();
+    for _ in 0..N {
+        let cp = cp.clone();
+        handles.push(tokio::spawn(async move {
+            cp.allocate_offset(7, 0, 1).await.expect("alloc")
+        }));
+    }
+    let mut got = Vec::new();
+    for h in handles {
+        got.push(h.await.expect("join"));
+    }
+    got.sort_unstable();
+    let want: Vec<i64> = (0..N).collect();
+    assert_eq!(
+        got, want,
+        "N concurrent allocations yield a gapless 0..N with no dups"
+    );
+    assert_eq!(
+        cp.peek_offset(7, 0).await.expect("peek"),
+        N,
+        "high-water equals N"
+    );
+}

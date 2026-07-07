@@ -18,6 +18,7 @@ mod ontology;
 mod page;
 mod queue;
 pub mod snapshot;
+mod stream;
 mod transaction;
 mod transform_job;
 mod transforms;
@@ -67,6 +68,7 @@ pub use ontology::{
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
+pub use stream::BucketOffsets;
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use transform_job::{
     OutputMode, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TransformJob, TypedTransformJob,
