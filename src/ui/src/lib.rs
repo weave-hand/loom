@@ -264,7 +264,7 @@ pub fn cell_to_string(v: &Value) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
     Catalog,
-    Pipelines,
+    Transforms,
     Ontology,
     Workbooks,
     Dashboards,
@@ -276,7 +276,7 @@ impl Surface {
     pub fn all() -> [Surface; 5] {
         [
             Surface::Catalog,
-            Surface::Pipelines,
+            Surface::Transforms,
             Surface::Ontology,
             Surface::Workbooks,
             Surface::Dashboards,
@@ -288,7 +288,7 @@ impl Surface {
     pub fn label(self) -> &'static str {
         match self {
             Surface::Catalog => "Catalog",
-            Surface::Pipelines => "Pipelines",
+            Surface::Transforms => "Transforms",
             Surface::Ontology => "Ontology",
             Surface::Workbooks => "Workbooks",
             Surface::Dashboards => "Dashboards",
@@ -300,7 +300,7 @@ impl Surface {
     pub fn accent(self) -> &'static str {
         match self {
             Surface::Catalog => "#3b82f6",
-            Surface::Pipelines => "#2bb0a0",
+            Surface::Transforms => "#2bb0a0",
             Surface::Ontology => "#8b5cf6",
             Surface::Workbooks => "#2da44e",
             Surface::Dashboards => "#d29922",
