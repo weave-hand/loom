@@ -22,7 +22,7 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## ingest
 
-- [ ] **Stream engine — Log Tables (slice 1)** `{#road-stream-log-tables area:ingest status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-06-stream-engine-design}`
+- [ ] **Stream engine — Log Tables (slice 1)** `{#road-stream-log-tables area:ingest status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-07-stream-log-tables-design}`
   Append-only stream dataset flavor: appends land in the inline tier stamped with `(bucket, offset)` from the `BucketOffsets` allocator and a `change_kind = +I` column (added to the inline DDL beside `loom_tombstone`), sub-second-visible via the current-state union read, flushed to a changelog Iceberg table. Builds on `road-stream-substrate` (shipped: the offset allocator). See spec §"Sliced roadmap".
 
 ## query

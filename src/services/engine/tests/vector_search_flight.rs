@@ -102,6 +102,7 @@ async fn vector_search_flight_top_k() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows 1-2");
@@ -121,6 +122,7 @@ async fn vector_search_flight_top_k() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows 3-4");
@@ -222,6 +224,7 @@ async fn vector_search_no_index_is_not_found() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land row");
@@ -323,6 +326,7 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows");

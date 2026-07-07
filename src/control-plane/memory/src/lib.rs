@@ -72,6 +72,7 @@ pub struct MemoryControlPlane {
     lineage: Arc<Mutex<LineageState>>,
     transforms: Arc<Mutex<TransformsState>>,
     offsets: Arc<Mutex<std::collections::HashMap<(i64, i32), i64>>>,
+    stream_tables: Arc<Mutex<std::collections::HashMap<i64, i32>>>,
     lock_timeout: Duration,
 }
 
@@ -87,6 +88,7 @@ impl MemoryControlPlane {
             lineage: Arc::new(Mutex::new(LineageState::default())),
             transforms: Arc::new(Mutex::new(TransformsState::default())),
             offsets: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            stream_tables: Arc::new(Mutex::new(std::collections::HashMap::new())),
             lock_timeout,
         }
     }

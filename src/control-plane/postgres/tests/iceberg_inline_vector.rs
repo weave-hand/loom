@@ -114,6 +114,7 @@ async fn inline_vector_null_row_round_trips() {
         &nullable_batch(),
         lineage(RunId(uuid::Uuid::new_v4()), &table),
         None,
+        None,
     )
     .await
     .expect("inline_append nullable vector rows");
@@ -172,6 +173,7 @@ async fn inline_vector_round_trips_bit_exact() {
         &columns(),
         &batch(rows),
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
         None,
     )
     .await

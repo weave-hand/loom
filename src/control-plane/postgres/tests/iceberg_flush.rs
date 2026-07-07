@@ -63,6 +63,7 @@ async fn flush_inline_only_makes_rows_file_backed_exactly_once() {
         &inline_batch(&[1, 2, 3]),
         inline_lineage(run, &table),
         None,
+        None,
     )
     .await
     .expect("inline_append");
@@ -146,6 +147,7 @@ async fn flush_emits_compaction_lineage() {
         &inline_batch(&[10]),
         inline_lineage(inline_run, &table),
         None,
+        None,
     )
     .await
     .expect("inline_append");
@@ -192,6 +194,7 @@ async fn flush_preserves_time_travel() {
         &columns(),
         &inline_batch(&[1, 2]),
         inline_lineage(run, &table),
+        None,
         None,
     )
     .await
@@ -270,6 +273,7 @@ async fn flush_leaves_later_inline_rows_live() {
         &inline_batch(&[1]),
         inline_lineage(run, &table),
         None,
+        None,
     )
     .await
     .expect("inline A");
@@ -287,6 +291,7 @@ async fn flush_leaves_later_inline_rows_live() {
         &columns(),
         &inline_batch(&[2]),
         inline_lineage(run, &table),
+        None,
         None,
     )
     .await

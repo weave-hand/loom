@@ -77,6 +77,7 @@ async fn reads_landed_file_back_to_exact_rows() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "read_test"),
+        None,
     )
     .await
     .expect("land");

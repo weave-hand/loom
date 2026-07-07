@@ -147,6 +147,7 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land rows");

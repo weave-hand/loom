@@ -127,6 +127,7 @@ async fn flush_enqueues_one_build_job_per_declared_index() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land");
@@ -171,6 +172,7 @@ async fn flush_without_declared_index_enqueues_nothing() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land");
@@ -271,6 +273,7 @@ async fn two_flushes_with_pending_build_enqueue_one() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land 1");
@@ -298,6 +301,7 @@ async fn two_flushes_with_pending_build_enqueue_one() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land 2");
@@ -334,6 +338,7 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land 1");
@@ -363,6 +368,7 @@ async fn flush_while_build_running_enqueues_a_fresh_pending() {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, &table),
+        None,
     )
     .await
     .expect("land 2");

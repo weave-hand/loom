@@ -269,6 +269,7 @@ async fn append_only_table_still_flushes() {
         &full_row_batch(1, 1),
         lineage(run, &table),
         None,
+        None,
     )
     .await
     .expect("seed append");

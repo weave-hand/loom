@@ -122,6 +122,7 @@ async fn worker_compacts_small_files_over_the_wire() {
                 flush_byte_threshold: i64::MAX, // no auto-enqueue
             },
             lineage(RunId(uuid::Uuid::new_v4()), &acc),
+            None,
         )
         .await
         .expect("land");
@@ -261,6 +262,7 @@ async fn worker_leaves_large_files_untouched() {
                 flush_byte_threshold: i64::MAX,
             },
             lineage(RunId(uuid::Uuid::new_v4()), &mixed),
+            None,
         )
         .await
         .expect("land small");
@@ -281,6 +283,7 @@ async fn worker_leaves_large_files_untouched() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &mixed),
+        None,
     )
     .await
     .expect("land large");

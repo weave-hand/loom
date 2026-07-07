@@ -453,6 +453,7 @@ async fn list_files_reports_columns_and_absence() {
             flush_byte_threshold: i64::MAX,
         },
         event(&[], &seeded, "seed"),
+        None,
     )
     .await
     .expect("land");

@@ -162,6 +162,7 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
             flush_byte_threshold: i64::MAX, // no auto-enqueue
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land batch 1");
@@ -180,6 +181,7 @@ async fn worker_streams_a_file_set_and_reconstructs_exact_rows() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land batch 2");

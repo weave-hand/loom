@@ -331,6 +331,7 @@ pub async fn seed_docs_table(fx: &PgFixture, db: &str) -> VectorSeed {
             batches,
             cold_limits(),
             test_lineage(run, &table),
+            None,
         )
         .await
         .expect("land cold rows");
@@ -390,6 +391,7 @@ pub async fn land_vec4(s: &VectorSeed, rows: &[(i64, [f32; 4])], limits: InlineL
         batches,
         limits,
         test_lineage(RunId(uuid::Uuid::new_v4()), &s.table),
+        None,
     )
     .await
     .expect("land vec4 rows");

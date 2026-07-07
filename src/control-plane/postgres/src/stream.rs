@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, ControlPlaneError, Result};
+use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables};
 
 use crate::{PgControlPlane, backend};
 
@@ -60,5 +60,51 @@ impl BucketOffsets for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn peek_offset(&self, table_id: i64, bucket: i32) -> Result<i64> {
         pg_peek_offset(self.pool(), table_id, bucket).await
+    }
+}
+
+/// Declare a log table (idempotent, first-wins on bucket_count).
+pub(crate) async fn pg_declare_stream<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+    bucket_count: i32,
+) -> Result<()> {
+    sqlx::query!(
+        "insert into stream.stream_table (table_id, bucket_count) values ($1, $2) \
+         on conflict (table_id) do nothing",
+        table_id,
+        bucket_count,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// The bucket count if table_id is a declared log table, else None.
+pub(crate) async fn pg_stream_bucket_count<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+) -> Result<Option<i32>> {
+    let n = sqlx::query_scalar!(
+        "select bucket_count from stream.stream_table where table_id = $1",
+        table_id,
+    )
+    .fetch_optional(ex)
+    .await
+    .map_err(backend)?;
+    Ok(n)
+}
+
+#[async_trait]
+impl StreamTables for PgControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn declare_stream(&self, table_id: i64, bucket_count: i32) -> Result<()> {
+        pg_declare_stream(self.pool(), table_id, bucket_count).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>> {
+        pg_stream_bucket_count(self.pool(), table_id).await
     }
 }

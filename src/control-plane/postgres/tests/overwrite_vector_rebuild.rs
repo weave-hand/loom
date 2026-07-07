@@ -117,6 +117,7 @@ async fn seed(pool: &PgPool, catalog: &SqlCatalog, table: &TableRef) {
             flush_byte_threshold: i64::MAX,
         },
         test_lineage(run, table),
+        None,
     )
     .await
     .expect("land");

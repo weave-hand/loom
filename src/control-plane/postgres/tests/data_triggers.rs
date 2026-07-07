@@ -122,6 +122,7 @@ async fn inline_land_fires_a_data_trigger_run() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("inline land");
@@ -170,6 +171,7 @@ async fn parquet_land_fires_and_debounces() {
         batches,
         limits,
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("land 1");
@@ -191,6 +193,7 @@ async fn parquet_land_fires_and_debounces() {
         batches,
         limits,
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("land 2");
@@ -212,6 +215,7 @@ async fn parquet_land_fires_and_debounces() {
         batches,
         limits,
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("land 3");
@@ -303,6 +307,7 @@ async fn unmatched_table_does_not_fire() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("land into unrelated table");
@@ -341,6 +346,7 @@ async fn overwrite_and_truncate_fire() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("seed append");
@@ -487,6 +493,7 @@ async fn flush_does_not_refire() {
             flush_byte_threshold: 1,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("inline land 1");
@@ -551,6 +558,7 @@ async fn broken_def_body_is_skipped() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &input),
+        None,
     )
     .await
     .expect("land commits despite a poisoned def");

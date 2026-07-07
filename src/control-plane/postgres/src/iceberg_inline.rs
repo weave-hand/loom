@@ -286,7 +286,10 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
            loom_row_id bigserial primary key, \
            begin_snapshot bigint not null, \
            end_snapshot bigint, \
-           loom_tombstone boolean not null default false{cols})",
+           loom_tombstone boolean not null default false, \
+           loom_change_kind text not null default '+I', \
+           loom_bucket int, \
+           loom_offset bigint{cols})",
         inline_table_name(table_id),
     ))
 }
@@ -363,11 +366,26 @@ async fn ensure_inline_schema(
     columns: &[ColumnSpec],
 ) -> Result<()> {
     run_idempotent_ddl(&mut *conn, inline_ddl(tid, columns)?).await?;
-    let alter = format!(
+    let alter_tomb = format!(
         "alter table {} add column if not exists loom_tombstone boolean not null default false",
         inline_table_name(tid),
     );
-    run_idempotent_ddl(&mut *conn, alter).await?;
+    run_idempotent_ddl(&mut *conn, alter_tomb).await?;
+    let alter_kind = format!(
+        "alter table {} add column if not exists loom_change_kind text not null default '+I'",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_kind).await?;
+    let alter_bucket = format!(
+        "alter table {} add column if not exists loom_bucket int",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_bucket).await?;
+    let alter_offset = format!(
+        "alter table {} add column if not exists loom_offset bigint",
+        inline_table_name(tid),
+    );
+    run_idempotent_ddl(&mut *conn, alter_offset).await?;
     Ok(())
 }
 
@@ -388,10 +406,17 @@ pub async fn inline_append(
     batch: &RecordBatch,
     lineage: LineageEvent,
     flush_threshold: Option<i64>,
+    stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
     let conn: &mut PgConnection = &mut tx;
+
+    // Detect whether the table already existed (for the batch->stream conversion
+    // guard below) BEFORE `ensure_table` creates the mirror row.
+    let pre_existing = live_table_id(&mut *conn, &table.schema, &table.name)
+        .await?
+        .is_some();
 
     // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
     let at = next_snapshot(conn, None).await?;
@@ -430,6 +455,61 @@ pub async fn inline_append(
     // 2. Ensure inline storage exists (transactional DDL).
     ensure_inline_schema(&mut *conn, tid, columns).await?;
 
+    // Reconcile stream mode. `effective` = Some(bucket_count) iff this table is a
+    // (now-)declared log table; None => batch table (no offset stamping).
+    let existing = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
+    let effective: Option<i32> = match (stream_buckets, existing) {
+        (Some(n), Some(m)) if n != m => {
+            return Err(ControlPlaneError::Conflict(format!(
+                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
+                table.schema, table.name
+            )));
+        }
+        (Some(_), Some(m)) => Some(m),
+        (Some(n), None) => {
+            if pre_existing {
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot convert existing batch table {}.{} to a stream table",
+                    table.schema, table.name
+                )));
+            }
+            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
+            // A concurrent first-writer may have won the declare with a different
+            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
+            // count and honour it, so the rows we stamp always agree with
+            // stream_table.bucket_count.
+            let stored = crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        "stream_table row missing immediately after declare".into(),
+                    )
+                })?;
+            if stored != n {
+                return Err(ControlPlaneError::Conflict(format!(
+                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
+                    table.schema, table.name
+                )));
+            }
+            Some(stored)
+        }
+        (None, existing) => existing,
+    };
+
+    // Defense in depth: a non-positive effective bucket count would otherwise
+    // reach the `row % bc` arithmetic below and panic (division/remainder by
+    // zero, or a meaningless negative modulus). Reject it cleanly here — this is
+    // currently unreachable (callers only ever pass positive counts), but a future
+    // caller threading an external `?buckets=N` value through must fail with a
+    // `Validation` error, not a panic.
+    if let Some(bc) = effective
+        && bc < 1
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream bucket_count must be >= 1, got {bc}"
+        )));
+    }
+
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
     let col_list = columns
@@ -437,25 +517,101 @@ pub async fn inline_append(
         .map(|c| quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let placeholders = (0..columns.len())
-        .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
-        .collect::<Vec<_>>()
-        .join(", ");
-    let insert_sql = format!(
-        "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
-        inline_table_name(tid),
-    );
-    for row in 0..batch.num_rows() {
-        let cells = columns
-            .iter()
-            .enumerate()
-            .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
-            .collect::<Result<Vec<_>>>()?;
-        let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone())).bind(at.0);
-        for cell in &cells {
-            q = bind_cell(q, cell);
+
+    if let Some(bc) = effective {
+        // Per-row bucket = row_index % bc (v1 simplification; bc >= 1).
+        let n = batch.num_rows();
+        // Count rows per bucket and reserve a contiguous offset run per touched
+        // bucket, up front, so the per-row loop only needs to hand out offsets
+        // from an already-reserved cursor (panic-free bucket indexing: `Vec::get`/
+        // `get_mut` instead of `[]`, even though `b` is always `< bc` by construction).
+        let bc_usize = usize::try_from(bc).map_err(|e| {
+            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+        })?;
+        let mut counts = vec![0i64; bc_usize];
+        for row in 0..n {
+            let b = row % bc_usize;
+            let c = counts
+                .get_mut(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            *c += 1;
         }
-        q.execute(&mut *conn).await.map_err(backend)?;
+        // cursor[b] = next offset to assign for bucket b (first of the reserved run).
+        let mut cursor = vec![0i64; bc_usize];
+        for (b, count) in counts.iter().enumerate() {
+            if *count > 0 {
+                let b_i32 = i32::try_from(b).map_err(|e| {
+                    ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+                })?;
+                let first =
+                    crate::stream::pg_allocate_offset(&mut *conn, tid, b_i32, *count).await?;
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot = first;
+            }
+        }
+        // $1 begin_snapshot, $2 loom_bucket, $3 loom_offset, then data columns from $4.
+        let placeholders = (0..columns.len())
+            .map(|i| format!("${}", i + 4))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "insert into {} (begin_snapshot, loom_bucket, loom_offset, {col_list}) \
+             values ($1, $2, $3, {placeholders})",
+            inline_table_name(tid),
+        );
+        for row in 0..n {
+            let b = row % bc_usize;
+            let offset = *cursor
+                .get(b)
+                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
+            {
+                let slot = cursor.get_mut(b).ok_or_else(|| {
+                    ControlPlaneError::Backend("bucket index out of range".into())
+                })?;
+                *slot += 1;
+            }
+            let b_i32 = i32::try_from(b).map_err(|e| {
+                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+            })?;
+            let cells = columns
+                .iter()
+                .enumerate()
+                .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
+                .collect::<Result<Vec<_>>>()?;
+            let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone()))
+                .bind(at.0)
+                .bind(b_i32)
+                .bind(offset);
+            for cell in &cells {
+                q = bind_cell(q, cell);
+            }
+            q.execute(&mut *conn).await.map_err(backend)?;
+        }
+    } else {
+        // Batch table: unchanged behaviour (loom_bucket/loom_offset stay NULL,
+        // loom_change_kind defaults to '+I').
+        let placeholders = (0..columns.len())
+            .map(|i| format!("${}", i + 2)) // $1 = begin_snapshot
+            .collect::<Vec<_>>()
+            .join(", ");
+        let insert_sql = format!(
+            "insert into {} (begin_snapshot, {col_list}) values ($1, {placeholders})",
+            inline_table_name(tid),
+        );
+        for row in 0..batch.num_rows() {
+            let cells = columns
+                .iter()
+                .enumerate()
+                .map(|(c, spec)| cell_from_arrow(batch, c, row, &spec.ty))
+                .collect::<Result<Vec<_>>>()?;
+            let mut q = sqlx::query(AssertSqlSafe(insert_sql.clone())).bind(at.0);
+            for cell in &cells {
+                q = bind_cell(q, cell);
+            }
+            q.execute(&mut *conn).await.map_err(backend)?;
+        }
     }
 
     // 3b. Flush trigger: accrue this batch's live bytes; on crossing the
@@ -796,9 +952,11 @@ pub async fn write_inline_delta(
     // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
     // (partition by <id>) shadows/hides the file row for that id.
     if tombstone {
-        // Tombstone: begin_snapshot, loom_tombstone=true, "<id_col>"=id; data NULL.
+        // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
+        // "<id_col>"=id; data NULL.
         let sql = format!(
-            "insert into {} (begin_snapshot, loom_tombstone, \"{}\") values ($1, true, $2)",
+            "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, \"{}\") \
+             values ($1, true, '-D', $2)",
             inline_table_name(tid),
             id_column.replace('"', "\"\""),
         );
@@ -807,8 +965,9 @@ pub async fn write_inline_delta(
             .await
             .map_err(backend)?;
     } else {
-        // Version: mirror inline_append's INSERT but prefix loom_tombstone=false.
-        // The id column is one of <cols>, so the version row carries the id naturally.
+        // Version: mirror inline_append's INSERT but prefix
+        // loom_tombstone=false, loom_change_kind='+U'. The id column is one of
+        // <cols>, so the version row carries the id naturally.
         let col_list = columns
             .iter()
             .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))
@@ -819,8 +978,8 @@ pub async fn write_inline_delta(
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "insert into {} (begin_snapshot, loom_tombstone, {col_list}) \
-             values ($1, false, {placeholders})",
+            "insert into {} (begin_snapshot, loom_tombstone, loom_change_kind, {col_list}) \
+             values ($1, false, '+U', {placeholders})",
             inline_table_name(tid),
         );
         let cells = columns

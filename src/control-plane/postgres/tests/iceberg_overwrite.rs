@@ -93,6 +93,7 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("append");
@@ -152,6 +153,7 @@ async fn replaced_files_carry_per_column_stats() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "stats"),
+        None,
     )
     .await
     .expect("append");
@@ -201,6 +203,7 @@ async fn truncate_overwrite_with_zero_files() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "trunc"),
+        None,
     )
     .await
     .expect("append");
@@ -248,6 +251,7 @@ async fn overwrite_emits_lineage() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "lin"),
+        None,
     )
     .await
     .expect("append");
@@ -311,6 +315,7 @@ async fn overwrite_atomicity_leaves_prior_set_intact() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "atomic"),
+        None,
     )
     .await
     .expect("append");

@@ -75,6 +75,7 @@ async fn iceberg_tx_compact_files_swaps_subset() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("a");
@@ -91,6 +92,7 @@ async fn iceberg_tx_compact_files_swaps_subset() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
     )
     .await
     .expect("b");

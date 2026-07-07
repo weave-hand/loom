@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use control_plane_core::{BucketOffsets, ControlPlaneError, Result};
+use control_plane_core::{BucketOffsets, ControlPlaneError, Result, StreamTables};
 
 use crate::MemoryControlPlane;
 
@@ -27,5 +27,23 @@ impl BucketOffsets for MemoryControlPlane {
             .get(&(table_id, bucket))
             .copied()
             .unwrap_or(0))
+    }
+}
+
+#[async_trait]
+impl StreamTables for MemoryControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn declare_stream(&self, table_id: i64, bucket_count: i32) -> Result<()> {
+        // Idempotent, first-wins: only insert if absent.
+        self.stream_tables
+            .lock()
+            .entry(table_id)
+            .or_insert(bucket_count);
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>> {
+        Ok(self.stream_tables.lock().get(&table_id).copied())
     }
 }

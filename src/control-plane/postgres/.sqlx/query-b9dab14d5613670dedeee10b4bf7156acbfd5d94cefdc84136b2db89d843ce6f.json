@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select bucket_count from stream.stream_table where table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bucket_count",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "stream.stream_table",
+            "name": "bucket_count"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b9dab14d5613670dedeee10b4bf7156acbfd5d94cefdc84136b2db89d843ce6f"
+}

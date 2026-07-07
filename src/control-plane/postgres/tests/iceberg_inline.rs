@@ -158,6 +158,7 @@ async fn inline_append_rejects_mistyped_batch_without_panicking() {
         &batch,
         lineage,
         None,
+        None,
     )
     .await
     .expect_err("mistyped batch must be rejected, not landed");

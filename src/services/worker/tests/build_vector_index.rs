@@ -146,6 +146,7 @@ async fn worker_builds_vector_index_over_the_wire() {
             flush_byte_threshold: i64::MAX, // no auto-enqueue
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land");
@@ -310,6 +311,7 @@ async fn build_with_unknown_index_name_fails() {
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land");

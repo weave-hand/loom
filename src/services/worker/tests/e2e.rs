@@ -169,6 +169,7 @@ async fn inline_threshold_enqueues_and_worker_flushes() {
         &inline_batch(&[1, 2, 3]),
         inline_lineage(run, &table),
         Some(1), // 1-byte threshold — any inline write crosses this
+        None,
     )
     .await
     .expect("inline_append with threshold");
@@ -269,6 +270,7 @@ async fn duplicate_dispatch_flush_is_idempotent_over_the_wire() {
         &inline_batch(&[1, 2, 3]),
         inline_lineage(run, &table),
         None,
+        None,
     )
     .await
     .expect("inline_append");
@@ -348,6 +350,7 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
             flush_byte_threshold: i64::MAX,
         },
         inline_lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
     )
     .await
     .expect("land");

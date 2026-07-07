@@ -164,6 +164,7 @@ async fn seed_and_build(
             flush_byte_threshold: i64::MAX,
         },
         lineage_evt(table),
+        None,
     )
     .await
     .expect("land cold");
@@ -289,6 +290,7 @@ async fn string_identity_cold_hot_merge() {
             flush_byte_threshold: i64::MAX,
         },
         lineage_evt(&table),
+        None,
     )
     .await
     .expect("land inline hot row");
@@ -350,6 +352,7 @@ async fn integer_identity_cold_hot_merge() {
             flush_byte_threshold: i64::MAX,
         },
         lineage_evt(&table),
+        None,
     )
     .await
     .expect("land inline hot row");

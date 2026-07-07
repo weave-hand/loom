@@ -298,6 +298,7 @@ async fn flush_over_wire() {
         &inline_batch(&[10, 20, 30]),
         inline_lineage(run, &table),
         None,
+        None,
     )
     .await
     .expect("inline_append");

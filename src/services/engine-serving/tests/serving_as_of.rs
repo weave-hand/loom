@@ -73,6 +73,7 @@ async fn land_rows(
         batches,
         cold_limits(),
         test_lineage(RunId(uuid::Uuid::new_v4()), table),
+        None,
     )
     .await
     .expect("land")

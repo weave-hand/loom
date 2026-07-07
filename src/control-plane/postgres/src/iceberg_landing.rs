@@ -27,7 +27,8 @@ use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append;
 use crate::iceberg_mirror::{
     ProjectedColumn, ProjectedFile, end_cap_files_by_path, end_cap_live_data_files, ensure_table,
-    live_columns_for, next_snapshot, project_files, reconcile_and_project, stamp_schema_version,
+    live_columns_for, live_table_id, next_snapshot, project_files, reconcile_and_project,
+    stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
@@ -51,10 +52,11 @@ pub struct InlineLimits {
 /// [`InlineLimits`]). Returns the loom mirror snapshot id either way.
 #[expect(
     clippy::too_many_arguments,
-    reason = "eight cohesive positional params: routing target (pool/catalog/table/columns), \
+    reason = "nine cohesive positional params: routing target (pool/catalog/table/columns), \
               pre-decoded payload (schema/batches — split from the single ipc_body: &[u8] this \
-              replaces), and behavior (limits/lineage); grouping any of these into a struct would \
-              obscure the mechanical 1:1 mapping callers already have to the removed decode step"
+              replaces), behavior (limits/lineage), and the stream-mode declaration \
+              (stream_buckets); grouping any of these into a struct would obscure the mechanical \
+              1:1 mapping callers already have to the removed decode step"
 )]
 pub async fn land(
     pool: &PgPool,
@@ -65,6 +67,7 @@ pub async fn land(
     batches: Vec<RecordBatch>,
     limits: InlineLimits,
     lineage: LineageEvent,
+    stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
     // Project the decoded columns to `columns` order, by name. Both downstream
     // branches align columns POSITIONALLY (inline indexes `columns[c]` against
@@ -83,10 +86,20 @@ pub async fn land(
             &batch,
             lineage,
             Some(limits.flush_byte_threshold),
+            stream_buckets,
         )
         .await
     } else {
-        land_parquet(pool, catalog, table, columns, batches, lineage).await
+        land_parquet(
+            pool,
+            catalog,
+            table,
+            columns,
+            batches,
+            lineage,
+            stream_buckets,
+        )
+        .await
     }
 }
 
@@ -606,6 +619,12 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
 /// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
 /// back. Idempotent on namespace/table (create-if-absent). Delegates to
 /// [`append_parquet_snapshot`].
+///
+/// `stream_buckets`: Plan 1a scope only DECLARES the stream mode on this path
+/// (via `pg_declare_stream`), and only for a brand-new table — mirroring
+/// `inline_append`'s batch->stream conversion guard by simply skipping the
+/// declaration for a pre-existing table rather than stamping/erroring. Per-bucket
+/// offset stamping on the Parquet write path is Plan 1b scope.
 async fn land_parquet(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -613,8 +632,16 @@ async fn land_parquet(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
+    stream_buckets: Option<i32>,
 ) -> Result<SnapshotId> {
-    append_parquet_snapshot(
+    let pre_existing = {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        live_table_id(&mut conn, &table.schema, &table.name)
+            .await?
+            .is_some()
+    };
+
+    let snapshot = append_parquet_snapshot(
         pool,
         catalog,
         table,
@@ -626,7 +653,22 @@ async fn land_parquet(
             ..CommitExtras::default()
         },
     )
-    .await
+    .await?;
+
+    if let Some(n) = stream_buckets
+        && !pre_existing
+    {
+        // Best-effort: this declare runs AFTER the Parquet commit above, on a
+        // separate connection/transaction, so it is not atomic with the write —
+        // idempotent-retriable on this path (Plan 1b brings the Parquet path to
+        // the inline path's full parity, incl. re-reading the recorded count).
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
+            crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
+        }
+    }
+
+    Ok(snapshot)
 }
 
 /// Replace `table`'s live data with `batches` in one Postgres transaction — the
