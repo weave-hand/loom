@@ -186,9 +186,10 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         serving: &serving,
     };
     let body = json!({ "id": "42", "name": "gadget" });
-    let (outcome, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
-        .await
-        .expect("action runs");
+    let (outcome, run_id, _kind) =
+        run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+            .await
+            .expect("action runs");
     let created = match outcome {
         query_api::action::ActionOutcome::Single(rows) => rows,
         query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),

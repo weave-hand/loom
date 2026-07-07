@@ -195,7 +195,7 @@ async fn rename_param_writes_bound_property() {
         action_engine: &engine,
         serving: &serving,
     };
-    let (outcome, _run) = run_action(
+    let (outcome, _run, _kind) = run_action(
         "createGadget",
         json!({ "id": "7", "displayName": "Widget A" })
             .as_object()
@@ -445,7 +445,7 @@ async fn update_targets_and_patches_via_bound_property() {
     .expect("seed insert runs");
 
     // Patch via the bound identity + bound name property.
-    let (outcome, _run) = run_action(
+    let (outcome, _run, _kind) = run_action(
         "renameGadget",
         json!({ "key": "7", "displayName": "Renamed" })
             .as_object()

@@ -168,3 +168,112 @@ async fn multi_step_envelope_and_single_step_back_compat() {
         "bare affected object rendered at top level"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn action_status_is_kind_true() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    // Widget: createWidget/updateWidget/deleteWidget (mirrors update_delete_e2e.rs's seed
+    // via the shared e2e_support::define_widget/grant_writer_role helpers).
+    let widget = e2e_support::define_widget(&cp).await;
+    let (subj, role) = e2e_support::grant_writer_role(&cp, &widget).await;
+
+    // Order + LineItem: the multi-step createOrderWithLines action, for the
+    // Insert-first-wins primary-kind guard (mirrors the test above's seed).
+    cp.ontology()
+        .define_type(
+            ObjectType::build("Order", ("main", "order"))
+                .prop_req("id", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_type(
+            ObjectType::build("LineItem", ("main", "line_item"))
+                .prop_req("id", "Long")
+                .prop_req("orderId", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+    e2e_support::define_create_order_with_lines_action(&cp).await;
+    for t in ["Order", "LineItem"] {
+        cp.grant(
+            &role,
+            Action::Write,
+            PolicyTarget::Type(TypeName(t.into())),
+            Effect::Allow,
+        )
+        .await
+        .unwrap();
+    }
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    // Insert → 201 Created (mints the row Update/Delete then target).
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createWidget",
+        &json!({ "id": "1", "name": "a", "qty": "1" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "Insert is 201: {body}");
+
+    // Update → 200 OK; run-id header still present.
+    let (status, headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/updateWidget",
+        &json!({ "id": "1", "qty": "9" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Update is kind-true 200: {body}");
+    assert!(headers.get("X-Loom-Run-Id").is_some());
+
+    // Delete → 200 OK.
+    let (status, headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/deleteWidget",
+        &json!({ "id": "1" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "Delete is kind-true 200: {body}");
+    assert!(headers.get("X-Loom-Run-Id").is_some());
+
+    // Multi-step primary-kind guard: Insert-first → 201 (first step wins).
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrderWithLines",
+        &json!({ "oid": "600", "li1": "1", "li2": "2" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "multi-step Insert-first is 201: {body}"
+    );
+}

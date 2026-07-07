@@ -530,7 +530,7 @@ pub async fn run_action(
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
-) -> Result<(ActionOutcome, RunId), ActionError> {
+) -> Result<(ActionOutcome, RunId, ActionKind), ActionError> {
     // 1. Resolve the action.
     let action = deps
         .cp
@@ -574,12 +574,13 @@ pub async fn run_action(
         return Err(ActionError::Forbidden);
     }
     check_conformance(&action, &target)?;
-    let (rows, run_id) = match single_step.kind {
+    let kind = single_step.kind;
+    let (rows, run_id) = match kind {
         ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await?,
         ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await?,
         ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await?,
     };
-    Ok((ActionOutcome::Single(rows), run_id))
+    Ok((ActionOutcome::Single(rows), run_id, kind))
 }
 
 /// Collect every declared-constraint violation over resolved `(property, value)` write
@@ -1283,10 +1284,14 @@ async fn run_multi_step(
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
-) -> Result<(ActionOutcome, RunId), ActionError> {
+) -> Result<(ActionOutcome, RunId, ActionKind), ActionError> {
     let action_name = action.name.0.as_str();
     let now = request_now();
     let run_id = RunId(Uuid::new_v4());
+    // The primary kind for HTTP status purposes: the first declared step's kind. `run_multi_step`
+    // already requires at least one step (see the empty-steps guards below), so this is total via
+    // `unwrap_or_default()` without an `expect`.
+    let primary_kind = action.steps.first().map(|s| s.kind).unwrap_or_default();
 
     // Resolve EVERY step's target type (for their tables + property logical types, and so
     // cross-step conformance can see each step's target). A missing target is a broken ActionDef
@@ -1405,7 +1410,7 @@ async fn run_multi_step(
     if step_results.is_empty() {
         return Err(ActionError::Misconfigured("action has no steps".into()));
     }
-    Ok((ActionOutcome::Multi(step_results), run_id))
+    Ok((ActionOutcome::Multi(step_results), run_id, primary_kind))
 }
 
 /// Govern one step and build its staged [`StepWrite`], dispatching on the step's kind. Insert

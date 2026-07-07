@@ -215,9 +215,10 @@ async fn conformant_action_runs_the_insert() {
         serving: &null_serving,
     };
     let body = json!({"id": "42", "name": "gadget"});
-    let (outcome, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
-        .await
-        .unwrap();
+    let (outcome, run_id, _kind) =
+        run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+            .await
+            .unwrap();
     let rows = match outcome {
         query_api::action::ActionOutcome::Single(rows) => rows,
         query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),

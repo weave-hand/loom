@@ -357,9 +357,8 @@ fn generates_real_action_operations() {
 }
 
 #[test]
-fn update_and_delete_actions_document_201_like_the_handler() {
-    // `post_action` responds 201 for every kind (single Ok arm, http.rs) —
-    // the generated document follows the handler, not REST convention.
+fn update_and_delete_actions_document_200() {
+    // Kind-true: Update/Delete document 200 OK (not 201); Insert still 201.
     let update = ActionDef::single_step(
         ActionName("updateCustomer".into()),
         TypeName("Customer".into()),
@@ -378,17 +377,28 @@ fn update_and_delete_actions_document_201_like_the_handler() {
 
     let up = op_json(&paths, "/actions/updateCustomer", "post");
     assert!(
-        up["responses"]["201"].is_object(),
-        "Update documents the handler's 201"
+        up["responses"]["200"].is_object(),
+        "Update documents 200 OK"
     );
-    assert!(up["responses"]["200"].is_null(), "no invented 200");
+    assert!(
+        up["responses"]["201"].is_null(),
+        "Update no longer documents 201"
+    );
+    // 2xx body still refs the target type's component schema.
+    assert_eq!(
+        up["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/Customer"
+    );
 
     let del = op_json(&paths, "/actions/deleteCustomer", "post");
     assert!(
-        del["responses"]["201"].is_object(),
-        "Delete documents the handler's 201"
+        del["responses"]["200"].is_object(),
+        "Delete documents 200 OK"
     );
-    assert!(del["responses"]["200"].is_null(), "no invented 200");
+    assert!(
+        del["responses"]["201"].is_null(),
+        "Delete no longer documents 201"
+    );
 }
 
 #[test]
