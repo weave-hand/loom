@@ -296,6 +296,17 @@ self-referential loop that could otherwise arise from a post-define ontology
 rebind (the def's typed input/output re-resolving to overlap after the cycle
 check ran).
 
+**Rebind cycle guard.** The self-suppression above neutralizes a *self*-loop
+at runtime, but not a cycle spanning *different* defs (A→B→A) that a rebind can
+create. So `Ontology::define_type` now re-runs the trigger-cycle check whenever
+a type's backing-table binding changes: both adapters resolve the data-triggered
+set against the **new** binding and reject a rebind that would close a
+**multi-def** cycle with a `Validation` error (postgres in-tx, so the rejection
+rolls the binding upsert back; memory validates before mutating). It uses
+`validate_no_multi_def_trigger_cycle` — the self-edge-tolerant variant — so a
+single-def self-loop is still *allowed* at rebind time and left to the runtime
+self-suppression, while `define_transform`'s own define-time check stays strict.
+
 **Poison-body skip-and-warn.** A def body that fails to deserialize (a stale
 shape from before a breaking change, or manual corruption) is skipped with a
 `tracing::warn!` rather than failing the transaction — a single broken admin
