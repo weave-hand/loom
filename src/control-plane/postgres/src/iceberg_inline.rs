@@ -795,7 +795,8 @@ async fn read_max_version(
     }
     let sql = format!(
         "select coalesce(max(begin_snapshot), 0) as v from {} \
-         where \"{}\" = $1 and end_snapshot is null",
+         where \"{}\" = $1 and end_snapshot is null \
+           and (loom_change_kind is null or loom_change_kind <> '-U')",
         inline_table_name(tid),
         id_column.replace('"', "\"\""),
     );
@@ -1200,7 +1201,8 @@ impl IcebergCatalog {
             .join(", ");
 
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select loom_row_id, {col_list} from {} where {} order by loom_row_id",
+            "select loom_row_id, {col_list} from {} where {} \
+             and (loom_change_kind is null or loom_change_kind <> '-U') order by loom_row_id",
             inline_table_name(tid),
             mvcc_live_pred(at.0),
         )))

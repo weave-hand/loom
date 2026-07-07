@@ -1274,3 +1274,21 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "stream-cdc-minus-u-hidden",
+    crate = "stream_cdc_minus_u_hidden",
+    srcs = ["tests/stream_cdc_minus_u_hidden.rs"],
+    crate_root = "tests/stream_cdc_minus_u_hidden.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
