@@ -457,6 +457,30 @@ impl Transforms for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn reconcile_stranded_runs(
+        &self,
+        running_since_before: OffsetDateTime,
+    ) -> Result<Vec<Uuid>> {
+        let rows = sqlx::query!(
+            "update transforms.run as r \
+                set state = 'failed', error = 'reporting lost', finished_at = now() \
+              where r.state = 'running' \
+                and r.started_at <= $1 \
+                and not exists ( \
+                  select 1 from queue.jobs j \
+                   where j.state in ('available', 'running') \
+                     and (j.payload->>'run_id')::uuid = r.run_id \
+                ) \
+            returning r.run_id",
+            running_since_before,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(backend)?;
+        Ok(rows.into_iter().map(|r| r.run_id).collect())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn get_run(&self, run_id: Uuid) -> Result<TransformRun> {
         let r = sqlx::query!(
             "select run_id, transform, trigger, state, body, queued_at, \
