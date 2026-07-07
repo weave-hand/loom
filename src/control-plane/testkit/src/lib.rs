@@ -4917,7 +4917,7 @@ where
     );
 }
 
-use control_plane_core::BucketOffsets;
+use control_plane_core::{BucketOffsets, StreamTables};
 
 /// Contract for the per-`(table, bucket)` offset allocator. `cp` must be freshly
 /// empty. Offsets start at 0, are gapless and monotonic per bucket, and buckets
@@ -5016,5 +5016,36 @@ where
         cp.peek_offset(7, 0).await.expect("peek"),
         N,
         "high-water equals N"
+    );
+}
+
+/// Contract for the StreamTables mode registry. `cp` must be freshly empty.
+pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
+    assert_eq!(
+        cp.stream_bucket_count(1).await.expect("q"),
+        None,
+        "unknown table is not a stream"
+    );
+    cp.declare_stream(1, 4).await.expect("declare");
+    assert_eq!(
+        cp.stream_bucket_count(1).await.expect("q"),
+        Some(4),
+        "declared bucket count is recorded"
+    );
+    // idempotent: redeclaring is a no-op, first bucket_count stands (immutable)
+    cp.declare_stream(1, 4).await.expect("idempotent redeclare");
+    cp.declare_stream(1, 8)
+        .await
+        .expect("redeclare with different count is ignored, not error");
+    assert_eq!(
+        cp.stream_bucket_count(1).await.expect("q"),
+        Some(4),
+        "bucket count is immutable — first declaration wins"
+    );
+    // tables are independent
+    assert_eq!(
+        cp.stream_bucket_count(2).await.expect("q"),
+        None,
+        "other tables unaffected"
     );
 }

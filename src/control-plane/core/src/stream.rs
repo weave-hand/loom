@@ -17,3 +17,12 @@ pub trait BucketOffsets {
     /// would be handed out (0 if none has been allocated yet).
     async fn peek_offset(&self, table_id: i64, bucket: i32) -> Result<i64>;
 }
+
+#[async_trait]
+pub trait StreamTables {
+    /// Declare table_id as a log table with bucket_count buckets. Idempotent: a
+    /// redeclare is a no-op and the first declaration's bucket_count stands.
+    async fn declare_stream(&self, table_id: i64, bucket_count: i32) -> Result<()>;
+    /// The bucket count if table_id is a declared log table, else None.
+    async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>>;
+}
