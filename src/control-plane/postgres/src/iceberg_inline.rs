@@ -1049,8 +1049,10 @@ pub async fn write_inline_delta(
     let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
     let cdc = matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc);
 
-    // Insert one delta row. BOTH kinds carry the identity value so the merge-on-read
-    // (partition by <id>) shadows/hides the file row for that id.
+    // Emit the delta row(s). Every row carries the identity value so merge-on-read
+    // (partition by <id>) shadows/hides the file row for that id. A CDC table emits
+    // the multi-row change sequence (below); a non-CDC table writes a single tombstone
+    // or version row (the `else if`/`else` arms).
     if cdc {
         let m = meta
             .as_ref()
