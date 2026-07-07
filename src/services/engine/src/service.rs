@@ -466,6 +466,8 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
                 &r.id_column,
                 r.tombstone,
                 &r.ipc,
+                &r.before_ipc,
+                &r.before_columns_json,
                 event,
                 r.expected_version,
             )

@@ -326,6 +326,8 @@ impl GrpcQueueClient {
         columns_json: String,
         lineage_json: String,
         expected_version: i64,
+        before_ipc: Vec<u8>,
+        before_columns_json: String,
     ) -> Result<i64> {
         let resp = self
             .inner
@@ -339,6 +341,8 @@ impl GrpcQueueClient {
                 columns_json,
                 lineage_json,
                 expected_version,
+                before_ipc,
+                before_columns_json,
             })
             .await
             .map_err(write_status)?

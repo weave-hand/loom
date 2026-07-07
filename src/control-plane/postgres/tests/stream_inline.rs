@@ -159,6 +159,7 @@ async fn tombstone_delta_is_minus_d() {
         "id",
         true,
         &id_batch("id", 1),
+        None,
         lin(),
         v0,
     )
@@ -214,6 +215,7 @@ async fn version_delta_is_plus_u() {
         "id",
         false,
         &full_row_batch(1, 9),
+        None,
         lin(),
         v0,
     )

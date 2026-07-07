@@ -2065,6 +2065,7 @@ dependencies = [
  "datafusion",
  "iceberg",
  "object_store",
+ "serde_json",
  "sqlx",
  "thiserror 1.0.69",
  "time",

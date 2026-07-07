@@ -119,6 +119,7 @@ async fn delta_write_and_cas_conflict() {
         "id",
         false,
         &full_row_batch(1, 9),
+        None,
         lin(),
         v0,
     )
@@ -146,6 +147,7 @@ async fn delta_write_and_cas_conflict() {
         "id",
         false,
         &full_row_batch(1, 7),
+        None,
         lin(),
         v0,
     )
@@ -173,6 +175,7 @@ async fn delta_write_and_cas_conflict() {
         "id",
         false,
         &full_row_batch(2, 5),
+        None,
         lin(),
         v0_id2,
     )
@@ -212,6 +215,7 @@ async fn tombstone_delta_marks_deleted() {
         "id",
         true,
         &id_batch("id", 1),
+        None,
         lin(),
         v0,
     )
@@ -300,6 +304,7 @@ async fn file_only_object_tombstone_first_lifecycle() {
         "id",
         true,
         &id_batch("id", 1),
+        None,
         lin(),
         v0,
     )
@@ -389,6 +394,7 @@ async fn concurrent_first_provisioning_of_distinct_identities() {
                 "id",
                 false,
                 &full_row_batch(id, id),
+                None,
                 lin(),
                 0,
             )

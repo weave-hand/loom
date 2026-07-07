@@ -319,6 +319,20 @@ pub trait ServingEngine: Send + Sync {
     }
 }
 
+/// The prior row (before-image) of an identity-targeted UPDATE/DELETE, threaded
+/// alongside the new row through [`ActionEngine::write_delta`]. It carries its OWN
+/// `columns`/`logical_types` positionally aligned with `values`, so a downstream
+/// CDC consumer can build the `−U`/`−D` row from `(columns, values)` directly
+/// without depending on the mutation's `columns` order matching. `None` off the
+/// CDC update/delete path (e.g. inserts). Purely a data carrier in this slice —
+/// postgres accepts but ignores it until the CDC emit lands.
+#[derive(Clone, Copy)]
+pub struct BeforeImage<'a> {
+    pub columns: &'a [String],
+    pub values: &'a [SqlValue],
+    pub logical_types: &'a [String],
+}
+
 /// A write-capable serving engine — the atomic action write-back seam. An impl
 /// writes ONE row AND commits its lineage event in the same transaction, so the
 /// snapshot and its lineage land or roll back together (no dangling slice). The
@@ -388,6 +402,7 @@ pub trait ActionEngine: Send + Sync {
         _columns: &[String],
         _values: &[SqlValue],
         _logical_types: &[String],
+        _before: Option<BeforeImage<'_>>,
         _event: control_plane_core::LineageEvent,
         _expected_version: i64,
     ) -> Result<control_plane_core::SnapshotId, ServingError> {

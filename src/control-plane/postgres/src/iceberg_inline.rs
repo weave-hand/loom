@@ -958,7 +958,7 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
 /// distinct keys and never contend. Inline delta rows are never end-capped here.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + lineage + CAS witness; a params struct would only obscure the call sites"
+    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness; a params struct would only obscure the call sites"
 )]
 pub async fn write_inline_delta(
     pool: &PgPool,
@@ -967,9 +967,14 @@ pub async fn write_inline_delta(
     id_column: &str,
     tombstone: bool,
     batch: &RecordBatch,
+    before: Option<(&[ColumnSpec], &RecordBatch)>,
     lineage: LineageEvent,
     expected_version: i64,
 ) -> Result<SnapshotId> {
+    // The optional before-image (prior row) with its OWN positionally-aligned
+    // ColumnSpecs. Accepted for the CDC emit path (a later slice) but deliberately
+    // unused here — this write stays byte-identical whether or not it is present.
+    let _ = before;
     let mut tx = pool.begin().await.map_err(backend)?;
 
     // The mutation targets an existing object, so a live mirror row must exist.

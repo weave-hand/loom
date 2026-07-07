@@ -9,7 +9,7 @@ use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 
 use crate::serving::{
-    ActionEngine, ServingError, SqlValue, StepWrite, WriteMode, build_object_batch,
+    ActionEngine, BeforeImage, ServingError, SqlValue, StepWrite, WriteMode, build_object_batch,
     build_object_batches,
 };
 
@@ -179,6 +179,7 @@ impl ActionEngine for EngineActionClient {
         columns: &[String],
         values: &[SqlValue],
         logical_types: &[String],
+        before: Option<BeforeImage<'_>>,
         event: control_plane_core::LineageEvent,
         expected_version: i64,
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
@@ -213,6 +214,20 @@ impl ActionEngine for EngineActionClient {
                 serde_json::to_string(&specs).map_err(to_serving)?,
             )
         };
+        // The optional before-image (prior row) rides alongside the new row. It
+        // carries its OWN ColumnSpecs (positionally aligned with its batch) so a
+        // CDC consumer can build the −U/−D row directly. Absent ⇒ empty IPC.
+        let (before_ipc, before_columns_json) = match before {
+            Some(b) => {
+                let (_schema, batch, specs) =
+                    build_object_batch(b.columns, b.values, b.logical_types)?;
+                (
+                    encode_ipc_stream(&batch)?,
+                    serde_json::to_string(&specs).map_err(to_serving)?,
+                )
+            }
+            None => (Vec::new(), String::new()),
+        };
         let id = self
             .ctl
             .write_delta(
@@ -224,6 +239,8 @@ impl ActionEngine for EngineActionClient {
                 columns_json,
                 lineage_json,
                 expected_version,
+                before_ipc,
+                before_columns_json,
             )
             .await
             .map_err(to_serving_write)?;

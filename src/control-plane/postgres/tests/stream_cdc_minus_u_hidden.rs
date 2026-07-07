@@ -96,9 +96,17 @@ async fn minus_u_row_is_excluded_from_current_state_reads() {
 
     // Seed ONE live row for id=1 (val=100) via a plain append -- loom_change_kind
     // defaults to '+I'.
-    iceberg_inline::inline_append(&pool, &table, &cols, &full_row_batch(1, 100), lin(), None, None)
-        .await
-        .expect("seed append");
+    iceberg_inline::inline_append(
+        &pool,
+        &table,
+        &cols,
+        &full_row_batch(1, 100),
+        lin(),
+        None,
+        None,
+    )
+    .await
+    .expect("seed append");
 
     let tid = tid_of(&pool).await;
 

@@ -175,7 +175,7 @@ impl IcebergActionWriter {
     /// `EngineServingError::Conflict` if the CAS lost a race.
     #[allow(
         clippy::too_many_arguments,
-        reason = "mirrors iceberg_inline::write_inline_delta's public contract — table + id-batch + version-vs-tombstone + lineage + CAS witness; a params struct would only obscure the call site"
+        reason = "mirrors iceberg_inline::write_inline_delta's public contract — table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness; a params struct would only obscure the call site"
     )]
     pub async fn write_delta(
         &self,
@@ -184,6 +184,8 @@ impl IcebergActionWriter {
         id_column: &str,
         tombstone: bool,
         ipc: &[u8],
+        before_ipc: &[u8],
+        before_columns_json: &str,
         event: LineageEvent,
         expected_version: i64,
     ) -> Result<SnapshotId, EngineServingError> {
@@ -193,6 +195,22 @@ impl IcebergActionWriter {
             .into_iter()
             .next()
             .ok_or_else(|| EngineServingError::Engine("empty delta batch".into()))?;
+        // Optional before-image (prior row). Empty IPC ⇒ absent (non-CDC / insert
+        // paths). When present it carries its OWN ColumnSpecs, positionally aligned
+        // with `before_batch`; postgres accepts but ignores the pair in this slice.
+        let before = if before_ipc.is_empty() {
+            None
+        } else {
+            let before_columns: Vec<ColumnSpec> = serde_json::from_str(before_columns_json)
+                .map_err(|e| EngineServingError::Engine(format!("bad before_columns_json: {e}")))?;
+            let before_batch = datafusion_io::decode_ipc(before_ipc)
+                .map_err(|e| EngineServingError::Engine(e.to_string()))?
+                .1
+                .into_iter()
+                .next()
+                .ok_or_else(|| EngineServingError::Engine("empty before batch".into()))?;
+            Some((before_columns, before_batch))
+        };
         iceberg_inline::write_inline_delta(
             &self.pool,
             table,
@@ -200,6 +218,9 @@ impl IcebergActionWriter {
             id_column,
             tombstone,
             &batch,
+            before
+                .as_ref()
+                .map(|(cols, batch)| (cols.as_slice(), batch)),
             event,
             expected_version,
         )

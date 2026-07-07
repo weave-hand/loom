@@ -1151,6 +1151,15 @@ async fn run_mutate(
         // 5. Commit ONE inline delta, guarded by the CAS on `v0`. UPDATE writes the full
         //    post-PATCH row; DELETE writes a tombstone carrying only the identity (the
         //    engine builds a one-cell id batch and NULLs the other columns).
+        // The before-image (prior row) rides alongside the new row for the CDC emit
+        // path (a later slice). It carries the full ordered property set + the merged
+        // prior values, positionally aligned. Postgres accepts but ignores it here, so
+        // the non-CDC update/delete write stays byte-identical.
+        let before = Some(crate::serving::BeforeImage {
+            columns: &columns,
+            values: &existing,
+            logical_types: &logical,
+        });
         let res = match &new_row {
             Some(row) => {
                 deps.action_engine
@@ -1161,6 +1170,7 @@ async fn run_mutate(
                         &columns,
                         row,
                         &logical,
+                        before,
                         event.clone(),
                         v0,
                     )
@@ -1175,6 +1185,7 @@ async fn run_mutate(
                         std::slice::from_ref(&idprop),
                         std::slice::from_ref(&id_value),
                         std::slice::from_ref(&id_logical),
+                        before,
                         event.clone(),
                         v0,
                     )
