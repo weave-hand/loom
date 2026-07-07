@@ -322,7 +322,10 @@ join the declarative-authoring surface too: `POST|GET
 /admin/models/{type}/vector-indexes` declares and lists named
 `VectorIndexDef`s (kind/metric/params) the same way the direct `Ontology`
 trait always could — declaring still does not build the index (see
-`vector-search.md`).
+`vector-search.md`). Both adapters now answer an **unknown object type**
+identically: `define_vector_index` probes `object_type_exists` first and
+returns `NotFound` (→ the documented 404) rather than the postgres adapter's
+old misleading `Validation`/400 "type has no property" message (#387).
 
 ## Transforms
 
