@@ -1313,3 +1313,21 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "stream-inline-full-read",
+    crate = "stream_inline_full_read",
+    srcs = ["tests/stream_inline_full_read.rs"],
+    crate_root = "tests/stream_inline_full_read.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

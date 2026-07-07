@@ -1319,11 +1319,36 @@ impl IcebergCatalog {
     /// arrow batch), or `None` if there is no inline storage or no live rows.
     /// The `table_id` and row ids are returned so a flush can end-cap exactly the
     /// rows it reconstructs in the same `inline_<tid>` table. Shares the
-    /// reconstruction the read path uses.
+    /// reconstruction the read path uses. Excludes `-U` before-images — they are
+    /// audit-only rows that must never compete as an identity's current-state row
+    /// (see `inline_live_batch_full` for the unfiltered variant).
     pub async fn inline_live_batch(
         &self,
         table: &TableRef,
         at: SnapshotId,
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
+        self.inline_live_batch_impl(table, at, true).await
+    }
+
+    /// Identical to `inline_live_batch` except it does NOT exclude `-U`
+    /// before-images, so the returned batch carries every live inline row
+    /// (including `-U`). Used by the changelog flush, which needs the full
+    /// change sequence rather than just the current-state view.
+    pub async fn inline_live_batch_full(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
+        self.inline_live_batch_impl(table, at, false).await
+    }
+
+    /// Shared body of `inline_live_batch`/`inline_live_batch_full`; the only
+    /// difference between the two is whether `-U` before-images are excluded.
+    async fn inline_live_batch_impl(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        exclude_minus_u: bool,
     ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
         let mut conn = self.pool.acquire().await.map_err(backend)?;
         let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
@@ -1347,9 +1372,13 @@ impl IcebergCatalog {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let minus_u_pred = if exclude_minus_u {
+            " and (loom_change_kind is null or loom_change_kind <> '-U')"
+        } else {
+            ""
+        };
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select loom_row_id, {col_list} from {} where {} \
-             and (loom_change_kind is null or loom_change_kind <> '-U') order by loom_row_id",
+            "select loom_row_id, {col_list} from {} where {}{minus_u_pred} order by loom_row_id",
             inline_table_name(tid),
             mvcc_live_pred(at.0),
         )))
