@@ -799,7 +799,10 @@ async fn define_link_route(
         ("from" = String, Path, description = "The link's `from` type"),
         ("name" = String, Path, description = "Link name"),
     ),
-    responses((status = 200, description = "Link definition removed (idempotent)")),
+    responses(
+        (status = 200, description = "Link definition removed (idempotent)"),
+        (status = 409, description = "Link is referenced by a derived property; delete blocked"),
+    ),
     security(("bearer_auth" = [])),
     tag = "admin",
 )]
@@ -816,6 +819,11 @@ async fn delete_link_route(
         Ok(()) => {
             Json(serde_json::json!({ "deleted": { "from": from, "name": name } })).into_response()
         }
+        Err(control_plane_core::ControlPlaneError::Conflict(msg)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": msg })),
+        )
+            .into_response(),
         Err(e) => status_for(&e).into_response(),
     }
 }

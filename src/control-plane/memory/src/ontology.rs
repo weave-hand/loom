@@ -79,11 +79,46 @@ impl Ontology for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()> {
-        self.ontology
-            .lock()
-            .links
-            .retain(|l| !(l.from == *from && l.name == name));
+        let mut ont = self.ontology.lock(); // ONE lock: read refs + retain atomically (no TOCTOU)
+        let refs: Vec<String> = ont
+            .types
+            .get(&from.0)
+            .map(|t| {
+                t.derived
+                    .iter()
+                    .filter(|d| d.link == name)
+                    .map(|d| d.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !refs.is_empty() {
+            return Err(ControlPlaneError::Conflict(format!(
+                "link `{name}` is referenced by derived properties: {}",
+                refs.join(", ")
+            )));
+        }
+        ont.links.retain(|l| !(l.from == *from && l.name == name));
         Ok(())
+    }
+
+    async fn derived_properties_referencing(
+        &self,
+        from: &TypeName,
+        name: &str,
+    ) -> Result<Vec<String>> {
+        let ont = self.ontology.lock();
+        let names = ont
+            .types
+            .get(&from.0)
+            .map(|t| {
+                t.derived
+                    .iter()
+                    .filter(|d| d.link == name)
+                    .map(|d| d.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(names)
     }
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {

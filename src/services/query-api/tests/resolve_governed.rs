@@ -30,6 +30,13 @@ impl Ontology for MissingType {
     async fn delete_link(&self, _from: &TypeName, _name: &str) -> control_plane_core::Result<()> {
         unreachable!("not exercised by resolve_governed")
     }
+    async fn derived_properties_referencing(
+        &self,
+        _from: &TypeName,
+        _name: &str,
+    ) -> control_plane_core::Result<Vec<String>> {
+        unreachable!("not exercised by resolve_governed")
+    }
     async fn get_type(&self, name: &TypeName) -> control_plane_core::Result<ObjectType> {
         Err(ControlPlaneError::NotFound(format!("type {}", name.0)))
     }

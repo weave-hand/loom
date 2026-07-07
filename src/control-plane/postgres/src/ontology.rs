@@ -152,15 +152,43 @@ impl Ontology for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let refs = sqlx::query_scalar!(
+            "select name from ontology.derived_property where type_name = $1 and link_name = $2 order by ordinal",
+            from.0, name,
+        ).fetch_all(&mut *tx).await.map_err(backend)?;
+        if !refs.is_empty() {
+            return Err(ControlPlaneError::Conflict(format!(
+                "link `{name}` is referenced by derived properties: {}",
+                refs.join(", ")
+            )));
+        }
         sqlx::query!(
             "delete from ontology.link where from_type = $1 and name = $2",
             from.0,
-            name,
+            name
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
+    }
+
+    async fn derived_properties_referencing(
+        &self,
+        from: &TypeName,
+        name: &str,
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query_scalar!(
+            "select name from ontology.derived_property where type_name = $1 and link_name = $2 order by ordinal",
+            from.0,
+            name,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(rows)
     }
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {

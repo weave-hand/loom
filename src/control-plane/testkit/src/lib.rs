@@ -1519,6 +1519,64 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "re-defined link listed again"
     );
 
+    // --- referrer guard: a derived property naming a link blocks its deletion ---
+    // (Runs after the delete_link block re-defined `customer`, so it is present here.)
+    let order_ty = o.get_type(&tn("Order")).await.expect("Order exists");
+    let mut order_with_derived = order_ty.clone();
+    order_with_derived.derived = vec![DerivedPropertyDef {
+        name: "customerCount".into(),
+        ty: "Long".into(),
+        link: "customer".into(),
+        agg: Aggregation::Count, // Count: no agg column, so Surface-2 validation is a no-op here
+    }];
+    o.define_type(order_with_derived)
+        .await
+        .expect("Order with derived");
+
+    // derived_properties_referencing reports the referrer; [] for an unreferenced link.
+    assert_eq!(
+        o.derived_properties_referencing(&tn("Order"), "customer")
+            .await
+            .unwrap(),
+        vec!["customerCount".to_string()],
+    );
+    assert!(
+        o.derived_properties_referencing(&tn("Order"), "no_such_link")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // delete_link is BLOCKED with Conflict; the link is untouched.
+    let blocked = o.delete_link(&tn("Order"), "customer").await;
+    assert!(
+        matches!(
+            blocked,
+            Err(control_plane_core::ControlPlaneError::Conflict(_))
+        ),
+        "referenced link 409s: {blocked:?}"
+    );
+    assert!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "blocked delete left the link in place",
+    );
+
+    // Redefine Order WITHOUT the derived property → delete now succeeds, idempotent again.
+    o.define_type(order_ty.clone())
+        .await
+        .expect("Order without derived");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete after derived removed");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("idempotent re-delete");
+
     // --- delete_action: gone from get + list, idempotent, re-definable ---
     let create_widget_again = o
         .get_action(&ActionName("createWidget".into()))

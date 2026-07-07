@@ -780,6 +780,15 @@ pub trait Ontology {
     /// backing columns / join tables are untouched. Idempotent: deleting an
     /// absent link is `Ok(())`.
     async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()>;
+    /// Names of derived properties on `from` whose link is `name`. Empty if none.
+    /// Only derived properties on `from` can be stranded by deleting link
+    /// `(from, name)` (a derived property resolves its link among its own type's
+    /// outbound links).
+    async fn derived_properties_referencing(
+        &self,
+        from: &TypeName,
+        name: &str,
+    ) -> Result<Vec<String>>;
     /// Fetch a type by name. `NotFound` if absent.
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType>;
     /// All defined types (order unspecified). The `page` request is accepted but not yet enforced; results
