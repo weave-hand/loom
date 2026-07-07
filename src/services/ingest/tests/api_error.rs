@@ -4,6 +4,7 @@
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use control_plane_core::ControlPlaneError;
 use http_body_util::BodyExt;
 use ingest::IngestError;
 use ingest::http::ApiError;
@@ -50,6 +51,32 @@ fn into_api_maps_conformance_to_422() {
             .into_response()
             .status(),
         StatusCode::UNPROCESSABLE_ENTITY
+    );
+}
+
+/// A stream bucket-count mismatch (`ControlPlaneError::Conflict`) is a client
+/// error, not a backend fault: it must surface as 400, not the opaque 500.
+#[test]
+fn into_api_maps_stream_conflict_to_400() {
+    assert_eq!(
+        IngestError::ControlPlane(ControlPlaneError::Conflict("bucket count mismatch".into()))
+            .into_api("ctx")
+            .into_response()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// A batch->stream conversion attempt (`ControlPlaneError::Validation`) is
+/// likewise a client error, surfaced as 400.
+#[test]
+fn into_api_maps_stream_validation_to_400() {
+    assert_eq!(
+        IngestError::ControlPlane(ControlPlaneError::Validation("cannot convert".into()))
+            .into_api("ctx")
+            .into_response()
+            .status(),
+        StatusCode::BAD_REQUEST
     );
 }
 

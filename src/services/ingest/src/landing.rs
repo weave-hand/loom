@@ -29,6 +29,8 @@ pub struct LandRequest<'a> {
     /// Caller-unique prefix (subdirectory) for this call's files, e.g. a run id.
     pub file_prefix: &'a str,
     pub lineage: LineageEvent,
+    /// Some(n) if the caller declared this as a stream (log) table with n buckets.
+    pub stream_buckets: Option<i32>,
 }
 
 /// The landing port: land one request and return the new snapshot id. One impl
@@ -66,9 +68,7 @@ impl LandingMaterializer for IcebergMaterializer {
                 flush_byte_threshold: self.flush_byte_threshold,
             },
             req.lineage,
-            // `LandRequest` gains a `stream_buckets` field in Task 4; for now this
-            // path never declares stream intent.
-            None,
+            req.stream_buckets,
         )
         .await
         .map_err(IngestError::from)

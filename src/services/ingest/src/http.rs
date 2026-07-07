@@ -91,6 +91,13 @@ impl IngestError {
         match self {
             IngestError::DoesNotConform(violations) => ApiError::Violations(violations),
             IngestError::Infer(_) => ApiError::BadRequest(Cow::Borrowed("unsupported column type")),
+            // Stream-mode declaration faults (a bucket-count mismatch on an
+            // already-declared log table, or an attempt to convert an existing
+            // batch table to a stream table) are client errors, not backend
+            // faults: the message is safe to echo (it names no internal detail).
+            IngestError::ControlPlane(
+                ControlPlaneError::Conflict(msg) | ControlPlaneError::Validation(msg),
+            ) => ApiError::BadRequest(Cow::Owned(msg)),
             other => ApiError::internal(context, other),
         }
     }
@@ -194,6 +201,17 @@ struct LandColumn {
 #[derive(Deserialize)]
 pub(crate) struct ModelQuery {
     identity: Option<String>,
+}
+
+/// Query params for `POST /datasets/{schema}/{table}`. `mode=stream` declares the
+/// table as a log table (immutable after the first successful write); `buckets`
+/// is the bucket count (defaults to 1 when `mode=stream` and `buckets` is absent).
+/// Both are ignored (`stream_buckets` resolves to `None`) unless `mode` is exactly
+/// `"stream"`.
+#[derive(Deserialize)]
+pub(crate) struct StreamParams {
+    mode: Option<String>,
+    buckets: Option<i32>,
 }
 
 impl From<LandModel> for ModelShape {
@@ -334,6 +352,9 @@ pub(crate) async fn land_model(
         batches: &batches,
         file_prefix: &file_prefix,
         lineage,
+        // The `/models/{type}` path never declares stream intent (Task 4 scopes
+        // the flag to `/datasets/{schema}/{table}` only).
+        stream_buckets: None,
     };
 
     let snap = st
@@ -353,6 +374,8 @@ pub(crate) async fn land_model(
     params(
         ("schema" = String, Path, description = "Iceberg schema"),
         ("table" = String, Path, description = "Dataset/table name"),
+        ("mode" = Option<String>, Query, description = "`stream` declares this table as a log table on its first write; immutable thereafter"),
+        ("buckets" = Option<i32>, Query, description = "Bucket count for `mode=stream` (defaults to 1); ignored otherwise"),
     ),
     request_body(
         content = Vec<u8>,
@@ -361,7 +384,7 @@ pub(crate) async fn land_model(
     ),
     responses(
         (status = 200, description = "Landed; snapshot committed", body = LandAck),
-        (status = 400, description = "Invalid Arrow IPC / unsupported column type / bad header"),
+        (status = 400, description = "Invalid Arrow IPC / unsupported column type / bad header / invalid stream declaration"),
         (status = 422, description = "Data does not conform to model gate", body = ViolationsBody),
         (status = 500, description = "Internal error"),
     ),
@@ -372,8 +395,22 @@ pub(crate) async fn land(
     State(st): State<AppState>,
     Path((schema_name, table_name)): Path<(String, String)>,
     headers: HeaderMap,
+    Query(params): Query<StreamParams>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // `?mode=stream&buckets=N` declares this table as a log table on its first
+    // write (immutable thereafter); any other `mode` value (or its absence) means
+    // a plain batch write, matching today's behaviour byte-for-byte.
+    let stream_buckets = if params.mode.as_deref() == Some("stream") {
+        let n = params.buckets.unwrap_or(1);
+        if n < 1 {
+            return Err(ApiError::BadRequest(Cow::Borrowed("buckets must be >= 1")));
+        }
+        Some(n)
+    } else {
+        None
+    };
+
     // Optional model gate from X-Loom-Model (JSON) and run id from X-Loom-Run-Id.
     let gate: Option<ModelShape> =
         parse_header(&headers, "X-Loom-Model", "invalid X-Loom-Model", |s| {
@@ -419,6 +456,7 @@ pub(crate) async fn land(
         batches: &batches,
         file_prefix: &file_prefix,
         lineage,
+        stream_buckets,
     };
 
     // Opaque for backend faults: a governance-fronted service must not echo
