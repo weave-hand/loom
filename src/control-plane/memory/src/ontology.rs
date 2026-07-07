@@ -17,6 +17,29 @@ pub(crate) struct OntologyState {
     pub(crate) vector_indexes: HashMap<(String, String), VectorIndexDef>,
 }
 
+/// Resolve each of `ty`'s outbound links' target type against the locked
+/// ontology state and validate `ty.derived` against them — extracted from
+/// `define_type` so the (empty-derived) common case skips the link/type scan.
+fn validate_derived_against(ont: &OntologyState, ty: &ObjectType) -> Result<()> {
+    if ty.derived.is_empty() {
+        return Ok(());
+    }
+    let mut targets: std::collections::HashMap<String, ObjectType> =
+        std::collections::HashMap::new();
+    for l in ont.links.iter().filter(|l| l.from == ty.name) {
+        let target = if l.to == ty.name {
+            ty.clone()
+        } else if let Some(t) = ont.types.get(&l.to.0) {
+            t.clone()
+        } else {
+            continue;
+        };
+        targets.insert(l.name.clone(), target);
+    }
+    control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
+    Ok(())
+}
+
 #[async_trait]
 impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -55,19 +78,7 @@ impl Ontology for MemoryControlPlane {
                 .collect();
             validate_no_multi_def_trigger_cycle(&nodes)?;
         }
-        let mut targets: std::collections::HashMap<String, ObjectType> =
-            std::collections::HashMap::new();
-        for l in ont.links.iter().filter(|l| l.from == ty.name) {
-            let target = if l.to == ty.name {
-                ty.clone()
-            } else if let Some(t) = ont.types.get(&l.to.0) {
-                t.clone()
-            } else {
-                continue;
-            };
-            targets.insert(l.name.clone(), target);
-        }
-        control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
+        validate_derived_against(&ont, &ty)?;
         let event = changed.then(|| control_plane_core::type_table_binding_event(&ty));
         ont.types.insert(ty.name.0.clone(), ty);
         if let Some(event) = event {

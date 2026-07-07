@@ -109,52 +109,7 @@ impl Ontology for PgControlPlane {
             crate::lineage::pg_emit(&mut *tx, &control_plane_core::type_table_binding_event(&ty))
                 .await?;
         }
-        // Resolve each outbound link's target type (name + properties only) for
-        // derived agg-column validation — all reads on the open tx.
-        let link_rows = sqlx::query!(
-            "select name, to_type from ontology.link where from_type = $1",
-            ty.name.0,
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(backend)?;
-        let mut targets: std::collections::HashMap<String, ObjectType> =
-            std::collections::HashMap::new();
-        for l in link_rows {
-            let target = if l.to_type == ty.name.0 {
-                ty.clone() // self-link: the type being defined (not yet committed)
-            } else {
-                let props = sqlx::query!(
-                    "select name, ty from ontology.property where type_name = $1 order by ordinal",
-                    l.to_type,
-                )
-                .fetch_all(&mut *tx)
-                .await
-                .map_err(backend)?;
-                if props.is_empty() {
-                    // target type not defined yet (no property rows) → skip (deferred)
-                    continue;
-                }
-                ObjectType {
-                    name: TypeName(l.to_type.clone()),
-                    properties: props
-                        .into_iter()
-                        .map(|p| PropertyDef {
-                            name: p.name,
-                            ty: p.ty,
-                            required: false,
-                            constraints: control_plane_core::PropertyConstraints::default(),
-                        })
-                        .collect(),
-                    // The validator reads only name + properties; these are filler.
-                    derived: vec![],
-                    table: ty.table.clone(),
-                    identity: None,
-                }
-            };
-            targets.insert(l.name, target);
-        }
-        control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
+        pg_validate_derived_columns(&mut tx, &ty).await?;
         tx.commit().await.map_err(backend)?;
         Ok(())
     }
@@ -706,6 +661,63 @@ pub async fn vector_index_def_row(
             r.ef_construction.map(|v| v as u32),
         )?,
     }))
+}
+
+/// Resolve each of `ty`'s outbound links' target type (name + properties only)
+/// and validate `ty.derived` against them — extracted from `define_type` so the
+/// (empty-derived) common case skips the link/property queries entirely.
+pub(crate) async fn pg_validate_derived_columns(
+    tx: &mut sqlx::PgConnection,
+    ty: &ObjectType,
+) -> Result<()> {
+    if ty.derived.is_empty() {
+        return Ok(());
+    }
+    let link_rows = sqlx::query!(
+        "select name, to_type from ontology.link where from_type = $1",
+        ty.name.0,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(backend)?;
+    let mut targets: std::collections::HashMap<String, ObjectType> =
+        std::collections::HashMap::new();
+    for l in link_rows {
+        let target = if l.to_type == ty.name.0 {
+            ty.clone() // self-link: the type being defined (not yet committed)
+        } else {
+            let props = sqlx::query!(
+                "select name, ty from ontology.property where type_name = $1 order by ordinal",
+                l.to_type,
+            )
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(backend)?;
+            if props.is_empty() {
+                // target type not defined yet (no property rows) → skip (deferred)
+                continue;
+            }
+            ObjectType {
+                name: TypeName(l.to_type.clone()),
+                properties: props
+                    .into_iter()
+                    .map(|p| PropertyDef {
+                        name: p.name,
+                        ty: p.ty,
+                        required: false,
+                        constraints: control_plane_core::PropertyConstraints::default(),
+                    })
+                    .collect(),
+                // The validator reads only name + properties; these are filler.
+                derived: vec![],
+                table: ty.table.clone(),
+                identity: None,
+            }
+        };
+        targets.insert(l.name, target);
+    }
+    control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
+    Ok(())
 }
 
 /// True if an ontology object type named `name` exists. THE single existence
