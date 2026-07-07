@@ -1893,6 +1893,31 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "stream-cdc-declare",
+    crate = "stream_cdc_declare",
+    srcs = ["tests/stream_cdc_declare.rs"],
+    crate_root = "tests/stream_cdc_declare.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:axum",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "lineage-visibility",
     crate = "lineage_visibility",

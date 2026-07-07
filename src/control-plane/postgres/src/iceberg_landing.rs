@@ -160,6 +160,16 @@ pub async fn land_cdc(
     // declared order, which need not match the wire order — so without this
     // realignment, same-typed reordered columns would silently swap values.
     let (schema, batches) = align_to_columns(&schema, batches, columns)?;
+
+    // A CDC declaration also owns a durable changelog Iceberg table (spec §4). Its
+    // object-store metadata is created HERE (before any commit tx), so both landing
+    // routes can assume it exists; its mirror row + registry pointer are set inside
+    // the write tx by `reconcile_stream_mode`. Idempotent.
+    if matches!(decl, StreamDecl::Cdc { .. }) {
+        let clog = changelog_table_ref(table);
+        ensure_iceberg_table(catalog, &clog, columns, true).await?;
+    }
+
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= limits.inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(backend)?;
@@ -654,10 +664,6 @@ pub(crate) fn augment_with_framing(
 
 /// The durable changelog table's `TableRef` for a CDC base table: same schema,
 /// name suffixed `__changelog` (slice 2b, spec §4).
-#[expect(
-    dead_code,
-    reason = "consumed by a later slice 2b task that creates the changelog table"
-)]
 pub(crate) fn changelog_table_ref(base: &TableRef) -> TableRef {
     TableRef {
         schema: base.schema.clone(),
@@ -916,7 +922,7 @@ async fn land_parquet_stream(
         // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
         // back and return, never retry.
         let effective =
-            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table)
+            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table, at)
                 .await
             {
                 Ok(e) => e,

@@ -538,7 +538,8 @@ pub(crate) async fn inline_append_decl(
     // batch->stream conversion (Validation), and a bucket-count mismatch (Conflict),
     // all BEFORE any declare — on this same transaction.
     let effective: Option<i32> =
-        crate::stream::reconcile_stream_mode(&mut *conn, tid, decl, pre_existing, table).await?;
+        crate::stream::reconcile_stream_mode(&mut *conn, tid, decl, pre_existing, table, at)
+            .await?;
 
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.

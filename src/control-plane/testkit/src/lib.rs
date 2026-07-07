@@ -5265,7 +5265,10 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
     assert_eq!(meta2.bucket_key.as_deref(), Some("id"));
     // changelog_table_id is null until explicitly set, then round-trips.
     let m = cp.stream_meta(2).await.expect("meta").expect("row");
-    assert_eq!(m.changelog_table_id, None, "changelog pointer null until set");
+    assert_eq!(
+        m.changelog_table_id, None,
+        "changelog pointer null until set"
+    );
     cp.set_changelog_table_id(2, 4242)
         .await
         .expect("set changelog id");
