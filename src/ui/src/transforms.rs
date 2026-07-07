@@ -4,7 +4,10 @@
 use serde_json::Value;
 
 use crate::str_field;
-use crate::{CompletionColumn, CompletionSchema, CompletionTable, DatasetDetail, TypeDetail};
+use crate::{
+    BadgeTone, CompletionColumn, CompletionSchema, CompletionTable, DatasetDetail, Status,
+    TypeDetail,
+};
 
 /// Whether a transform operates on physical tables or ontology types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -429,4 +432,52 @@ pub fn schema_from_types(types: &[(String, TypeDetail)]) -> CompletionSchema {
             })
             .collect(),
     }
+}
+
+/// Map a run `state` string to a badge tone.
+#[must_use]
+pub fn run_state_tone(state: &str) -> BadgeTone {
+    match state {
+        "succeeded" => BadgeTone::Success,
+        "failed" => BadgeTone::Danger,
+        "running" => BadgeTone::Info,
+        _ => BadgeTone::Neutral,
+    }
+}
+
+/// Map a run `state` string to a status-dot status.
+#[must_use]
+pub fn run_state_status(state: &str) -> Status {
+    match state {
+        "succeeded" => Status::Ok,
+        "failed" => Status::Error,
+        _ => Status::Warn,
+    }
+}
+
+/// Human label for a run `trigger` string.
+#[must_use]
+pub fn trigger_label(trigger: &str) -> &'static str {
+    match trigger {
+        "manual" => "Manual",
+        "schedule" => "Schedule",
+        "data-trigger" => "Data trigger",
+        "ad-hoc" => "Ad-hoc",
+        _ => "Unknown",
+    }
+}
+
+/// Badge label for a transform kind.
+#[must_use]
+pub fn kind_badge_label(kind: TransformKind) -> &'static str {
+    match kind {
+        TransformKind::Physical => "Physical",
+        TransformKind::Typed => "Typed",
+    }
+}
+
+/// Clamp a proposed drawer width (integer px, may be negative) into `[min, max]`.
+#[must_use]
+pub fn clamp_drawer_width(px: i32, min: u32, max: u32) -> u32 {
+    u32::try_from(px).unwrap_or(0).clamp(min, max)
 }

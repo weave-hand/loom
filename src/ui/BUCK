@@ -126,6 +126,15 @@ rust_test(
     deps = [":ui-core"],
 )
 
+rust_test(
+    name = "transforms-display",
+    crate = "transforms_display",
+    srcs = ["tests/transforms_display.rs"],
+    crate_root = "tests/transforms_display.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
 rust_binary(
     name = "app",
     crate = "app",
