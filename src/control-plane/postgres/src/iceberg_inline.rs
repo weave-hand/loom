@@ -479,6 +479,20 @@ pub async fn inline_append(
         (None, existing) => existing,
     };
 
+    // Defense in depth: a non-positive effective bucket count would otherwise
+    // reach the `row % bc` arithmetic below and panic (division/remainder by
+    // zero, or a meaningless negative modulus). Reject it cleanly here — this is
+    // currently unreachable (callers only ever pass positive counts), but a future
+    // caller threading an external `?buckets=N` value through must fail with a
+    // `Validation` error, not a panic.
+    if let Some(bc) = effective
+        && bc < 1
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream bucket_count must be >= 1, got {bc}"
+        )));
+    }
+
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
     let col_list = columns

@@ -323,3 +323,21 @@ async fn stream_append_stamps_gapless_per_bucket_offsets() {
         "a non-stream table's append leaves bucket/offset NULL"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_append_rejects_non_positive_bucket_count() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let table = table();
+    let cols = vec![id_spec()];
+    let batch1 = id_batch_n("id", &[1]);
+
+    let err =
+        iceberg_inline::inline_append(&pool, &table, &cols, &batch1, lin(), None, Some(0)).await;
+    assert!(
+        matches!(err, Err(ControlPlaneError::Validation(_))),
+        "bucket_count 0 must be rejected as Validation, not panic: got {err:?}"
+    );
+}
