@@ -156,9 +156,11 @@ This inserts `Order 500` and two `LineItem`s (`1`, `2`) whose `orderId` is `500`
 - **Long values are JSON strings** (`"500"`), so 64-bit ids keep full precision.
   Other types use their natural JSON form (`"text"`, `true`, `3.14`,
   `"2026-07-03"`, `"2026-07-03T12:00:00"`).
-- On success: **`201 Created`**, the response body is the affected object as JSON,
-  and the **`X-Loom-Run-Id`** header carries the action's run id — use it to look
-  up the action's lineage.
+- On success: **`201 Created`** for Insert, **`200 OK`** for Update/Delete
+  (multi-step keys on the first step's kind); the response body is the affected
+  object (Update) or pre-deletion values (Delete) as JSON, and the
+  **`X-Loom-Run-Id`** header carries the action's run id — use it to look up the
+  action's lineage.
 
 ### One flat body, distinct per-step params
 
@@ -192,7 +194,8 @@ action.
 
 | Code | Meaning |
 |---|---|
-| `201 Created` | committed; body = affected object, `X-Loom-Run-Id` header set |
+| `201 Created` | Insert committed; body = new object, `X-Loom-Run-Id` set |
+| `200 OK` | Update/Delete committed; body = affected/pre-deletion object, `X-Loom-Run-Id` set |
 | `400 Bad Request` | body is not a JSON object |
 | `403 Forbidden` | coarse `Write` denied (bodyless), or fine-grained write denied (`{error, reason, column?}`) |
 | `404 Not Found` | unknown action, or an Update/Delete target row not found |

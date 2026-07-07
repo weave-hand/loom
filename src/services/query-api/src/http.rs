@@ -984,14 +984,16 @@ async fn graph_tree_respond(
 
 /// Invoke an ontology action by name (typed governed write).
 ///
-/// The body is the action's parameter envelope. Insert/Update/Delete all respond 201
-/// with the affected object. Governed by ACL.
+/// The body is the action's parameter envelope. Insert responds 201 Created;
+/// Update/Delete respond 200 OK. The body carries the affected object.
+/// Governed by ACL.
 #[utoipa::path(
     post, path = "/actions/{action_name}",
     params(("action_name" = String, Path, description = "Ontology action id")),
     request_body = serde_json::Value,
     responses(
-        (status = 201, description = "Action applied. Single-step actions return the bare created/affected object; multi-step actions return an ordered `steps` envelope (one entry per step, labelled by bind + target)", body = crate::openapi::ActionStepsBody),
+        (status = 201, description = "Insert action applied: the created object (single-step) or the `steps` envelope (multi-step)", body = crate::openapi::ActionStepsBody),
+        (status = 200, description = "Update/Delete action applied: the affected object (Update) or pre-deletion values (Delete); the per-action `/docs` entry states each action's exact status", body = crate::openapi::ActionStepsBody),
         (status = 400, description = "Malformed or undecodable request body (not a JSON action envelope)"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),
