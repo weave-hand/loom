@@ -74,6 +74,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let detail = use_state(|| Option::<DatasetDetail>::None);
     let preview = use_state(|| Option::<PreviewData>::None);
     let preview_loading = use_state(|| false);
+    let detail_error = use_state(|| Option::<String>::None);
+    let preview_error = use_state(|| Option::<String>::None);
     let catalog_tab = use_state(|| AttrValue::from("schema"));
     // Lazily-loaded lineage closures (upstream, downstream) for the selected dataset,
     // plus whether the Lineage tab is showing the full-canvas stub.
@@ -117,6 +119,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let detail = detail.clone();
         let preview = preview.clone();
         let preview_loading = preview_loading.clone();
+        let detail_error = detail_error.clone();
+        let preview_error = preview_error.clone();
         let catalog_tab = catalog_tab.clone();
         let lineage = lineage.clone();
         let show_full_lineage = show_full_lineage.clone();
@@ -132,6 +136,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
             detail.set(None);
             preview.set(None);
             preview_loading.set(false);
+            detail_error.set(None);
+            preview_error.set(None);
             lineage.set(None);
             show_full_lineage.set(false);
             catalog_tab.set(AttrValue::from("schema"));
@@ -147,9 +153,11 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         }
                     }
                     Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    // Best-effort: a failure leaves the Schema tab on its "Loading…"
-                    // line rather than blocking the rest of the drawer.
-                    Err(_) => {}
+                    Err(e) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            detail_error.set(Some(e.to_string()));
+                        }
+                    }
                 }
             });
         });
@@ -162,6 +170,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
     {
         let preview = preview.clone();
         let preview_loading = preview_loading.clone();
+        let preview_error = preview_error.clone();
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
@@ -189,8 +198,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         preview_loading.set(false);
                         on_logout.emit(());
                     }
-                    Err(_) => {
+                    Err(e) => {
                         if fetch_gen.borrow().is_current(my_gen) {
+                            preview_error.set(Some(e.to_string()));
                             preview_loading.set(false);
                         }
                     }
@@ -326,6 +336,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             detail={(*detail).clone()}
                             preview={(*preview).clone()}
                             preview_loading={*preview_loading}
+                            detail_error={(*detail_error).clone()}
+                            preview_error={(*preview_error).clone()}
                             active_tab={(*catalog_tab).clone()}
                             on_tab={on_tab}
                             lineage={lineage_view}

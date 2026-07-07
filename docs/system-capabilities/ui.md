@@ -92,7 +92,11 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   `FetchGeneration` counter (in `loom_ui_core`, `rust_test`'d) bumped on dataset
   selection change; each fetch captures the generation it was spawned under and
   commits its result only if the selection hasn't advanced — so an out-of-order
-  network arrival from a superseded selection can't stale the drawer body.
+  network arrival from a superseded selection can't stale the drawer body. A
+  non-401 fetch error on the Schema or Preview tab surfaces a small error line
+  (styled with `--loom-danger`) that takes precedence over the "Loading…"
+  placeholder — an error no longer leaves the tab hung on "Loading…" (Schema) or
+  silently empty (Preview); the Lineage tab already degraded gracefully.
 
 ## Known gaps
 
