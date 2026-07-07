@@ -13,8 +13,8 @@ mod surfaces;
 
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
-    AuthError, BadgeTone, ButtonVariant, DatasetDetail, DatasetRow, PreviewData, Surface,
-    TypeDetail,
+    AuthError, BadgeTone, ButtonVariant, DatasetDetail, DatasetRow, FetchGeneration, PreviewData,
+    Surface, TypeDetail,
 };
 use net::FetchError;
 use std::collections::HashMap;
@@ -83,6 +83,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
     )]
     let lineage = use_state(|| Option::<(Vec<(String, String)>, Vec<(String, String)>)>::None);
     let show_full_lineage = use_state(|| false);
+    // Generation guard for selection-scoped drawer fetches: bumped on dataset
+    // selection change so a slow in-flight fetch from a prior selection cannot
+    // overwrite the current selection's drawer tab body (see FetchGeneration).
+    let fetch_gen = use_mut_ref(FetchGeneration::default);
 
     // On mount: load the dataset list. Catalog is the default surface, so a
     // mount-keyed effect loads it exactly once (mirrors the ontology type list).
@@ -119,6 +123,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
+        let fetch_gen = fetch_gen.clone();
         let selected_dep = *selected_dataset;
         use_effect_with(selected_dep, move |sel| {
             let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
@@ -130,11 +135,17 @@ fn workspace(props: &WorkspaceProps) -> Html {
             lineage.set(None);
             show_full_lineage.set(false);
             catalog_tab.set(AttrValue::from("schema"));
+            // Any in-flight fetch from the previous selection is now stale.
+            let my_gen = fetch_gen.borrow_mut().bump();
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_dataset_detail(&net::api_base(), &token, &ds.schema, &ds.name)
                     .await
                 {
-                    Ok(d) => detail.set(Some(d)),
+                    Ok(d) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            detail.set(Some(d));
+                        }
+                    }
                     Err(FetchError::Unauthorized) => on_logout.emit(()),
                     // Best-effort: a failure leaves the Schema tab on its "Loading…"
                     // line rather than blocking the rest of the drawer.
@@ -154,6 +165,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
+        let fetch_gen = fetch_gen.clone();
         let already_loaded = preview.is_some();
         let dep = (*selected_dataset, (*catalog_tab).clone());
         use_effect_with(dep, move |(sel, tab)| {
@@ -164,17 +176,24 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 return;
             };
             preview_loading.set(true);
+            let my_gen = fetch_gen.borrow().current();
             wasm_bindgen_futures::spawn_local(async move {
                 match net::fetch_preview(&net::api_base(), &token, &ds.schema, &ds.name, 50).await {
                     Ok(p) => {
-                        preview.set(Some(p));
-                        preview_loading.set(false);
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            preview.set(Some(p));
+                            preview_loading.set(false);
+                        }
                     }
                     Err(FetchError::Unauthorized) => {
                         preview_loading.set(false);
                         on_logout.emit(());
                     }
-                    Err(_) => preview_loading.set(false),
+                    Err(_) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            preview_loading.set(false);
+                        }
+                    }
                 }
             });
         });
@@ -189,6 +208,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
+        let fetch_gen = fetch_gen.clone();
         let already_loaded = lineage.is_some();
         let dep = (*selected_dataset, (*catalog_tab).clone());
         use_effect_with(dep, move |(sel, tab)| {
@@ -198,6 +218,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
             let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
                 return;
             };
+            let my_gen = fetch_gen.borrow().current();
             wasm_bindgen_futures::spawn_local(async move {
                 let base = net::api_base();
                 let up = net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "upstream").await;
@@ -211,7 +232,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     on_logout.emit(());
                     return;
                 }
-                lineage.set(Some((up.unwrap_or_default(), down.unwrap_or_default())));
+                if fetch_gen.borrow().is_current(my_gen) {
+                    lineage.set(Some((up.unwrap_or_default(), down.unwrap_or_default())));
+                }
             });
         });
     }
