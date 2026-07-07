@@ -289,7 +289,14 @@ check ran).
 **Poison-body skip-and-warn.** A def body that fails to deserialize (a stale
 shape from before a breaking change, or manual corruption) is skipped with a
 `tracing::warn!` rather than failing the transaction — a single broken admin
-artifact must never fail unrelated ingest or transform commits.
+artifact must never fail unrelated ingest or transform commits. All three
+batch decoders behave identically: the commit-seam `pg_fire_data_triggers`
+(candidate scan + under-lock re-read), the `define_transform` trigger-cycle
+scan (an undecodable existing def is omitted from the edge set — it cannot
+fire, so it forms no live cycle), and `claim_due_schedules` (**advance-and-warn**:
+the poison row still gets its `next_run_at` advanced from its own `schedule`
+column so it leaves the due window and stops starving healthy schedules, but is
+not returned for execution until repaired).
 
 Tested by the cross-adapter `transform_data_trigger_contract` (testkit,
 covering both memory and postgres) plus cycle-rejection legs in
