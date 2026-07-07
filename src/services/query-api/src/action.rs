@@ -522,14 +522,15 @@ fn check_mutate_conformance(
 /// Run one named action against its target type from `body`. Dispatches on the action's
 /// `kind`: `Insert` creates a new instance; `Update`/`Delete` mutate or remove one existing
 /// instance located by the target type's declared identity (O(change) inline-delta
-/// copy-on-write). Returns the affected object as a single-row `ObjectRows` plus the `RunId`
+/// copy-on-write). Returns the affected-object payload as an [`ActionOutcome`] (`Single` for
+/// a lone bind-less step, `Multi` — one [`StepResult`] per step — otherwise) plus the `RunId`
 /// so the caller can locate the action's lineage (committed atomically with the new snapshot).
 pub async fn run_action(
     action_name: &str,
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
-) -> Result<(ObjectRows, RunId), ActionError> {
+) -> Result<(ActionOutcome, RunId), ActionError> {
     // 1. Resolve the action.
     let action = deps
         .cp
@@ -573,11 +574,12 @@ pub async fn run_action(
         return Err(ActionError::Forbidden);
     }
     check_conformance(&action, &target)?;
-    match single_step.kind {
-        ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await,
-        ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await,
-        ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await,
-    }
+    let (rows, run_id) = match single_step.kind {
+        ActionKind::Insert => run_insert(&action, &target, body, subject, deps).await?,
+        ActionKind::Update => run_mutate(&action, &target, body, subject, deps, true).await?,
+        ActionKind::Delete => run_mutate(&action, &target, body, subject, deps, false).await?,
+    };
+    Ok((ActionOutcome::Single(rows), run_id))
 }
 
 /// Collect every declared-constraint violation over resolved `(property, value)` write
@@ -656,6 +658,26 @@ pub fn affected_object(
     row: Vec<SqlValue>,
 ) -> ObjectRows {
     Projection::of_columns(target, columns).object_rows(vec![row])
+}
+
+/// One multi-step action step's affected object, labelled for the response
+/// envelope. `bind` is the step's declared name (the semantic key, when it
+/// declared one); `target` is the step's type (always present); array order
+/// disambiguates unbound same-target steps.
+#[derive(Debug)]
+pub struct StepResult {
+    pub bind: Option<String>,
+    pub target: String,
+    pub rows: ObjectRows,
+}
+
+/// The affected-object payload an action produces. `Single` is a lone
+/// bind-less step (today's byte-compatible bare-object response); `Multi`
+/// carries every step's result in declared order.
+#[derive(Debug)]
+pub enum ActionOutcome {
+    Single(ObjectRows),
+    Multi(Vec<StepResult>),
 }
 
 /// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
@@ -1253,16 +1275,15 @@ fn log_write_denied(action_name: &str, reason: &WriteDenialReason) {
 /// Write gate, fine-grained ACL, or a constraint violation — returns before any write is issued,
 /// so the whole action is all-or-nothing (nothing is ever partially written). Steps sharing a
 /// target table coalesce into one multi-row `Append`; distinct targets stay distinct. One
-/// `RunId`; the lineage event's `outputs` list every step's target dataset. The returned
-/// `ObjectRows` is the FIRST step's affected object (the primary/root object the action minted) —
-/// the HTTP handler surfaces a single created object, and a richer multi-object response body is
-/// a follow-on.
+/// `RunId`; the lineage event's `outputs` list every step's target dataset. Returns
+/// `ActionOutcome::Multi`, one [`StepResult`] per declared step in order, captured before
+/// `coalesce_appends` — the HTTP handler renders every step's affected object.
 async fn run_multi_step(
     action: &ActionDef,
     body: &serde_json::Map<String, Value>,
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
-) -> Result<(ObjectRows, RunId), ActionError> {
+) -> Result<(ActionOutcome, RunId), ActionError> {
     let action_name = action.name.0.as_str();
     let now = request_now();
     let run_id = RunId(Uuid::new_v4());
@@ -1316,7 +1337,7 @@ async fn run_multi_step(
 
     let mut step_env = crate::params::StepEnv::new();
     let mut writes: Vec<StepWrite> = Vec::with_capacity(action.steps.len());
-    let mut first_affected: Option<ObjectRows> = None;
+    let mut step_results: Vec<StepResult> = Vec::with_capacity(action.steps.len());
 
     // Resolve + govern each step in declared order, building its staged write. NOTHING is written
     // in this loop — `write_steps` runs once, after the whole action clears governance.
@@ -1342,12 +1363,14 @@ async fn run_multi_step(
         //        step's staged write. Any denial/violation returns here — before any write.
         let write = govern_and_build_step(step, target, &pairs, subject, deps, action_name).await?;
 
-        // Response: keep the FIRST step's affected object (the primary/root object created).
-        if first_affected.is_none() {
-            let cols: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
-            let vals: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
-            first_affected = Some(affected_object(target, cols, vals));
-        }
+        // Response: capture EVERY step's affected object, in declared order.
+        let cols: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
+        let vals: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
+        step_results.push(StepResult {
+            bind: step.bind.clone(),
+            target: step.target.0.clone(),
+            rows: affected_object(target, cols, vals),
+        });
 
         // f. Expose this step's resolved row (INCLUDING its identity) under its `bind` name, so a
         //    later step's `StepRef` resolves against it.
@@ -1379,9 +1402,10 @@ async fn run_multi_step(
 
     deps.action_engine.write_steps(&writes, event).await?;
 
-    let rows =
-        first_affected.ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
-    Ok((rows, run_id))
+    if step_results.is_empty() {
+        return Err(ActionError::Misconfigured("action has no steps".into()));
+    }
+    Ok((ActionOutcome::Multi(step_results), run_id))
 }
 
 /// Govern one step and build its staged [`StepWrite`], dispatching on the step's kind. Insert

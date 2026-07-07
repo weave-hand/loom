@@ -29,10 +29,10 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, Auth, Cardinality, ControlPlane, ControlPlaneError,
-    DatasetId, Effect, EventType, IndexSpec, LineageEvent, LinkBacking, LinkDef, Metric, NewUser,
-    ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, RunId, SubjectId,
-    TableRef, TypeName, VectorIndexDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, Auth, Cardinality,
+    ControlPlane, ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent,
+    LinkBacking, LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget,
+    PropertyDef, RoleId, RowFilter, RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -814,6 +814,56 @@ pub async fn seed_vector_type(
     (cp, eng, writer)
 }
 
+/// A required param renamed away from the property it writes (`binds`). Shared by the
+/// `createOrderWithLines` seed below and the multi-object/response-envelope e2e tests'
+/// own single-step actions.
+fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
+    ParamDef {
+        name: name.into(),
+        ty: ty.into(),
+        required,
+        binds: Some(binds.into()),
+    }
+}
+
+/// Define the `createOrderWithLines` multi-step action: step0 inserts the Order (bind
+/// `order`); step1 & step2 each insert a LineItem whose `orderId` is `@order.id` (a
+/// StepRef into the parent's just-resolved identity). Two line items ⇒ two LineItem
+/// steps. Callers must have already defined `Order` (with an `id` property) and
+/// `LineItem` (with `id` and `orderId` properties) — this only defines the action.
+/// Byte-identical seed shared by `action_multi_object_e2e` and `action_response_http`.
+pub async fn define_create_order_with_lines_action(cp: &PgControlPlane) {
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("createOrderWithLines".into()),
+            steps: vec![
+                ActionStep {
+                    target: TypeName("Order".into()),
+                    kind: ActionKind::Insert,
+                    parameters: vec![param_bound("oid", "Long", true, "id")],
+                    assignments: vec![],
+                    bind: Some("order".into()),
+                },
+                ActionStep {
+                    target: TypeName("LineItem".into()),
+                    kind: ActionKind::Insert,
+                    parameters: vec![param_bound("li1", "Long", true, "id")],
+                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
+                    bind: None,
+                },
+                ActionStep {
+                    target: TypeName("LineItem".into()),
+                    kind: ActionKind::Insert,
+                    parameters: vec![param_bound("li2", "Long", true, "id")],
+                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
+                    bind: None,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+}
+
 /// Define `Widget(id Long required identity, name String, qty Long)` + the
 /// `createWidget` (insert), `updateWidget` (id + qty), and `deleteWidget` (id) actions.
 /// Promoted from `update_delete_tiers_e2e.rs` so wire-client tests can reuse it.
@@ -1085,4 +1135,55 @@ pub async fn post_search(
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     };
     (status, json)
+}
+
+/// Drive `POST /actions/{name}` through the router (behind the auth gate) and return
+/// (status, headers, parsed JSON body). Sibling to `post_search`, but also returns
+/// headers (needed to assert `X-Loom-Run-Id`) and takes the action engine explicitly:
+/// `StubAction`'s default `write_steps` errors, so a multi-step action needs a REAL
+/// write engine (e.g. `spawn_engine_writer`) to actually commit.
+pub async fn post_action_raw(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    action_engine: Arc<dyn query_api::serving::ActionEngine>,
+    uri: &str,
+    body: &serde_json::Value,
+    subject: &str,
+) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine,
+            default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, headers, json)
 }

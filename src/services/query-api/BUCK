@@ -762,6 +762,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "action-response-http",
+    crate = "action_response_http",
+    srcs = ["tests/action_response_http.rs"],
+    crate_root = "tests/action_response_http.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "write-steps-e2e",
     crate = "write_steps_e2e",
     srcs = ["tests/write_steps_e2e.rs"],

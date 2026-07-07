@@ -991,7 +991,7 @@ async fn graph_tree_respond(
     params(("action_name" = String, Path, description = "Ontology action id")),
     request_body = serde_json::Value,
     responses(
-        (status = 201, description = "Action applied; created/affected object"),
+        (status = 201, description = "Action applied. Single-step actions return the bare created/affected object; multi-step actions return an ordered `steps` envelope (one entry per step, labelled by bind + target)", body = crate::openapi::ActionStepsBody),
         (status = 400, description = "Malformed or undecodable request body (not a JSON action envelope)"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),
@@ -1016,18 +1016,34 @@ async fn post_action(
         serving: st.serving.as_ref(),
     };
     match crate::action::run_action(&action_name, &obj, &subject.0, &deps).await {
-        Ok((rows, run_id)) => {
-            let body = crate::render::objects_to_json(&rows, None);
-            // objects_to_json yields {"objects":[{...}]}; return the single created object.
-            let one = body
-                .get("objects")
-                .and_then(|a| a.as_array())
-                .and_then(|a| a.first())
-                .cloned()
-                .unwrap_or(serde_json::Value::Null);
+        Ok((outcome, run_id)) => {
+            let body = match outcome {
+                crate::action::ActionOutcome::Single(rows) => {
+                    // Byte-compatible single-object response: the bare affected object.
+                    crate::render::objects_to_json(&rows, None)
+                        .get("objects")
+                        .and_then(|a| a.as_array())
+                        .and_then(|a| a.first())
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                }
+                crate::action::ActionOutcome::Multi(steps) => {
+                    let steps_json: Vec<serde_json::Value> = steps
+                        .iter()
+                        .map(|s| {
+                            let objects = crate::render::objects_to_json(&s.rows, None)
+                                .get("objects")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!([]));
+                            serde_json::json!({ "bind": s.bind, "target": s.target, "objects": objects })
+                        })
+                        .collect();
+                    serde_json::json!({ "steps": steps_json })
+                }
+            };
             // Surface the action's run_id so a caller can locate its lineage via
-            // Lineage::events_for. The body is unchanged (non-invasive).
-            let mut resp = (StatusCode::CREATED, Json(one)).into_response();
+            // Lineage::events_for. The single-step body is unchanged (non-invasive).
+            let mut resp = (StatusCode::CREATED, Json(body)).into_response();
             if let Ok(v) = axum::http::HeaderValue::from_str(&run_id.0.to_string()) {
                 resp.headers_mut().insert("X-Loom-Run-Id", v);
             }

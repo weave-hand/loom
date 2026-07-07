@@ -48,7 +48,7 @@ async fn update_merges_named_columns() {
     .expect("seed insert");
 
     // UPDATE {id:1, qty:9} — name is NOT a param, so it must be retained (PATCH).
-    let (affected, _run) = run_action(
+    let (outcome, _run) = run_action(
         "updateWidget",
         json!({ "id": "1", "qty": "9" }).as_object().unwrap(),
         &subj,
@@ -56,6 +56,10 @@ async fn update_merges_named_columns() {
     )
     .await
     .expect("update runs");
+    let affected = match outcome {
+        query_api::action::ActionOutcome::Single(rows) => rows,
+        query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),
+    };
     // The affected object returns the new version.
     let affected_json = objects_to_json(&affected, None);
     assert_eq!(affected_json["objects"][0]["qty"], json!("9"));

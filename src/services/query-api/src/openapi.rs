@@ -60,6 +60,24 @@ pub struct WriteDeniedBody {
     pub column: Option<String>,
 }
 
+/// One step's affected object in a multi-step action response.
+#[derive(ToSchema)]
+pub struct ActionStepResult {
+    /// The step's declared bind name, when it declared one.
+    pub bind: Option<String>,
+    /// The step's target type name (always present).
+    pub target: String,
+    /// The step's affected object rows (same shape as an object read).
+    pub objects: Vec<serde_json::Value>,
+}
+
+/// The 201 body of a MULTI-step action: one entry per declared step, in order.
+/// (A single-step action returns the bare affected object instead.)
+#[derive(ToSchema)]
+pub struct ActionStepsBody {
+    pub steps: Vec<ActionStepResult>,
+}
+
 /// Documentation shape for a 422 constraint-violation body on a typed-insert action.
 #[derive(ToSchema)]
 pub struct ConstraintViolationsBody {
@@ -199,6 +217,8 @@ pub struct DatasetPreviewResponse {
         VectorSearchResponse,
         JobAck,
         WriteDeniedBody,
+        ActionStepsBody,
+        ActionStepResult,
         ConstraintViolationsBody,
         ConstraintViolationItem,
         OntologyTypesResponse,
