@@ -28,7 +28,9 @@
 //     snippets — wasm-bindgen `--target web --out-dir $OUT` emits `$OUT/snippets/`,
 //     which the genrule's `out=dist` already captures. No CDN, no extra copy.
 
-use loom_ui_core::{CompletionSchema, SuggestionKind, cursor_context, sql_completions};
+use loom_ui_core::{
+    CompletionSchema, LOOM_BG, LOOM_TEXT, SuggestionKind, cursor_context, sql_completions,
+};
 use monaco::api::{CodeEditor, CodeEditorOptions, DisposableClosure, TextModel};
 use monaco::sys::editor::{
     BuiltinTheme, IEditorOptions, IModelContentChangedEvent, IStandaloneThemeData, ITextModel,
@@ -107,10 +109,13 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
             theme_data.set_base(BuiltinTheme::VsDark);
             theme_data.set_inherit(true);
             theme_data.set_rules(&js_sys::Array::new());
+            // Monaco can't read CSS custom properties, so the editor chrome draws its
+            // colors from the same `loom_ui_core` palette constants that back the
+            // `--loom-bg`/`--loom-text` tokens in global.rs — one source of truth.
             let colors = js_sys::Object::new();
-            js_sys::Reflect::set(&colors, &"editor.background".into(), &"#0b0e14".into())
+            js_sys::Reflect::set(&colors, &"editor.background".into(), &LOOM_BG.into())
                 .expect("set editor.background");
-            js_sys::Reflect::set(&colors, &"editor.foreground".into(), &"#e6edf3".into())
+            js_sys::Reflect::set(&colors, &"editor.foreground".into(), &LOOM_TEXT.into())
                 .expect("set editor.foreground");
             theme_data.set_colors(&colors);
             monaco::sys::editor::define_theme("loom-dark", &theme_data)

@@ -9,6 +9,16 @@ pub use completion::{
     cursor_context, sql_completions,
 };
 
+/// Design-token hex values that must be consumed *outside* the CSS layer and so
+/// can't be read as `var(--loom-*)`. The `:root` custom properties in
+/// `components/global.rs` and the Monaco editor theme in `components/sql_editor.rs`
+/// (Monaco can't read CSS custom properties) both build from these, so the palette
+/// has a single source of truth. Only the values needed off the CSS path live here;
+/// the rest of the palette stays inline in `global.rs`.
+pub const LOOM_BG: &str = "#0b0e14";
+/// Foreground/body text color; the `--loom-text` token.
+pub const LOOM_TEXT: &str = "#e6edf3";
+
 /// Join a runtime API base with a request path. An empty base yields a relative
 /// (same-origin) URL; a non-empty base is used as a prefix with at most one `/`.
 #[must_use]

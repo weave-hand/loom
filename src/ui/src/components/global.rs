@@ -1,18 +1,28 @@
+use loom_ui_core::{LOOM_BG, LOOM_TEXT};
 use stylist::yew::Global;
 use yew::prelude::*;
 
 /// Injects the loom design tokens (`:root { --loom-* }`) and base body/font rules
 /// once at the app root. Render this before any other component.
+///
+/// `--loom-bg`/`--loom-text` are interpolated from `loom_ui_core::{LOOM_BG, LOOM_TEXT}`
+/// so the two tokens the Monaco editor theme also needs (it can't read CSS vars) have
+/// a single source of truth. The block is assembled by concatenation to keep the CSS
+/// braces literal (a `format!` would require escaping every `{`/`}`).
 #[function_component(GlobalStyles)]
 pub fn global_styles() -> Html {
-    html! {
-        <Global css={r#"
+    let css: String = [
+        r#"
             :root {
-                --loom-bg: #0b0e14;
+                --loom-bg: "#,
+        LOOM_BG,
+        r#";
                 --loom-panel: #161b22;
                 --loom-panel-2: #1c2230;
                 --loom-border: #232a35;
-                --loom-text: #e6edf3;
+                --loom-text: "#,
+        LOOM_TEXT,
+        r#";
                 --loom-text-mut: #8b949e;
                 --loom-accent: #3b82f6;
                 --loom-accent-fg: #ffffff;
@@ -31,6 +41,8 @@ pub fn global_styles() -> Html {
                 font-size: 13px;
                 line-height: 1.5;
             }
-        "#} />
-    }
+        "#,
+    ]
+    .concat();
+    html! { <Global css={css} /> }
 }
