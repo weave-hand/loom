@@ -102,7 +102,7 @@ fn gallery() -> Html {
             active: true,
         },
         NavItem {
-            label: "Pipelines".into(),
+            label: "Transforms".into(),
             active: false,
         },
         NavItem {
@@ -243,7 +243,7 @@ fn gallery() -> Html {
                             active={Surface::Catalog}
                             on_switch={Callback::noop()}
                             avatar="DK"
-                            list={html!{ <StubView surface={Surface::Pipelines} /> }}
+                            list={html!{ <StubView surface={Surface::Transforms} /> }}
                         />
                     </Panel>
                 </section>

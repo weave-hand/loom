@@ -2,9 +2,11 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, DatasetDetail, DatasetRow, PreviewData, TypeDetail, parse_dataset_detail,
-    parse_datasets, parse_preview, parse_type_detail, status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, PreviewData, RunRow, TransformDefView, TransformSummary,
+    TypeDetail, parse_dataset_detail, parse_datasets, parse_preview, parse_runs,
+    parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
 };
+use serde_json::Value;
 use wasm_bindgen::JsValue;
 
 /// Read `window.LOOM_CONFIG.apiBase` (shipped default ""), so the same bundle is
@@ -54,14 +56,18 @@ pub async fn logout(base: &str, token: &str) {
         .await;
 }
 
-/// Why a governed `GET` failed.
+/// Why a governed request failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FetchError {
     /// The bearer token is missing/expired (HTTP 401) — the caller should log out.
     Unauthorized,
+    /// Authenticated but lacking the required role (HTTP 403).
+    Forbidden,
     /// The request never completed (transport / decode failure).
     Network,
-    /// The server responded with an unexpected non-401 status.
+    /// The server rejected the request with a message (e.g. HTTP 400 validation).
+    Rejected(String),
+    /// The server responded with an unexpected status.
     Server(u16),
 }
 
@@ -69,6 +75,8 @@ impl std::fmt::Display for FetchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unauthorized => write!(f, "your session has expired — please sign in again"),
+            Self::Forbidden => write!(f, "this action requires the admin role"),
+            Self::Rejected(msg) => write!(f, "{msg}"),
             Self::Server(c) => write!(f, "server error ({c})"),
             Self::Network => write!(f, "could not reach the server"),
         }
@@ -76,10 +84,28 @@ impl std::fmt::Display for FetchError {
 }
 
 fn fetch_status_err(status: u16) -> FetchError {
-    if status == 401 {
-        FetchError::Unauthorized
-    } else {
-        FetchError::Server(status)
+    match status {
+        401 => FetchError::Unauthorized,
+        403 => FetchError::Forbidden,
+        s => FetchError::Server(s),
+    }
+}
+
+/// Map a non-success write response to an error, reading the body on 400 so the
+/// server's validation message can be surfaced.
+async fn write_status_err(resp: gloo_net::http::Response) -> FetchError {
+    match resp.status() {
+        401 => FetchError::Unauthorized,
+        403 => FetchError::Forbidden,
+        400 => {
+            let msg = resp.text().await.unwrap_or_default();
+            if msg.is_empty() {
+                FetchError::Rejected("request rejected".to_string())
+            } else {
+                FetchError::Rejected(msg)
+            }
+        }
+        s => FetchError::Server(s),
     }
 }
 
@@ -212,4 +238,118 @@ pub async fn fetch_preview(
     }
     let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
     Ok(parse_preview(&body))
+}
+
+/// GET /admin/transforms with the bearer token.
+pub async fn list_transforms(base: &str, token: &str) -> Result<Vec<TransformSummary>, FetchError> {
+    let resp = Request::get(&url(base, "/admin/transforms"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_transform_list(&body))
+}
+
+/// GET /admin/transforms/{name} with the bearer token.
+pub async fn get_transform(
+    base: &str,
+    token: &str,
+    name: &str,
+) -> Result<TransformDefView, FetchError> {
+    let resp = Request::get(&url(base, &format!("/admin/transforms/{name}")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_transform_def(&body))
+}
+
+/// GET /admin/transforms/{name}/runs with the bearer token (newest first).
+pub async fn list_runs(base: &str, token: &str, name: &str) -> Result<Vec<RunRow>, FetchError> {
+    let resp = Request::get(&url(base, &format!("/admin/transforms/{name}/runs")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_runs(&body))
+}
+
+/// POST /admin/transforms — define/redefine (expects 201).
+pub async fn define_transform(base: &str, token: &str, def: &Value) -> Result<(), FetchError> {
+    let resp = Request::post(&url(base, "/admin/transforms"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .json(def)
+        .map_err(|_| FetchError::Network)?
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() == 201 {
+        Ok(())
+    } else {
+        Err(write_status_err(resp).await)
+    }
+}
+
+/// DELETE /admin/transforms/{name} — idempotent delete (expects 200).
+pub async fn delete_transform(base: &str, token: &str, name: &str) -> Result<(), FetchError> {
+    let resp = Request::delete(&url(base, &format!("/admin/transforms/{name}")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() == 200 {
+        Ok(())
+    } else {
+        Err(fetch_status_err(resp.status()))
+    }
+}
+
+/// POST /admin/transforms/{name}/run — run a saved transform now (expects 202 {run_id}).
+pub async fn run_transform(base: &str, token: &str, name: &str) -> Result<String, FetchError> {
+    let resp = Request::post(&url(base, &format!("/admin/transforms/{name}/run")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 202 {
+        return Err(write_status_err(resp).await);
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(body
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
+/// POST /admin/transforms/run — run an ad-hoc body (expects 202 {run_id}).
+pub async fn run_adhoc(base: &str, token: &str, body_json: &Value) -> Result<String, FetchError> {
+    let resp = Request::post(&url(base, "/admin/transforms/run"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .json(body_json)
+        .map_err(|_| FetchError::Network)?
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 202 {
+        return Err(write_status_err(resp).await);
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(body
+        .get("run_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
 }

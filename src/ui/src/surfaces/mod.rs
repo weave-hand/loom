@@ -4,6 +4,8 @@
 
 mod catalog;
 mod ontology;
+mod transforms;
 
 pub use catalog::{CatalogDrawer, CatalogList};
 pub use ontology::{LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow};
+pub use transforms::{TransformDrawer, TransformEditor, TransformsList};

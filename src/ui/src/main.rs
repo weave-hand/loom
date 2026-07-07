@@ -13,14 +13,17 @@ mod surfaces;
 
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
-    AuthError, BadgeTone, ButtonVariant, DatasetDetail, DatasetRow, FetchGeneration, PreviewData,
-    Surface, TypeDetail,
+    AuthError, BadgeTone, ButtonVariant, CompletionSchema, DatasetDetail, DatasetRow,
+    FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef, TransformDefView,
+    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, form_to_body,
+    form_to_def, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::collections::HashMap;
 use stylist::yew::styled_component;
 use surfaces::{
     CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow,
+    TransformDrawer, TransformEditor, TransformsList,
 };
 use yew::prelude::*;
 
@@ -89,6 +92,33 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // selection change so a slow in-flight fetch from a prior selection cannot
     // overwrite the current selection's drawer tab body (see FetchGeneration).
     let fetch_gen = use_mut_ref(FetchGeneration::default);
+
+    // Transforms
+    let transforms = use_state(Vec::<TransformSummary>::new);
+    let tf_status = use_state(|| LoadStatus::Idle);
+    let tf_forbidden = use_state(|| false);
+    let tf_selected = use_state(|| Option::<usize>::None);
+    let tf_def = use_state(|| Option::<TransformDefView>::None);
+    let tf_drawer_tab = use_state(|| AttrValue::from("definition"));
+    let tf_runs = use_state(Vec::<RunRow>::new);
+    let tf_runs_status = use_state(|| LoadStatus::Idle);
+    // Editor form: Some(form) when the editor is open (New or Edit), None when viewing.
+    let tf_editing = use_state(|| Option::<TransformForm>::None);
+    // When editing an EXISTING def, the name being redefined; None for a New transform.
+    // Drives the editor title + disabled name field + the redefine target.
+    let tf_edit_name = use_state(|| Option::<String>::None);
+    let tf_schema = use_state(CompletionSchema::default);
+    let tf_errors = use_state(Vec::<FieldError>::new);
+    let tf_server_error = use_state(|| Option::<AttrValue>::None);
+    let tf_dataset_options = use_state(Vec::<String>::new);
+    let tf_type_options = use_state(Vec::<String>::new);
+    // Per-stream epoch generation guards. One SHARED counter is wrong: two effects
+    // keyed on the same selection each bump-then-capture, so the later effect's bump
+    // invalidates the earlier effect's in-flight fetch. Each independent fetch stream
+    // gets its own counter so a stream only cancels its own stale in-flight requests.
+    let tf_def_gen = use_mut_ref(|| 0u64);
+    let tf_runs_gen = use_mut_ref(|| 0u64);
+    let tf_schema_gen = use_mut_ref(|| 0u64);
 
     // On mount: load the dataset list. Catalog is the default surface, so a
     // mount-keyed effect loads it exactly once (mirrors the ontology type list).
@@ -290,6 +320,181 @@ fn workspace(props: &WorkspaceProps) -> Html {
         });
     }
 
+    // Transforms list: load once on mount. A 403 (non-admin) flips `tf_forbidden` so
+    // the list renders the admin-only empty state instead of an error.
+    {
+        let transforms = transforms.clone();
+        let tf_status = tf_status.clone();
+        let tf_forbidden = tf_forbidden.clone();
+        let token = props.token.to_string();
+        let base = net::api_base();
+        let on_logout = props.on_logout.clone();
+        use_effect_with((), move |()| {
+            tf_status.set(LoadStatus::Loading);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::list_transforms(&base, &token).await {
+                    Ok(rows) => {
+                        tf_forbidden.set(false);
+                        transforms.set(rows);
+                        tf_status.set(LoadStatus::Idle);
+                    }
+                    Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(net::FetchError::Forbidden) => {
+                        tf_forbidden.set(true);
+                        tf_status.set(LoadStatus::Idle);
+                    }
+                    Err(e) => tf_status.set(LoadStatus::Error(e.to_string())),
+                }
+            });
+            || ()
+        });
+    }
+
+    // Transforms editor options: load the dataset ("schema.name") + type name lists
+    // once on mount so the editor's input checkbox list has options to offer.
+    {
+        let tf_dataset_options = tf_dataset_options.clone();
+        let tf_type_options = tf_type_options.clone();
+        let token = props.token.to_string();
+        let base = net::api_base();
+        use_effect_with((), move |()| {
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(datasets) = net::fetch_datasets(&base, &token).await {
+                    let opts: Vec<String> = datasets
+                        .iter()
+                        .map(|d| format!("{}.{}", d.schema, d.name))
+                        .collect();
+                    tf_dataset_options.set(opts);
+                }
+                if let Ok(types) = net::fetch_types(&base, &token).await {
+                    tf_type_options.set(types);
+                }
+            });
+            || ()
+        });
+    }
+
+    // On transform row-select: reset the drawer + clear the previous def/runs/editor,
+    // then load the selected transform's definition. Guarded by `tf_def_gen` so a
+    // stale in-flight fetch never overwrites a newer selection's def.
+    {
+        let tf_def = tf_def.clone();
+        let tf_drawer_tab = tf_drawer_tab.clone();
+        let tf_editing = tf_editing.clone();
+        let tf_edit_name = tf_edit_name.clone();
+        let tf_runs = tf_runs.clone();
+        let transforms = transforms.clone();
+        let tf_def_gen = tf_def_gen.clone();
+        let token = props.token.to_string();
+        let base = net::api_base();
+        let on_logout = props.on_logout.clone();
+        let selected = *tf_selected;
+        use_effect_with(selected, move |selected| {
+            *tf_def_gen.borrow_mut() += 1;
+            let my_gen = *tf_def_gen.borrow();
+            tf_def.set(None);
+            tf_editing.set(None);
+            tf_edit_name.set(None);
+            tf_runs.set(Vec::new()); // force the runs tab to refetch for the new selection
+            tf_drawer_tab.set(AttrValue::from("definition"));
+            if let Some(idx) = *selected
+                && let Some(row) = transforms.get(idx)
+            {
+                let name = row.name.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match net::get_transform(&base, &token, &name).await {
+                        Ok(def) => {
+                            if *tf_def_gen.borrow() == my_gen {
+                                tf_def.set(Some(def));
+                            }
+                        }
+                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                        Err(_) => {
+                            if *tf_def_gen.borrow() == my_gen {
+                                tf_def.set(None);
+                            }
+                        }
+                    }
+                });
+            }
+            || ()
+        });
+    }
+
+    // Lazy runs fetch: only when the Runs tab is active for the selected transform and
+    // no runs are loaded yet (the row-select effect clears `tf_runs`). Keyed on
+    // (selection, active tab); guarded by its own `tf_runs_gen`.
+    {
+        let tf_runs = tf_runs.clone();
+        let tf_runs_status = tf_runs_status.clone();
+        let transforms = transforms.clone();
+        let tf_runs_gen = tf_runs_gen.clone();
+        let token = props.token.to_string();
+        let base = net::api_base();
+        let on_logout = props.on_logout.clone();
+        let already_loaded = !tf_runs.is_empty();
+        let dep = (*tf_selected, (*tf_drawer_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "runs" || already_loaded {
+                return;
+            }
+            let Some(name) = sel.and_then(|i| transforms.get(i).map(|r| r.name.clone())) else {
+                return;
+            };
+            *tf_runs_gen.borrow_mut() += 1;
+            let my_gen = *tf_runs_gen.borrow();
+            tf_runs_status.set(LoadStatus::Loading);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::list_runs(&base, &token, &name).await {
+                    Ok(rows) => {
+                        if *tf_runs_gen.borrow() == my_gen {
+                            tf_runs.set(rows);
+                            tf_runs_status.set(LoadStatus::Idle);
+                        }
+                    }
+                    Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(e) => {
+                        if *tf_runs_gen.borrow() == my_gen {
+                            tf_runs_status.set(LoadStatus::Error(e.to_string()));
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    // Input-scoped completion schema: while the editor is open, key on the form's
+    // sorted (kind, inputs) fingerprint and rebuild the schema from those inputs'
+    // dataset/type details. Guarded by `tf_schema_gen`; the SqlEditor remounts on the
+    // same fingerprint `key`, so the fresh schema takes effect.
+    {
+        let tf_schema = tf_schema.clone();
+        let tf_editing = tf_editing.clone();
+        let tf_schema_gen = tf_schema_gen.clone();
+        let token = props.token.to_string();
+        let base = net::api_base();
+        let fp = tf_editing.as_ref().map(|f| {
+            (f.kind, {
+                let mut xs = f.inputs.clone();
+                xs.sort();
+                xs
+            })
+        });
+        use_effect_with(fp, move |fp| {
+            if let Some((kind, inputs)) = fp.clone() {
+                *tf_schema_gen.borrow_mut() += 1;
+                let my_gen = *tf_schema_gen.borrow();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let schema = build_input_schema(&base, &token, kind, &inputs).await;
+                    if *tf_schema_gen.borrow() == my_gen {
+                        tf_schema.set(schema);
+                    }
+                });
+            }
+            || ()
+        });
+    }
+
     let on_switch = {
         let surface = surface.clone();
         Callback::from(move |s: Surface| surface.set(s))
@@ -405,6 +610,233 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     }
                 })
                 .unwrap_or_default();
+            (list, drawer)
+        }
+        Surface::Transforms => {
+            let on_row = {
+                let s = tf_selected.clone();
+                Callback::from(move |i| s.set(Some(i)))
+            };
+            let on_new = {
+                let editing = tf_editing.clone();
+                let edit_name = tf_edit_name.clone();
+                let selected = tf_selected.clone();
+                let errors = tf_errors.clone();
+                let server_error = tf_server_error.clone();
+                Callback::from(move |()| {
+                    selected.set(None);
+                    edit_name.set(None); // New, not Edit
+                    errors.set(Vec::new());
+                    server_error.set(None);
+                    editing.set(Some(TransformForm::default()));
+                })
+            };
+            let list = html! {
+                <TransformsList rows={(*transforms).clone()} status={(*tf_status).clone()}
+                    selected={*tf_selected} on_row={on_row} on_new={on_new} forbidden={*tf_forbidden} />
+            };
+            // Reusable "refetch the list into state" async closure builder.
+            let reload_list = {
+                let transforms = transforms.clone();
+                let tf_status = tf_status.clone();
+                let on_logout = props.on_logout.clone();
+                let token = props.token.to_string();
+                let base = net::api_base();
+                move || {
+                    let (transforms, tf_status, on_logout) =
+                        (transforms.clone(), tf_status.clone(), on_logout.clone());
+                    let (token, base) = (token.clone(), base.clone());
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match net::list_transforms(&base, &token).await {
+                            Ok(rows) => {
+                                transforms.set(rows);
+                                tf_status.set(LoadStatus::Idle);
+                            }
+                            Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                            Err(e) => tf_status.set(LoadStatus::Error(e.to_string())),
+                        }
+                    });
+                }
+            };
+            let drawer = if let Some(form) = (*tf_editing).clone() {
+                let on_change = {
+                    let e = tf_editing.clone();
+                    Callback::from(move |f| e.set(Some(f)))
+                };
+                let editing = tf_edit_name.is_some();
+                // Define (or redefine): validate client-side, POST, then close + refetch list.
+                let on_submit = {
+                    let form = form.clone();
+                    let editing_state = tf_editing.clone();
+                    let errors = tf_errors.clone();
+                    let server_error = tf_server_error.clone();
+                    let on_logout = props.on_logout.clone();
+                    let token = props.token.to_string();
+                    let base = net::api_base();
+                    let reload_list = reload_list.clone();
+                    Callback::from(move |()| {
+                        errors.set(Vec::new());
+                        server_error.set(None);
+                        match form_to_def(&form) {
+                            Err(errs) => errors.set(errs),
+                            Ok(def_json) => {
+                                let (editing_state, server_error, on_logout) = (
+                                    editing_state.clone(),
+                                    server_error.clone(),
+                                    on_logout.clone(),
+                                );
+                                let (token, base) = (token.clone(), base.clone());
+                                let reload_list = reload_list.clone();
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match net::define_transform(&base, &token, &def_json).await {
+                                        Ok(()) => {
+                                            editing_state.set(None);
+                                            reload_list();
+                                        }
+                                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                                        Err(e) => {
+                                            server_error.set(Some(AttrValue::from(e.to_string())))
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    })
+                };
+                // Ad-hoc run: validate the body, POST, close the editor (result shows in Runs on reselect).
+                let on_run_adhoc = {
+                    let form = form.clone();
+                    let editing_state = tf_editing.clone();
+                    let errors = tf_errors.clone();
+                    let server_error = tf_server_error.clone();
+                    let on_logout = props.on_logout.clone();
+                    let token = props.token.to_string();
+                    let base = net::api_base();
+                    Callback::from(move |()| {
+                        errors.set(Vec::new());
+                        server_error.set(None);
+                        match form_to_body(&form) {
+                            Err(errs) => errors.set(errs),
+                            Ok(body_json) => {
+                                let (editing_state, server_error, on_logout) = (
+                                    editing_state.clone(),
+                                    server_error.clone(),
+                                    on_logout.clone(),
+                                );
+                                let (token, base) = (token.clone(), base.clone());
+                                wasm_bindgen_futures::spawn_local(async move {
+                                    match net::run_adhoc(&base, &token, &body_json).await {
+                                        Ok(_run_id) => editing_state.set(None),
+                                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                                        Err(e) => {
+                                            server_error.set(Some(AttrValue::from(e.to_string())))
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                    })
+                };
+                let on_cancel = {
+                    let e = tf_editing.clone();
+                    Callback::from(move |()| e.set(None))
+                };
+                html! {
+                    <TransformEditor form={form} schema={(*tf_schema).clone()}
+                        editing={editing}
+                        dataset_options={(*tf_dataset_options).clone()}
+                        type_options={(*tf_type_options).clone()}
+                        errors={(*tf_errors).clone()} server_error={(*tf_server_error).clone()}
+                        on_change={on_change} on_submit={on_submit}
+                        on_run_adhoc={on_run_adhoc} on_cancel={on_cancel} />
+                }
+            } else if let Some(def) = (*tf_def).clone() {
+                let on_tab = {
+                    let t = tf_drawer_tab.clone();
+                    Callback::from(move |id| t.set(id))
+                };
+                // Edit: seed the form from the def, record the edit target name.
+                let on_edit = {
+                    let editing = tf_editing.clone();
+                    let edit_name = tf_edit_name.clone();
+                    let errors = tf_errors.clone();
+                    let server_error = tf_server_error.clone();
+                    let def = def.clone();
+                    Callback::from(move |()| {
+                        errors.set(Vec::new());
+                        server_error.set(None);
+                        edit_name.set(Some(def.name.clone()));
+                        editing.set(Some(form_from_def(&def)));
+                    })
+                };
+                // Run saved now → refetch runs (clear tf_runs so the runs effect refires) + open Runs tab.
+                let on_run = {
+                    let name = def.name.clone();
+                    let tf_runs = tf_runs.clone();
+                    let tf_drawer_tab = tf_drawer_tab.clone();
+                    let on_logout = props.on_logout.clone();
+                    let token = props.token.to_string();
+                    let base = net::api_base();
+                    Callback::from(move |()| {
+                        let (name, tf_runs, tf_drawer_tab, on_logout) = (
+                            name.clone(),
+                            tf_runs.clone(),
+                            tf_drawer_tab.clone(),
+                            on_logout.clone(),
+                        );
+                        let (token, base) = (token.clone(), base.clone());
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match net::run_transform(&base, &token, &name).await {
+                                Ok(_run_id) => {
+                                    tf_runs.set(Vec::new());
+                                    tf_drawer_tab.set(AttrValue::from("runs"));
+                                }
+                                Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                                Err(_e) => tf_drawer_tab.set(AttrValue::from("runs")),
+                            }
+                        });
+                    })
+                };
+                // Delete → clear selection + refetch list.
+                let on_delete = {
+                    let name = def.name.clone();
+                    let tf_selected = tf_selected.clone();
+                    let tf_def = tf_def.clone();
+                    let on_logout = props.on_logout.clone();
+                    let token = props.token.to_string();
+                    let base = net::api_base();
+                    let reload_list = reload_list.clone();
+                    Callback::from(move |()| {
+                        let (name, tf_selected, tf_def, on_logout) = (
+                            name.clone(),
+                            tf_selected.clone(),
+                            tf_def.clone(),
+                            on_logout.clone(),
+                        );
+                        let (token, base) = (token.clone(), base.clone());
+                        let reload_list = reload_list.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match net::delete_transform(&base, &token, &name).await {
+                                Ok(()) => {
+                                    tf_selected.set(None);
+                                    tf_def.set(None);
+                                    reload_list();
+                                }
+                                Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                                Err(_e) => {}
+                            }
+                        });
+                    })
+                };
+                html! {
+                    <TransformDrawer def={def} active_tab={(*tf_drawer_tab).clone()}
+                        on_tab={on_tab}
+                        runs={(*tf_runs).clone()} runs_status={(*tf_runs_status).clone()}
+                        on_edit={on_edit} on_run={on_run} on_delete={on_delete} />
+                }
+            } else {
+                Html::default()
+            };
             (list, drawer)
         }
         other => (html! { <StubView surface={other} /> }, Html::default()),
@@ -639,6 +1071,71 @@ fn login(props: &LoginProps) -> Html {
                 </div>
             </div>
         </>
+    }
+}
+
+/// Invert `parse_transform_def` for the Edit path: seed a `TransformForm` from a
+/// loaded definition. Physical inputs/output round-trip through `"schema.name"`.
+fn form_from_def(def: &TransformDefView) -> TransformForm {
+    let (kind, inputs, output) = match &def.body.io {
+        TransformIo::Physical { inputs, output } => (
+            TransformKind::Physical,
+            inputs
+                .iter()
+                .map(|t| format!("{}.{}", t.schema, t.name))
+                .collect(),
+            format!("{}.{}", output.schema, output.name),
+        ),
+        TransformIo::Typed { inputs, output } => {
+            (TransformKind::Typed, inputs.clone(), output.clone())
+        }
+    };
+    TransformForm {
+        kind,
+        name: def.name.clone(),
+        inputs,
+        output,
+        sql: def.body.sql.clone(),
+        schedule: def.schedule.clone().unwrap_or_default(),
+        on_input_commit: def.on_input_commit,
+        output_mode: def.body.output_mode,
+    }
+}
+
+/// Fetch each input's schema and assemble the input-scoped SQL completion schema.
+/// Best-effort: an input that fails to load is simply omitted from completions.
+async fn build_input_schema(
+    base: &str,
+    token: &str,
+    kind: TransformKind,
+    inputs: &[String],
+) -> CompletionSchema {
+    match kind {
+        TransformKind::Physical => {
+            let mut pairs = Vec::new();
+            for input in inputs {
+                let (schema, name) = input.split_once('.').unwrap_or(("", input.as_str()));
+                if let Ok(detail) = net::fetch_dataset_detail(base, token, schema, name).await {
+                    pairs.push((
+                        TableRef {
+                            schema: schema.to_string(),
+                            name: name.to_string(),
+                        },
+                        detail,
+                    ));
+                }
+            }
+            schema_from_dataset_details(&pairs)
+        }
+        TransformKind::Typed => {
+            let mut pairs = Vec::new();
+            for ty in inputs {
+                if let Ok(detail) = net::fetch_type_detail(base, token, ty).await {
+                    pairs.push((ty.clone(), detail));
+                }
+            }
+            schema_from_types(&pairs)
+        }
     }
 }
 

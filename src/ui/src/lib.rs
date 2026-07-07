@@ -9,6 +9,14 @@ pub use completion::{
     cursor_context, sql_completions,
 };
 
+mod transforms;
+pub use transforms::{
+    FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformForm,
+    TransformIo, TransformKind, TransformSummary, clamp_drawer_width, form_to_body, form_to_def,
+    kind_badge_label, parse_runs, parse_transform_def, parse_transform_list, run_state_status,
+    run_state_tone, schema_from_dataset_details, schema_from_types, trigger_label,
+};
+
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
 /// can't be read as `var(--loom-*)`. The `:root` custom properties in
 /// `components/global.rs` and the Monaco editor theme in `components/sql_editor.rs`
@@ -264,7 +272,7 @@ pub fn cell_to_string(v: &Value) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
     Catalog,
-    Pipelines,
+    Transforms,
     Ontology,
     Workbooks,
     Dashboards,
@@ -276,7 +284,7 @@ impl Surface {
     pub fn all() -> [Surface; 5] {
         [
             Surface::Catalog,
-            Surface::Pipelines,
+            Surface::Transforms,
             Surface::Ontology,
             Surface::Workbooks,
             Surface::Dashboards,
@@ -288,7 +296,7 @@ impl Surface {
     pub fn label(self) -> &'static str {
         match self {
             Surface::Catalog => "Catalog",
-            Surface::Pipelines => "Pipelines",
+            Surface::Transforms => "Transforms",
             Surface::Ontology => "Ontology",
             Surface::Workbooks => "Workbooks",
             Surface::Dashboards => "Dashboards",
@@ -300,7 +308,7 @@ impl Surface {
     pub fn accent(self) -> &'static str {
         match self {
             Surface::Catalog => "#3b82f6",
-            Surface::Pipelines => "#2bb0a0",
+            Surface::Transforms => "#2bb0a0",
             Surface::Ontology => "#8b5cf6",
             Surface::Workbooks => "#2da44e",
             Surface::Dashboards => "#d29922",
@@ -310,7 +318,10 @@ impl Surface {
     /// Whether the backend can serve this surface (else the shell shows a stub).
     #[must_use]
     pub fn is_live(self) -> bool {
-        matches!(self, Surface::Catalog | Surface::Ontology)
+        matches!(
+            self,
+            Surface::Catalog | Surface::Ontology | Surface::Transforms
+        )
     }
 }
 
@@ -345,7 +356,7 @@ pub struct TypeDetail {
     pub identity: Option<String>,
 }
 
-fn str_field(v: &Value, k: &str) -> String {
+pub(crate) fn str_field(v: &Value, k: &str) -> String {
     v.get(k)
         .and_then(Value::as_str)
         .unwrap_or_default()
