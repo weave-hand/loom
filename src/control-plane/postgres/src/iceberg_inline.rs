@@ -297,16 +297,20 @@ fn inline_ddl(table_id: i64, columns: &[ColumnSpec]) -> Result<String> {
 }
 
 /// True if `e` is a Postgres "object already exists" race on concurrent DDL:
-/// `duplicate_table` (42P07), `duplicate_column` (42701), or a `unique_violation`
+/// `duplicate_table` (42P07), `duplicate_column` (42701), `duplicate_object`
+/// (42710 — the implicit row-type a `CREATE TABLE` creates alongside the
+/// relation, reported as `type "<name>" already exists`), or a `unique_violation`
 /// (23505) on the system catalog when two sessions create the same relation at
 /// once. `CREATE TABLE IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS` are NOT
 /// concurrency-safe in Postgres — the existence check and the catalog insert are
 /// not atomic against a concurrent creator — so this is a benign lost race: the
-/// object now exists.
+/// object now exists. All four codes are the same race surfacing at whichever
+/// catalog layer the loser happens to collide on first (relation, column, row
+/// type, or the backing unique index).
 fn is_duplicate_object_race(e: &sqlx::Error) -> bool {
     e.as_database_error()
         .and_then(|db| db.code())
-        .is_some_and(|code| matches!(code.as_ref(), "42P07" | "42701" | "23505"))
+        .is_some_and(|code| matches!(code.as_ref(), "42P07" | "42701" | "42710" | "23505"))
 }
 
 /// Execute one idempotent `IF NOT EXISTS` DDL statement, tolerating Postgres's
