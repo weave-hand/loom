@@ -333,8 +333,11 @@ loom_fixture_test(
     deps = [
         "//src/testing:seed",
         ":postgres",
+        "//src/control-plane/core:core",
         "//src/control-plane/testkit:testkit",
+        "//third-party:sqlx",
         "//third-party:tempfile",
+        "//third-party:time",
         "//third-party:tokio",
     ],
 )
