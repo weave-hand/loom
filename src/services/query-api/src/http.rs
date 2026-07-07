@@ -991,7 +991,7 @@ async fn graph_tree_respond(
     params(("action_name" = String, Path, description = "Ontology action id")),
     request_body = serde_json::Value,
     responses(
-        (status = 201, description = "Action applied; created/affected object"),
+        (status = 201, description = "Action applied. Single-step actions return the bare created/affected object; multi-step actions return an ordered `steps` envelope (one entry per step, labelled by bind + target)", body = crate::openapi::ActionStepsBody),
         (status = 400, description = "Malformed or undecodable request body (not a JSON action envelope)"),
         (status = 403, description = "Write denied by ACL policy", body = WriteDeniedBody),
         (status = 404, description = "Unknown action"),

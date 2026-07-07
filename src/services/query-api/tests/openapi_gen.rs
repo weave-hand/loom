@@ -412,10 +412,10 @@ fn multi_step_action_documents_union_schema_and_all_target_tags() {
     assert!(schema["properties"]["name"].is_object());
     assert!(schema["properties"]["total"].is_object());
     assert_eq!(schema["required"], serde_json::json!(["name", "total"]));
-    // 2xx body is the PRIMARY step's object; summary narrates the steps.
+    // 2xx body is the `{steps:[...]}` envelope, not the primary step's bare object.
     assert_eq!(
         op["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
-        serde_json::json!("#/components/schemas/Customer")
+        serde_json::json!("#/components/schemas/ActionStepsBody")
     );
     assert_eq!(
         op["summary"],

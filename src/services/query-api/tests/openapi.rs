@@ -113,6 +113,20 @@ fn documents_exactly_the_expected_routes() {
 }
 
 #[test]
+fn documents_action_steps_envelope() {
+    let doc = query_api::build_openapi();
+    let schemas = &doc.components.as_ref().expect("components").schemas;
+    assert!(
+        schemas.contains_key("ActionStepsBody"),
+        "ActionStepsBody schema registered"
+    );
+    assert!(
+        schemas.contains_key("ActionStepResult"),
+        "ActionStepResult schema registered"
+    );
+}
+
+#[test]
 fn post_action_documents_422_and_400() {
     let doc = query_api::build_openapi();
     let json = serde_json::to_value(&doc).unwrap();
