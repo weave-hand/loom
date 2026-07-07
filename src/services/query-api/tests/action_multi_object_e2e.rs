@@ -175,7 +175,7 @@ async fn order_with_lines_round_trips_with_cross_step_fk_and_one_run() {
     };
 
     let body = json!({ "oid": "500", "li1": "1", "li2": "2" });
-    let (outcome, run_id) = run_action(
+    let (outcome, run_id, _kind) = run_action(
         "createOrderWithLines",
         body.as_object().unwrap(),
         &subj,
@@ -567,7 +567,7 @@ async fn mixed_insert_and_update_commit_atomically() {
     assert_eq!(seeded[0]["status"], json!("pending"), "seed status");
 
     // Run the mixed-kind action: insert LineItem 7, update Order 1 → status "shipped".
-    let (_rows, run_id) = run_action(
+    let (_rows, run_id, _kind) = run_action(
         "fulfillOrder",
         json!({ "liId": "7", "liOrderId": "1", "ordId": "1", "status": "shipped" })
             .as_object()
@@ -710,7 +710,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
     );
 
     // Insert LineItem 9 + delete the only Order in one atomic action.
-    let (_rows, run_id) = run_action(
+    let (_rows, run_id, _kind) = run_action(
         "closeOrder",
         json!({ "liId": "9", "liOrderId": "1", "ordId": "1" })
             .as_object()

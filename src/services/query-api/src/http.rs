@@ -22,8 +22,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{
-    ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, LinkDef, NewJob, PageReq,
-    RunId, TableRef, TypeName,
+    ActionKind, ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, LinkDef, NewJob,
+    PageReq, RunId, TableRef, TypeName,
 };
 use lineage_naming::LineageNaming;
 use service_runtime::Subject;
@@ -1016,7 +1016,7 @@ async fn post_action(
         serving: st.serving.as_ref(),
     };
     match crate::action::run_action(&action_name, &obj, &subject.0, &deps).await {
-        Ok((outcome, run_id)) => {
+        Ok((outcome, run_id, kind)) => {
             let body = match outcome {
                 crate::action::ActionOutcome::Single(rows) => {
                     // Byte-compatible single-object response: the bare affected object.
@@ -1041,9 +1041,16 @@ async fn post_action(
                     serde_json::json!({ "steps": steps_json })
                 }
             };
+            // Kind-true status: Insert mints a new row (201 Created); Update/Delete mutate or
+            // remove an existing one (200 OK). Multi-step actions take their primary kind from
+            // the first declared step (see `run_multi_step`).
+            let status = match kind {
+                ActionKind::Insert => StatusCode::CREATED,
+                ActionKind::Update | ActionKind::Delete => StatusCode::OK,
+            };
             // Surface the action's run_id so a caller can locate its lineage via
             // Lineage::events_for. The single-step body is unchanged (non-invasive).
-            let mut resp = (StatusCode::CREATED, Json(body)).into_response();
+            let mut resp = (status, Json(body)).into_response();
             if let Ok(v) = axum::http::HeaderValue::from_str(&run_id.0.to_string()) {
                 resp.headers_mut().insert("X-Loom-Run-Id", v);
             }
