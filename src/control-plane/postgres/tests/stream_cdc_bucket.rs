@@ -114,7 +114,11 @@ async fn cdc_identity_stays_in_one_bucket_across_appends() {
         .filter(|(id, _, _)| *id == 1)
         .map(|(_, b, _)| *b)
         .collect();
-    assert_eq!(id1_buckets.len(), 2, "id=1 appears in both appends: {rows:?}");
+    assert_eq!(
+        id1_buckets.len(),
+        2,
+        "id=1 appears in both appends: {rows:?}"
+    );
     assert_eq!(
         id1_buckets[0], id1_buckets[1],
         "id=1's two rows (from separate appends) must share the SAME bucket \
