@@ -40,6 +40,12 @@ pub struct EngineTuning {
     /// How often the scheduler loop claims due transform schedules
     /// (`LOOM_SCHEDULER_TICK_SECS`, default 5).
     pub scheduler_tick: Duration,
+    /// How often the reconciliation loop sweeps stranded runs
+    /// (`LOOM_RECONCILE_TICK_SECS`, default 60).
+    pub reconcile_tick: Duration,
+    /// Minimum age of a `Running` run before it is eligible for reconciliation
+    /// (`LOOM_RECONCILE_GRACE_SECS`, default 120).
+    pub reconcile_grace: Duration,
 }
 
 impl EngineTuning {
@@ -61,6 +67,16 @@ impl EngineTuning {
                 vars,
                 "LOOM_SCHEDULER_TICK_SECS",
                 5_u64,
+            )?),
+            reconcile_tick: Duration::from_secs(service_runtime::parse_var(
+                vars,
+                "LOOM_RECONCILE_TICK_SECS",
+                60_u64,
+            )?),
+            reconcile_grace: Duration::from_secs(service_runtime::parse_var(
+                vars,
+                "LOOM_RECONCILE_GRACE_SECS",
+                120_u64,
             )?),
         })
     }
@@ -117,11 +133,21 @@ pub async fn run(
     // The send fails only if the receiver dropped (e.g. throwaway in main.rs), which is fine.
     let _sent = ready.send(());
 
+    let reconcile_cp = sched_cp.clone();
+
     let sched_cancel = CancellationToken::new();
     let sched = tokio::spawn(scheduler::scheduler_loop(
         sched_cp,
         tuning.scheduler_tick,
         sched_cancel.clone(),
+    ));
+
+    let reconcile_cancel = CancellationToken::new();
+    let reconcile = tokio::spawn(scheduler::reconcile_loop(
+        reconcile_cp,
+        tuning.reconcile_tick,
+        tuning.reconcile_grace,
+        reconcile_cancel.clone(),
     ));
 
     Server::builder()
@@ -135,5 +161,7 @@ pub async fn run(
     // exiting either way.
     sched_cancel.cancel();
     drop(sched.await);
+    reconcile_cancel.cancel();
+    drop(reconcile.await);
     Ok(())
 }

@@ -39,16 +39,7 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
     let parsed: TransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad transform payload: {e}")))?;
     let run_id = parsed.run_id;
-    if let Some(rid) = run_id {
-        // Failure to reach the engine is retryable — the run record stays
-        // Queued and the retry re-marks it.
-        ctx.control.mark_run_running(rid).await.map_err(|e| {
-            JobFailure::retry(
-                ctx.worker_tuning.backoff(attempts),
-                format!("mark_run_running: {e}"),
-            )
-        })?;
-    }
+    mark_running_if_tracked(ctx, run_id, attempts).await?;
     let inputs: Vec<(String, TableRef)> = parsed
         .inputs
         .iter()
@@ -80,11 +71,10 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
     result
 }
 
-/// Run one `"typed-transform"` job: SQL over ontology-type-named inputs. Each input
-/// TYPE resolves to its backing table (registered under the TYPE name, so the SQL is
-/// written in type terms) and the result must conform exactly to the output type's
-/// properties before anything is written or committed. Lineage is TYPE-named
-/// (`loom:type` dataset refs) with the physical tables retained in the payload.
+/// Run one `"typed-transform"` job: SQL over ontology-type-named inputs. Thin
+/// lifecycle wrapper: parse → mark the run Running via `mark_running_if_tracked`
+/// → run the typed funnel (input resolution, conformance-gated write, commit) →
+/// on failure, best-effort report it against the run.
 pub async fn handle_typed_transform(
     ctx: &TransformCtx,
     job: Job,
@@ -93,9 +83,21 @@ pub async fn handle_typed_transform(
     let parsed: TypedTransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad typed-transform payload: {e}")))?;
     let run_id = parsed.run_id;
+    mark_running_if_tracked(ctx, run_id, attempts).await?;
+    let result = handle_typed_transform_inner(ctx, attempts, &parsed).await;
+    report_run_failure(ctx, run_id, &result).await;
+    result
+}
+
+/// Mark a tracked run `Running` before execution. A failure to reach the engine
+/// is retryable — the run record stays `Queued` and the retry re-marks it. A
+/// no-op when the job carries no `run_id` (ad-hoc).
+async fn mark_running_if_tracked(
+    ctx: &TransformCtx,
+    run_id: Option<uuid::Uuid>,
+    attempts: i32,
+) -> std::result::Result<(), JobFailure> {
     if let Some(rid) = run_id {
-        // Failure to reach the engine is retryable — the run record stays
-        // Queued and the retry re-marks it.
         ctx.control.mark_run_running(rid).await.map_err(|e| {
             JobFailure::retry(
                 ctx.worker_tuning.backoff(attempts),
@@ -103,16 +105,13 @@ pub async fn handle_typed_transform(
             )
         })?;
     }
-    let result = handle_typed_transform_inner(ctx, attempts, &parsed, run_id).await;
-    report_run_failure(ctx, run_id, &result).await;
-    result
+    Ok(())
 }
 
 async fn handle_typed_transform_inner(
     ctx: &TransformCtx,
     attempts: i32,
     parsed: &TypedTransformJob,
-    run_id: Option<uuid::Uuid>,
 ) -> std::result::Result<(), JobFailure> {
     // Resolve inputs: NotFound is deterministic (Abandon), other errors transient (Retry).
     let mut inputs = Vec::new();
@@ -148,7 +147,7 @@ async fn handle_typed_transform_inner(
             ),
         })?;
     let lineage = LineageEvent {
-        run_id: RunId(run_id.unwrap_or_else(uuid::Uuid::new_v4)),
+        run_id: RunId(parsed.run_id.unwrap_or_else(uuid::Uuid::new_v4)),
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
         inputs: input_types.iter().map(DatasetRef::from).collect(),
@@ -172,7 +171,7 @@ async fn handle_typed_transform_inner(
             conform: Some(&out_type.properties),
             output_mode: parsed.output_mode,
             lineage,
-            run_id,
+            run_id: parsed.run_id,
         },
     )
     .await

@@ -1463,6 +1463,23 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "missing property rejected"
     );
 
+    // unknown type -> NotFound (not Validation): the type, not the property,
+    // is what is missing. Pins postgres to the memory adapter's answer.
+    let unknown_type = VectorIndexDef {
+        name: "bad3".into(),
+        type_name: tn("Ghost"), // never defined in this contract
+        property: "embedding".into(),
+        metric: Metric::Cosine,
+        spec: IndexSpec::Flat,
+    };
+    assert!(
+        matches!(
+            o.define_vector_index(unknown_type).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "unknown type is NotFound, not Validation"
+    );
+
     // --- delete_link: gone from reads, idempotent, re-definable ---
     // Uses the `customer` link (Order -> Customer) defined above; fetched before
     // deletion so the exact definition can be re-defined afterwards.
@@ -4528,6 +4545,128 @@ where
     assert_eq!(r.snapshot_id, Some(41));
     assert!(r.finished_at.is_some());
 
+    // --- reconcile_stranded_runs: a Running run whose queue job is no longer
+    // live (terminal-report lost) is swept to Failed("reporting lost") ---
+    let mk_run = |rid: uuid::Uuid| TransformRun {
+        run_id: rid,
+        transform: Some(TransformName("daily".into())),
+        trigger: RunTrigger::Manual,
+        state: RunState::Queued,
+        body: redefined.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    let future = || time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let past = || time::OffsetDateTime::now_utc() - time::Duration::hours(1);
+
+    // (1) Stranded -> Failed: dequeued, marked running, then job abandoned
+    // (terminal) with the run never finished.
+    let s_rid = uuid::Uuid::new_v4();
+    let s_job = redefined.body.to_job(s_rid);
+    let s_kinds = vec![s_job.kind.clone()];
+    cp.submit_run(mk_run(s_rid), s_job).await.unwrap();
+    let s_dq = cp
+        .queue()
+        .dequeue(&s_kinds, "w")
+        .await
+        .unwrap()
+        .expect("s job");
+    cp.mark_run_running(s_rid).await.unwrap();
+    cp.queue()
+        .fail(s_dq.id, "boom", RetryPolicy::Abandon)
+        .await
+        .unwrap();
+    let swept = cp.reconcile_stranded_runs(future()).await.unwrap();
+    assert!(swept.contains(&s_rid), "stranded run is swept: {swept:?}");
+    let r = cp.get_run(s_rid).await.unwrap();
+    assert_eq!(r.state, RunState::Failed);
+    assert_eq!(r.error.as_deref(), Some("reporting lost"));
+    assert!(r.finished_at.is_some());
+
+    // (1b) Idempotent: a second sweep does not re-touch the now-Failed run.
+    assert!(
+        !cp.reconcile_stranded_runs(future())
+            .await
+            .unwrap()
+            .contains(&s_rid),
+        "already-Failed run is not re-swept"
+    );
+
+    // (2) Live in-flight (job 'running', not failed) is NOT swept.
+    let l_rid = uuid::Uuid::new_v4();
+    let l_job = redefined.body.to_job(l_rid);
+    let l_kinds = vec![l_job.kind.clone()];
+    cp.submit_run(mk_run(l_rid), l_job).await.unwrap();
+    let _l_dq = cp
+        .queue()
+        .dequeue(&l_kinds, "w")
+        .await
+        .unwrap()
+        .expect("l job");
+    cp.mark_run_running(l_rid).await.unwrap();
+    assert!(
+        !cp.reconcile_stranded_runs(future())
+            .await
+            .unwrap()
+            .contains(&l_rid),
+        "in-flight run is not swept"
+    );
+    assert_eq!(cp.get_run(l_rid).await.unwrap().state, RunState::Running);
+
+    // (4) Grace guard: a fresh Running run with a failed job is NOT swept when the
+    // cutoff predates started_at; a later cutoff catches it.
+    let g_rid = uuid::Uuid::new_v4();
+    let g_job = redefined.body.to_job(g_rid);
+    let g_kinds = vec![g_job.kind.clone()];
+    cp.submit_run(mk_run(g_rid), g_job).await.unwrap();
+    let g_dq = cp
+        .queue()
+        .dequeue(&g_kinds, "w")
+        .await
+        .unwrap()
+        .expect("g job");
+    cp.mark_run_running(g_rid).await.unwrap();
+    cp.queue()
+        .fail(g_dq.id, "boom", RetryPolicy::Abandon)
+        .await
+        .unwrap();
+    assert!(
+        !cp.reconcile_stranded_runs(past())
+            .await
+            .unwrap()
+            .contains(&g_rid),
+        "grace: a fresh run is not swept by an earlier cutoff"
+    );
+    assert_eq!(cp.get_run(g_rid).await.unwrap().state, RunState::Running);
+    assert!(
+        cp.reconcile_stranded_runs(future())
+            .await
+            .unwrap()
+            .contains(&g_rid),
+        "a later cutoff catches the stranded run"
+    );
+
+    // (3) Live available (job still 'available', self-heal case) is NOT swept.
+    // MUST run LAST: it deliberately leaves an un-dequeued 'available' job in the
+    // shared queue pool. All scenarios build jobs from `redefined.body` (one
+    // physical job kind), and dequeue returns the earliest available row — so an
+    // available job left dangling before a later scenario's dequeue would be
+    // returned in place of that scenario's own job. Keeping (3) last avoids it.
+    let a_rid = uuid::Uuid::new_v4();
+    let a_job = redefined.body.to_job(a_rid);
+    cp.submit_run(mk_run(a_rid), a_job).await.unwrap(); // job stays 'available'
+    cp.mark_run_running(a_rid).await.unwrap();
+    assert!(
+        !cp.reconcile_stranded_runs(future())
+            .await
+            .unwrap()
+            .contains(&a_rid),
+        "run with an available job is not swept"
+    );
+
     // a second, ad-hoc failed run; list newest-first + filter
     let rid2 = uuid::Uuid::new_v4();
     let run2 = TransformRun {
@@ -4559,13 +4698,18 @@ where
         Some(rid2),
         "newest first"
     );
-    assert_eq!(all.items.len(), 2);
+    // rid + the four reconcile-scenario runs (s_rid, l_rid, g_rid, a_rid) + rid2.
+    assert_eq!(all.items.len(), 6);
     let named = cp
         .list_runs(Some(&TransformName("daily".into())), PageReq::default())
         .await
         .unwrap();
-    assert_eq!(named.items.len(), 1);
-    assert_eq!(named.items[0].run_id, rid);
+    let named_ids: std::collections::HashSet<_> = named.items.iter().map(|r| r.run_id).collect();
+    assert_eq!(
+        named_ids,
+        [rid, s_rid, l_rid, g_rid, a_rid].into_iter().collect(),
+        "daily filter includes the original run plus the four reconcile-scenario runs"
+    );
 
     // unknown-id errors
     let nope = uuid::Uuid::new_v4();
@@ -4598,7 +4742,7 @@ where
         .list_runs(Some(&TransformName("daily".into())), PageReq::default())
         .await
         .unwrap();
-    assert_eq!(named.items.len(), 1, "runs survive definition deletion");
+    assert_eq!(named.items.len(), 5, "runs survive definition deletion");
 }
 
 /// A `DataFile` with representative stats, copying the full 7-field literal

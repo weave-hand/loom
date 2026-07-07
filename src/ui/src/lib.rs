@@ -33,6 +33,37 @@ pub fn url(base: &str, path: &str) -> String {
     )
 }
 
+/// A monotonic generation guard for selection-scoped async fetches in the
+/// `Workspace` Catalog drawer. The drawer bumps the generation whenever the
+/// selected dataset changes; each in-flight fetch captures the generation it was
+/// spawned under and commits its result only if the generation has not advanced
+/// since — so a fetch from a superseded selection cannot overwrite the current
+/// drawer body (whichever fetch resolves last would otherwise win).
+#[derive(Debug, Clone, Default)]
+pub struct FetchGeneration(u32);
+
+impl FetchGeneration {
+    /// The current generation.
+    #[must_use]
+    pub fn current(&self) -> u32 {
+        self.0
+    }
+
+    /// Advance to a new generation — call when the selection changes — and
+    /// return the new value for the freshly-spawned fetch to capture.
+    pub fn bump(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(1);
+        self.0
+    }
+
+    /// True if `captured` is still the current generation, i.e. the fetch that
+    /// captured it may commit its result; false if the selection has advanced.
+    #[must_use]
+    pub fn is_current(&self, captured: u32) -> bool {
+        self.0 == captured
+    }
+}
+
 /// Why a login attempt failed, mapped to user-facing text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthError {

@@ -195,8 +195,18 @@ once, with `snapshot_id` populated from the committed snapshot. Lifecycle
 methods carry no state-transition guards by design: the queue is
 at-least-once, so a retried job that already committed may legitimately
 re-mark a terminal run, and the record follows execution rather than gating
-it. Runs are listed newest-first (`queued_at` desc, `run_id` desc tiebreak),
-optionally filtered to one transform's history.
+it. Because the terminal `finish_run_failed` report is best-effort and
+non-masking (a reporting failure never overturns the queue's abandon
+decision), a *lost* terminal report could otherwise strand a run reading
+`Running` forever after its job has terminally `failed`. A **reconciliation
+sweep** closes that gap: the engine's `reconcile_loop` periodically calls
+`Transforms::reconcile_stranded_runs`, which marks `Failed("reporting lost")`
+every run still `Running` whose queue job is no longer live (neither
+`available` nor in-flight `running`) and whose `started_at` predates a grace
+cutoff — so a stranded run self-heals within a tick, while a genuinely
+in-flight or retrying run (its job still live) is left untouched (#392). Runs
+are listed newest-first (`queued_at` desc, `run_id` desc tiebreak), optionally
+filtered to one transform's history.
 
 ## Cron schedules
 
@@ -289,7 +299,14 @@ check ran).
 **Poison-body skip-and-warn.** A def body that fails to deserialize (a stale
 shape from before a breaking change, or manual corruption) is skipped with a
 `tracing::warn!` rather than failing the transaction — a single broken admin
-artifact must never fail unrelated ingest or transform commits.
+artifact must never fail unrelated ingest or transform commits. All three
+batch decoders behave identically: the commit-seam `pg_fire_data_triggers`
+(candidate scan + under-lock re-read), the `define_transform` trigger-cycle
+scan (an undecodable existing def is omitted from the edge set — it cannot
+fire, so it forms no live cycle), and `claim_due_schedules` (**advance-and-warn**:
+the poison row still gets its `next_run_at` advanced from its own `schedule`
+column so it leaves the due window and stops starving healthy schedules, but is
+not returned for execution until repaired).
 
 Tested by the cross-adapter `transform_data_trigger_contract` (testkit,
 covering both memory and postgres) plus cycle-rejection legs in

@@ -65,3 +65,30 @@ pub async fn scheduler_loop(cp: Arc<dyn ControlPlane>, every: Duration, cancel: 
         }
     }
 }
+
+/// Sweep stranded `Running` runs (a lost terminal report) every `every`, using
+/// `grace` as the minimum age before a run is eligible, until `cancel` fires.
+pub async fn reconcile_loop(
+    cp: Arc<dyn ControlPlane>,
+    every: Duration,
+    grace: Duration,
+    cancel: CancellationToken,
+) {
+    let mut interval = tokio::time::interval(every);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            _ = interval.tick() => {
+                let cutoff = OffsetDateTime::now_utc() - grace;
+                match cp.transforms().reconcile_stranded_runs(cutoff).await {
+                    Ok(ids) if !ids.is_empty() => {
+                        tracing::info!(reconciled = ids.len(), "reconcile: swept stranded runs");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!(error = %e, "reconcile: sweep failed"),
+                }
+            }
+        }
+    }
+}

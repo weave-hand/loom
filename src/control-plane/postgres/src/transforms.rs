@@ -309,10 +309,19 @@ impl Transforms for PgControlPlane {
             .fetch_all(&mut *tx)
             .await
             .map_err(backend)?;
-            let mut bodies: Vec<(TransformName, TransformBody)> = existing
-                .into_iter()
-                .map(|r| Ok((TransformName(r.name), de_body(r.body)?)))
-                .collect::<Result<_>>()?;
+            let mut bodies: Vec<(TransformName, TransformBody)> =
+                Vec::with_capacity(existing.len() + 1);
+            for r in existing {
+                match de_body(r.body) {
+                    Ok(b) => bodies.push((TransformName(r.name), b)),
+                    Err(e) => {
+                        tracing::warn!(transform = %r.name, error = %e,
+                            "trigger-cycle scan: undecodable body skipped");
+                    }
+                }
+            }
+            // The candidate being defined is always in-memory and decodable, so
+            // the def under construction is always validated against the cycle set.
             bodies.push((def.name.clone(), def.body.clone()));
             let types = pg_type_tables(&mut *tx, &bodies).await?;
             let nodes: Vec<TriggerNode> = bodies
@@ -448,6 +457,30 @@ impl Transforms for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn reconcile_stranded_runs(
+        &self,
+        running_since_before: OffsetDateTime,
+    ) -> Result<Vec<Uuid>> {
+        let rows = sqlx::query!(
+            "update transforms.run as r \
+                set state = 'failed', error = 'reporting lost', finished_at = now() \
+              where r.state = 'running' \
+                and r.started_at <= $1 \
+                and not exists ( \
+                  select 1 from queue.jobs j \
+                   where j.state in ('available', 'running') \
+                     and (j.payload->>'run_id')::uuid = r.run_id \
+                ) \
+            returning r.run_id",
+            running_since_before,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(backend)?;
+        Ok(rows.into_iter().map(|r| r.run_id).collect())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn get_run(&self, run_id: Uuid) -> Result<TransformRun> {
         let r = sqlx::query!(
             "select run_id, transform, trigger, state, body, queued_at, \
@@ -531,9 +564,32 @@ impl Transforms for PgControlPlane {
         .map_err(backend)?;
         let mut claimed = Vec::with_capacity(rows.len());
         for r in rows {
+            let body = match de_body(r.body) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(transform = %r.name, error = %e,
+                        "schedule claim: undecodable body skipped");
+                    // Advance next_run_at anyway (from the row's own `schedule`
+                    // column, no body needed) so the poison row leaves the due
+                    // window and stops starving healthy schedules; it is not
+                    // pushed to `claimed` because it cannot run until repaired.
+                    if let Some(expr) = r.schedule.as_deref() {
+                        let next = next_cron_occurrence(expr, now)?;
+                        sqlx::query!(
+                            "update transforms.transform set next_run_at = $2 where name = $1",
+                            r.name,
+                            next,
+                        )
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(backend)?;
+                    }
+                    continue;
+                }
+            };
             let def = TransformDef {
                 name: TransformName(r.name),
-                body: de_body(r.body)?,
+                body,
                 schedule: r.schedule,
                 on_input_commit: r.on_input_commit,
             };
