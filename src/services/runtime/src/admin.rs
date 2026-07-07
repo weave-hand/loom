@@ -510,8 +510,11 @@ struct DefineModelReq {
     table: TableReq,
     identity: Option<String>,
     properties: Vec<PropReq>,
-    /// Aggregate-over-link derived properties. Link existence is not validated
-    /// here (matches `define_type`; see iss-delete-link-derived-dangle).
+    /// Aggregate-over-link derived properties. Link *existence* is not validated
+    /// here (matches `define_type`; see iss-delete-link-derived-dangle) — but when
+    /// the link and its target type DO resolve, `define_type` now validates the
+    /// aggregate column against the target (a missing column, or a non-numeric
+    /// column under Sum/Avg, is a `Validation` error surfaced here as 400).
     #[serde(default)]
     derived: Vec<DerivedReq>,
 }

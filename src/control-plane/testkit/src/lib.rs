@@ -1348,6 +1348,121 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "redefine replaces derived"
     );
 
+    // --- Surface-2: define-time validation of a derived property's aggregate
+    // column against its link's target type (only when the link+target resolve).
+    // Concrete target + link so Surface-2 validation resolves (a local prop helper —
+    // no prop_* helper exists in this contract).
+    let prop = |name: &str, ty: &str| PropertyDef {
+        name: name.into(),
+        ty: ty.into(),
+        required: false,
+        constraints: control_plane_core::PropertyConstraints::default(),
+    };
+    o.define_type(ObjectType {
+        name: tn("Transaction"),
+        table: tref("main", "txn"),
+        identity: None,
+        properties: vec![
+            prop("id", "Long"),
+            prop("amount", "Double"),
+            prop("note", "String"),
+        ],
+        derived: vec![],
+    })
+    .await
+    .expect("define Transaction");
+    // define_link requires both endpoints to pre-exist; Account is defined above.
+    o.define_link(LinkDef {
+        name: "transactions".into(),
+        from: tn("Account"),
+        to: tn("Transaction"),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "account_id".into(),
+        },
+    })
+    .await
+    .expect("define transactions link");
+
+    // resolvable link + MISSING agg column → Validation.
+    let missing_col = o
+        .define_type(ObjectType {
+            name: tn("Account"),
+            table: tref("main", "account"),
+            identity: None,
+            properties: vec![prop("id", "Long")],
+            derived: vec![DerivedPropertyDef {
+                name: "x".into(),
+                ty: "Double".into(),
+                link: "transactions".into(),
+                agg: Aggregation::Sum("nope".into()),
+            }],
+        })
+        .await;
+    assert!(
+        matches!(
+            missing_col,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "missing agg column → Validation: {missing_col:?}"
+    );
+
+    // resolvable link + NON-NUMERIC agg column (note: String) under Sum → Validation.
+    let non_numeric = o
+        .define_type(ObjectType {
+            name: tn("Account"),
+            table: tref("main", "account"),
+            identity: None,
+            properties: vec![prop("id", "Long")],
+            derived: vec![DerivedPropertyDef {
+                name: "x".into(),
+                ty: "String".into(),
+                link: "transactions".into(),
+                agg: Aggregation::Sum("note".into()),
+            }],
+        })
+        .await;
+    assert!(
+        matches!(
+            non_numeric,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "Sum over non-numeric → Validation: {non_numeric:?}"
+    );
+
+    // valid Sum over a numeric column (amount: Double) → Ok.
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "balance".into(),
+            ty: "Double".into(),
+            link: "transactions".into(),
+            agg: Aggregation::Sum("amount".into()),
+        }],
+    })
+    .await
+    .expect("valid Sum over numeric column");
+
+    // unresolvable link (target link undefined) → Ok (deferred; read path still omits).
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "y".into(),
+            ty: "Double".into(),
+            link: "ghostlink".into(),
+            agg: Aggregation::Sum("whatever".into()),
+        }],
+    })
+    .await
+    .expect("unresolvable link defers validation");
+
     // --- vector index declarations -------------------------------------------
     let doc = ObjectType {
         name: tn("Document"),

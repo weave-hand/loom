@@ -55,6 +55,19 @@ impl Ontology for MemoryControlPlane {
                 .collect();
             validate_no_multi_def_trigger_cycle(&nodes)?;
         }
+        let mut targets: std::collections::HashMap<String, ObjectType> =
+            std::collections::HashMap::new();
+        for l in ont.links.iter().filter(|l| l.from == ty.name) {
+            let target = if l.to == ty.name {
+                ty.clone()
+            } else if let Some(t) = ont.types.get(&l.to.0) {
+                t.clone()
+            } else {
+                continue;
+            };
+            targets.insert(l.name.clone(), target);
+        }
+        control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
         let event = changed.then(|| control_plane_core::type_table_binding_event(&ty));
         ont.types.insert(ty.name.0.clone(), ty);
         if let Some(event) = event {

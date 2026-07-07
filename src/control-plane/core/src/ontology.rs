@@ -769,6 +769,49 @@ impl ActionDefBuilder {
     }
 }
 
+/// Validate each derived property's aggregate column against its link's target
+/// type, when the link+target are resolvable. `resolve_target(link_name)` returns
+/// the target `ObjectType` or `None` — an unresolvable link/target is SKIPPED
+/// (best-effort; the read path keeps guarding a missing link). A resolvable link
+/// whose `agg` column is absent, or is present but wrong-typed for the aggregation
+/// (`Sum`/`Avg` need numeric, `Min`/`Max` need ordered), is a `Validation` error.
+///
+/// `resolve_target` carries an explicit lifetime `'a` (rather than a fully
+/// elided `Fn(&str) -> Option<&ObjectType>`) because the elided form desugars
+/// to a higher-ranked bound (`for<'r> Fn(&'r str) -> Option<&'r ObjectType>`)
+/// that a closure returning a reference into a captured map (e.g.
+/// `|ln| targets.get(ln)`, where the output's lifetime comes from `targets`,
+/// not from `ln`) cannot satisfy — the borrow checker demands `targets: 'static`.
+/// Naming `'a` ties the output to the caller's own borrow instead.
+pub fn validate_derived_columns<'a>(
+    derived: &[DerivedPropertyDef],
+    resolve_target: impl Fn(&str) -> Option<&'a ObjectType>,
+) -> Result<()> {
+    for d in derived {
+        let Some(col) = d.agg.column() else { continue }; // Count: no column
+        let Some(target) = resolve_target(&d.link) else {
+            continue;
+        }; // unresolvable: skip (deferred)
+        let Some(prop) = target.properties.iter().find(|p| p.name == col) else {
+            return Err(ControlPlaneError::Validation(format!(
+                "derived `{}`: link `{}` target `{}` has no column `{col}`",
+                d.name, d.link, target.name.0
+            )));
+        };
+        if !d
+            .agg
+            .column_applicable(crate::logical_type::resolve_logical(&prop.ty))
+        {
+            return Err(ControlPlaneError::Validation(format!(
+                "derived `{}`: aggregation over column `{col}` (type `{}`) is not applicable \
+                 (Sum/Avg need a numeric column; Min/Max need an ordered column)",
+                d.name, prop.ty
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait Ontology {
     /// Create or replace an object type and its full (ordered) property list. Upsert.
