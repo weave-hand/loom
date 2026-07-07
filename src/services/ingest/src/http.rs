@@ -86,7 +86,9 @@ impl IntoResponse for ApiError {
 impl IngestError {
     /// Map a landing fault onto the HTTP surface: a conformance failure is the
     /// 422 body, an unsupported-column-type infer error is a 400 (client data),
-    /// and any backend fault is an opaque 500 logged with `context`.
+    /// a stream-mode declaration fault (`Conflict`/`Validation` from the control
+    /// plane) is a 400 with the message echoed as-is, and any other backend
+    /// fault is an opaque 500 logged with `context`.
     pub fn into_api(self, context: &'static str) -> ApiError {
         match self {
             IngestError::DoesNotConform(violations) => ApiError::Violations(violations),

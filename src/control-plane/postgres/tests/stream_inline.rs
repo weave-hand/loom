@@ -166,8 +166,12 @@ async fn tombstone_delta_is_minus_d() {
     .expect("tombstone delta");
 
     let tid = tid_of(&pool).await;
-    let (kind, _bucket, _offset) = framing_cols(&pool, tid, "id", 1).await;
+    let (kind, bucket, offset) = framing_cols(&pool, tid, "id", 1).await;
     assert_eq!(kind, "-D", "a tombstone delta stamps loom_change_kind = -D");
+    assert!(
+        bucket.is_none() && offset.is_none(),
+        "a delta row must never stamp bucket/offset: got bucket={bucket:?} offset={offset:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -217,8 +221,12 @@ async fn version_delta_is_plus_u() {
     .expect("version delta");
 
     let tid = tid_of(&pool).await;
-    let (kind, _bucket, _offset) = framing_cols(&pool, tid, "id", 1).await;
+    let (kind, bucket, offset) = framing_cols(&pool, tid, "id", 1).await;
     assert_eq!(kind, "+U", "a version delta stamps loom_change_kind = +U");
+    assert!(
+        bucket.is_none() && offset.is_none(),
+        "a delta row must never stamp bucket/offset: got bucket={bucket:?} offset={offset:?}"
+    );
 }
 
 /// Read back every live row's `(loom_bucket, loom_offset)` for `tid`, ordered by
@@ -340,4 +348,121 @@ async fn stream_append_rejects_non_positive_bucket_count() {
         matches!(err, Err(ControlPlaneError::Validation(_))),
         "bucket_count 0 must be rejected as Validation, not panic: got {err:?}"
     );
+}
+
+/// Concurrent first-declare of a brand-new table with DIFFERING bucket counts must
+/// not desync: exactly one writer's count wins and gets recorded in
+/// `stream.stream_table`, and the OTHER writer must fail rather than silently
+/// stamping rows against a bucket count the recorded table doesn't admit.
+///
+/// Both writers observe `stream_bucket_count == None` (the table is brand new), so
+/// both call `pg_declare_stream` — an `INSERT ... ON CONFLICT (table_id) DO NOTHING`.
+/// One of them wins the insert; the other's insert is a no-op. Without re-reading
+/// the stored count after the declare, the loser would proceed with its OWN
+/// requested count and stamp `loom_bucket = row % <its count>`, producing bucket
+/// values the committed `stream_table.bucket_count` (the winner's count) does not
+/// admit — the desync this test guards against. The fix re-reads the recorded
+/// count post-declare and returns `Conflict` if it disagrees with the request.
+///
+/// Under this specific brand-new-table race, the two writers ALSO race
+/// `ensure_table`'s creation of the `iceberg_mirror.table` row itself (a separate,
+/// orthogonal race over `iceberg_table_one_live_idx`, unguarded today): depending
+/// on scheduling, the loser is rejected either at that earlier stage (a `Backend`
+/// wrapping a Postgres `23505` duplicate-key error on `iceberg_mirror.table` — a
+/// clean, if unpolished, rejection with nothing committed) or — whenever both
+/// writers reach the declare with the SAME table id — at the stream-declare stage
+/// fixed here (`Conflict`). Either shape is an acceptable "loser never desyncs"
+/// outcome; assert the loser is one of exactly those two, and — regardless of
+/// which — pin down the invariant that actually matters: no stamped `loom_bucket`
+/// ever exceeds the recorded `stream_table.bucket_count`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_declare_with_differing_counts_does_not_desync() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let table = table();
+    let cols = vec![id_spec()];
+
+    let pool_a = pool.clone();
+    let table_a = table.clone();
+    let cols_a = cols.clone();
+    let batch_a = id_batch_n("id", &[1, 2]);
+    let handle_a = tokio::spawn(async move {
+        iceberg_inline::inline_append(&pool_a, &table_a, &cols_a, &batch_a, lin(), None, Some(2))
+            .await
+    });
+
+    let pool_b = pool.clone();
+    let table_b = table.clone();
+    let cols_b = cols.clone();
+    let batch_b = id_batch_n("id", &[3, 4, 5]);
+    let handle_b = tokio::spawn(async move {
+        iceberg_inline::inline_append(&pool_b, &table_b, &cols_b, &batch_b, lin(), None, Some(3))
+            .await
+    });
+
+    let result_a = handle_a.await.expect("task a join");
+    let result_b = handle_b.await.expect("task b join");
+
+    // A loser rejected at the (orthogonal, pre-existing) `ensure_table` race: a
+    // Backend error wrapping Postgres 23505 on the live-table unique index.
+    fn is_benign_ensure_table_race(e: &ControlPlaneError) -> bool {
+        match e {
+            ControlPlaneError::Backend(err) => err
+                .downcast_ref::<sqlx::Error>()
+                .and_then(sqlx::Error::as_database_error)
+                .and_then(|db| db.code())
+                .is_some_and(|code| code.as_ref() == "23505"),
+            _ => false,
+        }
+    }
+
+    // Exactly one of the two concurrent first-declares succeeds; the other must be
+    // rejected — either as the stream-declare Conflict this fix adds, or as the
+    // benign ensure_table race above — never silently proceeding with a
+    // mismatched count.
+    let outcomes = [&result_a, &result_b];
+    let ok_count = outcomes.iter().filter(|r| r.is_ok()).count();
+    let clean_rejection_count = outcomes
+        .iter()
+        .filter(|r| match r {
+            Err(ControlPlaneError::Conflict(_)) => true,
+            Err(e) => is_benign_ensure_table_race(e),
+            Ok(_) => false,
+        })
+        .count();
+    assert_eq!(
+        ok_count, 1,
+        "exactly one concurrent first-declare must succeed: a={result_a:?} b={result_b:?}"
+    );
+    assert_eq!(
+        clean_rejection_count, 1,
+        "the losing first-declare must fail cleanly (Conflict, or the benign ensure_table \
+         race), not desync: a={result_a:?} b={result_b:?}"
+    );
+
+    // Whichever count won, every stamped row must be `< bucket_count` — i.e. no row
+    // was stamped for a bucket the recorded count doesn't admit. Don't assume which
+    // writer won: read both the recorded count and the actual stamped rows back.
+    let tid = tid_of(&pool).await;
+    let bucket_count: i32 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select bucket_count from stream.stream_table where table_id = {tid}"
+    )))
+    .fetch_one(&pool)
+    .await
+    .expect("recorded bucket_count");
+
+    let rows = bucket_offset_rows(&pool, tid).await;
+    assert!(
+        !rows.is_empty(),
+        "the winning writer's rows must have been committed"
+    );
+    for (bucket, _offset) in &rows {
+        let b = bucket.expect("a stream-table row must have a stamped bucket");
+        assert!(
+            b < bucket_count,
+            "stamped bucket {b} must be < recorded bucket_count {bucket_count} (desync)"
+        );
+    }
 }

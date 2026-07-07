@@ -474,7 +474,24 @@ pub async fn inline_append(
                 )));
             }
             crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
-            Some(n)
+            // A concurrent first-writer may have won the declare with a different
+            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
+            // count and honour it, so the rows we stamp always agree with
+            // stream_table.bucket_count.
+            let stored = crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        "stream_table row missing immediately after declare".into(),
+                    )
+                })?;
+            if stored != n {
+                return Err(ControlPlaneError::Conflict(format!(
+                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
+                    table.schema, table.name
+                )));
+            }
+            Some(stored)
         }
         (None, existing) => existing,
     };
@@ -948,8 +965,9 @@ pub async fn write_inline_delta(
             .await
             .map_err(backend)?;
     } else {
-        // Version: mirror inline_append's INSERT but prefix loom_tombstone=false.
-        // The id column is one of <cols>, so the version row carries the id naturally.
+        // Version: mirror inline_append's INSERT but prefix
+        // loom_tombstone=false, loom_change_kind='+U'. The id column is one of
+        // <cols>, so the version row carries the id naturally.
         let col_list = columns
             .iter()
             .map(|c| format!("\"{}\"", c.name.replace('"', "\"\"")))

@@ -658,6 +658,10 @@ async fn land_parquet(
     if let Some(n) = stream_buckets
         && !pre_existing
     {
+        // Best-effort: this declare runs AFTER the Parquet commit above, on a
+        // separate connection/transaction, so it is not atomic with the write —
+        // idempotent-retriable on this path (Plan 1b brings the Parquet path to
+        // the inline path's full parity, incl. re-reading the recorded count).
         let mut conn = pool.acquire().await.map_err(backend)?;
         if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
             crate::stream::pg_declare_stream(&mut *conn, tid, n).await?;
