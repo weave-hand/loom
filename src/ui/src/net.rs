@@ -66,7 +66,6 @@ pub enum FetchError {
     /// The request never completed (transport / decode failure).
     Network,
     /// The server rejected the request with a message (e.g. HTTP 400 validation).
-    #[allow(dead_code, reason = "consumed by Task 9's transform editor wiring")]
     Rejected(String),
     /// The server responded with an unexpected status.
     Server(u16),
@@ -94,7 +93,6 @@ fn fetch_status_err(status: u16) -> FetchError {
 
 /// Map a non-success write response to an error, reading the body on 400 so the
 /// server's validation message can be surfaced.
-#[allow(dead_code, reason = "consumed by Task 9's transform editor wiring")]
 async fn write_status_err(resp: gloo_net::http::Response) -> FetchError {
     match resp.status() {
         401 => FetchError::Unauthorized,
@@ -243,7 +241,6 @@ pub async fn fetch_preview(
 }
 
 /// GET /admin/transforms with the bearer token.
-#[allow(dead_code, reason = "consumed by Task 9's TransformsList wiring")]
 pub async fn list_transforms(base: &str, token: &str) -> Result<Vec<TransformSummary>, FetchError> {
     let resp = Request::get(&url(base, "/admin/transforms"))
         .header("Authorization", &format!("Bearer {token}"))
@@ -258,7 +255,6 @@ pub async fn list_transforms(base: &str, token: &str) -> Result<Vec<TransformSum
 }
 
 /// GET /admin/transforms/{name} with the bearer token.
-#[allow(dead_code, reason = "consumed by Task 9's TransformDrawer wiring")]
 pub async fn get_transform(
     base: &str,
     token: &str,
@@ -277,10 +273,6 @@ pub async fn get_transform(
 }
 
 /// GET /admin/transforms/{name}/runs with the bearer token (newest first).
-#[allow(
-    dead_code,
-    reason = "consumed by Task 9's TransformDrawer runs tab wiring"
-)]
 pub async fn list_runs(base: &str, token: &str, name: &str) -> Result<Vec<RunRow>, FetchError> {
     let resp = Request::get(&url(base, &format!("/admin/transforms/{name}/runs")))
         .header("Authorization", &format!("Bearer {token}"))
@@ -295,7 +287,6 @@ pub async fn list_runs(base: &str, token: &str, name: &str) -> Result<Vec<RunRow
 }
 
 /// POST /admin/transforms — define/redefine (expects 201).
-#[allow(dead_code, reason = "consumed by Task 9's TransformEditor save wiring")]
 pub async fn define_transform(base: &str, token: &str, def: &Value) -> Result<(), FetchError> {
     let resp = Request::post(&url(base, "/admin/transforms"))
         .header("Authorization", &format!("Bearer {token}"))
@@ -312,10 +303,6 @@ pub async fn define_transform(base: &str, token: &str, def: &Value) -> Result<()
 }
 
 /// DELETE /admin/transforms/{name} — idempotent delete (expects 200).
-#[allow(
-    dead_code,
-    reason = "consumed by Task 9's TransformDrawer delete wiring"
-)]
 pub async fn delete_transform(base: &str, token: &str, name: &str) -> Result<(), FetchError> {
     let resp = Request::delete(&url(base, &format!("/admin/transforms/{name}")))
         .header("Authorization", &format!("Bearer {token}"))
@@ -330,10 +317,6 @@ pub async fn delete_transform(base: &str, token: &str, name: &str) -> Result<(),
 }
 
 /// POST /admin/transforms/{name}/run — run a saved transform now (expects 202 {run_id}).
-#[allow(
-    dead_code,
-    reason = "consumed by Task 9's TransformDrawer run-now wiring"
-)]
 pub async fn run_transform(base: &str, token: &str, name: &str) -> Result<String, FetchError> {
     let resp = Request::post(&url(base, &format!("/admin/transforms/{name}/run")))
         .header("Authorization", &format!("Bearer {token}"))
@@ -352,10 +335,6 @@ pub async fn run_transform(base: &str, token: &str, name: &str) -> Result<String
 }
 
 /// POST /admin/transforms/run — run an ad-hoc body (expects 202 {run_id}).
-#[allow(
-    dead_code,
-    reason = "consumed by Task 9's TransformEditor run-adhoc wiring"
-)]
 pub async fn run_adhoc(base: &str, token: &str, body_json: &Value) -> Result<String, FetchError> {
     let resp = Request::post(&url(base, "/admin/transforms/run"))
         .header("Authorization", &format!("Bearer {token}"))

@@ -1,7 +1,3 @@
-#![allow(
-    dead_code,
-    reason = "view components consumed by Task 9's Workspace render arm; the allow is removed there"
-)]
 //! The Transforms admin surface. Three presentational components: `TransformsList`
 //! (the transform-definition `DataTable`) fills the Shell's `list` slot,
 //! `TransformDrawer` (Definition · Runs tabs over the selected transform) fills its

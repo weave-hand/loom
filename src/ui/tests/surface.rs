@@ -10,13 +10,13 @@ fn accents_match_the_design_tokens() {
 }
 
 #[test]
-fn only_catalog_and_ontology_are_live() {
+fn catalog_transforms_and_ontology_are_live() {
     let live: Vec<&str> = Surface::all()
         .into_iter()
         .filter(|s| s.is_live())
         .map(Surface::label)
         .collect();
-    assert_eq!(live, vec!["Catalog", "Ontology"]);
+    assert_eq!(live, vec!["Catalog", "Transforms", "Ontology"]);
 }
 
 #[test]

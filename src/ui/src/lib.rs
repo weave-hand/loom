@@ -318,7 +318,10 @@ impl Surface {
     /// Whether the backend can serve this surface (else the shell shows a stub).
     #[must_use]
     pub fn is_live(self) -> bool {
-        matches!(self, Surface::Catalog | Surface::Ontology)
+        matches!(
+            self,
+            Surface::Catalog | Surface::Ontology | Surface::Transforms
+        )
     }
 }
 
