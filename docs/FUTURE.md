@@ -72,6 +72,8 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   Re-back the offset-ordered live tier with sealed Arrow segments on object storage (design Approach B) if Postgres becomes the hot-log throughput bottleneck; the `BucketOffsets`/changelog logical model is unchanged.
 - [ ] **Stream engine — partitioning above buckets** `{#fut-stream-partitioning area:ingest status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
   Fluss-style two-level partition → bucket sharding above the single-level bucketing the slices ship.
+- [ ] **Stream engine — framing on mutation/overwrite write paths** `{#fut-stream-framing-write-paths area:ingest status:deferred from:2026-07-06-stream-engine-design pr:- spec:-}`
+  A stream/log table's `loom_` framing (`loom_change_kind`/`loom_bucket`/`loom_offset`) is persisted on the two write paths that exist for it today — inline→flush and the direct large-write Parquet path (slice 1). The other Iceberg write paths (`overwrite_parquet_snapshot` / `Tx::replace_files`, the transform `write_steps` commit, and the multi-target `iceberg_control_plane` path) pass `include_framing=false`, so if a stream table were ever overwritten or written by a transform its new Iceberg schema would drop the framing columns and `coerce_batch_to_ice` would mismatch the framing-bearing writer schema. Unreachable in slice 1 (log tables are append-only, created only via land/inline), but must be closed as [[road-stream-pk-tables]] (mutation) and stream-output transforms land: gate those write paths on stream-ness and thread framing through, or explicitly refuse them for stream tables.
 
 ## query
 

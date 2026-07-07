@@ -28,6 +28,54 @@ Binding is the validated promotion that makes a landed dataset retrievable as a 
 
 Beyond structure, the model path enforces **per-value constraints**: after the shape gate and before any write, `validate_values` runs each property's declared `PropertyConstraints` (range, length, pattern, one-of) over the decoded batches, rejecting with a 422 naming the failed rule. The same `core` `PropertyValidator` backs query-api's typed-insert action, so both write paths enforce identical rules. Model ingest is append-only throughout — the identity property is checked for presence, but no row-level dedup or upsert runs.
 
+## Stream log tables
+
+A dataset can be declared an **append-only log table** at ingest time via
+`POST /datasets/{schema}/{table}?mode=stream&buckets=N` (default `buckets=1`;
+`buckets` is ignored without `mode=stream`). The flag threads
+`http.rs` → `LandRequest` → `iceberg_land`; the row's presence in the
+control-plane `stream.stream_table` registry (`bucket_count` fixed at creation,
+`>= 1` enforced by a DB CHECK) is the "this is a log table" marker. The mode is
+immutable: `mode=stream` against an existing batch table, or a `buckets` value
+that disagrees with the recorded count, is a `400`. A later flagless write
+appends using the table's recorded mode. Declaration and the offset allocator
+(`road-stream-substrate`, the `BucketOffsets` seam) are the substrate; this is
+Fluss-style Log Tables, slice 1.
+
+Every appended row carries three reserved **framing columns** —
+`loom_change_kind` (`+I`/`+U`/`-D`, universal; set at the inline write sites),
+`loom_bucket`, and `loom_offset`. For a stream table each row is assigned
+`bucket = row_index % bucket_count` and a **gapless, per-bucket, 0-indexed
+offset** reserved from `stream.bucket_offset` via `pg_allocate_offset` **inside
+the write's transaction**, so offsets are assigned iff the write commits (a
+rollback frees the run). Ordering is guaranteed per bucket, not across buckets.
+Batch tables skip all stamping and are byte-identical to before the feature.
+
+The framing is **durable and invisible**. It is registered as reserved physical
+columns in the Iceberg schema for stream tables, so it survives the flush from
+the inline tier into Parquet (flush reads the framing via an unfiltered
+`physical_columns` read and the mirror registers it automatically from the
+Iceberg schema). A single `is_reserved` filter at the one logical-schema
+chokepoint (`IcebergCatalog::schema`) excludes every `loom_`-prefixed column
+from all logical reads (`GET /objects`, `GET /datasets`, link traversal,
+previews), so a stream table's user-facing schema and reads are byte-identical
+to a batch table's — the log framing is never exposed. (Reading the log *by
+offset* is the subscribe/tail feed, [[road-stream-subscribe]], slice 3.)
+
+The **direct large-write Parquet path** (writes over the inline byte limit, which
+bypass the inline tier and write Parquet straight to object storage) has full
+parity: it reconciles stream mode atomically (same `Conflict`/`Validation`
+rules), allocates offsets, and stamps the framing into the written Parquet, with
+the allocation riding the **same Postgres transaction** as the snapshot's
+pointer-CAS commit (via a caller-provided-tx commit seam and a `TxCommitCatalog`
+decorator) so offsets commit iff the snapshot commits — gapless with no offset
+gap on failure; a lost CAS rolls back (freeing the run), re-allocates, and
+re-writes. This is the one path that holds a PG transaction across the
+object-store write; the common inline/flush and batch commit paths keep their
+short, object-store-free commit transaction. Framing on the overwrite and
+transform-output write paths is not yet wired (`#fut-stream-framing-write-paths`),
+unreachable while log tables are append-only.
+
 ## Known gaps
 
 - `#fut-ingest-overwrite-endpoint` — no dataset-level replace/overwrite ingest endpoint; the land path is append-only and the shipped overwrite primitive is wired only to the action copy-on-write path.
