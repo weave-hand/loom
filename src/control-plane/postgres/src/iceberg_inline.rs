@@ -694,7 +694,19 @@ pub(crate) async fn inline_append_decl(
         // the arm so the trigger stays disarmed (and can re-fire once slice-2
         // consolidation clears the flag) rather than getting stuck "enqueued" for a
         // job that was deliberately never queued.
-        if st.live_bytes >= st.effective && !st.enqueued && !has_shadow(&mut *conn, tid).await? {
+        // A CDC table's flush is delta-aware (dual-write of the base +I/+U/-D
+        // subset and the full changelog, `flush_locked`'s CDC branch) and is
+        // safe to run even while shadow deltas are pending — it never
+        // duplicates/resurrects a file row the way the non-CDC cow-inline-
+        // shadow flush would, so the `has_shadow` suppression below applies
+        // only to non-CDC tables.
+        let is_cdc = crate::stream::pg_stream_meta(&mut *conn, tid)
+            .await?
+            .is_some_and(|m| m.kind == control_plane_core::StreamKind::Cdc);
+        if st.live_bytes >= st.effective
+            && !st.enqueued
+            && (is_cdc || !has_shadow(&mut *conn, tid).await?)
+        {
             let job = NewJob {
                 kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
                 payload: serde_json::json!({ "schema": table.schema, "name": table.name }),

@@ -346,7 +346,7 @@ pub(crate) async fn append_parquet_snapshot(
 /// list's element field (`item`, no field id) would otherwise be rejected by
 /// `RecordBatch::try_new`, which compares the full nested field. Same data, relabeled
 /// element field. Also validates each row's element count equals the declared `N`.
-fn coerce_batch_to_ice(
+pub(crate) fn coerce_batch_to_ice(
     batch: &RecordBatch,
     ice_arrow: &Arc<Schema>,
     columns: &[ColumnSpec],

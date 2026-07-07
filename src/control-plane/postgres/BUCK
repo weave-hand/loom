@@ -1315,6 +1315,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-cdc-dual-flush",
+    crate = "stream_cdc_dual_flush",
+    srcs = ["tests/stream_cdc_dual_flush.rs"],
+    crate_root = "tests/stream_cdc_dual_flush.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-inline-full-read",
     crate = "stream_inline_full_read",
     srcs = ["tests/stream_inline_full_read.rs"],
