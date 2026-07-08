@@ -769,6 +769,52 @@ impl ActionDefBuilder {
     }
 }
 
+/// Validate each derived property's aggregate column against its link's target
+/// type — best-effort, catalog-decoupled. `resolve_target(link_name)` returns the
+/// target `ObjectType` or `None`; an unresolvable link/target is SKIPPED (deferred
+/// to the read path). A derived aggregate reads a TARGET-TABLE column, which a type
+/// need not declare as a property (a type may declare a subset of its table's
+/// columns; the ingest `bind` conformance seam validates against the catalog table),
+/// so a column absent from the declared `properties` is likewise SKIPPED here. Only
+/// a DECLARED property whose KNOWN logical type is inapplicable to the aggregation
+/// (`Sum`/`Avg` need numeric, `Min`/`Max` need ordered) is a `Validation` error.
+///
+/// `resolve_target` carries an explicit lifetime `'a` (rather than a fully
+/// elided `Fn(&str) -> Option<&ObjectType>`) because the elided form desugars
+/// to a higher-ranked bound (`for<'r> Fn(&'r str) -> Option<&'r ObjectType>`)
+/// that a closure returning a reference into a captured map (e.g.
+/// `|ln| targets.get(ln)`, where the output's lifetime comes from `targets`,
+/// not from `ln`) cannot satisfy — the borrow checker demands `targets: 'static`.
+/// Naming `'a` ties the output to the caller's own borrow instead.
+pub fn validate_derived_columns<'a>(
+    derived: &[DerivedPropertyDef],
+    resolve_target: impl Fn(&str) -> Option<&'a ObjectType>,
+) -> Result<()> {
+    for d in derived {
+        let Some(col) = d.agg.column() else { continue }; // Count: no column
+        let Some(target) = resolve_target(&d.link) else {
+            continue;
+        }; // unresolvable link/target: skip (deferred)
+        // Best-effort: a derived aggregate reads a TARGET-TABLE column, which a type need
+        // not declare as a property (a type may declare a subset of its table's columns; the
+        // ingest `bind` conformance seam validates against the catalog table). So a column
+        // absent from the declared properties is SKIPPED here — only a DECLARED property whose
+        // KNOWN logical type is inapplicable to the aggregation is rejected.
+        let Some(prop) = target.properties.iter().find(|p| p.name == col) else {
+            continue;
+        };
+        let base = crate::logical_type::resolve_logical(&prop.ty);
+        if base.is_some() && !d.agg.column_applicable(base) {
+            return Err(ControlPlaneError::Validation(format!(
+                "derived `{}`: aggregation over column `{col}` (type `{}`) is not applicable \
+                 (Sum/Avg need a numeric column; Min/Max need an ordered column)",
+                d.name, prop.ty
+            )));
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait Ontology {
     /// Create or replace an object type and its full (ordered) property list. Upsert.
@@ -780,6 +826,15 @@ pub trait Ontology {
     /// backing columns / join tables are untouched. Idempotent: deleting an
     /// absent link is `Ok(())`.
     async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()>;
+    /// Names of derived properties on `from` whose link is `name`. Empty if none.
+    /// Only derived properties on `from` can be stranded by deleting link
+    /// `(from, name)` (a derived property resolves its link among its own type's
+    /// outbound links).
+    async fn derived_properties_referencing(
+        &self,
+        from: &TypeName,
+        name: &str,
+    ) -> Result<Vec<String>>;
     /// Fetch a type by name. `NotFound` if absent.
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType>;
     /// All defined types (order unspecified). The `page` request is accepted but not yet enforced; results

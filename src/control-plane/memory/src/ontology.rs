@@ -17,6 +17,29 @@ pub(crate) struct OntologyState {
     pub(crate) vector_indexes: HashMap<(String, String), VectorIndexDef>,
 }
 
+/// Resolve each of `ty`'s outbound links' target type against the locked
+/// ontology state and validate `ty.derived` against them — extracted from
+/// `define_type` so the (empty-derived) common case skips the link/type scan.
+fn validate_derived_against(ont: &OntologyState, ty: &ObjectType) -> Result<()> {
+    if ty.derived.is_empty() {
+        return Ok(());
+    }
+    let mut targets: std::collections::HashMap<String, ObjectType> =
+        std::collections::HashMap::new();
+    for l in ont.links.iter().filter(|l| l.from == ty.name) {
+        let target = if l.to == ty.name {
+            ty.clone()
+        } else if let Some(t) = ont.types.get(&l.to.0) {
+            t.clone()
+        } else {
+            continue;
+        };
+        targets.insert(l.name.clone(), target);
+    }
+    control_plane_core::validate_derived_columns(&ty.derived, |ln| targets.get(ln))?;
+    Ok(())
+}
+
 #[async_trait]
 impl Ontology for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -55,6 +78,7 @@ impl Ontology for MemoryControlPlane {
                 .collect();
             validate_no_multi_def_trigger_cycle(&nodes)?;
         }
+        validate_derived_against(&ont, &ty)?;
         let event = changed.then(|| control_plane_core::type_table_binding_event(&ty));
         ont.types.insert(ty.name.0.clone(), ty);
         if let Some(event) = event {
@@ -79,11 +103,46 @@ impl Ontology for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_link(&self, from: &TypeName, name: &str) -> Result<()> {
-        self.ontology
-            .lock()
-            .links
-            .retain(|l| !(l.from == *from && l.name == name));
+        let mut ont = self.ontology.lock(); // ONE lock: read refs + retain atomically (no TOCTOU)
+        let refs: Vec<String> = ont
+            .types
+            .get(&from.0)
+            .map(|t| {
+                t.derived
+                    .iter()
+                    .filter(|d| d.link == name)
+                    .map(|d| d.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !refs.is_empty() {
+            return Err(ControlPlaneError::Conflict(format!(
+                "link `{name}` is referenced by derived properties: {}",
+                refs.join(", ")
+            )));
+        }
+        ont.links.retain(|l| !(l.from == *from && l.name == name));
         Ok(())
+    }
+
+    async fn derived_properties_referencing(
+        &self,
+        from: &TypeName,
+        name: &str,
+    ) -> Result<Vec<String>> {
+        let ont = self.ontology.lock();
+        let names = ont
+            .types
+            .get(&from.0)
+            .map(|t| {
+                t.derived
+                    .iter()
+                    .filter(|d| d.link == name)
+                    .map(|d| d.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(names)
     }
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
