@@ -39,7 +39,7 @@ async fn action_downstream_round_trips() {
     .downstream(vec![
         JobTemplate {
             kind: "transform".into(),
-            payload: json!({ "id": "@self.id" }),
+            payload: json!({ "sku": "@self.sku" }),
         },
         JobTemplate {
             kind: "flush_table".into(),
@@ -55,7 +55,7 @@ async fn action_downstream_round_trips() {
         .expect("get_action");
     assert_eq!(got.downstream.len(), 2);
     assert_eq!(got.downstream[0].kind, "transform");
-    assert_eq!(got.downstream[0].payload, json!({ "id": "@self.id" }));
+    assert_eq!(got.downstream[0].payload, json!({ "sku": "@self.sku" }));
     assert_eq!(got.downstream[1].kind, "flush_table");
 
     // Redefined with no downstream ⇒ cleared (mirror the clear-then-insert idempotency).

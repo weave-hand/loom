@@ -316,11 +316,30 @@ impl Ontology for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
-        if action.steps.is_empty() {
-            return Err(ControlPlaneError::Validation(format!(
-                "action `{}` has no steps",
-                action.name.0
-            )));
+        let primary_step = match action.steps.first() {
+            Some(s) => s,
+            None => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "action `{}` has no steps",
+                    action.name.0
+                )));
+            }
+        };
+        // Load the primary step's full ObjectType (properties + identity) and validate
+        // every downstream template against it BEFORE opening the define tx. `get_type`
+        // uses its own connection; a NotFound here is left to the per-step existence check
+        // inside the tx below, which raises the canonical Validation error for unknown
+        // types (mirroring the memory fake). The boolean `object_type_exists` does NOT
+        // suffice — it carries no properties/identity for the validator.
+        match self.get_type(&primary_step.target).await {
+            Ok(primary_target) => {
+                control_plane_core::validate_action_downstream(
+                    &action.downstream,
+                    &primary_target,
+                )?;
+            }
+            Err(ControlPlaneError::NotFound(_)) => {}
+            Err(e) => return Err(e),
         }
         let mut tx = self.pool.begin().await.map_err(backend)?;
         // Every step's target type must exist. The explicit check makes the error a clear

@@ -2,6 +2,7 @@
 //! No I/O — adapters (memory, postgres) implement these against a backend.
 
 mod acl;
+mod action_downstream;
 mod auth;
 mod catalog;
 mod compact_job;
@@ -31,6 +32,7 @@ pub use acl::{
     RolePolicy, RowFilter, ScalarValue, SubjectId, check_grant_target, check_policy_write,
     validate_row_filter,
 };
+pub use action_downstream::validate_action_downstream;
 pub use auth::{
     Auth, LockoutPolicy, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount,
     ServiceToken, UserSummary,
