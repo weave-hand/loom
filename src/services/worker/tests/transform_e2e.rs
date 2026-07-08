@@ -22,7 +22,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::flight::{FlightTableClient, FlightTicket};
+use engine_wire::flight::{FlightSqlClient, FlightTableClient, FlightTicket};
 use store_config::{ObjectStoreConfig, build_write_store};
 use worker::transform::{TransformCtx, handle_transform};
 
@@ -97,12 +97,10 @@ async fn build_ctx(sock: &str, wh_str: &str) -> TransformCtx {
     let control = GrpcQueueClient::connect(sock)
         .await
         .expect("connect control");
-    let flight = FlightTableClient::connect(sock)
-        .await
-        .expect("connect flight");
+    let sql = FlightSqlClient::connect(sock).await.expect("connect sql");
     TransformCtx {
         control,
-        flight,
+        sql,
         write,
         write_cfg: datafusion_io::WriteConfig::default(),
         worker_tuning: loom_config::WorkerTuning::default(),
@@ -111,11 +109,14 @@ async fn build_ctx(sock: &str, wh_str: &str) -> TransformCtx {
 
 /// Read the single-Int64-column values of `table` at `snap` back over Flight.
 async fn read_i64s(
-    flight: &FlightTableClient,
+    sock: &str,
     ice: &IcebergCatalog,
     table: &TableRef,
     snap: SnapshotId,
 ) -> HashSet<i64> {
+    let flight = FlightTableClient::connect(sock)
+        .await
+        .expect("connect flight");
     let files = ice.files_with_stats(table, snap).await.expect("files");
     let batches = flight
         .fetch(FlightTicket {
@@ -235,7 +236,7 @@ async fn transform_runs_over_the_wire() {
     // Output rows: ids {2,3} land in main.dst, readable over Flight.
     let ice = IcebergCatalog::new(pool.clone());
     let snap = ice.current_snapshot(&dst).await.expect("output snapshot");
-    let ids = read_i64s(&ctx.flight, &ice, &dst, snap.id).await;
+    let ids = read_i64s(&eng.sock, &ice, &dst, snap.id).await;
     assert_eq!(
         ids,
         HashSet::from([2, 3]),
@@ -272,6 +273,109 @@ async fn transform_runs_over_the_wire() {
         inputs,
         vec!["main.src".to_string()],
         "the input table is the upstream dataset"
+    );
+}
+
+/// An input whose rows live ONLY in the hot inline PG tier (never flushed to
+/// Parquet) must still be read by a transform. Regression guard for
+/// `#iss-transform-inline-blind`: the worker used to read only the cold Parquet
+/// `data_file` set, so an inline-only input registered as an EMPTY relation and the
+/// transform committed an empty output. Every other e2e seeds `inline_byte_limit: 0`
+/// (cold-only), so none of them covered the inline tier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_only_input_is_read() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // Seed main.src with ids [1,2,3] but keep them INLINE: a generous inline byte
+    // limit admits the tiny payload, and an i64::MAX flush threshold means no flush
+    // job is ever enqueued — so the rows stay in the hot PG tier with ZERO cold files.
+    let src = tref("main", "src");
+    let (schema, batches) = ipc_body(&[1, 2, 3]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 1 << 20,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&src),
+        None,
+    )
+    .await
+    .expect("land");
+
+    // Fixture invariant: the input genuinely has no cold data files — its rows are
+    // inline only. This is exactly the state the old cold-file read path missed.
+    let ice = IcebergCatalog::new(pool.clone());
+    let src_snap = ice.current_snapshot(&src).await.expect("src snapshot");
+    let cold = ice
+        .files_with_stats(&src, src_snap.id)
+        .await
+        .expect("src files");
+    assert!(
+        cold.is_empty(),
+        "the input must be inline-only (no cold files), got {cold:?}"
+    );
+
+    // Run a transform that reads the inline-only input.
+    let dst = tref("main", "dst");
+    let sql = "SELECT id FROM src WHERE id >= 2";
+    cp.queue()
+        .enqueue(NewJob {
+            kind: TRANSFORM_JOB_KIND.to_string(),
+            payload: serde_json::to_value(TransformJob {
+                inputs: vec![src.clone()],
+                output: dst.clone(),
+                sql: sql.to_string(),
+                output_mode: OutputMode::Append,
+                run_id: None,
+            })
+            .expect("payload"),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .expect("enqueue");
+
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let job = ctx
+        .control
+        .dequeue(&[TRANSFORM_JOB_KIND.to_string()], "e2e-worker")
+        .await
+        .expect("dequeue")
+        .expect("a queued transform job");
+    handle_transform(&ctx, job).await.expect("transform");
+
+    // The transform SAW the inline rows: {2,3} land in the output. On the old
+    // cold-only read path this set was empty.
+    let snap = ice.current_snapshot(&dst).await.expect("output snapshot");
+    let ids = read_i64s(&eng.sock, &ice, &dst, snap.id).await;
+    assert_eq!(
+        ids,
+        HashSet::from([2, 3]),
+        "transform must read the hot inline tier, not just cold Parquet"
     );
 }
 
@@ -405,7 +509,7 @@ async fn empty_input_counts_zero() {
 
     let ice = IcebergCatalog::new(pool);
     let snap = ice.current_snapshot(&out).await.expect("output snapshot");
-    let vals = read_i64s(&ctx.flight, &ice, &out, snap.id).await;
+    let vals = read_i64s(&eng.sock, &ice, &out, snap.id).await;
     assert_eq!(
         vals,
         HashSet::from([0]),
@@ -510,7 +614,7 @@ async fn transform_joins_two_inputs() {
         .current_snapshot(&joined)
         .await
         .expect("output snapshot");
-    let ids = read_i64s(&ctx.flight, &ice, &joined, snap.id).await;
+    let ids = read_i64s(&eng.sock, &ice, &joined, snap.id).await;
     assert_eq!(
         ids,
         (2..=9000).collect::<HashSet<i64>>(),
@@ -680,7 +784,7 @@ async fn transform_chains_read_prior_output() {
     .expect("chained transform");
 
     let snap2 = ice.current_snapshot(&dst2).await.expect("dst2 snapshot");
-    let ids = read_i64s(&ctx.flight, &ice, &dst2, snap2.id).await;
+    let ids = read_i64s(&eng.sock, &ice, &dst2, snap2.id).await;
     assert_eq!(
         ids,
         HashSet::from([2, 3]),
@@ -757,7 +861,7 @@ async fn overwrite_replaces_live_set_and_time_travels() {
         .iter()
         .map(|f| f.path.clone())
         .collect();
-    let ids1 = read_i64s(&ctx.flight, &ice, &out, snap1.id).await;
+    let ids1 = read_i64s(&eng.sock, &ice, &out, snap1.id).await;
     assert_eq!(ids1, HashSet::from([1, 2]), "first run appended {{1,2}}");
 
     // Second: OVERWRITE with a different predicate.
@@ -775,7 +879,7 @@ async fn overwrite_replaces_live_set_and_time_travels() {
 
     let snap2 = ice.current_snapshot(&out).await.expect("snapshot 2");
     assert_ne!(snap2.id, snap1.id, "overwrite allocated a new snapshot");
-    let ids2 = read_i64s(&ctx.flight, &ice, &out, snap2.id).await;
+    let ids2 = read_i64s(&eng.sock, &ice, &out, snap2.id).await;
     assert_eq!(
         ids2,
         HashSet::from([3]),
