@@ -649,7 +649,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
-        version: None,
+        version: Some("id".into()),
     };
     o.define_type(customer.clone())
         .await
@@ -695,6 +695,17 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_type(&tn("Order")).await.unwrap().identity,
         None,
         "an undeclared identity stays None"
+    );
+    // A declared version property round-trips through define_type/get_type.
+    let versioned = o.get_type(&tn("Customer")).await.unwrap();
+    assert_eq!(
+        versioned.version.as_deref(),
+        Some("id"),
+        "declared version persists through define_type/get_type",
+    );
+    assert!(
+        o.get_type(&tn("Order")).await.unwrap().version.is_none(),
+        "an undeclared version stays None"
     );
     assert_eq!(
         o.get_type(&tn("Order"))

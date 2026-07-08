@@ -32,14 +32,16 @@ impl Ontology for PgControlPlane {
             None => true,
         };
         sqlx::query!(
-            "insert into ontology.object_type (name, table_schema, table_name, identity) \
-             values ($1, $2, $3, $4) \
+            "insert into ontology.object_type (name, table_schema, table_name, identity, version) \
+             values ($1, $2, $3, $4, $5) \
              on conflict (name) do update set table_schema = excluded.table_schema, \
-                 table_name = excluded.table_name, identity = excluded.identity",
+                 table_name = excluded.table_name, identity = excluded.identity, \
+                 version = excluded.version",
             ty.name.0,
             ty.table.schema,
             ty.table.name,
             ty.identity,
+            ty.version,
         )
         .execute(&mut *tx)
         .await
@@ -194,7 +196,7 @@ impl Ontology for PgControlPlane {
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         let row = sqlx::query!(
-            "select table_schema, table_name, identity from ontology.object_type where name = $1",
+            "select table_schema, table_name, identity, version from ontology.object_type where name = $1",
             name.0,
         )
         .fetch_optional(&self.pool)
@@ -249,7 +251,7 @@ impl Ontology for PgControlPlane {
             properties: props,
             derived,
             identity: row.identity,
-            version: None,
+            version: row.version,
         })
     }
 
@@ -630,6 +632,32 @@ pub async fn identity_for_table(pool: &PgPool, table: &TableRef) -> Result<Optio
     .await
     .map_err(backend)?;
     // `identity` column is itself nullable → flatten Option<Option<String>>.
+    Ok(row.flatten())
+}
+
+/// Reverse-lookup: the version/sequence column name for the object type stored
+/// at `table`, or None if it has no declared version / does not exist. Used by
+/// the Versioned merge engine's fold sites to read the precedence column live
+/// (mirroring `identity_for_table` for the identity column), and by
+/// `reconcile_stream_mode`'s Versioned declaration validation. Executor-generic
+/// (not `&PgPool`-specific like `identity_for_table`) so the reconcile path can
+/// call it with its `&mut PgConnection`.
+// AssertSqlSafe: static query against ontology.object_type; sqlx regen
+// unavailable in this env (initdb-as-root). Convert to query! when regenerating
+// locally.
+pub async fn version_for_table<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table: &TableRef,
+) -> Result<Option<String>> {
+    let row: Option<Option<String>> = sqlx::query_scalar(AssertSqlSafe(
+        "select version from ontology.object_type \
+         where table_schema = $1 and table_name = $2",
+    ))
+    .bind(&table.schema)
+    .bind(&table.name)
+    .fetch_optional(ex)
+    .await
+    .map_err(backend)?;
     Ok(row.flatten())
 }
 

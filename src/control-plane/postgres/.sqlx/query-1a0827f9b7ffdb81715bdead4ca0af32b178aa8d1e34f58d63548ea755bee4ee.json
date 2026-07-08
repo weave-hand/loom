@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select table_schema, table_name, identity from ontology.object_type where name = $1",
+  "query": "select table_schema, table_name, identity, version from ontology.object_type where name = $1",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "identity"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.object_type",
+            "name": "version"
+          }
+        }
       }
     ],
     "parameters": {
@@ -45,8 +56,9 @@
     "nullable": [
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "354fd62ebec619fbaa8d147c2d1d9af537a14fdb24eeb13f7e8235903ce0f8e3"
+  "hash": "1a0827f9b7ffdb81715bdead4ca0af32b178aa8d1e34f58d63548ea755bee4ee"
 }
