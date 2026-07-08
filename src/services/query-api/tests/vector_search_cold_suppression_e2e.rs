@@ -28,7 +28,9 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_inline;
-use e2e_support::{grant_read, grant_read_filtered, post_search, seed_vector_type, subject_with_role};
+use e2e_support::{
+    grant_read, grant_read_filtered, post_search, seed_vector_type, subject_with_role,
+};
 
 use axum::http::StatusCode;
 
@@ -124,17 +126,18 @@ async fn cold_hits_suppressed_with_no_row_filter() {
     // Write ONE inline row-version for id=1 with a NEW vector near the probe. The
     // cold Puffin index is NOT rebuilt, so it still scores id=1's ORIGINAL vector ->
     // pre-fix id=1 is returned twice (cold stale + hot fresh).
-    let v0 = iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(1))
-        .await
-        .unwrap();
+    let v0 =
+        iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(1))
+            .await
+            .unwrap();
     iceberg_inline::write_inline_delta(
         &pool,
         &docs_table,
         &columns,
         "id",
-        false, // tombstone = false -> row-version
+        false,                               // tombstone = false -> row-version
         &vec_batch(1, [0.9, 0.1, 0.0, 0.0]), // NEW embedding, near the probe below
-        None,  // before-image not needed here
+        None,                                // before-image not needed here
         lineage(RunId(uuid::Uuid::new_v4()), &docs_table),
         v0,
     )
@@ -150,7 +153,10 @@ async fn cold_hits_suppressed_with_no_row_filter() {
     )
     .await;
     let res = results(status, &body);
-    let ones = res.iter().filter(|h| h["id"] == serde_json::json!(1)).count();
+    let ones = res
+        .iter()
+        .filter(|h| h["id"] == serde_json::json!(1))
+        .count();
     assert_eq!(
         ones, 1,
         "identity 1 appears exactly once (stale cold duplicate suppressed): {body}"
@@ -158,15 +164,16 @@ async fn cold_hits_suppressed_with_no_row_filter() {
 
     // --- 2. Tombstoned DELETE: the tombstoned identity must be omitted ---
     // A tombstone needs no vector value -> write it directly too (tombstone = true).
-    let v0d = iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(2))
-        .await
-        .unwrap();
+    let v0d =
+        iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(2))
+            .await
+            .unwrap();
     iceberg_inline::write_inline_delta(
         &pool,
         &docs_table,
         &columns,
         "id",
-        true, // tombstone
+        true,         // tombstone
         &id_batch(2), // tombstone batch = identity only
         None,
         lineage(RunId(uuid::Uuid::new_v4()), &docs_table),
@@ -222,9 +229,10 @@ async fn cold_hit_suppressed_with_row_filter_regression() {
     let columns = docs_columns();
 
     // Superseded UPDATE on id=1 (same setup as the unfiltered case above).
-    let v0 = iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(1))
-        .await
-        .unwrap();
+    let v0 =
+        iceberg_inline::current_inline_version(&pool, &docs_table, &columns, "id", &id_batch(1))
+            .await
+            .unwrap();
     iceberg_inline::write_inline_delta(
         &pool,
         &docs_table,
@@ -248,13 +256,17 @@ async fn cold_hit_suppressed_with_row_filter_regression() {
     )
     .await;
     let res = results(status, &body);
-    let ones = res.iter().filter(|h| h["id"] == serde_json::json!(1)).count();
+    let ones = res
+        .iter()
+        .filter(|h| h["id"] == serde_json::json!(1))
+        .count();
     assert!(
         ones <= 1,
         "id=1 appears at most once under the row-filter path too: {body}"
     );
     assert!(
-        res.iter().all(|h| h["id"] != serde_json::json!(3) && h["id"] != serde_json::json!(4)),
+        res.iter()
+            .all(|h| h["id"] != serde_json::json!(3) && h["id"] != serde_json::json!(4)),
         "row-filtered ids (id>=3) stay absent: {body}"
     );
 }
