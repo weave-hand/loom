@@ -62,6 +62,7 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -273,6 +274,7 @@ async fn ungranted_subject_is_forbidden() {
             }],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

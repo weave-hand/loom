@@ -96,5 +96,6 @@ pub fn infer_object_type(
             name: name.0.clone(),
         },
         identity: identity.map(str::to_string),
+        version: None,
     })
 }

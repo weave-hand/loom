@@ -147,6 +147,7 @@ async fn e2e_seed_widget_table(cp: &PgControlPlane) {
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

@@ -58,6 +58,7 @@ async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
             name: name.to_lowercase(),
         },
         identity: None,
+        version: None,
     })
     .await
     .expect("define type");
@@ -648,6 +649,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     o.define_type(customer.clone())
         .await
@@ -671,6 +673,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     };
     o.define_type(order.clone()).await.expect("define Order");
 
@@ -739,6 +742,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
@@ -787,6 +791,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     o.define_type(constrained.clone())
         .await
@@ -815,6 +820,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     assert!(
         matches!(
@@ -839,6 +845,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     assert!(
         matches!(
@@ -990,6 +997,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Widget");
@@ -1118,6 +1126,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Gadget");
@@ -1236,6 +1245,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Order");
@@ -1264,6 +1274,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define LineItem");
@@ -1314,6 +1325,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         table: tref("main", "account"),
         identity: None,
+        version: None,
     })
     .await
     .expect("define Account with derived");
@@ -1340,6 +1352,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         derived: vec![],
         table: tref("main", "account"),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -1362,6 +1375,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Transaction"),
         table: tref("main", "txn"),
         identity: None,
+        version: None,
         properties: vec![
             prop("id", "Long"),
             prop("amount", "Double"),
@@ -1392,6 +1406,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "x".into(),
@@ -1409,6 +1424,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: tn("Account"),
             table: tref("main", "account"),
             identity: None,
+            version: None,
             properties: vec![prop("id", "Long")],
             derived: vec![DerivedPropertyDef {
                 name: "x".into(),
@@ -1431,6 +1447,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "balance".into(),
@@ -1447,6 +1464,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "y".into(),
@@ -1484,6 +1502,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     o.define_type(doc.clone()).await.expect("define Document");
 
@@ -4268,6 +4287,7 @@ pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP) {
             name: table.into(),
         },
         identity: None,
+        version: None,
     };
 
     // define type X bound to main.customers -> emits binding edge {customers -> type/X}
@@ -4383,6 +4403,7 @@ async fn seed_type<O: Ontology>(o: &O, name: &str, schema: &str, table: &str) {
         properties: vec![],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -4931,6 +4952,7 @@ where
         }],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     cp.define_type(mk_type("RcA", &ta)).await.unwrap();
     cp.define_type(mk_type("RcB", &tb)).await.unwrap();
@@ -5155,6 +5177,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -5165,6 +5188,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -5213,6 +5237,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

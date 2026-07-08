@@ -488,6 +488,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: cust.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -516,6 +517,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -544,6 +546,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: li.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -744,6 +747,7 @@ pub async fn seed_vector_type(
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type Docs");

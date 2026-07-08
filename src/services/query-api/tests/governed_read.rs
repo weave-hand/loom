@@ -73,6 +73,7 @@ async fn governed_object_read() {
         derived: vec![],
         table: table.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

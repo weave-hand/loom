@@ -64,6 +64,7 @@ fn person_type(identity: Option<String>) -> ObjectType {
             name: "person".into(),
         },
         identity,
+        version: None,
     }
 }
 

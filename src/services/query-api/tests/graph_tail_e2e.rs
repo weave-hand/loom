@@ -112,6 +112,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: person.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -125,6 +126,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: company.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -134,6 +136,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: city.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

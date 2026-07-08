@@ -54,6 +54,7 @@ fn object_type(
         derived,
         table: tref(table),
         identity: None,
+        version: None,
     }
 }
 

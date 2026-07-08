@@ -249,6 +249,7 @@ impl Ontology for PgControlPlane {
             properties: props,
             derived,
             identity: row.identity,
+            version: None,
         })
     }
 
@@ -732,6 +733,7 @@ pub(crate) async fn pg_validate_derived_columns(
                 derived: vec![],
                 table: ty.table.clone(),
                 identity: None,
+                version: None,
             }
         };
         targets.insert(l.name, target);

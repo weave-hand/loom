@@ -29,6 +29,7 @@ fn target_type(name: &str, props: Vec<PropertyDef>) -> ObjectType {
             name: name.to_ascii_lowercase(),
         },
         identity: None,
+        version: None,
     }
 }
 

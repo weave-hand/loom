@@ -90,6 +90,7 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

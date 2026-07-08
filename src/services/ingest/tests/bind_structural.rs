@@ -39,6 +39,7 @@ fn otype(properties: Vec<PropertyDef>, identity: Option<&str>) -> ObjectType {
             name: "t".into(),
         },
         identity: identity.map(str::to_string),
+        version: None,
     }
 }
 

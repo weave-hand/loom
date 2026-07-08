@@ -119,6 +119,7 @@ fn order_type() -> ObjectType {
             name: "orders".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 
@@ -178,6 +179,7 @@ async fn granted_but_missing_type_maps_per_on_missing() {
             name: "ghost".into(),
         },
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

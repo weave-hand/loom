@@ -102,6 +102,7 @@ async fn seed_widget_table(cp: &PgControlPlane) {
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .expect("define_type");

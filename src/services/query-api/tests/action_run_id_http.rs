@@ -87,6 +87,7 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
             name: "widget".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

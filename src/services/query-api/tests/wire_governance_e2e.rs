@@ -53,6 +53,7 @@ async fn seed(
                     name: table.into(),
                 },
                 identity: Some("id".into()),
+                version: None,
             })
             .await
             .expect("define_type");

@@ -13,6 +13,7 @@ fn ty(properties: Vec<PropertyDef>, identity: Option<&str>) -> ObjectType {
             name: "thing".into(),
         },
         identity: identity.map(Into::into),
+        version: None,
     }
 }
 

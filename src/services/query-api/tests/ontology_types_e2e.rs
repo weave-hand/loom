@@ -23,6 +23,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine) {
         derived: vec![],
         table: tref("main", "customer"),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -32,6 +33,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine) {
         derived: vec![],
         table: tref("main", "orders"),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

@@ -98,6 +98,7 @@ async fn worker_builds_vector_index_over_the_wire() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");
@@ -292,6 +293,7 @@ async fn build_with_unknown_index_name_fails() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

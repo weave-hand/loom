@@ -16,6 +16,55 @@ pub enum StreamKind {
     Cdc,
 }
 
+/// The replace-class merge policy for a CDC current-state base: which row wins
+/// per identity when both fold sites (`consolidate_stream` compaction and
+/// `build_merge_view` merge-on-read) collapse multiple physical rows. A `-D`
+/// winner drops the identity under ALL engines. The durable changelog is
+/// engine-agnostic — engines govern only current-state. See
+/// `docs/superpowers/specs/2026-07-08-stream-merge-engines-design.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeEngine {
+    /// Greatest `loom_offset` per identity wins (the default; byte-identical to
+    /// the pre-engine fold).
+    LastRow,
+    /// Smallest `loom_offset` wins — "first write wins"; later events for that
+    /// identity are ignored for current-state (they still land in the changelog).
+    FirstRow,
+    /// A user-declared domain `version` column sets precedence (highest version
+    /// wins; `loom_offset` tie-breaks). Handles out-of-order arrival.
+    Versioned,
+}
+
+impl MergeEngine {
+    /// The persisted `stream.stream_table.merge_engine` wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeEngine::LastRow => "last_row",
+            MergeEngine::FirstRow => "first_row",
+            MergeEngine::Versioned => "versioned",
+        }
+    }
+}
+
+impl std::str::FromStr for MergeEngine {
+    type Err = crate::error::ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row / a bad `?merge_engine=` query param), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "last_row" => Ok(MergeEngine::LastRow),
+            "first_row" => Ok(MergeEngine::FirstRow),
+            "versioned" => Ok(MergeEngine::Versioned),
+            other => Err(crate::error::ControlPlaneError::Validation(format!(
+                "unknown merge engine '{other}'"
+            ))),
+        }
+    }
+}
+
 /// A declared stream table's metadata: its fixed bucket count, its kind, and —
 /// for a CDC table — the identity column it buckets on (`hash(bucket_key) %
 /// bucket_count`). `bucket_key` is `None` for a log table.

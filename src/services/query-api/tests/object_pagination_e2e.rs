@@ -51,6 +51,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: ord.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -61,6 +62,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -74,6 +76,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: ord.clone(),
         identity: Some("amount".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -282,6 +285,7 @@ async fn setup_with_derived(
         derived: vec![],
         table: ord.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -296,6 +300,7 @@ async fn setup_with_derived(
         }],
         table: cust.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

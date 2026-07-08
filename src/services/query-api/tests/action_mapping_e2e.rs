@@ -78,6 +78,7 @@ async fn setup_gadget_writer(fx: &PgFixture) -> GadgetWriter {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .unwrap();

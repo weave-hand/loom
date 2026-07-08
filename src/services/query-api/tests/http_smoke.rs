@@ -79,6 +79,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             name: "orders".into(),
         },
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

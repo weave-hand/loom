@@ -115,6 +115,7 @@ fn otype(name: &str, schema: &str, table: &str) -> ObjectType {
         derived: vec![],
         table: tref(schema, table),
         identity: None,
+        version: None,
     }
 }
 

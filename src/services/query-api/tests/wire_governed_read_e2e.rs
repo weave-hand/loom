@@ -73,6 +73,7 @@ async fn governed_read_parity_over_wire() {
             name: "orders".into(),
         },
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

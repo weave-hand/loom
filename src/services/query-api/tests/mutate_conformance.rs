@@ -32,6 +32,7 @@ fn widget(identity: Option<&str>) -> ObjectType {
             name: "widget".into(),
         },
         identity: identity.map(|s| s.to_string()),
+        version: None,
     }
 }
 

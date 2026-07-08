@@ -177,6 +177,7 @@ async fn define_thing(pg: &PgControlPlane, type_name: &str, table: TableRef) {
         derived: vec![],
         table,
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -315,6 +316,7 @@ async fn constraint_violation_is_422_and_nothing_lands() {
         derived: vec![],
         table: ctable.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
