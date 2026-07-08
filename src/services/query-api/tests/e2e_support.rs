@@ -914,6 +914,55 @@ pub async fn define_widget(cp: &PgControlPlane) -> TypeName {
     widget
 }
 
+/// A `VWidget` type keyed on `id` with a `seq` (Long) **version** column — for the
+/// Versioned merge-engine e2e. `createVWidget` (insert id+qty+seq), `bumpVWidget`
+/// (update id+seq), and `deleteVWidget` (delete id) let a test emit multiple
+/// versions of one identity and a delete. The `seq` column is the type's declared
+/// `version` property (precedence for the Versioned engine).
+pub async fn define_versioned_widget(cp: &PgControlPlane) -> TypeName {
+    let ty = TypeName("VWidget".into());
+    cp.ontology()
+        .define_type(
+            ObjectType::build("VWidget", ("main", "vwidget"))
+                .prop_req("id", "Long")
+                .prop("qty", "Long")
+                .prop_req("seq", "Long")
+                .identity("id")
+                .version("seq")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createVWidget", "VWidget", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("qty", "Long")
+                .param_req("seq", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("bumpVWidget", "VWidget", ActionKind::Update)
+                .param_req("id", "Long")
+                .param_req("seq", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("deleteVWidget", "VWidget", ActionKind::Delete)
+                .param_req("id", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    ty
+}
+
 /// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`),
 /// returning both the subject and the role so callers can `set_policy` on the role.
 /// Promoted from `update_delete_governance_e2e.rs` (the one signature delta in the
