@@ -50,7 +50,7 @@ fn count_skips_with_no_column() {
 }
 
 #[test]
-fn missing_column_is_validation_error() {
+fn undeclared_column_is_ok_skipped() {
     let mut targets: HashMap<String, ObjectType> = HashMap::new();
     targets.insert(
         "transactions".into(),
@@ -59,12 +59,11 @@ fn missing_column_is_validation_error() {
             vec![prop("id", "Long"), prop("amount", "Double")],
         ),
     );
+    // `nope` is not a declared property — it may be a valid catalog-only column,
+    // so validation SKIPS it (best-effort; the ingest `bind` seam is the catalog-aware
+    // backstop), rather than rejecting it.
     let d = vec![derived("transactions", Aggregation::Sum("nope".into()))];
-    let result = validate_derived_columns(&d, |ln| targets.get(ln));
-    assert!(
-        matches!(result, Err(ControlPlaneError::Validation(_))),
-        "missing agg column should be a Validation error: {result:?}"
-    );
+    assert!(validate_derived_columns(&d, |ln| targets.get(ln)).is_ok());
 }
 
 #[test]

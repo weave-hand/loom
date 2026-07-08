@@ -512,9 +512,11 @@ struct DefineModelReq {
     properties: Vec<PropReq>,
     /// Aggregate-over-link derived properties. Link *existence* is not validated
     /// here (matches `define_type`; see iss-delete-link-derived-dangle) — but when
-    /// the link and its target type DO resolve, `define_type` now validates the
-    /// aggregate column against the target (a missing column, or a non-numeric
-    /// column under Sum/Avg, is a `Validation` error surfaced here as 400).
+    /// the link and its target type DO resolve, `define_type` best-effort checks a
+    /// *declared* target property's type for applicability (Sum/Avg numeric, Min/Max
+    /// ordered), a `Validation` error surfaced here as 400. A catalog-only column
+    /// (one the target type doesn't declare as a property) is left to the ingest
+    /// `bind` seam's catalog-aware check.
     #[serde(default)]
     derived: Vec<DerivedReq>,
 }

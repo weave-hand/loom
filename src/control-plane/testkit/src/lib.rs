@@ -1385,28 +1385,23 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     .await
     .expect("define transactions link");
 
-    // resolvable link + MISSING agg column → Validation.
-    let missing_col = o
-        .define_type(ObjectType {
-            name: tn("Account"),
-            table: tref("main", "account"),
-            identity: None,
-            properties: vec![prop("id", "Long")],
-            derived: vec![DerivedPropertyDef {
-                name: "x".into(),
-                ty: "Double".into(),
-                link: "transactions".into(),
-                agg: Aggregation::Sum("nope".into()),
-            }],
-        })
-        .await;
-    assert!(
-        matches!(
-            missing_col,
-            Err(control_plane_core::ControlPlaneError::Validation(_))
-        ),
-        "missing agg column → Validation: {missing_col:?}"
-    );
+    // resolvable link + UNDECLARED agg column (`nope` is not a Transaction property)
+    // → Ok. A derived aggregate may read a catalog-only column the type doesn't declare;
+    // best-effort validation SKIPS it (the ingest `bind` seam is the catalog-aware backstop).
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "x".into(),
+            ty: "Double".into(),
+            link: "transactions".into(),
+            agg: Aggregation::Sum("nope".into()),
+        }],
+    })
+    .await
+    .expect("undeclared agg column is skipped (best-effort)");
 
     // resolvable link + NON-NUMERIC agg column (note: String) under Sum → Validation.
     let non_numeric = o

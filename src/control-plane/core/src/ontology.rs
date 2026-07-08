@@ -770,11 +770,14 @@ impl ActionDefBuilder {
 }
 
 /// Validate each derived property's aggregate column against its link's target
-/// type, when the link+target are resolvable. `resolve_target(link_name)` returns
-/// the target `ObjectType` or `None` — an unresolvable link/target is SKIPPED
-/// (best-effort; the read path keeps guarding a missing link). A resolvable link
-/// whose `agg` column is absent, or is present but wrong-typed for the aggregation
-/// (`Sum`/`Avg` need numeric, `Min`/`Max` need ordered), is a `Validation` error.
+/// type — best-effort, catalog-decoupled. `resolve_target(link_name)` returns the
+/// target `ObjectType` or `None`; an unresolvable link/target is SKIPPED (deferred
+/// to the read path). A derived aggregate reads a TARGET-TABLE column, which a type
+/// need not declare as a property (a type may declare a subset of its table's
+/// columns; the ingest `bind` conformance seam validates against the catalog table),
+/// so a column absent from the declared `properties` is likewise SKIPPED here. Only
+/// a DECLARED property whose KNOWN logical type is inapplicable to the aggregation
+/// (`Sum`/`Avg` need numeric, `Min`/`Max` need ordered) is a `Validation` error.
 ///
 /// `resolve_target` carries an explicit lifetime `'a` (rather than a fully
 /// elided `Fn(&str) -> Option<&ObjectType>`) because the elided form desugars
@@ -791,17 +794,17 @@ pub fn validate_derived_columns<'a>(
         let Some(col) = d.agg.column() else { continue }; // Count: no column
         let Some(target) = resolve_target(&d.link) else {
             continue;
-        }; // unresolvable: skip (deferred)
+        }; // unresolvable link/target: skip (deferred)
+        // Best-effort: a derived aggregate reads a TARGET-TABLE column, which a type need
+        // not declare as a property (a type may declare a subset of its table's columns; the
+        // ingest `bind` conformance seam validates against the catalog table). So a column
+        // absent from the declared properties is SKIPPED here — only a DECLARED property whose
+        // KNOWN logical type is inapplicable to the aggregation is rejected.
         let Some(prop) = target.properties.iter().find(|p| p.name == col) else {
-            return Err(ControlPlaneError::Validation(format!(
-                "derived `{}`: link `{}` target `{}` has no column `{col}`",
-                d.name, d.link, target.name.0
-            )));
+            continue;
         };
-        if !d
-            .agg
-            .column_applicable(crate::logical_type::resolve_logical(&prop.ty))
-        {
+        let base = crate::logical_type::resolve_logical(&prop.ty);
+        if base.is_some() && !d.agg.column_applicable(base) {
             return Err(ControlPlaneError::Validation(format!(
                 "derived `{}`: aggregation over column `{col}` (type `{}`) is not applicable \
                  (Sum/Avg need a numeric column; Min/Max need an ordered column)",

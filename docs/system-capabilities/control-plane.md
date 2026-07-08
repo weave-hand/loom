@@ -170,15 +170,17 @@ chain validation was deliberately dropped as subsumed: once every link is
 column-validated and endpoint-typed, any chain of defined links is structurally
 sound by construction, and ad-hoc multi-hop query paths correctly stay a
 read-time 400. The raw `define_type` upsert (`POST /admin/models`), which
-bypasses the `bind` seam above, now **also validates a resolvable derived
+bypasses the `bind` seam above, now **best-effort checks a resolvable derived
 property's aggregate column** at define time: when the property's link and
-target type are defined, the `agg` column must exist on the target and be
-numeric for `Sum`/`Avg` (ordered for `Min`/`Max`), else a `Validation` 400 —
-closing the gap where a typo'd column compiled a broken `SUM(sub."nope")` that
-500'd every reader. Validation is best-effort: an unresolvable link or
-not-yet-defined target defers (the read path keeps omitting a missing link), so
-a type carrying a derived property can still be defined before its link/target
-exist (#398).
+target type are defined, a *declared* target property named by the `agg` column
+must have a type applicable to the aggregation — numeric for `Sum`/`Avg`, ordered
+for `Min`/`Max` — else a `Validation` 400. The check is deliberately catalog-
+decoupled: a derived aggregate may read a target-TABLE column the type doesn't
+declare as a property (a type may declare a subset of its table's columns), so a
+column absent from the declared properties is SKIPPED here and left to the ingest
+`bind` seam's catalog-aware check; likewise an unresolvable link or not-yet-defined
+target defers (the read path keeps omitting a missing link), so a type carrying a
+derived property can still be defined before its link/target exist (#398).
 
 Actions are the governed write path. Part 1 delivered named `ActionDef`s invoked
 via `POST /actions/{name}` — the first live `Action::Write` enforcement — as an

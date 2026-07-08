@@ -337,6 +337,7 @@ async fn seed_order_customer_link(cp: &MemoryControlPlane, with_derived: bool) {
     cp.define_type(
         ObjectType::build("Customer", ("wh", "customer"))
             .prop_req("id", "Long")
+            .prop("name", "String")
             .identity("id")
             .done(),
     )
@@ -427,14 +428,17 @@ async fn delete_unreferenced_link_is_200() {
 }
 
 #[tokio::test]
-async fn define_model_with_missing_agg_column_is_400() {
+async fn define_model_with_non_numeric_agg_column_is_400() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, ADMIN).await;
-    // Seed Customer (id: Long), Order, and the resolvable `customer` link (Order -> Customer).
+    // Seed Customer (id: Long, name: String), Order, and the resolvable `customer`
+    // link (Order -> Customer).
     seed_order_customer_link(&cp, false).await;
 
-    // Redefine Order with a derived Sum over a column Customer does not have. The
-    // link + target resolve, so define_time validation rejects it as 400.
+    // Redefine Order with a derived Sum over Customer's DECLARED `name` (String)
+    // property. The link + target resolve and `name` is a declared property whose
+    // known logical type is non-numeric, so define-time validation rejects it as 400.
+    // (An UNDECLARED / catalog-only column would instead be skipped best-effort.)
     let body = r#"{
         "name": "Order",
         "table": {"schema": "wh", "name": "order"},
@@ -442,12 +446,12 @@ async fn define_model_with_missing_agg_column_is_400() {
         "properties": [{"name": "id", "ty": "Long", "required": true},
                        {"name": "customer_id", "ty": "Long", "required": true}],
         "derived": [{"name": "bogus", "ty": "Double", "link": "customer",
-                     "agg": {"kind": "sum", "column": "nope"}}]
+                     "agg": {"kind": "sum", "column": "name"}}]
     }"#;
     let (status, resp) = send(app(cp), post_json("/admin/models", &token, body)).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "missing agg column against a resolvable link+target → 400: {resp}"
+        "Sum over a declared non-numeric property → 400: {resp}"
     );
 }
