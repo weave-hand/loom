@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    BucketOffsets, ControlPlaneError, Result, StreamKind, StreamMeta, StreamTables,
+    BucketOffsets, ControlPlaneError, MergeEngine, Result, StreamKind, StreamMeta, StreamTables,
 };
 
 use crate::MemoryControlPlane;
@@ -45,12 +45,19 @@ impl StreamTables for MemoryControlPlane {
                 kind: StreamKind::Log,
                 bucket_key: None,
                 changelog_table_id: None,
+                merge_engine: MergeEngine::LastRow,
             });
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()> {
+    async fn declare_cdc(
+        &self,
+        table_id: i64,
+        bucket_count: i32,
+        bucket_key: &str,
+        merge_engine: MergeEngine,
+    ) -> Result<()> {
         self.stream_tables
             .lock()
             .entry(table_id)
@@ -59,6 +66,7 @@ impl StreamTables for MemoryControlPlane {
                 kind: StreamKind::Cdc,
                 bucket_key: Some(bucket_key.to_string()),
                 changelog_table_id: None,
+                merge_engine,
             });
         Ok(())
     }

@@ -60,7 +60,9 @@ async fn consolidate_stream_defers_to_a_held_table_lock() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id").await.expect("declare_cdc");
+    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
 
     // Hold the SAME per-table advisory lock `consolidate_stream` must take, from
     // a separate transaction — standing in for an in-flight flush/GC on this table.

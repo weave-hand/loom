@@ -92,7 +92,9 @@ async fn crossing_delta_threshold_enqueues_exactly_one_and_debounces() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id").await.expect("declare_cdc");
+    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
 
     // Seed id=1, val=100 (a plain +I append; not a delta, so it never touches
     // the consolidate trigger).

@@ -77,6 +77,10 @@ pub struct StreamMeta {
     /// (slice 2b); `None` for a log table or a CDC table not yet given its
     /// changelog pointer. Soft pointer — no FK.
     pub changelog_table_id: Option<i64>,
+    /// The replace-class merge engine governing this CDC table's current-state
+    /// fold (compaction + merge-on-read). Default `LastRow`. Log tables carry
+    /// `LastRow` too (unused — only CDC tables fold).
+    pub merge_engine: MergeEngine,
 }
 
 #[async_trait]
@@ -99,8 +103,15 @@ pub trait StreamTables {
     /// The bucket count if table_id is a declared log table, else None.
     async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>>;
     /// Declare table_id as a PK/CDC table with bucket_count buckets keyed on
-    /// `bucket_key` (the identity column). Idempotent, first-wins on all fields.
-    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()>;
+    /// `bucket_key` (the identity column), folded by `merge_engine`. Idempotent,
+    /// first-wins on all fields.
+    async fn declare_cdc(
+        &self,
+        table_id: i64,
+        bucket_count: i32,
+        bucket_key: &str,
+        merge_engine: MergeEngine,
+    ) -> Result<()>;
     /// Full stream metadata for table_id if it is a declared stream table, else None.
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>>;
     /// Point a CDC table's registry row at its durable changelog table's mirror

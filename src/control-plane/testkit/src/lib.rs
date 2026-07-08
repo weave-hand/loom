@@ -5456,17 +5456,43 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
         "other tables unaffected"
     );
     // CDC declaration: kind='cdc', bucket_key recorded, idempotent first-wins.
-    cp.declare_cdc(2, 4, "id").await.expect("declare cdc");
+    cp.declare_cdc(2, 4, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare cdc");
     let meta = cp.stream_meta(2).await.expect("meta").expect("declared");
     assert_eq!(meta.bucket_count, 4);
     assert_eq!(meta.kind, control_plane_core::StreamKind::Cdc);
     assert_eq!(meta.bucket_key.as_deref(), Some("id"));
-    cp.declare_cdc(2, 8, "other")
+    assert_eq!(
+        meta.merge_engine,
+        control_plane_core::MergeEngine::LastRow,
+        "default merge engine is LastRow"
+    );
+    cp.declare_cdc(2, 8, "other", control_plane_core::MergeEngine::LastRow)
         .await
         .expect("idempotent redeclare no-ops");
     let meta2 = cp.stream_meta(2).await.expect("meta").expect("declared");
     assert_eq!(meta2.bucket_count, 4, "first declaration's fields stand");
     assert_eq!(meta2.bucket_key.as_deref(), Some("id"));
+    // merge_engine round-trips a non-default engine on a fresh table, and a
+    // redeclare with a different engine is first-wins (idempotent no-op).
+    cp.declare_cdc(3, 2, "id", control_plane_core::MergeEngine::FirstRow)
+        .await
+        .expect("declare cdc first_row");
+    let me = cp.stream_meta(3).await.expect("meta").expect("declared");
+    assert_eq!(me.merge_engine, control_plane_core::MergeEngine::FirstRow);
+    cp.declare_cdc(3, 2, "id", control_plane_core::MergeEngine::Versioned)
+        .await
+        .expect("idempotent redeclare no-ops");
+    assert_eq!(
+        cp.stream_meta(3)
+            .await
+            .expect("meta")
+            .expect("declared")
+            .merge_engine,
+        control_plane_core::MergeEngine::FirstRow,
+        "first declaration's engine stands"
+    );
     // changelog_table_id is null until explicitly set, then round-trips.
     let m = cp.stream_meta(2).await.expect("meta").expect("row");
     assert_eq!(
@@ -5489,6 +5515,11 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
     assert_eq!(
         log_meta.changelog_table_id, None,
         "log table has no changelog pointer"
+    );
+    assert_eq!(
+        log_meta.merge_engine,
+        control_plane_core::MergeEngine::LastRow,
+        "log table carries the default LastRow engine (unused but present)"
     );
     // Unknown table → None.
     assert!(cp.stream_meta(999).await.expect("meta").is_none());

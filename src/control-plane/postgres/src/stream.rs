@@ -112,7 +112,14 @@ pub(crate) async fn reconcile_stream_mode(
             }
             match decl {
                 StreamDecl::Cdc { bucket_key, .. } => {
-                    pg_declare_cdc(&mut *conn, tid, n, bucket_key).await?;
+                    pg_declare_cdc(
+                        &mut *conn,
+                        tid,
+                        n,
+                        bucket_key,
+                        control_plane_core::MergeEngine::LastRow,
+                    )
+                    .await?;
                     // Register the changelog table's mirror row (its Iceberg metadata
                     // was created by `land_cdc` before this tx, outside any commit) and
                     // point the registry at it, reusing this write's `at` snapshot —
@@ -272,13 +279,15 @@ pub(crate) async fn pg_declare_cdc<'e, E: sqlx::PgExecutor<'e>>(
     table_id: i64,
     bucket_count: i32,
     bucket_key: &str,
+    merge_engine: control_plane_core::MergeEngine,
 ) -> Result<()> {
     sqlx::query!(
-        "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key) \
-         values ($1, $2, 'cdc', $3) on conflict (table_id) do nothing",
+        "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key, merge_engine) \
+         values ($1, $2, 'cdc', $3, $4) on conflict (table_id) do nothing",
         table_id,
         bucket_count,
         bucket_key,
+        merge_engine.as_str(),
     )
     .execute(ex)
     .await
@@ -292,8 +301,8 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
     table_id: i64,
 ) -> Result<Option<StreamMeta>> {
     let row = sqlx::query!(
-        "select bucket_count, kind, bucket_key, changelog_table_id from stream.stream_table \
-         where table_id = $1",
+        "select bucket_count, kind, bucket_key, changelog_table_id, merge_engine \
+         from stream.stream_table where table_id = $1",
         table_id,
     )
     .fetch_optional(ex)
@@ -305,11 +314,19 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
         } else {
             StreamKind::Log
         };
+        // The CHECK constraint on `merge_engine` guarantees a valid token; this
+        // `.unwrap_or` is a corrupt-row backstop only (never reached in
+        // practice — a bad token would have rejected the insert).
+        let merge_engine = r
+            .merge_engine
+            .parse()
+            .unwrap_or(control_plane_core::MergeEngine::LastRow);
         StreamMeta {
             bucket_count: r.bucket_count,
             kind,
             bucket_key: r.bucket_key,
             changelog_table_id: r.changelog_table_id,
+            merge_engine,
         }
     }))
 }
@@ -345,8 +362,21 @@ impl StreamTables for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()> {
-        pg_declare_cdc(self.pool(), table_id, bucket_count, bucket_key).await
+    async fn declare_cdc(
+        &self,
+        table_id: i64,
+        bucket_count: i32,
+        bucket_key: &str,
+        merge_engine: control_plane_core::MergeEngine,
+    ) -> Result<()> {
+        pg_declare_cdc(
+            self.pool(),
+            table_id,
+            bucket_count,
+            bucket_key,
+            merge_engine,
+        )
+        .await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
