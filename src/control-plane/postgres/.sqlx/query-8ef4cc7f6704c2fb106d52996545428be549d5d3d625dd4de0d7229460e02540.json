@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update stream.stream_table set changelog_table_id = $2 where table_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ef4cc7f6704c2fb106d52996545428be549d5d3d625dd4de0d7229460e02540"
+}

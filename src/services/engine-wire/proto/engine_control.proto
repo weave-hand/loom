@@ -11,6 +11,7 @@ service EngineControl {
   rpc GcTable      (GcTableRequest)      returns (GcTableResponse);
   rpc ListFiles    (ListFilesRequest)    returns (ListFilesResponse);
   rpc CompactTable (CompactTableRequest) returns (CompactTableResponse);
+  rpc ConsolidateStream (ConsolidateStreamRequest) returns (ConsolidateStreamResponse);
   rpc CommitTransform (CommitTransformRequest) returns (CommitTransformResponse);
   rpc MarkRunRunning  (MarkRunRunningRequest)  returns (MarkRunRunningResponse);
   rpc FinishRunFailed (FinishRunFailedRequest) returns (FinishRunFailedResponse);
@@ -72,6 +73,13 @@ message ListFilesResponse {
 }
 message CompactTableRequest  { string schema = 1; string name = 2; repeated string expire = 3; repeated string write_json = 4; }
 message CompactTableResponse { optional int64 snapshot_id = 1; }
+
+// Fold a `kind='cdc'` table's base by LastRow-per-identity (greatest loom_offset
+// wins; a tombstoned/-D winner is dropped) and clear its inline-shadow flag. A
+// no-op on a non-CDC table (batch or log) returns snapshot_id = 0; the changelog
+// table is never touched.
+message ConsolidateStreamRequest  { string schema = 1; string name = 2; }
+message ConsolidateStreamResponse { int64 snapshot_id = 1; }
 
 message CommitTransformRequest {
   string schema = 1;              // output TableRef

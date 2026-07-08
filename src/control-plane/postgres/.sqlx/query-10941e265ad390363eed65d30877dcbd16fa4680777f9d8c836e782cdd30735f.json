@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into iceberg_mirror.consolidate_trigger (table_id, delta_count) values ($1, $2) on conflict (table_id) do update set delta_count = iceberg_mirror.consolidate_trigger.delta_count + excluded.delta_count returning delta_count as \"delta_count!\", coalesce(threshold, $3) as \"effective!\", enqueued as \"enqueued!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "delta_count!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.consolidate_trigger",
+            "name": "delta_count"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "effective!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "enqueued!",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.consolidate_trigger",
+            "name": "enqueued"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "10941e265ad390363eed65d30877dcbd16fa4680777f9d8c836e782cdd30735f"
+}

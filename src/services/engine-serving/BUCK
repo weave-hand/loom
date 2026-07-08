@@ -22,6 +22,7 @@ rust_library(
         "//third-party:thiserror",
         "//third-party:time",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
     visibility = ["PUBLIC"],
 )
@@ -205,6 +206,21 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "consolidate-lock",
+    crate = "consolidate_lock",
+    srcs = ["tests/consolidate_lock.rs"],
+    crate_root = "tests/consolidate_lock.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )
 

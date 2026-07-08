@@ -17,6 +17,7 @@ against.
 | [query-api.md](query-api.md) | Governed reads, typed JSON, link/graph traversal, the filter language, actions, object sets, error contract |
 | [engine.md](engine.md) | The serving path, internal Flight SQL wire, Iceberg write paths (inline/flush/overwrite/compaction/COW), stats, GC |
 | [transform.md](transform.md) | Queue-driven SQL transforms, typed transforms, output tuning, the worker execution model |
+| [stream.md](stream.md) | Log tables and PK/CDC tables, framing/bucketing/offsets, CDC emission, dual base+changelog Iceberg tables, LastRow compaction, CDC-aware serving reads |
 | [vector-search.md](vector-search.md) | `vector(N)` column type, index definitions, Flat/IVF/HNSW builds, `/search`, rebuild triggers |
 | [build-and-test.md](build-and-test.md) | Hermetic buck2 builds + RE, test infrastructure, lint gates, CI, code-health and docs-register tooling |
 | [ui.md](ui.md) | The Yew/WASM UI experiment and its browser e2e harness |

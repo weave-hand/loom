@@ -37,6 +37,10 @@ pub struct EngineTuning {
     /// Inline-row bytes above which a flush-to-Parquet job is enqueued
     /// (`LOOM_FLUSH_BYTE_THRESHOLD`, default 64 MiB).
     pub flush_byte_threshold: i64,
+    /// Accumulated CDC delta-row count (per declared stream table) at/above which
+    /// a `stream_consolidate` job is enqueued (`LOOM_CONSOLIDATE_DELTA_THRESHOLD`,
+    /// default 128 — mirrors `ingest::config::RoutingTuning::consolidate_delta_threshold`).
+    pub consolidate_delta_threshold: i64,
     /// How often the scheduler loop claims due transform schedules
     /// (`LOOM_SCHEDULER_TICK_SECS`, default 5).
     pub scheduler_tick: Duration,
@@ -62,6 +66,11 @@ impl EngineTuning {
                 vars,
                 "LOOM_FLUSH_BYTE_THRESHOLD",
                 64 * 1024 * 1024,
+            )?,
+            consolidate_delta_threshold: service_runtime::parse_var(
+                vars,
+                "LOOM_CONSOLIDATE_DELTA_THRESHOLD",
+                128_i64,
             )?,
             scheduler_tick: Duration::from_secs(service_runtime::parse_var(
                 vars,
@@ -112,7 +121,8 @@ pub async fn run(
         pool.clone(),
         tuning.inline_byte_limit,
         tuning.flush_byte_threshold,
-    );
+    )
+    .with_consolidate_delta_threshold(tuning.consolidate_delta_threshold);
 
     let control = EngineControlService {
         cp,

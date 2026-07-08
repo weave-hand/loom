@@ -28,8 +28,8 @@ use sqlx::{AssertSqlSafe, PgConnection, PgPool, Postgres, Row};
 use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
-    ProjectedColumn, arm_inline_trigger, bump_inline_trigger, ensure_table, live_columns,
-    live_table_id, next_snapshot, project_columns,
+    ProjectedColumn, arm_consolidate_trigger, arm_inline_trigger, bump_consolidate_trigger,
+    bump_inline_trigger, ensure_table, live_columns, live_table_id, next_snapshot, project_columns,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_type::{
@@ -538,7 +538,8 @@ pub(crate) async fn inline_append_decl(
     // batch->stream conversion (Validation), and a bucket-count mismatch (Conflict),
     // all BEFORE any declare — on this same transaction.
     let effective: Option<i32> =
-        crate::stream::reconcile_stream_mode(&mut *conn, tid, decl, pre_existing, table).await?;
+        crate::stream::reconcile_stream_mode(&mut *conn, tid, decl, pre_existing, table, at)
+            .await?;
 
     // 3. Insert each row with the new begin_snapshot. The statement text is
     //    loop-invariant — only the binds change per row.
@@ -693,7 +694,19 @@ pub(crate) async fn inline_append_decl(
         // the arm so the trigger stays disarmed (and can re-fire once slice-2
         // consolidation clears the flag) rather than getting stuck "enqueued" for a
         // job that was deliberately never queued.
-        if st.live_bytes >= st.effective && !st.enqueued && !has_shadow(&mut *conn, tid).await? {
+        // A CDC table's flush is delta-aware (dual-write of the base +I/+U/-D
+        // subset and the full changelog, `flush_locked`'s CDC branch) and is
+        // safe to run even while shadow deltas are pending — it never
+        // duplicates/resurrects a file row the way the non-CDC cow-inline-
+        // shadow flush would, so the `has_shadow` suppression below applies
+        // only to non-CDC tables.
+        let is_cdc = crate::stream::pg_stream_meta(&mut *conn, tid)
+            .await?
+            .is_some_and(|m| m.kind == control_plane_core::StreamKind::Cdc);
+        if st.live_bytes >= st.effective
+            && !st.enqueued
+            && (is_cdc || !has_shadow(&mut *conn, tid).await?)
+        {
             let job = NewJob {
                 kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
                 payload: serde_json::json!({ "schema": table.schema, "name": table.name }),
@@ -755,6 +768,19 @@ pub async fn has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool>
     .await
     .map_err(backend)?;
     Ok(v)
+}
+
+/// Clear `tid`'s inline-shadow flag after consolidation, re-arming the
+/// byte-trigger flush. Idempotent. AssertSqlSafe: see [`set_has_shadow`].
+pub async fn clear_has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result<()> {
+    sqlx::query(AssertSqlSafe(
+        "delete from iceberg_mirror.shadow_flag where table_id = $1",
+    ))
+    .bind(tid)
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
 }
 
 /// Extract the id column's cell (row 0) from `batch`, typed by its `ColumnSpec`.
@@ -983,7 +1009,7 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
 /// distinct keys and never contend. Inline delta rows are never end-capped here.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness; a params struct would only obscure the call sites"
+    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness + optional consolidate threshold; a params struct would only obscure the call sites"
 )]
 pub async fn write_inline_delta(
     pool: &PgPool,
@@ -995,6 +1021,7 @@ pub async fn write_inline_delta(
     before: Option<(&[ColumnSpec], &RecordBatch)>,
     lineage: LineageEvent,
     expected_version: i64,
+    consolidate_threshold: Option<i64>,
 ) -> Result<SnapshotId> {
     // `before` (the prior row with its OWN positionally-aligned ColumnSpecs) is USED
     // by the CDC emit branch below; a non-CDC table ignores it and stays byte-identical.
@@ -1053,6 +1080,10 @@ pub async fn write_inline_delta(
     // (partition by <id>) shadows/hides the file row for that id. A CDC table emits
     // the multi-row change sequence (below); a non-CDC table writes a single tombstone
     // or version row (the `else if`/`else` arms).
+    // Count of CDC changelog rows this call emits (1 for a delete's -D, 2 for an
+    // update's -U/+U pair) — accrued below for the consolidate trigger. Unused
+    // (and left 0) on the non-CDC branches.
+    let mut emitted_rows: i64 = 0;
     if cdc {
         let m = meta
             .as_ref()
@@ -1079,6 +1110,7 @@ pub async fn write_inline_delta(
                 before_batch,
             )
             .await?;
+            emitted_rows = 1;
         } else {
             // Update → adjacent (-U before-image, +U after-image), -U first, at
             // consecutive offsets in the identity's single bucket. -U uses the
@@ -1108,6 +1140,7 @@ pub async fn write_inline_delta(
                 batch,
             )
             .await?;
+            emitted_rows = 2;
         }
     } else if tombstone {
         // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
@@ -1150,6 +1183,28 @@ pub async fn write_inline_delta(
             q = bind_cell(q, cell);
         }
         q.execute(&mut *tx).await.map_err(backend)?;
+    }
+
+    // Consolidate trigger: accrue this call's CDC delta rows, and on crossing the
+    // threshold enqueue one `stream_consolidate` job — mirroring the byte-trigger
+    // block in `inline_append_decl` above, but counting delta rows in a sibling
+    // trigger table (`consolidate_trigger`, not `inline_trigger`) so the two never
+    // clash. Only meaningful for a CDC table (a non-CDC delta has no changelog to
+    // consolidate). `None` => triggering disabled. Debounced by `enqueued`; the
+    // engine's `consolidate_stream` handler clears the trigger (alongside
+    // `has_shadow`) when consolidation runs, re-arming it for the next run.
+    if cdc && let Some(threshold) = consolidate_threshold {
+        let st = bump_consolidate_trigger(&mut tx, tid, emitted_rows, threshold).await?;
+        if st.delta_count >= st.effective && !st.enqueued {
+            let job = NewJob {
+                kind: control_plane_core::STREAM_CONSOLIDATE_JOB_KIND.to_string(),
+                payload: serde_json::json!({ "schema": table.schema, "name": table.name }),
+                run_at: None,
+                priority: 0,
+            };
+            crate::queue::pg_insert(&mut *tx, &job).await?;
+            arm_consolidate_trigger(&mut tx, tid).await?;
+        }
     }
 
     set_has_shadow(&mut tx, tid).await?;
@@ -1318,11 +1373,36 @@ impl IcebergCatalog {
     /// arrow batch), or `None` if there is no inline storage or no live rows.
     /// The `table_id` and row ids are returned so a flush can end-cap exactly the
     /// rows it reconstructs in the same `inline_<tid>` table. Shares the
-    /// reconstruction the read path uses.
+    /// reconstruction the read path uses. Excludes `-U` before-images — they are
+    /// audit-only rows that must never compete as an identity's current-state row
+    /// (see `inline_live_batch_full` for the unfiltered variant).
     pub async fn inline_live_batch(
         &self,
         table: &TableRef,
         at: SnapshotId,
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
+        self.inline_live_batch_impl(table, at, true).await
+    }
+
+    /// Identical to `inline_live_batch` except it does NOT exclude `-U`
+    /// before-images, so the returned batch carries every live inline row
+    /// (including `-U`). Used by the changelog flush, which needs the full
+    /// change sequence rather than just the current-state view.
+    pub async fn inline_live_batch_full(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
+        self.inline_live_batch_impl(table, at, false).await
+    }
+
+    /// Shared body of `inline_live_batch`/`inline_live_batch_full`; the only
+    /// difference between the two is whether `-U` before-images are excluded.
+    async fn inline_live_batch_impl(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        exclude_minus_u: bool,
     ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
         let mut conn = self.pool.acquire().await.map_err(backend)?;
         let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
@@ -1346,9 +1426,13 @@ impl IcebergCatalog {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let minus_u_pred = if exclude_minus_u {
+            " and (loom_change_kind is null or loom_change_kind <> '-U')"
+        } else {
+            ""
+        };
         let rows = sqlx::query(AssertSqlSafe(format!(
-            "select loom_row_id, {col_list} from {} where {} \
-             and (loom_change_kind is null or loom_change_kind <> '-U') order by loom_row_id",
+            "select loom_row_id, {col_list} from {} where {}{minus_u_pred} order by loom_row_id",
             inline_table_name(tid),
             mvcc_live_pred(at.0),
         )))

@@ -162,6 +162,7 @@ async fn tombstone_delta_is_minus_d() {
         None,
         lin(),
         v0,
+        None,
     )
     .await
     .expect("tombstone delta");
@@ -218,6 +219,7 @@ async fn version_delta_is_plus_u() {
         None,
         lin(),
         v0,
+        None,
     )
     .await
     .expect("version delta");

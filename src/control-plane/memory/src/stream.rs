@@ -44,6 +44,7 @@ impl StreamTables for MemoryControlPlane {
                 bucket_count,
                 kind: StreamKind::Log,
                 bucket_key: None,
+                changelog_table_id: None,
             });
         Ok(())
     }
@@ -57,6 +58,7 @@ impl StreamTables for MemoryControlPlane {
                 bucket_count,
                 kind: StreamKind::Cdc,
                 bucket_key: Some(bucket_key.to_string()),
+                changelog_table_id: None,
             });
         Ok(())
     }
@@ -73,5 +75,13 @@ impl StreamTables for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>> {
         Ok(self.stream_tables.lock().get(&table_id).cloned())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()> {
+        if let Some(m) = self.stream_tables.lock().get_mut(&table_id) {
+            m.changelog_table_id = Some(changelog_table_id);
+        }
+        Ok(())
     }
 }

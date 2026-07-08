@@ -293,3 +293,32 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+# Stream-consolidate job e2e: seed a CDC table with an unconsolidated update
+# delta (flushed to real Parquet), run handle_stream_consolidate over the wire
+# (decode payload -> EngineControl::ConsolidateStream RPC), assert the base
+# folds to LastRow-per-identity and has_shadow clears. Plus the bad-payload
+# Abandon edge for this job kind's dispatch wiring.
+loom_fixture_test(
+    name = "stream-consolidate-job",
+    crate = "stream_consolidate_job",
+    srcs = ["tests/stream_consolidate_job.rs"],
+    crate_root = "tests/stream_consolidate_job.rs",
+    edition = "2024",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/loom-config:loom-config",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

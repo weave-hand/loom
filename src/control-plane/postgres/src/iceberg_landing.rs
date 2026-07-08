@@ -160,6 +160,16 @@ pub async fn land_cdc(
     // declared order, which need not match the wire order — so without this
     // realignment, same-typed reordered columns would silently swap values.
     let (schema, batches) = align_to_columns(&schema, batches, columns)?;
+
+    // A CDC declaration also owns a durable changelog Iceberg table (spec §4). Its
+    // object-store metadata is created HERE (before any commit tx), so both landing
+    // routes can assume it exists; its mirror row + registry pointer are set inside
+    // the write tx by `reconcile_stream_mode`. Idempotent.
+    if matches!(decl, StreamDecl::Cdc { .. }) {
+        let clog = changelog_table_ref(table);
+        ensure_iceberg_table(catalog, &clog, columns, true).await?;
+    }
+
     let bytes: usize = batches.iter().map(|b| b.get_array_memory_size()).sum();
     if bytes <= limits.inline_byte_limit {
         let batch = concat_batches(&schema, &batches).map_err(backend)?;
@@ -336,7 +346,7 @@ pub(crate) async fn append_parquet_snapshot(
 /// list's element field (`item`, no field id) would otherwise be rejected by
 /// `RecordBatch::try_new`, which compares the full nested field. Same data, relabeled
 /// element field. Also validates each row's element count equals the declared `N`.
-fn coerce_batch_to_ice(
+pub(crate) fn coerce_batch_to_ice(
     batch: &RecordBatch,
     ice_arrow: &Arc<Schema>,
     columns: &[ColumnSpec],
@@ -652,6 +662,15 @@ pub(crate) fn augment_with_framing(
     }
 }
 
+/// The durable changelog table's `TableRef` for a CDC base table: same schema,
+/// name suffixed `__changelog` (slice 2b, spec §4).
+pub(crate) fn changelog_table_ref(base: &TableRef) -> TableRef {
+    TableRef {
+        schema: base.schema.clone(),
+        name: format!("{}__changelog", base.name),
+    }
+}
+
 /// How [`register_files`] folds new files into the table's live set.
 #[derive(Clone)]
 pub enum WriteMode {
@@ -903,7 +922,7 @@ async fn land_parquet_stream(
         // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
         // back and return, never retry.
         let effective =
-            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table)
+            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table, at)
                 .await
             {
                 Ok(e) => e,
@@ -1089,8 +1108,19 @@ pub async fn overwrite_parquet_snapshot(
     if batches.iter().all(|b| b.num_rows() == 0) {
         return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
     }
-    // Framing persistence on the overwrite/replace path is future scope
-    // (Plan 1b Task 5) — this path never stamps/persists framing yet.
+    // A declared stream table's physical schema carries framing; an overwrite must
+    // preserve it (else the replacement looks like a dropped-columns schema change
+    // against the live, framing-bearing mirror — see `classify_schema_change`).
+    // Batch tables stay framing-free — byte-identical to before.
+    let include_framing = {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        match live_table_id(&mut conn, &table.schema, &table.name).await? {
+            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .is_some(),
+            None => false,
+        }
+    };
     append_parquet_snapshot(
         pool,
         catalog,
@@ -1104,7 +1134,7 @@ pub async fn overwrite_parquet_snapshot(
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
-        false,
+        include_framing,
     )
     .await
 }

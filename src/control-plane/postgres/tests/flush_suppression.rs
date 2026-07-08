@@ -157,6 +157,7 @@ async fn flush_is_suppressed_after_a_mutation() {
         None,
         lineage(run, &table),
         v0,
+        None,
     )
     .await
     .expect("version delta");

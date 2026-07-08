@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    BucketOffsets, ControlPlaneError, Result, StreamKind, StreamMeta, StreamTables, TableRef,
+    BucketOffsets, ControlPlaneError, Result, SnapshotId, StreamKind, StreamMeta, StreamTables,
+    TableRef,
 };
 
 use crate::{PgControlPlane, backend};
@@ -42,13 +43,18 @@ pub(crate) enum StreamDecl {
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
 /// (the batch→stream conversion guard). `tid`: the mirror table id (already
-/// ensured by the caller).
+/// ensured by the caller). `at`: this write's already-allocated mirror snapshot
+/// (the same value the caller passed to its own `ensure_table`) — reused, on a
+/// CDC first-declare, as the changelog table's `iceberg_mirror.table` genesis
+/// snapshot, exactly as `write_steps` shares one snapshot across every table it
+/// touches in a transaction.
 pub(crate) async fn reconcile_stream_mode(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     decl: &StreamDecl,
     pre_existing: bool,
     table: &TableRef,
+    at: SnapshotId,
 ) -> Result<Option<i32>> {
     let requested: Option<i32> = match decl {
         StreamDecl::None => None,
@@ -107,6 +113,22 @@ pub(crate) async fn reconcile_stream_mode(
             match decl {
                 StreamDecl::Cdc { bucket_key, .. } => {
                     pg_declare_cdc(&mut *conn, tid, n, bucket_key).await?;
+                    // Register the changelog table's mirror row (its Iceberg metadata
+                    // was created by `land_cdc` before this tx, outside any commit) and
+                    // point the registry at it, reusing this write's `at` snapshot —
+                    // the changelog table's genesis shares the same snapshot as the
+                    // declaring write. Its columns are projected on first flush
+                    // append; an empty mirror row is a valid never-written table (no
+                    // user-facing changelog read in this slice).
+                    let clog = crate::iceberg_landing::changelog_table_ref(table);
+                    let clog_tid = crate::iceberg_mirror::ensure_table(
+                        &mut *conn,
+                        &clog.schema,
+                        &clog.name,
+                        at,
+                    )
+                    .await?;
+                    pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
                 }
                 _ => {
                     pg_declare_stream(&mut *conn, tid, n).await?;
@@ -270,7 +292,8 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
     table_id: i64,
 ) -> Result<Option<StreamMeta>> {
     let row = sqlx::query!(
-        "select bucket_count, kind, bucket_key from stream.stream_table where table_id = $1",
+        "select bucket_count, kind, bucket_key, changelog_table_id from stream.stream_table \
+         where table_id = $1",
         table_id,
     )
     .fetch_optional(ex)
@@ -286,8 +309,27 @@ pub(crate) async fn pg_stream_meta<'e, E: sqlx::PgExecutor<'e>>(
             bucket_count: r.bucket_count,
             kind,
             bucket_key: r.bucket_key,
+            changelog_table_id: r.changelog_table_id,
         }
     }))
+}
+
+/// Point a CDC table's registry row at its durable changelog table's mirror
+/// `table_id`. Idempotent overwrite; only meaningful for a `kind='cdc'` row.
+pub(crate) async fn pg_set_changelog_table_id<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+    changelog_table_id: i64,
+) -> Result<()> {
+    sqlx::query!(
+        "update stream.stream_table set changelog_table_id = $2 where table_id = $1",
+        table_id,
+        changelog_table_id,
+    )
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
 }
 
 #[async_trait]
@@ -310,5 +352,10 @@ impl StreamTables for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>> {
         pg_stream_meta(self.pool(), table_id).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()> {
+        pg_set_changelog_table_id(self.pool(), table_id, changelog_table_id).await
     }
 }

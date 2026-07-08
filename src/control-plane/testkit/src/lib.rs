@@ -5431,10 +5431,29 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
     let meta2 = cp.stream_meta(2).await.expect("meta").expect("declared");
     assert_eq!(meta2.bucket_count, 4, "first declaration's fields stand");
     assert_eq!(meta2.bucket_key.as_deref(), Some("id"));
+    // changelog_table_id is null until explicitly set, then round-trips.
+    let m = cp.stream_meta(2).await.expect("meta").expect("row");
+    assert_eq!(
+        m.changelog_table_id, None,
+        "changelog pointer null until set"
+    );
+    cp.set_changelog_table_id(2, 4242)
+        .await
+        .expect("set changelog id");
+    let m = cp.stream_meta(2).await.expect("meta").expect("row");
+    assert_eq!(
+        m.changelog_table_id,
+        Some(4242),
+        "changelog pointer round-trips"
+    );
     // A log table reports kind=Log with no bucket_key.
     let log_meta = cp.stream_meta(1).await.expect("meta").expect("declared");
     assert_eq!(log_meta.kind, control_plane_core::StreamKind::Log);
     assert_eq!(log_meta.bucket_key, None);
+    assert_eq!(
+        log_meta.changelog_table_id, None,
+        "log table has no changelog pointer"
+    );
     // Unknown table → None.
     assert!(cp.stream_meta(999).await.expect("meta").is_none());
 }

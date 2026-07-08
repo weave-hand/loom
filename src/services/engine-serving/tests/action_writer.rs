@@ -8,10 +8,12 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, ColumnSpec, ControlPlane, DatasetRef, EventType, IndexSpec,
-    LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
+    LineageEvent, Metric, ObjectType, PropertyDef, RunId, STREAM_CONSOLIDATE_JOB_KIND,
+    StreamTables, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
@@ -54,6 +56,29 @@ fn one_row_ipc(id: i64, name: &str) -> Vec<u8> {
         w.finish().expect("finish");
     }
     buf
+}
+
+/// A one-row, id-only IPC stream — the shape `current_inline_version` expects
+/// for its `id_ipc` argument.
+fn id_only_ipc(id: i64) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![id]))])
+        .expect("batch");
+    let mut buf = Vec::new();
+    {
+        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &schema).expect("writer");
+        w.write(&batch).expect("write");
+        w.finish().expect("finish");
+    }
+    buf
+}
+
+fn id_only_cols() -> Vec<ColumnSpec> {
+    vec![ColumnSpec {
+        name: "id".into(),
+        ty: "long".into(),
+        nullable: true,
+    }]
 }
 
 fn cols() -> Vec<ColumnSpec> {
@@ -242,5 +267,87 @@ async fn overwrite_table_enqueues_declared_index_rebuilds() {
         job_count_by_state(&pool, BUILD_VECTOR_INDEX_JOB_KIND, "available").await,
         2,
         "one available rebuild job per declared index"
+    );
+}
+
+/// The production write seam (`IcebergActionWriter::write_delta`, the exact
+/// method `engine::service::EngineControlService::write_delta` — the sole gRPC
+/// handler backing query-api's governed CDC mutations — calls) now threads a
+/// real `consolidate_delta_threshold` all the way to
+/// `iceberg_inline::write_inline_delta`: was hardcoded to `None` (dead
+/// machinery), now `Some(self.consolidate_delta_threshold)`. Configure the
+/// writer with a small threshold via `with_consolidate_delta_threshold` (the
+/// same builder `engine::run` calls with `EngineTuning::consolidate_delta_threshold`)
+/// and prove an UPDATE delta (a `(-U, +U)` pair == 2 delta rows) crossing
+/// threshold=2 enqueues exactly one `stream_consolidate` job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_delta_threads_consolidate_threshold_to_production_path() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let warehouse = tempfile::tempdir().expect("warehouse");
+    let catalog = Arc::new(build_catalog(&dsn, warehouse.path()).await);
+
+    e2e_seed_widget_table(&cp).await;
+
+    let table = TableRef {
+        schema: "main".into(),
+        name: "widget".into(),
+    };
+
+    // Declare the table CDC (keyed on `id`) BEFORE any write, exactly as
+    // `stream_cdc_consolidate_trigger.rs` does.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, "main", "widget", at0)
+        .await
+        .expect("ensure_table");
+    tx.commit().await.expect("commit");
+    cp.declare_cdc(tid, 2, "id").await.expect("declare_cdc");
+
+    let threshold = 2;
+    let writer = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX)
+        .with_consolidate_delta_threshold(threshold);
+
+    // Seed id=1 (a plain +I append — not a delta, never touches the trigger).
+    writer
+        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"))
+        .await
+        .expect("seed insert");
+    assert_eq!(
+        job_count(&pool, STREAM_CONSOLIDATE_JOB_KIND).await,
+        0,
+        "a plain insert must not enqueue a consolidate"
+    );
+
+    let v0 = writer
+        .current_inline_version(&table, &id_only_cols(), "id", &id_only_ipc(1))
+        .await
+        .expect("version after seed");
+
+    // UPDATE id=1 through the SAME production writer/method the engine's
+    // `write_delta` RPC handler calls: a (-U, +U) delta pair == 2 rows,
+    // crossing threshold=2.
+    writer
+        .write_delta(
+            &table,
+            &cols(),
+            "id",
+            false,
+            &one_row_ipc(1, "b"),
+            &one_row_ipc(1, "a"),
+            &serde_json::to_string(&cols()).expect("before_columns_json"),
+            event("update"),
+            v0,
+        )
+        .await
+        .expect("update delta crossing the threshold");
+
+    assert_eq!(
+        job_count(&pool, STREAM_CONSOLIDATE_JOB_KIND).await,
+        1,
+        "the production write_delta path enqueues stream_consolidate on crossing \
+         the threshold now that the writer threads Some(threshold) through"
     );
 }

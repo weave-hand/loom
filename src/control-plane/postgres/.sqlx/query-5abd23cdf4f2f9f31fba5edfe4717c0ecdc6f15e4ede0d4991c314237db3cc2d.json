@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select bucket_count, kind, bucket_key from stream.stream_table where table_id = $1",
+  "query": "select bucket_count, kind, bucket_key, changelog_table_id from stream.stream_table where table_id = $1",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,17 @@
             "name": "bucket_key"
           }
         }
+      },
+      {
+        "ordinal": 3,
+        "name": "changelog_table_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "stream.stream_table",
+            "name": "changelog_table_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -45,8 +56,9 @@
     "nullable": [
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "c3bf448b511e451583e8864ec36f7c273e8e8fbddd41f775d539e6be3556f9bc"
+  "hash": "5abd23cdf4f2f9f31fba5edfe4717c0ecdc6f15e4ede0d4991c314237db3cc2d"
 }

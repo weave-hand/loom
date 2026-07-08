@@ -379,6 +379,20 @@ impl GrpcQueueClient {
         Ok(resp.snapshot_id)
     }
 
+    /// Fold a `kind='cdc'` table's base by LastRow-per-identity (the engine-side
+    /// `consolidate_stream` op) and clear its inline-shadow flag. Returns the new
+    /// base snapshot id, or `0` if the table is not a declared CDC table (a no-op).
+    pub async fn consolidate_stream(&self, schema: String, name: String) -> Result<i64> {
+        let resp = self
+            .inner
+            .clone()
+            .consolidate_stream(pb::ConsolidateStreamRequest { schema, name })
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
     /// Commit a transform's output: create the table (idempotent), register the
     /// already-written `write` files (append, or replace the live set when
     /// `replace`), and emit `lineage` — one atomic engine-side transaction.

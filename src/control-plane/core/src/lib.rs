@@ -19,6 +19,7 @@ mod page;
 mod queue;
 pub mod snapshot;
 mod stream;
+mod stream_consolidate_job;
 mod transaction;
 mod transform_job;
 mod transforms;
@@ -69,6 +70,7 @@ pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use stream::{BucketOffsets, StreamKind, StreamMeta, StreamTables};
+pub use stream_consolidate_job::{STREAM_CONSOLIDATE_JOB_KIND, StreamConsolidateJob};
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use transform_job::{
     OutputMode, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TransformJob, TypedTransformJob,
