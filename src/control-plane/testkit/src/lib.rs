@@ -1289,6 +1289,68 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "multi-step action round-trips unchanged (both steps, bind preserved)",
     );
 
+    // --- Action downstream round-trip (slice 4) ---
+    // An action WITH downstream templates round-trips unchanged on both adapters
+    // (memory + postgres). `Gadget` is already seeded above with an `id` property,
+    // so the `@self.id` payload ref passes define-time validation. Reuses the
+    // single-step + chained `.downstream(...)` builder idiom (Task 1).
+    let with_ds = ActionDef::single_step(
+        ActionName("createGadgetWithJob".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    )
+    .downstream(vec![JobTemplate {
+        kind: "transform".into(),
+        payload: serde_json::json!({ "gid": "@self.id" }),
+    }]);
+    o.define_action(with_ds.clone())
+        .await
+        .expect("define action with downstream");
+    let got = o
+        .get_action(&ActionName("createGadgetWithJob".into()))
+        .await
+        .expect("get action with downstream");
+    assert_eq!(
+        got.downstream, with_ds.downstream,
+        "downstream round-trips unchanged on both adapters"
+    );
+
+    // Back-compat: an action WITHOUT downstream still round-trips with an empty vec
+    // (the field's default), exercising the legacy/flat shape through both adapters.
+    let plain = ActionDef::single_step(
+        ActionName("createPlain".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    );
+    assert!(
+        plain.downstream.is_empty(),
+        "freshly built action has no downstream by default"
+    );
+    o.define_action(plain.clone()).await.unwrap();
+    let got_plain = o
+        .get_action(&ActionName("createPlain".into()))
+        .await
+        .expect("get plain action");
+    assert_eq!(got_plain, plain, "plain action round-trips unchanged");
+    assert!(
+        got_plain.downstream.is_empty(),
+        "action without downstream returns empty downstream (back-compat)"
+    );
+
     // --- Derived properties ---
     o.define_type(ObjectType {
         name: tn("Account"),
