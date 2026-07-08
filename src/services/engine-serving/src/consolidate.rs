@@ -223,8 +223,11 @@ async fn consolidate_locked(
         control_plane_core::MergeEngine::Versioned => {
             // Unreachable: consolidate_stream resolves version_col for Versioned
             // before locking. Defense in depth — fall back to loom_offset if ever None.
+            // `nulls last` matches `build_merge_view`'s `.sort(false, false)` (DESC
+            // NULLS_LAST) so a nullable version column folds identically on read and
+            // after consolidate (a NULL version ranks lowest, never wins).
             let vcol = version_col.unwrap_or("loom_offset");
-            format!("{} desc, loom_offset desc", quote_ident(vcol))
+            format!("{} desc nulls last, loom_offset desc", quote_ident(vcol))
         }
     };
     // Greatest-precedence per identity wins; a winner tombstoned by `-D` (a

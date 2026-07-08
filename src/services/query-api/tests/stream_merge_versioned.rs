@@ -2,9 +2,9 @@
 //! `merge_engine=versioned` (the `VWidget` type's `seq` Long column is its
 //! version property) and proves three things:
 //!  1. **Highest domain version wins regardless of arrival order.** Emit id=1
-//!     with versions 7, then 3, then 5 (in that offset order). Versioned picks
-//!     seq=7 (highest version) — NOT seq=5, which has the greatest offset (that
-//!     is what LastRow would pick, so this distinguishes the engines).
+//!     with versions 3, then 7, then 5 (in that offset order). Versioned picks
+//!     seq=7 (highest version) — distinguishing it from LastRow (seq=5, greatest
+//!     offset) AND FirstRow (seq=3, earliest offset).
 //!  2. **Correctness across consolidate cycles.** After a `consolidate_stream`
 //!     folds the base to seq=7, a late event with seq=4 still loses on the next
 //!     read (the folded winner's version is preserved and dominates).
@@ -136,27 +136,28 @@ async fn versioned_highest_version_wins_and_late_low_version_loses_and_delete_dr
         name: "vwidget".to_string(),
     };
 
-    // (1) Emit id=1 with versions 7, then 3, then 5 (in arrival/offset order).
-    // Highest version (7) arrives FIRST; LastRow would pick seq=5 (greatest
-    // offset). Versioned must pick seq=7.
+    // (1) Emit id=1 with versions 3, then 7, then 5 (in arrival/offset order).
+    // This distinguishes all three engines: Versioned picks seq=7 (highest
+    // version); LastRow would pick seq=5 (greatest offset); FirstRow would pick
+    // seq=3 (earliest offset).
     run_action(
         "createVWidget",
-        json!({ "id": "1", "qty": "1", "seq": "7" })
+        json!({ "id": "1", "qty": "1", "seq": "3" })
             .as_object()
             .unwrap(),
         &subj,
         &deps,
     )
     .await
-    .expect("create id=1 seq=7");
+    .expect("create id=1 seq=3");
     run_action(
         "bumpVWidget",
-        json!({ "id": "1", "seq": "3" }).as_object().unwrap(),
+        json!({ "id": "1", "seq": "7" }).as_object().unwrap(),
         &subj,
         &deps,
     )
     .await
-    .expect("bump id=1 seq=3");
+    .expect("bump id=1 seq=7");
     run_action(
         "bumpVWidget",
         json!({ "id": "1", "seq": "5" }).as_object().unwrap(),

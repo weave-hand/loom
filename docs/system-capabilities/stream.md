@@ -259,9 +259,10 @@ provider for this shape, so `GET /objects` in the window after a flush but
 before the next consolidation duplicated rows per identity and could
 resurrect a `−D`-deleted id. A regression test (`stream_cdc_read_mid_window`)
 pins the fix: reads in that window are deduped and tombstone-correct
-regardless of whether consolidation has run yet. `ontology::is_cdc_table`
-(`ontology.rs:614`) is the new predicate that routes a table into the
-`Offset` precedence; framing columns are exposed to the fold internally but
+regardless of whether consolidation has run yet. `ontology::stream_meta_for_table`
+is the predicate that routes a CDC table into the engine-aware `Offset`
+precedence (fetching kind + `merge_engine` in one lookup); framing columns are
+exposed to the fold internally but
 never leak into the projected output.
 
 ## Known gaps
