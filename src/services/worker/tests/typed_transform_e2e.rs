@@ -22,7 +22,7 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::flight::{FlightTableClient, FlightTicket};
+use engine_wire::flight::{FlightSqlClient, FlightTableClient, FlightTicket};
 use store_config::{ObjectStoreConfig, build_write_store};
 use worker::transform::{TransformCtx, handle_typed_transform};
 
@@ -114,12 +114,10 @@ async fn build_ctx(sock: &str, wh_str: &str) -> TransformCtx {
     let control = GrpcQueueClient::connect(sock)
         .await
         .expect("connect control");
-    let flight = FlightTableClient::connect(sock)
-        .await
-        .expect("connect flight");
+    let sql = FlightSqlClient::connect(sock).await.expect("connect sql");
     TransformCtx {
         control,
-        flight,
+        sql,
         write,
         write_cfg: datafusion_io::WriteConfig::default(),
         worker_tuning: loom_config::WorkerTuning::default(),
@@ -128,11 +126,14 @@ async fn build_ctx(sock: &str, wh_str: &str) -> TransformCtx {
 
 /// Read the single-Int64-column values of `table` at `snap` back over Flight.
 async fn read_i64s(
-    flight: &FlightTableClient,
+    sock: &str,
     ice: &IcebergCatalog,
     table: &TableRef,
     snap: SnapshotId,
 ) -> HashSet<i64> {
+    let flight = FlightTableClient::connect(sock)
+        .await
+        .expect("connect flight");
     let files = ice.files_with_stats(table, snap).await.expect("files");
     let batches = flight
         .fetch(FlightTicket {
@@ -270,7 +271,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
     // Rows land in the OUTPUT TYPE's backing table, readable over Flight.
     let ice = IcebergCatalog::new(pool.clone());
     let snap = ice.current_snapshot(&slim).await.expect("output snapshot");
-    let ids = read_i64s(&ctx.flight, &ice, &slim, snap.id).await;
+    let ids = read_i64s(&eng.sock, &ice, &slim, snap.id).await;
     assert_eq!(
         ids,
         HashSet::from([2]),

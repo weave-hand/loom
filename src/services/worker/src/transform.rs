@@ -1,6 +1,7 @@
-//! The worker's transform job handler: resolve each input's live files + declared
-//! schema over the wire (ListFiles), stream the rows via Flight, run the job's SQL
-//! in a fresh DataFusion session, write the result as Parquet to object store, and
+//! The worker's transform job handler: resolve each input's existence + declared
+//! schema over the wire (ListFiles), read the input's MERGED rows (hot inline PG
+//! tier + cold Parquet) via the engine's SQL serving path, run the job's SQL in a
+//! fresh DataFusion session, write the result as Parquet to object store, and
 //! commit it atomically over CommitTransform (files + lineage, append or replace).
 //! Zero Postgres — the engine owns it.
 use std::collections::HashSet;
@@ -17,17 +18,33 @@ use datafusion_io::{
     register_empty_table, write_dataset,
 };
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::flight::{FlightTableClient, FlightTicket};
+use engine_wire::flight::FlightSqlClient;
 use loom_config::WorkerTuning;
 use store_config::WriteStore;
 
 #[derive(Clone)]
 pub struct TransformCtx {
     pub control: GrpcQueueClient,
-    pub flight: FlightTableClient,
+    /// Reads each input's MERGED rows (hot inline PG tier + cold Parquet) through
+    /// the engine's SQL serving path — unlike compaction's cold-file
+    /// `FlightTableClient`, a transform needs the table's logical current contents.
+    pub sql: FlightSqlClient,
     pub write: Arc<WriteStore>,
     pub write_cfg: WriteConfig,
     pub worker_tuning: WorkerTuning,
+}
+
+/// Build the `SELECT *` read for one input's physical table. The schema and name
+/// are double-quoted (and any embedded `"` doubled) so an arbitrary physical
+/// identifier resolves against the serving catalog's
+/// `TableReference::partial(schema, name)` registration.
+fn select_all_sql(table: &TableRef) -> String {
+    let quote = |s: &str| s.replace('"', "\"\"");
+    format!(
+        "SELECT * FROM \"{}\".\"{}\"",
+        quote(&table.schema),
+        quote(&table.name)
+    )
 }
 
 /// Run one physical `"transform"` job: SQL over table-named inputs, each registered
@@ -227,10 +244,15 @@ async fn run_wire_transform(
     // Fresh session per job — no state leaks between transforms.
     let df_ctx = SessionContext::new();
 
-    // 2+3. Resolve + register each input. An absent `columns` on ListFiles means the
-    //      table does not exist — deterministically bad (Abandon). A live input with
-    //      zero files (or a fetch streaming no batches) registers as an empty relation
-    //      with the DECLARED schema so the SQL runs over an empty input.
+    // 2+3. Resolve + register each input. ListFiles is the existence + declared-schema
+    //      oracle: an absent `columns` means the table does not exist — deterministically
+    //      bad (Abandon). The ROWS come from the engine's SQL serving path (`SELECT *`),
+    //      which merges the hot inline PG tier with the cold Parquet files — the cold
+    //      `files` list alone would silently drop unflushed inline rows. A live-but-empty
+    //      table (no inline, no files) is not registered in the serving catalog, so the
+    //      read plan-errors (`Validation`); since ListFiles already proved the table
+    //      exists, that is treated as an empty input (register the DECLARED schema with no
+    //      rows) so the SQL runs over an empty relation — matching the prior semantics.
     for (register_as, table) in &req.inputs {
         let listed = ctx
             .control
@@ -248,22 +270,18 @@ async fn run_wire_transform(
                 table.schema, table.name
             )));
         };
-        let batches = if listed.files.is_empty() {
-            Vec::new()
-        } else {
-            ctx.flight
-                .fetch(FlightTicket {
-                    schema: table.schema.clone(),
-                    name: table.name.clone(),
-                    files: listed.files.iter().map(|f| f.path.clone()).collect(),
-                })
-                .await
-                .map_err(|e| {
-                    JobFailure::retry(
-                        ctx.worker_tuning.backoff(attempts),
-                        format!("flight fetch: {e}"),
-                    )
-                })?
+        let batches = match ctx.sql.execute(select_all_sql(table)).await {
+            Ok(batches) => batches,
+            // The table exists (columns is Some) but the serving catalog holds no
+            // provider for it => it is empty (no inline, no cold files). Register an
+            // empty relation with the declared schema below.
+            Err(ControlPlaneError::Validation(_)) => Vec::new(),
+            Err(e) => {
+                return Err(JobFailure::retry(
+                    ctx.worker_tuning.backoff(attempts),
+                    format!("read input {}.{}: {e}", table.schema, table.name),
+                ));
+            }
         };
         match batches.first().map(|b| b.schema()) {
             None => {

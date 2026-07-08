@@ -142,11 +142,24 @@ connects to the engine over a UDS, runs the generic `control_plane_worker`
 loop against a gRPC queue client, and drains `flush_table`, `gc_table`,
 `compact_table`, `build_vector_index`, `transform`, and `typed-transform`
 jobs. The single-RPC jobs share one shape (`run_wire_job`); compaction and
-transforms are the full engine-wire compute pattern: list live files over
-gRPC, stream bytes over Arrow Flight (the bulk data plane), compute locally
-(coalesce for compaction, DataFusion SQL for transforms), rewrite to the
-object store, and commit the result through a single engine RPC
-(`CompactTable` / `CommitTransform`) — zero direct catalog access (#342).
+transforms are the full engine-wire compute pattern: read inputs over
+gRPC/Flight, compute locally (coalesce for compaction, DataFusion SQL for
+transforms), rewrite to the object store, and commit the result through a
+single engine RPC (`CompactTable` / `CommitTransform`) — zero direct catalog
+access (#342). The two read their inputs **differently, by design**:
+**compaction** lists a table's cold Parquet `data_file` set and streams those
+file bytes over Arrow Flight — it repackages files, so the cold set is exactly
+its input; **transforms** read each input's **merged** rows — the hot inline PG
+tier unioned with cold Parquet — through the engine's SQL serving path
+(`FlightSqlClient` → `do_get_sql`), because a transform needs the table's
+logical current contents, including unflushed inline appends and COW
+inline-shadow mutations. `ListFiles` is still consulted, but only as the
+input's existence + declared-schema oracle. Reading a transform input from the
+cold files alone silently dropped any rows still in the inline tier — a
+correctness bug (`iss-transform-inline-blind`) fixed by moving the input read to
+the merged serving path; a live-but-empty input (no inline, no files) is not
+registered in the serving catalog, so the worker treats a planning error on an
+existing input as an empty relation (see `#iss-serving-empty-table-not-found`).
 Worker config parsing is strict: a malformed tuning knob fails startup instead
 of silently falling back to the default (#202). Job payloads and kind strings
 were wire-frozen across the migration, so jobs queued against the old binary
