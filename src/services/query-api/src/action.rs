@@ -705,6 +705,9 @@ async fn run_insert(
     let now = request_now();
     let step_env = crate::params::StepEnv::new();
     let pairs = crate::params::resolve_action_row(step, target, body, now, &step_env)?;
+    // Slice-4: resolve the action's downstream templates against the written row, so
+    // the jobs ride the write's commit tx (atomic commit-or-neither).
+    let downstream_jobs = crate::downstream::resolve_downstream(&action.downstream, &pairs);
     let columns: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
     let values: Vec<SqlValue> = pairs.iter().map(|(_, v)| v.clone()).collect();
 
@@ -778,7 +781,7 @@ async fn run_insert(
 
     // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
     //    failure the Tx rolls back — no snapshot, no lineage, no partial state.
-    //    Resolved downstream jobs (Task 8) thread here; `&[]` for now.
+    //    The resolved downstream jobs ride this same write tx (commit-or-neither).
     deps.action_engine
         .write_object(
             &target.table,
@@ -786,7 +789,7 @@ async fn run_insert(
             &full_values,
             &full_logical,
             event,
-            &[],
+            &downstream_jobs,
         )
         .await?;
 

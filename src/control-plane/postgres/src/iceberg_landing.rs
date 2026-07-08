@@ -845,6 +845,7 @@ async fn land_parquet(
             lineage,
             decl,
             pre_existing,
+            jobs,
         )
         .await;
     }
@@ -892,6 +893,7 @@ async fn land_parquet_stream(
     lineage: LineageEvent,
     decl: &StreamDecl,
     pre_existing: bool,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     // Concatenate the write's batches: offsets are assigned in row order across the
     // whole write, and the framing columns are stamped onto the one batch.
@@ -1012,6 +1014,7 @@ async fn land_parquet_stream(
             lineage: Some(&lineage),
             data_trigger_tables: std::slice::from_ref(table),
             reuse_snapshot: Some(at),
+            jobs,
             ..CommitExtras::default()
         };
         match crate::iceberg_writer::append_batches_on_tx(
