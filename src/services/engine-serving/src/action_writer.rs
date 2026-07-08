@@ -33,6 +33,12 @@ pub struct IcebergActionWriter {
     pool: PgPool,
     inline_byte_limit: usize,
     flush_byte_threshold: i64,
+    /// Accumulated CDC delta-row count at/above which `write_delta` enqueues a
+    /// `stream_consolidate` job (mirrors `flush_byte_threshold`'s role for the
+    /// byte-triggered flush). Defaults to `i64::MAX` — i.e. never trigger — so
+    /// every existing 4-arg `new()` caller keeps today's behaviour; production
+    /// wiring opts in via [`Self::with_consolidate_delta_threshold`].
+    consolidate_delta_threshold: i64,
 }
 
 impl IcebergActionWriter {
@@ -48,7 +54,17 @@ impl IcebergActionWriter {
             pool,
             inline_byte_limit,
             flush_byte_threshold,
+            consolidate_delta_threshold: i64::MAX,
         }
+    }
+
+    /// Override the CDC-delta consolidate-enqueue threshold sourced from config
+    /// (e.g. `EngineTuning::consolidate_delta_threshold`, mirroring
+    /// `RoutingTuning::consolidate_delta_threshold` on the ingest side).
+    #[must_use]
+    pub fn with_consolidate_delta_threshold(mut self, consolidate_delta_threshold: i64) -> Self {
+        self.consolidate_delta_threshold = consolidate_delta_threshold;
+        self
     }
 
     /// Governed typed-insert: land one IPC-encoded row + its lineage atomically.
@@ -223,10 +239,7 @@ impl IcebergActionWriter {
                 .map(|(cols, batch)| (cols.as_slice(), batch)),
             event,
             expected_version,
-            // Production wiring of a delta-count consolidate threshold through
-            // `IcebergActionWriter`/`EngineTuning` is not part of this slice; `None`
-            // preserves current behaviour (no consolidate enqueue from this path).
-            None,
+            Some(self.consolidate_delta_threshold),
         )
         .await
         .map_err(|e| match e {

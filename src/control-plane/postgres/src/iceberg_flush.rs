@@ -386,3 +386,37 @@ pub(crate) fn lock_key(schema: &str, name: &str) -> i64 {
     name.hash(&mut h);
     h.finish() as i64
 }
+
+/// A held per-table advisory lock (see [`lock_table`]). Dropping without calling
+/// [`TableLock::release`] still releases the lock — it is a transaction-scoped
+/// (`pg_advisory_xact_lock`) lock, so it is freed whenever the underlying
+/// transaction ends, including via `Drop`; `release` just does it explicitly
+/// and promptly rather than waiting on the async runtime to drop the future.
+#[must_use]
+pub struct TableLock {
+    tx: sqlx::Transaction<'static, sqlx::Postgres>,
+}
+
+impl TableLock {
+    /// End the lock-holding transaction (a rollback — nothing was ever written
+    /// on it), releasing the advisory lock.
+    pub async fn release(self) {
+        drop(self.tx.rollback().await);
+    }
+}
+
+/// Acquire the SAME per-table advisory lock `flush_table`/`gc_table` use (same
+/// key derivation, `lock_key`), for the duration of the returned guard. This is
+/// the shared mutex that serializes flush, GC, and (via this function)
+/// consolidation against each other on one table: `pg_advisory_xact_lock`
+/// BLOCKS until any concurrent holder's lock-transaction ends — no skip/retry —
+/// so callers inherit exactly `flush_table`'s own contention behaviour.
+pub async fn lock_table(pool: &PgPool, table: &TableRef) -> Result<TableLock> {
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let key = lock_key(&table.schema, &table.name);
+    sqlx::query!("select pg_advisory_xact_lock($1)", key)
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+    Ok(TableLock { tx })
+}

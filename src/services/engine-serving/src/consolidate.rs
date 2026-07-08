@@ -18,6 +18,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_flush::lock_table;
 use control_plane_postgres::iceberg_inline::clear_has_shadow;
 use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
 use control_plane_postgres::iceberg_mirror::{clear_consolidate_trigger, live_table_id};
@@ -81,6 +82,30 @@ pub async fn consolidate_stream(
         ))
     })?;
 
+    // Serialize the read(files+inline)+fold+overwrite window below against a
+    // concurrent `flush_table`/`gc_table` on the SAME table: same per-table
+    // advisory-lock key (`iceberg_flush::lock_key`, via the shared `lock_table`
+    // helper) flush/GC already take. Without this, a flush committing between
+    // this function's file-read and its overwrite-commit could be end-capped by
+    // the overwrite WITHOUT its rows ever entering the fold — silent data loss.
+    // `pg_advisory_xact_lock` BLOCKS until acquired (no skip/retry), so a
+    // concurrent flush simply makes this call wait rather than racing it —
+    // exactly `flush_table`'s own contention behavior against a concurrent
+    // flush/GC. The lock is released explicitly right after the overwrite
+    // commits and the trigger flags below are cleared.
+    let lock = lock_table(pool, table).await.map_err(to_serving)?;
+    let result = consolidate_locked(pool, catalog, table, tid, &identity).await;
+    lock.release().await;
+    result
+}
+
+async fn consolidate_locked(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    tid: i64,
+    identity: &str,
+) -> Result<i64, EngineServingError> {
     let ice = IcebergCatalog::new(pool.clone());
     let current = match ice.current_snapshot(table).await {
         Ok(snap) => snap,
@@ -145,7 +170,7 @@ pub async fn consolidate_stream(
         .map(|c| quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let id_quoted = quote_ident(&identity);
+    let id_quoted = quote_ident(identity);
     let union_sql = if has_inline {
         format!(
             "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files \

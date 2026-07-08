@@ -210,6 +210,21 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "consolidate-lock",
+    crate = "consolidate_lock",
+    srcs = ["tests/consolidate_lock.rs"],
+    crate_root = "tests/consolidate_lock.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:iceberg",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "execute-query-stream",
     crate = "execute_query_stream",
     srcs = ["tests/execute_query_stream.rs"],
