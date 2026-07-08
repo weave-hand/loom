@@ -1071,6 +1071,19 @@ rust_test(
 )
 
 rust_test(
+    name = "downstream-resolve",
+    crate = "downstream_resolve",
+    srcs = ["tests/downstream_resolve.rs"],
+    crate_root = "tests/downstream_resolve.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "mutate-phases",
     crate = "mutate_phases",
     srcs = ["tests/mutate_phases.rs"],
