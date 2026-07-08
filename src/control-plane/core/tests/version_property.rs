@@ -6,7 +6,11 @@ use std::str::FromStr;
 
 #[test]
 fn merge_engine_round_trips_through_wire_token() {
-    for engine in [MergeEngine::LastRow, MergeEngine::FirstRow, MergeEngine::Versioned] {
+    for engine in [
+        MergeEngine::LastRow,
+        MergeEngine::FirstRow,
+        MergeEngine::Versioned,
+    ] {
         let parsed = MergeEngine::from_str(engine.as_str()).expect("known token parses");
         assert_eq!(parsed, engine, "token round-trips");
     }
@@ -14,7 +18,10 @@ fn merge_engine_round_trips_through_wire_token() {
 
 #[test]
 fn merge_engine_unknown_token_is_a_loud_error() {
-    assert!(MergeEngine::from_str("nonsense").is_err(), "unknown token rejected");
+    assert!(
+        MergeEngine::from_str("nonsense").is_err(),
+        "unknown token rejected"
+    );
 }
 
 #[test]
