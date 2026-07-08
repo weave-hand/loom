@@ -345,12 +345,19 @@ fn build_merge_view(
     // Mirror data columns in order — the exact output projection.
     let data_cols: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-    // Project a tier down to [<data_cols>, _loom_prec, _loom_tomb], so both tiers
-    // union under one schema regardless of which physical columns fed them.
-    let tier_select = |prec: Expr, tomb: Expr| -> Vec<Expr> {
+    // Project a tier down to [<data_cols>, _loom_prec, _loom_tomb, (_loom_off)], so
+    // both tiers union under one schema regardless of which physical columns fed
+    // them. `_loom_off` (the physical `loom_offset`) is projected only for Offset
+    // precedence, where the Versioned engine's window tie-break orders by it
+    // (Snapshot/LastRow/FirstRow never reference it; it is dropped by the final
+    // projection).
+    let tier_select = |prec: Expr, tomb: Expr, off: Option<Expr>| -> Vec<Expr> {
         let mut v: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
         v.push(prec.alias("_loom_prec"));
         v.push(tomb.alias("_loom_tomb"));
+        if let Some(o) = off {
+            v.push(o.alias("_loom_off"));
+        }
         v
     };
 
@@ -391,11 +398,15 @@ fn build_merge_view(
         Precedence::Offset { .. } => (prec_expr.clone(), cref("loom_change_kind").eq(lit("-D"))),
     };
 
+    // `_loom_off` is projected only for Offset precedence (the Versioned engine's
+    // window tie-break orders by it). Computed once, cloned into each tier.
+    let off: Option<Expr> =
+        matches!(&precedence, Precedence::Offset { .. }).then(|| cref("loom_offset"));
     let file_df = match file {
         Some(f) => Some(
             ctx.read_table(Arc::new(f))
                 .map_err(to_serving)?
-                .select(tier_select(file_prec, file_tomb))
+                .select(tier_select(file_prec, file_tomb, off.clone()))
                 .map_err(to_serving)?,
         ),
         None => None,
@@ -404,7 +415,7 @@ fn build_merge_view(
         Some(i) => Some(
             ctx.read_table(Arc::new(i))
                 .map_err(to_serving)?
-                .select(tier_select(inline_prec, inline_tomb))
+                .select(tier_select(inline_prec, inline_tomb, off))
                 .map_err(to_serving)?,
         ),
         None => None,
@@ -422,8 +433,9 @@ fn build_merge_view(
 
     // Per-identity window: rank 1 is the winner. Direction + keys come from the
     // engine: LastRow/Versioned order _loom_prec DESC (greatest precedence wins);
-    // FirstRow orders ASC (smallest offset wins). Versioned adds a loom_offset
-    // DESC tie-break (last-write-within-version wins). Snapshot is unchanged.
+    // FirstRow orders ASC (smallest offset wins). Versioned adds a _loom_off
+    // (loom_offset) DESC tie-break (last-write-within-version wins). Snapshot is
+    // unchanged.
     let order_keys = match &precedence {
         Precedence::Snapshot => vec![cref("_loom_prec").sort(false, false)],
         Precedence::Offset { engine, .. } => match engine {
@@ -431,7 +443,7 @@ fn build_merge_view(
             | control_plane_core::MergeEngine::Versioned => {
                 let mut keys = vec![cref("_loom_prec").sort(false, false)];
                 if matches!(engine, control_plane_core::MergeEngine::Versioned) {
-                    keys.push(cref("loom_offset").sort(false, false));
+                    keys.push(cref("_loom_off").sort(false, false));
                 }
                 keys
             }

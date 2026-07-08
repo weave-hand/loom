@@ -224,7 +224,7 @@ async fn consolidate_locked(
             // Unreachable: consolidate_stream resolves version_col for Versioned
             // before locking. Defense in depth — fall back to loom_offset if ever None.
             let vcol = version_col.unwrap_or("loom_offset");
-            format!("{}, loom_offset desc", quote_ident(vcol))
+            format!("{} desc, loom_offset desc", quote_ident(vcol))
         }
     };
     // Greatest-precedence per identity wins; a winner tombstoned by `-D` (a
