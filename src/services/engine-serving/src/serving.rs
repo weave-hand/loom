@@ -120,16 +120,46 @@ pub async fn build_serving_provider(
     // provider over the mirror's per-column stats; its `scan` skips files a query's
     // predicates provably cannot match.
     let schema = arrow_schema_from_mirror(&table_schema.columns)?;
+
+    // Resolve the type's identity column (if any). An identity-bearing type serves an
+    // identity-dedup MERGE (inline deltas shadow file rows by precedence, and a
+    // tombstone winner hides the id); an identity-less type keeps the additive union.
+    let identity = control_plane_postgres::ontology::identity_for_table(&catalog.pool, table)
+        .await
+        .map_err(to_serving)?;
+    // For an identity-bearing table, also resolve CDC-ness: a `kind='cdc'` base's
+    // flushed file tier can legitimately carry MULTIPLE physical rows (and `-D`
+    // tombstones) per identity, so its fold must use `loom_offset` precedence
+    // (`Precedence::Offset`) rather than assume file rows are already
+    // identity-unique (the pre-CDC assumption non-CDC identity tables still rely on).
+    let is_cdc = if identity.is_some() {
+        control_plane_postgres::ontology::is_cdc_table(&catalog.pool, table)
+            .await
+            .map_err(to_serving)?
+    } else {
+        false
+    };
+
     let files_with_stats = catalog
         .files_with_stats(table, snap_id)
         .await
         .map_err(to_serving)?;
+    // A CDC identity table's physical Parquet files carry the reserved framing
+    // columns (`loom_change_kind`, `loom_offset`) alongside the user columns
+    // (`augment_with_framing`); expose them under their physical names so the
+    // CDC-aware fold below can read them. Every other table's file provider keeps
+    // the plain mirror data schema — byte-identical to before this branch existed.
+    let file_schema = if is_cdc {
+        with_cdc_framing_fields(&schema)
+    } else {
+        schema.clone()
+    };
     let file_provider = if files_with_stats.is_empty() {
         None
     } else {
         Some(IcebergMirrorTableProvider::try_new_with_schema(
             files_with_stats,
-            schema.clone(),
+            file_schema,
         ))
     };
 
@@ -137,13 +167,6 @@ pub async fn build_serving_provider(
     // a PG TableProvider that pushes filter/limit/projection into a per-query
     // SELECT — no Arrow->Parquet->Arrow round-trip. The snapshot is baked into a
     // base predicate so MVCC visibility matches `inline_live_batch`.
-    // Resolve the type's identity column (if any). An identity-bearing type serves an
-    // identity-dedup MERGE (inline deltas shadow file rows by precedence, and a
-    // tombstone winner hides the id); an identity-less type keeps the additive union.
-    let identity = control_plane_postgres::ontology::identity_for_table(&catalog.pool, table)
-        .await
-        .map_err(to_serving)?;
-
     let inline_provider = build_inline_provider(
         catalog,
         table,
@@ -157,9 +180,10 @@ pub async fn build_serving_provider(
     // Combine. Identity-less: file-only, inline-only, or an additive UNION ALL of both
     // (the file provider presents the mirror schema; the union's nullability-widening
     // is defensive here — names + datatypes match because both derive from the same
-    // table schema). Identity-bearing: a plain file
-    // provider when there are no live inline rows (file rows are already identity-unique),
-    // else the identity-dedup merge view.
+    // table schema). Identity-bearing: a plain file provider when there are no live
+    // inline rows AND the table is not CDC (file rows are already identity-unique),
+    // else the identity-dedup merge view (CDC uses `loom_offset` precedence; non-CDC
+    // uses the MVCC `begin_snapshot`/`loom_tombstone` precedence).
     let provider: Arc<dyn datafusion::catalog::TableProvider> = match identity.as_deref() {
         None => match (file_provider, inline_provider) {
             (Some(f), Some(i)) => {
@@ -176,23 +200,70 @@ pub async fn build_serving_provider(
             (None, None) => return Ok(None), // a live table with no data; nothing to register
         },
         Some(id) => match (file_provider, inline_provider) {
-            // Identity but no live inline rows: file rows are already identity-unique,
-            // so return the plain file provider (cheaper, schema preserved trivially).
-            (Some(f), None) => Arc::new(f),
+            // Identity but no live inline rows: for a non-CDC table file rows are
+            // already identity-unique, so return the plain file provider (cheaper,
+            // schema preserved trivially). A CDC table's flushed base can legitimately
+            // carry multiple physical rows (and `-D` tombstones) per identity even
+            // with no live inline tail, so it still routes through the fold.
+            (Some(f), None) if !is_cdc => Arc::new(f),
+            (Some(f), None) => {
+                build_merge_view(ctx, &schema, id, Some(f), None, Precedence::Offset)?
+            }
             (None, None) => return Ok(None),
-            // Identity + inline present (with or without a file tier): dedup by identity.
-            (file_opt, Some(i)) => build_merge_view(ctx, &schema, id, file_opt, i)?,
+            // Identity + inline present (with or without a file tier): dedup by
+            // identity, using CDC's `loom_offset` precedence when the table is a
+            // declared CDC stream, else the MVCC precedence merge.
+            (file_opt, Some(i)) => {
+                let precedence = if is_cdc {
+                    Precedence::Offset
+                } else {
+                    Precedence::Snapshot
+                };
+                build_merge_view(ctx, &schema, id, file_opt, Some(i), precedence)?
+            }
         },
     };
 
     Ok(Some(provider))
 }
 
-/// Build the identity-dedup merge view for an identity-bearing type. The file tier
-/// synthesizes precedence `0` and a `false` tombstone; the inline tier exposes its
-/// `begin_snapshot` as `_loom_prec` and `loom_tombstone` as `_loom_tomb`. The two
-/// tiers are UNION-ALL'd (or the inline tier alone when `file` is `None`), then
-/// deduped per identity keeping the greatest precedence, tombstoned winners are
+/// Extend `schema` with a CDC base's reserved physical framing columns
+/// (`loom_change_kind`, `loom_offset`) under their physical names, appended AFTER
+/// the mirror data columns. Both columns are present in a CDC table's physical
+/// Parquet schema (`augment_with_framing`) for every file, since a table can only
+/// ever be DECLARED `kind='cdc'` before its first write (`reconcile_stream_mode`
+/// rejects a batch->stream conversion) — so every live file already carries them.
+/// Used by [`build_serving_provider`] to make the file tier's precedence/tombstone
+/// columns visible to the CDC-aware fold ([`Precedence::Offset`]).
+fn with_cdc_framing_fields(schema: &SchemaRef) -> SchemaRef {
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
+    fields.push(Field::new("loom_offset", DataType::Int64, true));
+    Arc::new(Schema::new(fields))
+}
+
+/// Which per-identity precedence + tombstone predicate [`build_merge_view`] folds
+/// on. The two physical tiers (file, inline) always carry the SAME pair of
+/// framing columns for a given mode — only which columns those are, and how a
+/// delete is recognized, differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Precedence {
+    /// Non-CDC identity tables: the file tier is assumed already identity-unique
+    /// (no deletes), so it synthesizes precedence `0` and a `false` tombstone; the
+    /// inline tier's `begin_snapshot` (strictly greater than any file-tier `0`)
+    /// and `loom_tombstone` order later writes as winners and mark deletes.
+    Snapshot,
+    /// CDC tables: BOTH tiers carry REAL physical framing — the flushed file
+    /// tier's `+I/+U/-D` subset and any still-live inline tail both stamp
+    /// `loom_offset` (a per-identity monotonic sequence) and `loom_change_kind`;
+    /// a delete is `loom_change_kind = '-D'`. Mirrors `consolidate.rs`'s fold.
+    Offset,
+}
+
+/// Build the identity-dedup merge view for an identity-bearing type. Each tier
+/// (file, inline — either may be absent) is projected to `[<data_cols>,
+/// _loom_prec, _loom_tomb]` per `precedence`'s column mapping, UNION-ALL'd, then
+/// deduped per identity keeping the greatest precedence; a tombstoned winner is
 /// dropped, and the result is projected back to EXACTLY the mirror data `schema`.
 ///
 /// Equivalent to (the reference SQL): for identity column `<id>`,
@@ -200,9 +271,13 @@ pub async fn build_serving_provider(
 /// SELECT <data_cols> FROM (
 ///   SELECT <data_cols>, _loom_tomb,
 ///          ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC) AS _loom_rn
-///   FROM ( <file 0/false>  UNION ALL  <inline begin_snapshot/loom_tombstone> )
+///   FROM ( <file tier>  UNION ALL  <inline tier> )
 /// ) WHERE _loom_rn = 1 AND _loom_tomb = false
 /// ```
+/// `Precedence::Snapshot`'s file tier is `<0, false>`; its inline tier is
+/// `<begin_snapshot, loom_tombstone>`. `Precedence::Offset`'s file AND inline
+/// tiers are both `<loom_offset, loom_change_kind = '-D'>` — the same fold
+/// `consolidate.rs` uses to physically collapse a CDC base.
 ///
 /// A `ROW_NUMBER()` window (not `DISTINCT ON`) is used deliberately: the window is a
 /// pass-through over the data columns, so they keep their mirror `DataType` AND
@@ -215,7 +290,8 @@ fn build_merge_view(
     schema: &SchemaRef,
     identity: &str,
     file: Option<IcebergMirrorTableProvider>,
-    inline: PgTableProvider,
+    inline: Option<PgTableProvider>,
+    precedence: Precedence,
 ) -> Result<Arc<dyn TableProvider>, EngineServingError> {
     use datafusion::functions_window::expr_fn::row_number;
     use datafusion::logical_expr::{ExprFunctionExt, lit};
@@ -232,30 +308,50 @@ fn build_merge_view(
     // Mirror data columns in order — the exact output projection.
     let data_cols: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-    // Inline tier aligned to [<data_cols>, _loom_prec, _loom_tomb]. The provider
-    // exposes precedence/tombstone under their physical names; alias for the union.
-    let mut inline_exprs: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
-    inline_exprs.push(cref("begin_snapshot").alias("_loom_prec"));
-    inline_exprs.push(cref("loom_tombstone").alias("_loom_tomb"));
-    let inline_df = ctx
-        .read_table(Arc::new(inline))
-        .map_err(to_serving)?
-        .select(inline_exprs)
-        .map_err(to_serving)?;
+    // Project a tier down to [<data_cols>, _loom_prec, _loom_tomb], so both tiers
+    // union under one schema regardless of which physical columns fed them.
+    let tier_select = |prec: Expr, tomb: Expr| -> Vec<Expr> {
+        let mut v: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
+        v.push(prec.alias("_loom_prec"));
+        v.push(tomb.alias("_loom_tomb"));
+        v
+    };
+    let (file_prec, file_tomb) = match precedence {
+        Precedence::Snapshot => (lit(0_i64), lit(false)),
+        Precedence::Offset => (cref("loom_offset"), cref("loom_change_kind").eq(lit("-D"))),
+    };
+    let (inline_prec, inline_tomb) = match precedence {
+        Precedence::Snapshot => (cref("begin_snapshot"), cref("loom_tombstone")),
+        Precedence::Offset => (cref("loom_offset"), cref("loom_change_kind").eq(lit("-D"))),
+    };
 
-    // File tier synthesizes precedence 0 + false tombstone, so any inline delta
-    // shadows a file row. UNION ALL with the inline tier (or inline alone).
-    let unioned = match file {
-        Some(f) => ctx
-            .read_table(Arc::new(f))
-            .map_err(to_serving)?
-            .with_column("_loom_prec", lit(0_i64))
-            .map_err(to_serving)?
-            .with_column("_loom_tomb", lit(false))
-            .map_err(to_serving)?
-            .union(inline_df)
-            .map_err(to_serving)?,
-        None => inline_df,
+    let file_df = match file {
+        Some(f) => Some(
+            ctx.read_table(Arc::new(f))
+                .map_err(to_serving)?
+                .select(tier_select(file_prec, file_tomb))
+                .map_err(to_serving)?,
+        ),
+        None => None,
+    };
+    let inline_df = match inline {
+        Some(i) => Some(
+            ctx.read_table(Arc::new(i))
+                .map_err(to_serving)?
+                .select(tier_select(inline_prec, inline_tomb))
+                .map_err(to_serving)?,
+        ),
+        None => None,
+    };
+    let unioned = match (file_df, inline_df) {
+        (Some(f), Some(i)) => f.union(i).map_err(to_serving)?,
+        (Some(f), None) => f,
+        (None, Some(i)) => i,
+        (None, None) => {
+            return Err(EngineServingError::Engine(
+                "build_merge_view: neither a file nor an inline tier".into(),
+            ));
+        }
     };
 
     // ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC): rank 1 is the
@@ -334,11 +430,17 @@ pub(crate) fn register_qualified(
 /// built by the caller); `cols` are the mirror column defs (for logical types).
 ///
 /// When `identity` is `Some` the type serves an identity-dedup MERGE, so the
-/// provider's schema is EXTENDED with two trailing columns — `begin_snapshot`
-/// (i64 non-null, the row's precedence) and `loom_tombstone` (bool non-null) —
-/// under their physical names, so `PgTableProvider`'s per-scan SELECT resolves
-/// them; the merge in `build_serving_provider` aliases them to `_loom_prec` /
-/// `_loom_tomb`. When `identity` is `None` the schema stays data-only.
+/// provider's schema is EXTENDED with four trailing columns, under their
+/// physical names (every inline table carries all four regardless of stream
+/// declaration — `iceberg_inline::inline_ddl`/`ensure_inline_schema`), so
+/// `PgTableProvider`'s per-scan SELECT can resolve whichever pair
+/// `build_merge_view`'s `Precedence` needs:
+///   - `begin_snapshot` (i64 non-null) / `loom_tombstone` (bool non-null) — the
+///     MVCC precedence a non-CDC identity table's merge uses;
+///   - `loom_change_kind` (string non-null) / `loom_offset` (i64 nullable) — the
+///     real per-identity framing a CDC table's merge uses instead.
+///
+/// When `identity` is `None` the schema stays data-only.
 async fn build_inline_provider(
     catalog: &IcebergCatalog,
     table: &TableRef,
@@ -384,15 +486,22 @@ async fn build_inline_provider(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Merge mode: append the precedence + tombstone columns (physical names) so the
-    // dedup can rank rows and hide tombstoned identities. Data-only otherwise.
+    // Merge mode: append BOTH precedence pairs (physical names) so the dedup can
+    // rank rows and hide tombstoned identities under either `Precedence`. Data-only
+    // otherwise. Unused columns for a given mode are never selected (DataFusion
+    // projects only what the fold references), so this is a no-op cost for the
+    // mode not in play.
     let (provider_schema, logical_types) = if identity.is_some() {
         let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
         fields.push(Field::new("begin_snapshot", DataType::Int64, false));
         fields.push(Field::new("loom_tombstone", DataType::Boolean, false));
+        fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
+        fields.push(Field::new("loom_offset", DataType::Int64, true));
         let mut lts = logical_types;
         lts.push(control_plane_core::BaseType::Long);
         lts.push(control_plane_core::BaseType::Boolean);
+        lts.push(control_plane_core::BaseType::String);
+        lts.push(control_plane_core::BaseType::Long);
         (Arc::new(Schema::new(fields)) as SchemaRef, lts)
     } else {
         (schema.clone(), logical_types)

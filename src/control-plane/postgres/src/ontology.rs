@@ -603,6 +603,26 @@ pub async fn identity_for_table(pool: &PgPool, table: &TableRef) -> Result<Optio
     Ok(row.flatten())
 }
 
+/// Whether `table`'s live incarnation is declared a `kind='cdc'` stream table.
+/// Used by the engine serving read to route an identity-bearing CDC table's
+/// current-state fold through `loom_offset` precedence (both the file and
+/// inline tiers carry real framing, and a `-D` winner must be dropped) instead
+/// of the MVCC `begin_snapshot`/`loom_tombstone` precedence a non-CDC identity
+/// table's merge-on-read uses — see `engine_serving::serving::build_merge_view`.
+/// `false` for a table with no live incarnation, no inline storage provisioned
+/// yet, or a non-CDC (batch/log) declaration.
+pub async fn is_cdc_table(pool: &PgPool, table: &TableRef) -> Result<bool> {
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name).await?
+    else {
+        return Ok(false);
+    };
+    Ok(crate::stream::pg_stream_meta(&mut *conn, tid)
+        .await?
+        .is_some_and(|m| m.kind == control_plane_core::StreamKind::Cdc))
+}
+
 /// Read one named vector-index declaration as a `VectorIndexDef`. Shared by the
 /// `Ontology::get_vector_index` impl and the build primitive (which has a raw pool).
 pub async fn vector_index_def_row(
