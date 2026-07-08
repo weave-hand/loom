@@ -20,7 +20,7 @@ use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::clear_has_shadow;
 use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
-use control_plane_postgres::iceberg_mirror::live_table_id;
+use control_plane_postgres::iceberg_mirror::{clear_consolidate_trigger, live_table_id};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
 use datafusion::execution::context::SessionContext;
@@ -184,6 +184,13 @@ pub async fn consolidate_stream(
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
     clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
+    // Disarm the consolidate trigger too, so the next accrual of CDC deltas can
+    // re-enqueue a `stream_consolidate` job (chosen over keying the re-arm off
+    // `has_shadow` alone: this table's own row is authoritative and explicit,
+    // and it stays correct even if a future change decouples the two flags).
+    clear_consolidate_trigger(&mut conn, tid)
+        .await
+        .map_err(to_serving)?;
 
     Ok(snap.0)
 }

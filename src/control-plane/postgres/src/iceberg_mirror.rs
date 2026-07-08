@@ -585,6 +585,81 @@ pub async fn reset_inline_trigger(conn: &mut PgConnection, table_id: i64) -> Res
     Ok(())
 }
 
+/// The consolidate-trigger row after a bump: the new running delta-row total,
+/// the effective threshold (per-table override or the passed global default),
+/// and whether a `stream_consolidate` job is already pending for this table.
+/// Same shape as [`TriggerState`], kept as a separate type since it counts
+/// rows, not bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct ConsolidateTriggerState {
+    pub delta_count: i64,
+    pub effective: i64,
+    pub enqueued: bool,
+}
+
+/// Add `add_deltas` to the table's accrued CDC delta-row counter (creating the
+/// row on first write), returning the post-bump state plus the effective
+/// threshold (`COALESCE(threshold, global_threshold)`). Idempotent row
+/// creation via upsert. Mirrors [`bump_inline_trigger`], counting deltas
+/// instead of bytes, in a sibling table so it never clashes with the
+/// byte-trigger row.
+pub async fn bump_consolidate_trigger(
+    conn: &mut PgConnection,
+    table_id: i64,
+    add_deltas: i64,
+    global_threshold: i64,
+) -> Result<ConsolidateTriggerState> {
+    let row = sqlx::query!(
+        "insert into iceberg_mirror.consolidate_trigger (table_id, delta_count) \
+         values ($1, $2) \
+         on conflict (table_id) do update \
+           set delta_count = iceberg_mirror.consolidate_trigger.delta_count + excluded.delta_count \
+         returning delta_count as \"delta_count!\", \
+                   coalesce(threshold, $3) as \"effective!\", \
+                   enqueued as \"enqueued!\"",
+        table_id,
+        add_deltas,
+        global_threshold,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(ConsolidateTriggerState {
+        delta_count: row.delta_count,
+        effective: row.effective,
+        enqueued: row.enqueued,
+    })
+}
+
+/// Mark the table's consolidate-trigger as having a pending `stream_consolidate`
+/// job (debounce). No-op if the row is absent (it is always created by a
+/// preceding [`bump_consolidate_trigger`]).
+pub async fn arm_consolidate_trigger(conn: &mut PgConnection, table_id: i64) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.consolidate_trigger set enqueued = true where table_id = $1",
+        table_id,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Reset the table's consolidate-trigger after consolidation runs: clear the
+/// counter and disarm (`enqueued = false`), so the next accumulation of
+/// deltas can re-trigger. No-op if the row is absent.
+pub async fn clear_consolidate_trigger(conn: &mut PgConnection, table_id: i64) -> Result<()> {
+    sqlx::query!(
+        "update iceberg_mirror.consolidate_trigger \
+         set delta_count = 0, enqueued = false where table_id = $1",
+        table_id,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
 /// Return the columns that were live at snapshot `at` for `table_id`, in column order.
 ///
 /// Uses the same MVCC predicate as `IcebergCatalog::schema` (`begin_snapshot <= $2`)

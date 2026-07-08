@@ -43,6 +43,9 @@ pub struct RoutingTuning {
     /// `inline_byte_limit`, or the real-Parquet branch (taken above that limit)
     /// is unreachable over HTTP: axum's stock 2 MB default did exactly that.
     pub http_max_body_bytes: usize,
+    /// Accumulated CDC delta-row count (per declared stream table) at/above which
+    /// a `stream_consolidate` job is enqueued.
+    pub consolidate_delta_threshold: i64,
 }
 
 impl Default for RoutingTuning {
@@ -51,13 +54,15 @@ impl Default for RoutingTuning {
             inline_byte_limit: 16 * 1024 * 1024,
             flush_byte_threshold: 64 * 1024 * 1024,
             http_max_body_bytes: 64 * 1024 * 1024,
+            consolidate_delta_threshold: 128,
         }
     }
 }
 
 impl RoutingTuning {
     /// Apply `LOOM_INLINE_BYTE_LIMIT` / `LOOM_FLUSH_BYTE_THRESHOLD` /
-    /// `LOOM_HTTP_MAX_BODY_BYTES` over the current values.
+    /// `LOOM_HTTP_MAX_BODY_BYTES` / `LOOM_CONSOLIDATE_DELTA_THRESHOLD` over the
+    /// current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
         overlay_opt(vars, "LOOM_INLINE_BYTE_LIMIT", &mut self.inline_byte_limit)?;
         overlay_opt(
@@ -69,6 +74,11 @@ impl RoutingTuning {
             vars,
             "LOOM_HTTP_MAX_BODY_BYTES",
             &mut self.http_max_body_bytes,
+        )?;
+        overlay_opt(
+            vars,
+            "LOOM_CONSOLIDATE_DELTA_THRESHOLD",
+            &mut self.consolidate_delta_threshold,
         )?;
         Ok(())
     }
@@ -87,6 +97,9 @@ impl RoutingTuning {
                 "LOOM_HTTP_MAX_BODY_BYTES",
                 "must exceed LOOM_INLINE_BYTE_LIMIT, or the Parquet landing branch is unreachable over HTTP",
             ));
+        }
+        if self.consolidate_delta_threshold < 1 {
+            return Err(invalid("LOOM_CONSOLIDATE_DELTA_THRESHOLD", "must be >= 1"));
         }
         Ok(())
     }

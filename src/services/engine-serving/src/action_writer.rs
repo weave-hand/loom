@@ -223,6 +223,10 @@ impl IcebergActionWriter {
                 .map(|(cols, batch)| (cols.as_slice(), batch)),
             event,
             expected_version,
+            // Production wiring of a delta-count consolidate threshold through
+            // `IcebergActionWriter`/`EngineTuning` is not part of this slice; `None`
+            // preserves current behaviour (no consolidate enqueue from this path).
+            None,
         )
         .await
         .map_err(|e| match e {
