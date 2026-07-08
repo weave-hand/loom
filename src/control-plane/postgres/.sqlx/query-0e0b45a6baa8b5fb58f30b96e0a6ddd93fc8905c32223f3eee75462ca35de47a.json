@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, to_type from ontology.link where from_type = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "to_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "to_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "0e0b45a6baa8b5fb58f30b96e0a6ddd93fc8905c32223f3eee75462ca35de47a"
+}

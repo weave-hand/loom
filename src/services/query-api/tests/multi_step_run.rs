@@ -211,7 +211,7 @@ async fn two_step_action_resolves_stepref_and_writes_once() {
     };
 
     let body = json!({ "orderId": "100", "sku": "ABC" });
-    let (_rows, run_id) = run_action(
+    let (_rows, run_id, _kind) = run_action(
         "createOrderWithLine",
         body.as_object().unwrap(),
         &subj,

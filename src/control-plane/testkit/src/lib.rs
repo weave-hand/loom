@@ -1348,6 +1348,116 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         "redefine replaces derived"
     );
 
+    // --- Surface-2: define-time validation of a derived property's aggregate
+    // column against its link's target type (only when the link+target resolve).
+    // Concrete target + link so Surface-2 validation resolves (a local prop helper —
+    // no prop_* helper exists in this contract).
+    let prop = |name: &str, ty: &str| PropertyDef {
+        name: name.into(),
+        ty: ty.into(),
+        required: false,
+        constraints: control_plane_core::PropertyConstraints::default(),
+    };
+    o.define_type(ObjectType {
+        name: tn("Transaction"),
+        table: tref("main", "txn"),
+        identity: None,
+        properties: vec![
+            prop("id", "Long"),
+            prop("amount", "Double"),
+            prop("note", "String"),
+        ],
+        derived: vec![],
+    })
+    .await
+    .expect("define Transaction");
+    // define_link requires both endpoints to pre-exist; Account is defined above.
+    o.define_link(LinkDef {
+        name: "transactions".into(),
+        from: tn("Account"),
+        to: tn("Transaction"),
+        cardinality: Cardinality::Many,
+        backing: LinkBacking::ForeignKey {
+            from_column: "id".into(),
+            to_column: "account_id".into(),
+        },
+    })
+    .await
+    .expect("define transactions link");
+
+    // resolvable link + UNDECLARED agg column (`nope` is not a Transaction property)
+    // → Ok. A derived aggregate may read a catalog-only column the type doesn't declare;
+    // best-effort validation SKIPS it (the ingest `bind` seam is the catalog-aware backstop).
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "x".into(),
+            ty: "Double".into(),
+            link: "transactions".into(),
+            agg: Aggregation::Sum("nope".into()),
+        }],
+    })
+    .await
+    .expect("undeclared agg column is skipped (best-effort)");
+
+    // resolvable link + NON-NUMERIC agg column (note: String) under Sum → Validation.
+    let non_numeric = o
+        .define_type(ObjectType {
+            name: tn("Account"),
+            table: tref("main", "account"),
+            identity: None,
+            properties: vec![prop("id", "Long")],
+            derived: vec![DerivedPropertyDef {
+                name: "x".into(),
+                ty: "String".into(),
+                link: "transactions".into(),
+                agg: Aggregation::Sum("note".into()),
+            }],
+        })
+        .await;
+    assert!(
+        matches!(
+            non_numeric,
+            Err(control_plane_core::ControlPlaneError::Validation(_))
+        ),
+        "Sum over non-numeric → Validation: {non_numeric:?}"
+    );
+
+    // valid Sum over a numeric column (amount: Double) → Ok.
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "balance".into(),
+            ty: "Double".into(),
+            link: "transactions".into(),
+            agg: Aggregation::Sum("amount".into()),
+        }],
+    })
+    .await
+    .expect("valid Sum over numeric column");
+
+    // unresolvable link (target link undefined) → Ok (deferred; read path still omits).
+    o.define_type(ObjectType {
+        name: tn("Account"),
+        table: tref("main", "account"),
+        identity: None,
+        properties: vec![prop("id", "Long")],
+        derived: vec![DerivedPropertyDef {
+            name: "y".into(),
+            ty: "Double".into(),
+            link: "ghostlink".into(),
+            agg: Aggregation::Sum("whatever".into()),
+        }],
+    })
+    .await
+    .expect("unresolvable link defers validation");
+
     // --- vector index declarations -------------------------------------------
     let doc = ObjectType {
         name: tn("Document"),
@@ -1518,6 +1628,64 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .any(|l| l.name == "customer"),
         "re-defined link listed again"
     );
+
+    // --- referrer guard: a derived property naming a link blocks its deletion ---
+    // (Runs after the delete_link block re-defined `customer`, so it is present here.)
+    let order_ty = o.get_type(&tn("Order")).await.expect("Order exists");
+    let mut order_with_derived = order_ty.clone();
+    order_with_derived.derived = vec![DerivedPropertyDef {
+        name: "customerCount".into(),
+        ty: "Long".into(),
+        link: "customer".into(),
+        agg: Aggregation::Count, // Count: no agg column, so Surface-2 validation is a no-op here
+    }];
+    o.define_type(order_with_derived)
+        .await
+        .expect("Order with derived");
+
+    // derived_properties_referencing reports the referrer; [] for an unreferenced link.
+    assert_eq!(
+        o.derived_properties_referencing(&tn("Order"), "customer")
+            .await
+            .unwrap(),
+        vec!["customerCount".to_string()],
+    );
+    assert!(
+        o.derived_properties_referencing(&tn("Order"), "no_such_link")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // delete_link is BLOCKED with Conflict; the link is untouched.
+    let blocked = o.delete_link(&tn("Order"), "customer").await;
+    assert!(
+        matches!(
+            blocked,
+            Err(control_plane_core::ControlPlaneError::Conflict(_))
+        ),
+        "referenced link 409s: {blocked:?}"
+    );
+    assert!(
+        o.links(&tn("Order"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .items
+            .iter()
+            .any(|l| l.name == "customer"),
+        "blocked delete left the link in place",
+    );
+
+    // Redefine Order WITHOUT the derived property → delete now succeeds, idempotent again.
+    o.define_type(order_ty.clone())
+        .await
+        .expect("Order without derived");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("delete after derived removed");
+    o.delete_link(&tn("Order"), "customer")
+        .await
+        .expect("idempotent re-delete");
 
     // --- delete_action: gone from get + list, idempotent, re-definable ---
     let create_widget_again = o

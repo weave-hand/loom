@@ -510,8 +510,13 @@ struct DefineModelReq {
     table: TableReq,
     identity: Option<String>,
     properties: Vec<PropReq>,
-    /// Aggregate-over-link derived properties. Link existence is not validated
-    /// here (matches `define_type`; see iss-delete-link-derived-dangle).
+    /// Aggregate-over-link derived properties. Link *existence* is not validated
+    /// here (matches `define_type`; see iss-delete-link-derived-dangle) — but when
+    /// the link and its target type DO resolve, `define_type` best-effort checks a
+    /// *declared* target property's type for applicability (Sum/Avg numeric, Min/Max
+    /// ordered), a `Validation` error surfaced here as 400. A catalog-only column
+    /// (one the target type doesn't declare as a property) is left to the ingest
+    /// `bind` seam's catalog-aware check.
     #[serde(default)]
     derived: Vec<DerivedReq>,
 }
@@ -799,7 +804,10 @@ async fn define_link_route(
         ("from" = String, Path, description = "The link's `from` type"),
         ("name" = String, Path, description = "Link name"),
     ),
-    responses((status = 200, description = "Link definition removed (idempotent)")),
+    responses(
+        (status = 200, description = "Link definition removed (idempotent)"),
+        (status = 409, description = "Link is referenced by a derived property; delete blocked"),
+    ),
     security(("bearer_auth" = [])),
     tag = "admin",
 )]
@@ -816,6 +824,11 @@ async fn delete_link_route(
         Ok(()) => {
             Json(serde_json::json!({ "deleted": { "from": from, "name": name } })).into_response()
         }
+        Err(control_plane_core::ControlPlaneError::Conflict(msg)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": msg })),
+        )
+            .into_response(),
         Err(e) => status_for(&e).into_response(),
     }
 }

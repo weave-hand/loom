@@ -8,7 +8,10 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{ADMIN_ROLE, Acl, Auth, NewUser, RoleId, SubjectId};
+use control_plane_core::{
+    ADMIN_ROLE, Acl, Aggregation, Auth, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef,
+    NewUser, ObjectType, Ontology, RoleId, SubjectId, TypeName,
+};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AdminState, AuthState, admin_routes, hash_password, token_sha256};
@@ -80,6 +83,15 @@ fn post_json(uri: &str, token: &str, body: &str) -> Request {
         .header(AUTHORIZATION, format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn delete_req(uri: &str, token: &str) -> Request {
+    Request::builder()
+        .method("DELETE")
+        .uri(uri)
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
         .unwrap()
 }
 
@@ -317,4 +329,129 @@ async fn non_admin_reset_is_403() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// Seed `Customer`, `Order`, and the `customer` link (Order -> Customer). When
+/// `with_derived` is set, `Order` also carries a derived property naming that link.
+async fn seed_order_customer_link(cp: &MemoryControlPlane, with_derived: bool) {
+    cp.define_type(
+        ObjectType::build("Customer", ("wh", "customer"))
+            .prop_req("id", "Long")
+            .prop("name", "String")
+            .identity("id")
+            .done(),
+    )
+    .await
+    .unwrap();
+    let mut order = ObjectType::build("Order", ("wh", "order"))
+        .prop_req("id", "Long")
+        .prop_req("customer_id", "Long")
+        .identity("id");
+    if with_derived {
+        order = order.derived(DerivedPropertyDef {
+            name: "customerCount".into(),
+            ty: "Long".into(),
+            link: "customer".into(),
+            agg: Aggregation::Count,
+        });
+    }
+    cp.define_type(order.done()).await.unwrap();
+    cp.define_link(LinkDef {
+        name: "customer".into(),
+        from: TypeName("Order".into()),
+        to: TypeName("Customer".into()),
+        cardinality: Cardinality::One,
+        backing: LinkBacking::ForeignKey {
+            from_column: "customer_id".into(),
+            to_column: "id".into(),
+        },
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn delete_link_referenced_by_derived_property_is_409() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_order_customer_link(&cp, true).await;
+
+    let (status, resp) = send(
+        app(cp.clone()),
+        delete_req("/admin/links/Order/customer", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let v: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert!(
+        v["error"].as_str().unwrap().contains("customerCount"),
+        "409 body names the blocking derived property: {resp}"
+    );
+
+    // Untouched: the link is still there.
+    assert!(
+        cp.links(
+            &TypeName("Order".into()),
+            control_plane_core::PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .any(|l| l.name == "customer")
+    );
+}
+
+#[tokio::test]
+async fn delete_unreferenced_link_is_200() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_order_customer_link(&cp, false).await;
+
+    let (status, _) = send(
+        app(cp.clone()),
+        delete_req("/admin/links/Order/customer", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !cp.links(
+            &TypeName("Order".into()),
+            control_plane_core::PageReq::unbounded()
+        )
+        .await
+        .unwrap()
+        .items
+        .iter()
+        .any(|l| l.name == "customer")
+    );
+}
+
+#[tokio::test]
+async fn define_model_with_non_numeric_agg_column_is_400() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    // Seed Customer (id: Long, name: String), Order, and the resolvable `customer`
+    // link (Order -> Customer).
+    seed_order_customer_link(&cp, false).await;
+
+    // Redefine Order with a derived Sum over Customer's DECLARED `name` (String)
+    // property. The link + target resolve and `name` is a declared property whose
+    // known logical type is non-numeric, so define-time validation rejects it as 400.
+    // (An UNDECLARED / catalog-only column would instead be skipped best-effort.)
+    let body = r#"{
+        "name": "Order",
+        "table": {"schema": "wh", "name": "order"},
+        "identity": "id",
+        "properties": [{"name": "id", "ty": "Long", "required": true},
+                       {"name": "customer_id", "ty": "Long", "required": true}],
+        "derived": [{"name": "bogus", "ty": "Double", "link": "customer",
+                     "agg": {"kind": "sum", "column": "name"}}]
+    }"#;
+    let (status, resp) = send(app(cp), post_json("/admin/models", &token, body)).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "Sum over a declared non-numeric property → 400: {resp}"
+    );
 }

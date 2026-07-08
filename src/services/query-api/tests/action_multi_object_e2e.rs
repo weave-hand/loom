@@ -29,6 +29,7 @@ use e2e_support::InProcessServingEngine;
 use query_api::action::{ActionDeps, ActionError, WriteDenialReason, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::render::objects_to_json;
+use query_api::serving::SqlValue;
 use serde_json::json;
 
 // ---- small construction helpers (mirroring multi_step_run.rs) --------------------------
@@ -160,35 +161,7 @@ async fn order_with_lines_round_trips_with_cross_step_fk_and_one_run() {
     // createOrderWithLines: step0 inserts the Order (bind `order`); step1 & step2 each
     // insert a LineItem whose `orderId` is `@order.id` (a StepRef into the parent's
     // just-resolved identity). Two line items ⇒ two LineItem steps.
-    cp.ontology()
-        .define_action(ActionDef {
-            name: ActionName("createOrderWithLines".into()),
-            steps: vec![
-                ActionStep {
-                    target: tn("Order"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("oid", "Long", true, "id")],
-                    assignments: vec![],
-                    bind: Some("order".into()),
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li1", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-                ActionStep {
-                    target: tn("LineItem"),
-                    kind: ActionKind::Insert,
-                    parameters: vec![param_bound("li2", "Long", true, "id")],
-                    assignments: vec![Assignment::step_ref("orderId", "order", "id")],
-                    bind: None,
-                },
-            ],
-        })
-        .await
-        .unwrap();
+    e2e_support::define_create_order_with_lines_action(&cp).await;
 
     let (subj, _role) = writer_on(&cp, &["Order", "LineItem"]).await;
     let (engine, _eg) =
@@ -202,7 +175,7 @@ async fn order_with_lines_round_trips_with_cross_step_fk_and_one_run() {
     };
 
     let body = json!({ "oid": "500", "li1": "1", "li2": "2" });
-    let (_created, run_id) = run_action(
+    let (outcome, run_id, _kind) = run_action(
         "createOrderWithLines",
         body.as_object().unwrap(),
         &subj,
@@ -210,6 +183,46 @@ async fn order_with_lines_round_trips_with_cross_step_fk_and_one_run() {
     )
     .await
     .expect("multi-step action runs");
+
+    let steps = match outcome {
+        query_api::action::ActionOutcome::Multi(s) => s,
+        query_api::action::ActionOutcome::Single(_) => panic!("multi-step action must yield Multi"),
+    };
+    assert_eq!(steps.len(), 3, "one result per declared step, in order");
+    // Step 0: the bound Order (id 500).
+    assert_eq!(steps[0].bind.as_deref(), Some("order"));
+    assert_eq!(steps[0].target, "Order");
+    assert_eq!(steps[0].rows.rows.len(), 1);
+    let oidc = steps[0]
+        .rows
+        .columns
+        .iter()
+        .position(|c| c == "id")
+        .expect("Order has id");
+    assert_eq!(steps[0].rows.rows[0][oidc], SqlValue::Int(500));
+    // Steps 1 & 2: the two unbound LineItems, carrying the parent's resolved id.
+    for (i, want_id) in [(1usize, 1i64), (2usize, 2i64)] {
+        assert_eq!(steps[i].bind, None, "LineItem steps are unbound");
+        assert_eq!(steps[i].target, "LineItem");
+        let idc = steps[i]
+            .rows
+            .columns
+            .iter()
+            .position(|c| c == "id")
+            .expect("LineItem has id");
+        let fkc = steps[i]
+            .rows
+            .columns
+            .iter()
+            .position(|c| c == "orderId")
+            .expect("LineItem has orderId");
+        assert_eq!(steps[i].rows.rows[0][idc], SqlValue::Int(want_id));
+        assert_eq!(
+            steps[i].rows.rows[0][fkc],
+            SqlValue::Int(500),
+            "cross-step FK wired"
+        );
+    }
 
     // (a) The Order round-trips through the Iceberg serving engine.
     let orders = read_objects(&cp, &pool, "Order", &subj).await;
@@ -554,7 +567,7 @@ async fn mixed_insert_and_update_commit_atomically() {
     assert_eq!(seeded[0]["status"], json!("pending"), "seed status");
 
     // Run the mixed-kind action: insert LineItem 7, update Order 1 → status "shipped".
-    let (_rows, run_id) = run_action(
+    let (_rows, run_id, _kind) = run_action(
         "fulfillOrder",
         json!({ "liId": "7", "liOrderId": "1", "ordId": "1", "status": "shipped" })
             .as_object()
@@ -697,7 +710,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
     );
 
     // Insert LineItem 9 + delete the only Order in one atomic action.
-    let (_rows, run_id) = run_action(
+    let (_rows, run_id, _kind) = run_action(
         "closeOrder",
         json!({ "liId": "9", "liOrderId": "1", "ordId": "1" })
             .as_object()

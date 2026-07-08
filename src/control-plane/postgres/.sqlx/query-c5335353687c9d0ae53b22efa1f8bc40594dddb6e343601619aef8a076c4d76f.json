@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select name, ty from ontology.property where type_name = $1 order by ordinal",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.property",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ty",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.property",
+            "name": "ty"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c5335353687c9d0ae53b22efa1f8bc40594dddb6e343601619aef8a076c4d76f"
+}

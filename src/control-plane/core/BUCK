@@ -421,6 +421,16 @@ rust_test(
 )
 
 rust_test(
+    name = "derived-columns",
+    crate = "derived_columns",
+    srcs = ["tests/derived_columns.rs"],
+    crate_root = "tests/derived_columns.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "aggregation-typing",
     crate = "aggregation_typing",
     srcs = ["tests/aggregation_typing.rs"],

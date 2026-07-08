@@ -123,9 +123,14 @@ async fn action_inserts_typed_object_readable_with_atomic_lineage() {
         serving: &serving,
     };
     let body = json!({ "id": "42", "name": "gadget" });
-    let (created, run_id) = run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
-        .await
-        .expect("action runs");
+    let (outcome, run_id, _kind) =
+        run_action("createWidget", body.as_object().unwrap(), &subj, &deps)
+            .await
+            .expect("action runs");
+    let created = match outcome {
+        query_api::action::ActionOutcome::Single(rows) => rows,
+        query_api::action::ActionOutcome::Multi(_) => panic!("single-step action yields Single"),
+    };
     assert_eq!(
         objects_to_json(&created, None)["objects"][0],
         json!({ "id": "42", "name": "gadget" })

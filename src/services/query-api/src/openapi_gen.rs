@@ -308,15 +308,17 @@ fn plain_response(description: &str) -> utoipa::openapi::Response {
 
 /// `POST /actions/{name}` for one defined action, tagged by **every** step's
 /// target type (deduped, step order) so the op appears in each involved type's
-/// docs section. The 2xx body documents the FIRST step's object — the
-/// primary/root object the action minted, which is exactly what `run_action`
-/// returns for both the single-step and multi-step paths. Every kind documents
-/// `201`: `post_action`'s single Ok arm responds `StatusCode::CREATED`
-/// regardless of kind (`http.rs`), and a truthful document follows the
-/// handler. Kind-true statuses are a registered follow-up.
+/// docs section. A single-step action's 2xx body documents the affected
+/// object itself (a ref to the target type's schema) — that's exactly what
+/// `run_action`'s `ActionOutcome::Single` path returns. A multi-step action's
+/// 2xx body instead documents the `{steps:[...]}` envelope (a ref to
+/// `ActionStepsBody`), one entry per declared step, matching
+/// `ActionOutcome::Multi`. The status is kind-true, matching `post_action`
+/// (`http.rs`): Insert documents `201 Created`; Update/Delete document
+/// `200 OK`. Multi-step actions key on the first (primary) step's kind.
 fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
     let target = &primary.target.0;
-    let (summary, ok_desc) = if let [only] = action.steps.as_slice() {
+    let (summary, ok_desc, ok_schema) = if let [only] = action.steps.as_slice() {
         let summary = match only.kind {
             ActionKind::Insert => format!("Insert a {target}"),
             ActionKind::Update => format!("Update a {target} (identity-targeted PATCH)"),
@@ -327,7 +329,7 @@ fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
             ActionKind::Update => "Updated object",
             ActionKind::Delete => "Deleted object (pre-deletion values)",
         };
-        (summary, desc)
+        (summary, desc, RefOr::Ref(Ref::from_schema_name(target)))
     } else {
         let steps = action
             .steps
@@ -337,7 +339,8 @@ fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
             .join(", ");
         (
             format!("Atomically {steps}"),
-            "Primary object (the first step's affected row)",
+            "Ordered `steps` envelope: one entry per declared step, each `{bind, target, objects}`",
+            RefOr::Ref(Ref::from_schema_name("ActionStepsBody")),
         )
     };
     let body = RequestBodyBuilder::new()
@@ -353,12 +356,13 @@ fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
             op = op.tag(step.target.0.clone());
         }
     }
+    let ok_status = match primary.kind {
+        ActionKind::Insert => "201",
+        ActionKind::Update | ActionKind::Delete => "200",
+    };
     op.security(bearer())
         .request_body(Some(body))
-        .response(
-            "201",
-            json_response(RefOr::Ref(Ref::from_schema_name(target)), ok_desc),
-        )
+        .response(ok_status, json_response(ok_schema, ok_desc))
         .response(
             "400",
             plain_response("Malformed or undecodable request body"),

@@ -699,12 +699,19 @@ pub async fn vector_search(
     if g.identity_governed() {
         return Err(QueryError::Forbidden);
     }
-    if g.row_filters.is_empty() {
+    // Interim cold-hit suppression: the survivor post-filter must run for EVERY
+    // identity-bearing type — not only when a row filter happens to exist — because a
+    // COW inline-shadow UPDATE/DELETE leaves a stale/tombstoned vector in the cold
+    // Puffin index that `merge_topk` does not suppress (#iss-search-cold-superseded-hits).
+    // Identity-less types cannot be inline-shadowed (mutation requires a declared
+    // identity), so they accrue no stale cold entries and keep the raw additive hits.
+    if g.otype.identity.is_none() {
         return Ok(hits);
     }
     let identity = g.otype.identity.clone().ok_or_else(|| {
-        // A served vector type with no declared identity is server ontology/config
-        // state, not caller-forgeable here — classify as internal, not a 400.
+        // unreachable after the is_none() carve-out above; defensive. A served vector
+        // type with no declared identity is server ontology/config state, not
+        // caller-forgeable here — classify as internal, not a 400.
         QueryError::NoIdentity(g.otype.name.0.clone())
             .into_internal("vector-search post-filter: served vector type has no declared identity")
     })?;
@@ -741,8 +748,15 @@ pub async fn vector_search(
         .filter_map(|r| r.first())
         .map(sqlvalue_to_id_string)
         .collect();
-    // Keep only surviving ids, preserving the engine's distance order; may return < k.
-    hits.retain(|h| surviving.contains(&sqlvalue_to_id_string(&h.id)));
+    // Keep only surviving identities, ONE hit per identity (the nearest, since `hits`
+    // is distance-ordered): collapses an UPDATE's (stale-cold, fresh-hot) duplicate
+    // pair to a single hit. A tombstoned identity survives in neither the merged view
+    // nor `surviving`, so it is dropped. May return < k.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    hits.retain(|h| {
+        let id = sqlvalue_to_id_string(&h.id);
+        surviving.contains(&id) && seen.insert(id)
+    });
     Ok(hits)
 }
 

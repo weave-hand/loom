@@ -192,6 +192,17 @@ impl Ontology for WireOntology {
         Err(read_only("delete_link"))
     }
 
+    // The referrer guard runs control-plane-side (postgres/memory `delete_link`);
+    // this wire client doesn't manage links (define_link/delete_link are read_only),
+    // so this guard helper is never invoked here — surface it as unsupported.
+    async fn derived_properties_referencing(
+        &self,
+        _from: &TypeName,
+        _name: &str,
+    ) -> Result<Vec<String>> {
+        Err(read_only("derived_properties_referencing"))
+    }
+
     async fn define_action(&self, _action: ActionDef) -> Result<()> {
         Err(read_only("define_action"))
     }

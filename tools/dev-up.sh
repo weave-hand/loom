@@ -3,7 +3,9 @@
 #
 # Builds the UI bundle and //src/services/standalone:loom, then runs the composite
 # (embedded Postgres self-extracted from the binary + engine + ingest + query-api)
-# with a local file:// warehouse. query-api serves the built UI bundle via
+# with a local file:// warehouse, plus a transform worker attached to the engine
+# UDS (the composite runs no worker, so without it a queued transform run would
+# never execute). query-api serves the built UI bundle via
 # LOOM_UI_DIR, so one origin hosts both the API and the login page, and bootstraps
 # an admin user you can log in with.
 #
@@ -41,7 +43,9 @@ fi
 # data dir. Installed once so a later `trap … EXIT` can't clobber cleanup — the
 # server-kill trap used to overwrite the dir-removal trap and leak /tmp/loom-*.
 server_pid=""
+worker_pid=""
 cleanup() {
+  [[ -n "$worker_pid" ]] && kill "$worker_pid" 2>/dev/null
   [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null
   (( EPHEMERAL )) && rm -rf "$DATA_PATH"
   return 0
@@ -54,14 +58,16 @@ if (( ${#DATA_PATH} > 80 )); then
 fi
 mkdir -p "$DATA_PATH/pgrun" "$DATA_PATH/warehouse" "$DATA_PATH/cache"
 
-echo "dev-up: building UI bundle + standalone binary + seed emitter (buck2)…"
-buck2 build //src/ui:bundle //src/services/standalone:loom //src/testing:emit-seed 2>&1 | tail -1
+echo "dev-up: building UI bundle + standalone binary + worker + seed emitter (buck2)…"
+buck2 build //src/ui:bundle //src/services/standalone:loom //src/services/worker:worker-bin //src/testing:emit-seed 2>&1 | tail -1
 UI_DIR="$(buck2 build --show-full-output //src/ui:bundle 2>/dev/null | awk '{print $2}')"
 LOOM_BIN="$(buck2 build --show-full-output //src/services/standalone:loom 2>/dev/null | awk '{print $2}')"
+WORKER_BIN="$(buck2 build --show-full-output //src/services/worker:worker-bin 2>/dev/null | awk '{print $2}')"
 EMIT_BIN="$(buck2 build --show-full-output //src/testing:emit-seed 2>/dev/null | awk '{print $2}')"
-[[ -d "$UI_DIR" ]]   || { echo "dev-up: UI bundle dir not found ($UI_DIR)" >&2; exit 1; }
-[[ -x "$LOOM_BIN" ]] || { echo "dev-up: loom binary not found ($LOOM_BIN)" >&2; exit 1; }
-[[ -x "$EMIT_BIN" ]] || { echo "dev-up: seed emitter not found ($EMIT_BIN)" >&2; exit 1; }
+[[ -d "$UI_DIR" ]]     || { echo "dev-up: UI bundle dir not found ($UI_DIR)" >&2; exit 1; }
+[[ -x "$LOOM_BIN" ]]   || { echo "dev-up: loom binary not found ($LOOM_BIN)" >&2; exit 1; }
+[[ -x "$WORKER_BIN" ]] || { echo "dev-up: worker binary not found ($WORKER_BIN)" >&2; exit 1; }
+[[ -x "$EMIT_BIN" ]]   || { echo "dev-up: seed emitter not found ($EMIT_BIN)" >&2; exit 1; }
 
 # Env shared by every boot of the composite. LOOM_BIND_ADDR is required by Config
 # but unused by the composite (the three real binds come from the addrs below).
@@ -147,6 +153,20 @@ if printf '%s' "$ADMIN_PASS" | env "${common_env[@]}" \
 else
   echo "dev-up: create-admin skipped (instance already sealed?)"
 fi
+
+# Start a transform worker alongside the composite. The composite runs engine +
+# ingest + query-api but NOT the worker, so without this a defined transform's
+# run (or a scheduled / on-input-commit firing) enqueues and sits `queued`
+# forever with nothing to drain it. The worker is the zero-pool binary: it holds
+# no Postgres pool, connecting to the engine over the same UDS (the engine owns
+# PG) and reading/writing the shared file:// warehouse. The query-api port check
+# above already confirmed the composite is listening, so engine.sock is bound.
+env "${common_env[@]}" \
+  LOOM_ENGINE_SOCKET="$DATA_PATH/engine.sock" \
+  LOOM_WORKER_ID=dev-up \
+  "$WORKER_BIN" &
+worker_pid=$!
+echo "dev-up: started transform worker (pid $worker_pid)"
 
 # Seed a small demo graph so the object-explorer has linked data — not just a
 # flat list — to render on a fresh boot. Two linked types + one FK link + one

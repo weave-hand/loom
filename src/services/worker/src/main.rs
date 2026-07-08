@@ -16,7 +16,7 @@ use control_plane_core::{
 };
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::flight::FlightTableClient;
+use engine_wire::flight::{FlightSqlClient, FlightTableClient};
 use tokio_util::sync::CancellationToken;
 use worker::compact::{CompactCtx, handle_compact};
 use worker::consolidate::handle_stream_consolidate;
@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store_cfg = store_config::ObjectStoreConfig::parse_from_env(&env)?;
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);
     let flight = FlightTableClient::connect(&socket).await?;
+    let sql = FlightSqlClient::connect(&socket).await?;
     let mut threshold_bytes: i64 = 128 * 1024 * 1024;
     loom_config::overlay_opt(&env, "LOOM_COMPACT_THRESHOLD_BYTES", &mut threshold_bytes)?;
 
@@ -54,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker_tuning = wcfg.worker;
     let cctx = CompactCtx {
         control: client.clone(),
-        flight: flight.clone(),
+        flight,
         write: write.clone(),
         threshold_bytes,
         write_cfg: wcfg.write.clone(),
@@ -62,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let tctx = TransformCtx {
         control: client.clone(),
-        flight,
+        sql,
         write,
         write_cfg: wcfg.write.clone(),
         worker_tuning,
