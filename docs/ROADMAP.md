@@ -22,8 +22,8 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## query
 
-- [ ] **Stream engine — Subscribe / tail feed (slice 3)** `{#road-stream-subscribe area:query status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-06-stream-engine-design}`
-  Governed query-api endpoint yielding a per-bucket offset-cursor feed of change events (changelog Iceberg ∪ inline tail), with LISTEN/NOTIFY + polling fallback and column projection. Folds in [[fut-serving-stream-to-http]].
+- [ ] **Stream engine — Subscribe / tail feed (slice 3)** `{#road-stream-subscribe area:query status:planned from:2026-07-08-stream-subscribe-design pr:- spec:2026-07-08-stream-subscribe-design}`
+  A governed `GET /objects/{type}/changes` streaming feed (chunked NDJSON) of ordered change events over a CDC table's changelog, resumable from a client-held opaque cursor (multi-consumer; server stateless). The feed is the disjoint UNION ALL of the changelog Iceberg files ∪ the base's live inline tail — flush appends-and-end-caps on one tx, so an event is inline XOR in files (no dedup, and no flush watermark needed for correctness). Sub-second freshness via a `pg_notify('loom_changelog:{tid}')`-on-commit wakeup + poll fallback (the queue's proven pattern); per-batch `GovernedTableProvider` enforces row/column ACL on the stream. The event+cursor contract is transport-agnostic (a future gRPC duplex wraps it). Deferred: server-side consumer-offset storage, the flush watermark, log-table subscribe. Folds in [[fut-serving-stream-to-http]].
 
 ## transform
 
