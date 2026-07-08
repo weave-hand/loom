@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use control_plane_core::{
     ActionDef, ActionName, ActionStep, Aggregation, Assignment, AssignmentSource,
-    ControlPlaneError, DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology,
-    Page, PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
+    ControlPlaneError, DerivedPropertyDef, IndexSpec, JobTemplate, LinkBacking, LinkDef,
+    ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName,
+    VectorIndexDef,
 };
 use sqlx::{AssertSqlSafe, PgPool};
 
@@ -364,6 +365,17 @@ impl Ontology for PgControlPlane {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
+        // The action-row insert is `on conflict do nothing`, so a redefine never
+        // deletes the parent row and the FK `on delete cascade` here never fires —
+        // the explicit delete is what keeps downstream idempotent on redefine (mirrors
+        // the action_assignment/action_param/action_step deletes above).
+        sqlx::query!(
+            "delete from ontology.action_downstream where action_name = $1",
+            action.name.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
         for (si, step) in action.steps.iter().enumerate() {
             let step_ordinal = si as i32;
             sqlx::query!(
@@ -428,13 +440,27 @@ impl Ontology for PgControlPlane {
                 .map_err(backend)?;
             }
         }
+        for (ordinal, jt) in action.downstream.iter().enumerate() {
+            sqlx::query!(
+                "insert into ontology.action_downstream (action_name, ordinal, kind, payload) \
+                 values ($1, $2, $3, $4)",
+                action.name.0,
+                ordinal as i32,
+                jt.kind,
+                jt.payload,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
         tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_action(&self, name: &ActionName) -> Result<()> {
-        // Steps/params/assignments cascade from the action row (0030/0009/0025).
+        // Steps/params/assignments/downstream cascade from the action row
+        // (0039/0030/0009/0025).
         sqlx::query!("delete from ontology.action where name = $1", name.0)
             .execute(&self.pool)
             .await
@@ -508,11 +534,24 @@ impl Ontology for PgControlPlane {
                 bind: sr.bind,
             });
         }
+        let downstream_rows = sqlx::query!(
+            "select kind, payload from ontology.action_downstream where action_name = $1 order by ordinal",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let downstream: Vec<JobTemplate> = downstream_rows
+            .into_iter()
+            .map(|r| JobTemplate {
+                kind: r.kind,
+                payload: r.payload,
+            })
+            .collect();
         Ok(ActionDef {
             name: name.clone(),
             steps,
-            // slice-4 Task 2 reconstructs downstream from ontology.action_downstream.
-            downstream: Vec::new(),
+            downstream,
         })
     }
 

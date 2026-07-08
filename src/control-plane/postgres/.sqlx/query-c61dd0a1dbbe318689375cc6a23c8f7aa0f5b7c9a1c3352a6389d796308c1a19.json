@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.action_downstream (action_name, ordinal, kind, payload) values ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int4",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c61dd0a1dbbe318689375cc6a23c8f7aa0f5b7c9a1c3352a6389d796308c1a19"
+}
