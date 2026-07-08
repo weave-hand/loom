@@ -74,6 +74,7 @@ impl LandingMaterializer for IcebergMaterializer {
             req.lineage,
             req.stream_buckets,
             req.cdc,
+            &[],
         )
         .await
         .map_err(IngestError::from)

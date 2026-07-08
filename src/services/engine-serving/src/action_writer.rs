@@ -77,10 +77,13 @@ impl IcebergActionWriter {
         columns: &[ColumnSpec],
         ipc: &[u8],
         event: LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, EngineServingError> {
         let (schema, batches) = datafusion_io::decode_ipc(ipc)
             .map_err(|e| EngineServingError::Engine(e.to_string()))?;
-        iceberg_landing::land(
+        // Call `land_cdc` directly (not the 9-arg `land`) so the action's resolved
+        // downstream `jobs` ride the write's commit tx — atomic commit-or-neither.
+        iceberg_landing::land_cdc(
             &self.pool,
             &self.catalog,
             table,
@@ -93,6 +96,8 @@ impl IcebergActionWriter {
             },
             event,
             None,
+            None,
+            jobs,
         )
         .await
         .map_err(|e| EngineServingError::Engine(e.to_string()))

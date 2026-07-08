@@ -424,12 +424,27 @@ pub async fn inline_append(
         Some(n) => crate::stream::StreamDecl::Log(n),
         None => crate::stream::StreamDecl::None,
     };
-    inline_append_decl(pool, table, columns, batch, lineage, flush_threshold, &decl).await
+    inline_append_decl(
+        pool,
+        table,
+        columns,
+        batch,
+        lineage,
+        flush_threshold,
+        &decl,
+        &[],
+    )
+    .await
 }
 
 /// The actual inline-append implementation, parameterized by the full stream-mode
 /// declaration (log bucket count, or a cdc declaration with its bucket key).
 /// See [`inline_append`] (the stable public entrypoint) for the contract.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the landing params it forwards (pool, table, columns, batch, lineage, \
+              flush threshold, stream decl) plus the slice-4 downstream jobs the action path threads in"
+)]
 pub(crate) async fn inline_append_decl(
     pool: &PgPool,
     table: &TableRef,
@@ -438,6 +453,7 @@ pub(crate) async fn inline_append_decl(
     lineage: LineageEvent,
     flush_threshold: Option<i64>,
     decl: &crate::stream::StreamDecl,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
@@ -720,6 +736,12 @@ pub(crate) async fn inline_append_decl(
 
     // 4. Lineage, atomic with the rows.
     pg_emit(&mut *conn, &lineage).await?;
+
+    // Slice-4: enqueue the action's resolved downstream jobs in this same tx
+    // (commit-or-neither), mirroring `CommitExtras.jobs` on the land_parquet path.
+    for job in jobs {
+        crate::queue::pg_insert_if_absent(&mut *conn, job).await?;
+    }
 
     crate::transforms::pg_fire_data_triggers(
         &mut *conn,

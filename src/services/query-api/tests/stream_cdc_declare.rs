@@ -106,6 +106,7 @@ async fn cdc_declaration_creates_changelog_table_mirror_row_and_pointer() {
             buckets: 2,
             bucket_key: "id".into(),
         }),
+        &[],
     )
     .await
     .expect("land cdc");
@@ -206,6 +207,7 @@ async fn non_cdc_batch_land_creates_no_changelog_table() {
         lineage(run),
         None,
         None,
+        &[],
     )
     .await
     .expect("land batch");
@@ -262,6 +264,7 @@ async fn log_declare_creates_no_changelog_table() {
         lineage(run),
         Some(2),
         None,
+        &[],
     )
     .await
     .expect("land log stream");
