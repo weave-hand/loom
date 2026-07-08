@@ -365,9 +365,15 @@ pub struct ActionName(pub String);
 /// Which kind of mutation an action performs against its target type. `Insert`
 /// (part-1) creates a new object; `Update`/`Delete` (A5) mutate or remove one
 /// existing object located by the target type's declared `identity`.
+///
+/// The serde wire token is the lowercase canonical form (`insert`/`update`/`delete`),
+/// matching [`ActionKind::as_str`] / [`ActionKind::from_str`] and the postgres
+/// `action_steps.kind` column default (`'insert'`, migration `0019`). The prior
+/// derived-default PascalCase form was an inconsistency with every other wire surface.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
 )]
+#[serde(rename_all = "lowercase")]
 pub enum ActionKind {
     #[default]
     Insert,
@@ -500,6 +506,17 @@ impl Assignment {
     }
 }
 
+/// A downstream job an action enqueues atomically with its write (slice 4). `kind`
+/// is validated at define time against [`crate::KNOWN_JOB_KINDS`]; `payload` is a JSON
+/// object whose string leaves beginning with `@` are `@self.<prop>` references resolved
+/// against the written (primary-step) row at invoke time.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct JobTemplate {
+    pub kind: String,
+    #[serde(default = "serde_json::Value::default")]
+    pub payload: serde_json::Value,
+}
+
 /// One step of an [`ActionDef`]: a single-target mutation. `bind` names the step's
 /// output row so later steps can reference its properties (`@order.id`). Slice-1
 /// `ParamDef.binds` and slice-2 `Assignment` live inside a step unchanged.
@@ -524,6 +541,11 @@ pub struct ActionStep {
 pub struct ActionDef {
     pub name: ActionName,
     pub steps: Vec<ActionStep>,
+    /// Downstream jobs the action enqueues atomically with its write (slice 4). The
+    /// field-level `#[serde(default)]` is documentary — the [`ActionDefRepr`] bridge
+    /// carries the real default (empty) on both its `Flat` and `Stepped` variants.
+    #[serde(default)]
+    pub downstream: Vec<JobTemplate>,
 }
 
 /// Wire bridge: a single-step, bind-less action reads/writes the legacy flat JSON;
@@ -541,10 +563,14 @@ enum ActionDefRepr {
         parameters: Vec<ParamDef>,
         #[serde(default)]
         assignments: Vec<Assignment>,
+        #[serde(default)]
+        downstream: Vec<JobTemplate>,
     },
     Stepped {
         name: ActionName,
         steps: Vec<ActionStep>,
+        #[serde(default)]
+        downstream: Vec<JobTemplate>,
     },
 }
 
@@ -557,8 +583,21 @@ impl From<ActionDefRepr> for ActionDef {
                 kind,
                 parameters,
                 assignments,
-            } => ActionDef::single_step(name, target, kind, parameters, assignments),
-            ActionDefRepr::Stepped { name, steps } => ActionDef { name, steps },
+                downstream,
+            } => {
+                let mut def = ActionDef::single_step(name, target, kind, parameters, assignments);
+                def.downstream = downstream;
+                def
+            }
+            ActionDefRepr::Stepped {
+                name,
+                steps,
+                downstream,
+            } => ActionDef {
+                name,
+                steps,
+                downstream,
+            },
         }
     }
 }
@@ -583,10 +622,12 @@ impl From<ActionDef> for ActionDefRepr {
                 kind: s.kind,
                 parameters: s.parameters,
                 assignments: s.assignments,
+                downstream: a.downstream,
             },
             None => ActionDefRepr::Stepped {
                 name: a.name,
                 steps,
+                downstream: a.downstream,
             },
         }
     }
@@ -611,7 +652,17 @@ impl ActionDef {
                 assignments,
                 bind: None,
             }],
+            downstream: Vec::new(),
         }
+    }
+
+    /// Replace this action's downstream templates (slice 4). Default is empty (set by
+    /// [`ActionDef::single_step`] / [`ActionDef::build`]). A chained setter mirroring
+    /// [`ActionDefBuilder::downstream`] for callers that finish with `single_step`.
+    #[must_use]
+    pub fn downstream(mut self, templates: Vec<JobTemplate>) -> Self {
+        self.downstream = templates;
+        self
     }
 
     /// Start a fluent [`ActionDefBuilder`] for an action named `name` targeting
@@ -640,6 +691,7 @@ impl ActionDef {
                 assignments: Vec::new(),
                 bind: None,
             }],
+            downstream: Vec::new(),
         }
     }
 }
@@ -651,6 +703,8 @@ pub struct ActionDefBuilder {
     name: ActionName,
     /// Always holds at least one open step (seeded by [`ActionDef::build`]).
     steps: Vec<ActionStep>,
+    /// Downstream templates (slice 4); empty by default until `.downstream(...)`.
+    downstream: Vec<JobTemplate>,
 }
 
 impl ActionDefBuilder {
@@ -760,11 +814,20 @@ impl ActionDefBuilder {
         self
     }
 
+    /// Replace the action's downstream templates (slice 4). Default is empty (seeded
+    /// by [`ActionDef::build`]). A chained setter; call before [`done`](Self::done).
+    #[must_use]
+    pub fn downstream(mut self, templates: Vec<JobTemplate>) -> Self {
+        self.downstream = templates;
+        self
+    }
+
     /// Finish: the assembled [`ActionDef`].
     pub fn done(self) -> ActionDef {
         ActionDef {
             name: self.name,
             steps: self.steps,
+            downstream: self.downstream,
         }
     }
 }

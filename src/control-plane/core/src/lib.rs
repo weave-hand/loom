@@ -62,12 +62,12 @@ pub use logical_type::{
 };
 pub use ontology::{
     ActionDef, ActionDefBuilder, ActionKind, ActionName, ActionStep, Aggregation, Assignment,
-    AssignmentSource, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType,
-    ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
+    AssignmentSource, Cardinality, DerivedPropertyDef, JobTemplate, LinkBacking, LinkDef,
+    ObjectType, ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
     VectorIndexDef, validate_derived_columns,
 };
 pub use page::{Cursor, Page, PageReq};
-pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
+pub use queue::{Job, JobFailure, JobId, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use stream::{BucketOffsets, StreamKind, StreamMeta, StreamTables};
 pub use stream_consolidate_job::{STREAM_CONSOLIDATE_JOB_KIND, StreamConsolidateJob};

@@ -511,6 +511,8 @@ impl Ontology for PgControlPlane {
         Ok(ActionDef {
             name: name.clone(),
             steps,
+            // slice-4 Task 2 reconstructs downstream from ontology.action_downstream.
+            downstream: Vec::new(),
         })
     }
 

@@ -23,6 +23,20 @@ pub struct NewJob {
     pub priority: i32,
 }
 
+/// Every job kind a worker dispatches — the define-time allowlist for action
+/// `downstream` [`crate::JobTemplate`]s. Mirrors the worker's dispatch match: a kind an
+/// action enqueues but no worker handles would deadlock the queue. The consts are
+/// re-exported at the crate root, so `crate::<KIND>` resolves here.
+pub const KNOWN_JOB_KINDS: &[&str] = &[
+    crate::FLUSH_JOB_KIND,
+    crate::GC_JOB_KIND,
+    crate::COMPACT_JOB_KIND,
+    crate::BUILD_VECTOR_INDEX_JOB_KIND,
+    crate::STREAM_CONSOLIDATE_JOB_KIND,
+    crate::TRANSFORM_JOB_KIND,
+    crate::TYPED_TRANSFORM_JOB_KIND,
+];
+
 /// A claimed job handed to a worker.
 #[derive(Debug)]
 pub struct Job {

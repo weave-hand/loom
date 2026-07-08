@@ -859,6 +859,7 @@ pub async fn define_create_order_with_lines_action(cp: &PgControlPlane) {
                     bind: None,
                 },
             ],
+            downstream: Vec::new(),
         })
         .await
         .unwrap();

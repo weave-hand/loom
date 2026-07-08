@@ -170,6 +170,7 @@ fn action() -> ActionDef {
                 bind: Some("li".into()),
             },
         ],
+        downstream: Vec::new(),
     }
 }
 
