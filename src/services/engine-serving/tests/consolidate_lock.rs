@@ -70,9 +70,8 @@ async fn consolidate_stream_defers_to_a_held_table_lock() {
     let catalog2 = catalog.clone();
     let pool2 = pool.clone();
     let table2 = table.clone();
-    let consolidate_task = tokio::spawn(async move {
-        consolidate_stream(&cp2, &catalog2, &pool2, &table2).await
-    });
+    let consolidate_task =
+        tokio::spawn(async move { consolidate_stream(&cp2, &catalog2, &pool2, &table2).await });
 
     // Give the spawned task a moment to actually reach and block on the lock,
     // then assert it has NOT proceeded past the gate while the lock is held.
