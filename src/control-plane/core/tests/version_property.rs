@@ -41,3 +41,26 @@ fn version_builder_field_round_trips() {
         .done();
     assert!(no_version.version.is_none());
 }
+
+#[test]
+fn version_orderable_types_are_integer_long_timestamp() {
+    use control_plane_core::BaseType;
+    for ty in [BaseType::Integer, BaseType::Long, BaseType::Timestamp] {
+        assert!(
+            ty.is_version_orderable(),
+            "{ty:?} should be version-orderable"
+        );
+    }
+    for ty in [
+        BaseType::Double,
+        BaseType::Boolean,
+        BaseType::String,
+        BaseType::Date,
+        BaseType::Vector(4),
+    ] {
+        assert!(
+            !ty.is_version_orderable(),
+            "{ty:?} should NOT be version-orderable"
+        );
+    }
+}

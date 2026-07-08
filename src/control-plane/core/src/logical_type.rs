@@ -117,6 +117,19 @@ impl BaseType {
     pub fn is_ordered(self) -> bool {
         !matches!(self, BaseType::Boolean)
     }
+
+    /// A version/sequence column must be a totally-ordered, monotonic-friendly
+    /// type — `Integer`, `Long`, or `Timestamp` — for the `Versioned` merge engine
+    /// to order current-state by it. Narrower than `is_ordered` (excludes Double,
+    /// String, Date, Vector): a version is an integer or timestamp sequence, not
+    /// arbitrary ordered data. See `road-stream-merge-engines`.
+    #[must_use]
+    pub fn is_version_orderable(self) -> bool {
+        matches!(
+            self,
+            BaseType::Integer | BaseType::Long | BaseType::Timestamp
+        )
+    }
 }
 
 /// The Arrow list-child field of every loom `Vector(N)` column, in memory and on

@@ -45,6 +45,7 @@ use crate::stream::StreamDecl;
 pub struct CdcDecl {
     pub buckets: i32,
     pub bucket_key: String,
+    pub merge_engine: control_plane_core::MergeEngine,
 }
 
 /// The inline-tier routing limits carried by [`land`]: at/below
@@ -77,10 +78,12 @@ fn combine_stream_decl(stream_buckets: Option<i32>, cdc: Option<CdcDecl>) -> Res
             Some(CdcDecl {
                 buckets,
                 bucket_key,
+                merge_engine,
             }),
         ) => Ok(StreamDecl::Cdc {
             buckets,
             bucket_key,
+            merge_engine,
         }),
         (None, None) => Ok(StreamDecl::None),
     }

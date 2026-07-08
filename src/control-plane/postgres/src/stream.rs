@@ -20,8 +20,12 @@ pub(crate) enum StreamDecl {
     /// Declare (or confirm) a log table with this many buckets.
     Log(i32),
     /// Declare (or confirm) a PK/CDC table with this many buckets, keyed on
-    /// `bucket_key` (an identity column name).
-    Cdc { buckets: i32, bucket_key: String },
+    /// `bucket_key` (an identity column name), folded by `merge_engine`.
+    Cdc {
+        buckets: i32,
+        bucket_key: String,
+        merge_engine: control_plane_core::MergeEngine,
+    },
 }
 
 /// Reconcile a write's REQUESTED stream mode (`decl`) against the mode the
@@ -73,6 +77,50 @@ pub(crate) async fn reconcile_stream_mode(
         )));
     }
 
+    // merge_engine=versioned requires the bound type to declare a version
+    // property of an orderable type (integer/long/timestamp). Validated HERE —
+    // on every declarer's path (HTTP `/models/{type}?mode=cdc` and direct
+    // land_cdc), and reachable for Versioned (which is only ever created via a
+    // control-plane-defined versioned type + land_cdc, since the HTTP path
+    // infers types with version: None). Runs before existing/new branching so it
+    // gates both first-declare and redeclare.
+    if let StreamDecl::Cdc {
+        merge_engine: control_plane_core::MergeEngine::Versioned,
+        ..
+    } = decl
+    {
+        let version_col = crate::ontology::version_for_table(&mut *conn, table).await?;
+        let Some(vcol) = version_col else {
+            return Err(ControlPlaneError::Validation(format!(
+                "merge_engine=versioned requires {}.{} to declare a version property",
+                table.schema, table.name
+            )));
+        };
+        // The version property's logical type (join object_type -> property).
+        let ty: Option<String> = sqlx::query_scalar!(
+            "select p.ty from ontology.property p \
+             join ontology.object_type o on o.name = p.type_name \
+             where o.table_schema = $1 and o.table_name = $2 and p.name = $3",
+            table.schema,
+            table.name,
+            vcol,
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(backend)?;
+        let orderable = ty
+            .as_deref()
+            .and_then(control_plane_core::resolve_logical)
+            .is_some_and(control_plane_core::BaseType::is_version_orderable);
+        if !orderable {
+            return Err(ControlPlaneError::Validation(format!(
+                "merge_engine=versioned requires an integer/long/timestamp version column; \
+                 {}.{} version column '{vcol}' is {:?}",
+                table.schema, table.name, ty
+            )));
+        }
+    }
+
     let existing_meta = pg_stream_meta(&mut *conn, tid).await?;
     let existing = existing_meta.as_ref().map(|m| m.bucket_count);
 
@@ -101,6 +149,29 @@ pub(crate) async fn reconcile_stream_mode(
                     table.schema, table.name
                 )));
             }
+            // Engine immutability: a `Cdc` redeclare where the existing engine
+            // differs from the requested ⇒ `Conflict` (mirrors the bucket-count
+            // mismatch shape). A `Log` redeclare is unaffected (engine is unused
+            // for log tables).
+            if matches!(
+                decl,
+                StreamDecl::Cdc { merge_engine, .. }
+                    if existing_meta.as_ref().map(|m| m.merge_engine) != Some(*merge_engine)
+            ) {
+                let existing_engine = existing_meta
+                    .as_ref()
+                    .map(|m| m.merge_engine.as_str())
+                    .unwrap_or("?");
+                let requested_engine = match decl {
+                    StreamDecl::Cdc { merge_engine, .. } => merge_engine.as_str(),
+                    _ => existing_engine,
+                };
+                return Err(ControlPlaneError::Conflict(format!(
+                    "stream merge_engine mismatch for {}.{}: requested {requested_engine}, \
+                     table has {existing_engine}",
+                    table.schema, table.name
+                )));
+            }
             Some(m)
         }
         (Some(n), None) => {
@@ -111,15 +182,12 @@ pub(crate) async fn reconcile_stream_mode(
                 )));
             }
             match decl {
-                StreamDecl::Cdc { bucket_key, .. } => {
-                    pg_declare_cdc(
-                        &mut *conn,
-                        tid,
-                        n,
-                        bucket_key,
-                        control_plane_core::MergeEngine::LastRow,
-                    )
-                    .await?;
+                StreamDecl::Cdc {
+                    bucket_key,
+                    merge_engine,
+                    ..
+                } => {
+                    pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?;
                     // Register the changelog table's mirror row (its Iceberg metadata
                     // was created by `land_cdc` before this tx, outside any commit) and
                     // point the registry at it, reusing this write's `at` snapshot —

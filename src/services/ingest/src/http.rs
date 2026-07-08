@@ -4,6 +4,7 @@
 //! `LandingMaterializer` port (`st.materializer.land(req)`); this layer only does
 //! decode <-> HTTP mapping plus that gate/resolve step.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axum::Router;
@@ -209,6 +210,7 @@ pub(crate) struct ModelQuery {
     identity: Option<String>,
     mode: Option<String>,
     buckets: Option<i32>,
+    merge_engine: Option<String>,
 }
 
 /// Query params for `POST /datasets/{schema}/{table}`. `mode=stream` declares the
@@ -250,6 +252,7 @@ impl From<LandModel> for ModelShape {
     params(
         ("type" = String, Path, description = "Ontology type name"),
         ("identity" = Option<String>, Query, description = "Column to record as the inferred type's identity (type-absent branch only)"),
+        ("merge_engine" = Option<String>, Query, description = "CDC merge engine for `mode=cdc`: `last_row` (default) | `first_row` | `versioned` (requires a declared integer/long/timestamp version property on the type)"),
     ),
     request_body(
         content = Vec<u8>,
@@ -333,8 +336,10 @@ pub(crate) async fn land_model(
         Err(e) => return Err(ApiError::internal("ingest model: get_type", e)),
     };
 
-    // `?mode=cdc&buckets=N` declares this type's table as a PK/CDC stream table on
-    // first creation. Requires a declared identity (the bucket key); immutable after.
+    // `?mode=cdc&buckets=N&merge_engine=<engine>` declares this type's table as a
+    // PK/CDC stream table on first creation. Requires a declared identity (the
+    // bucket key); merge_engine=versioned additionally requires a declared
+    // orderable version property — validated in `reconcile_stream_mode`.
     let cdc_decl = if q.mode.as_deref() == Some("cdc") {
         let n = q.buckets.unwrap_or(1);
         if n < 1 {
@@ -346,9 +351,21 @@ pub(crate) async fn land_model(
             .ok_or(ApiError::BadRequest(Cow::Borrowed(
                 "mode=cdc requires the type to declare an identity property",
             )))?;
+        let engine = match q.merge_engine.as_deref() {
+            None => control_plane_core::MergeEngine::LastRow,
+            Some(tok) => match control_plane_core::MergeEngine::from_str(tok) {
+                Ok(e) => e,
+                Err(_) => {
+                    return Err(ApiError::BadRequest(Cow::Owned(format!(
+                        "unknown merge_engine '{tok}' (expected last_row|first_row|versioned)"
+                    ))));
+                }
+            },
+        };
         Some(CdcDecl {
             buckets: n,
             bucket_key: identity,
+            merge_engine: engine,
         })
     } else {
         None
