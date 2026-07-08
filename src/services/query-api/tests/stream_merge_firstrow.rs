@@ -35,7 +35,10 @@ async fn table_rows(
 ) -> Vec<(String, i64, i64)> {
     let ice = IcebergCatalog::new(pool.clone());
     let snap = ice.current_snapshot(table).await.expect("current snapshot");
-    let files = ice.files(table, snap.id, PageReq::unbounded()).await.expect("files");
+    let files = ice
+        .files(table, snap.id, PageReq::unbounded())
+        .await
+        .expect("files");
     let paths: Vec<String> = files.items.into_iter().map(|f| f.path).collect();
     let (_schema, batches) = read_files_as_batches(catalog, table, &paths)
         .await
@@ -51,9 +54,21 @@ fn decode_rows(b: &RecordBatch) -> Vec<(String, i64, i64)> {
     let kind_idx = b.schema().index_of("loom_change_kind").expect("kind col");
     let id_idx = b.schema().index_of("id").expect("id col");
     let qty_idx = b.schema().index_of("qty").expect("qty col");
-    let kinds = b.column(kind_idx).as_any().downcast_ref::<StringArray>().expect("kind str");
-    let ids = b.column(id_idx).as_any().downcast_ref::<Int64Array>().expect("id Int64");
-    let qtys = b.column(qty_idx).as_any().downcast_ref::<Int64Array>().expect("qty Int64");
+    let kinds = b
+        .column(kind_idx)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .expect("kind str");
+    let ids = b
+        .column(id_idx)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("id Int64");
+    let qtys = b
+        .column(qty_idx)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("qty Int64");
     (0..b.num_rows())
         .map(|i| (kinds.value(i).to_string(), ids.value(i), qtys.value(i)))
         .collect()
@@ -86,51 +101,122 @@ async fn firstrow_first_write_wins_and_delete_is_ignored_for_current_state() {
     // Declare `main.widget` CDC keyed on `id` with the FirstRow engine.
     let mut tx = pool.begin().await.expect("begin");
     let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut tx, "main", "widget", at0).await.expect("ensure_table");
+    let tid = ensure_table(&mut tx, "main", "widget", at0)
+        .await
+        .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id", MergeEngine::FirstRow).await.expect("declare_cdc first_row");
+    cp.declare_cdc(tid, 2, "id", MergeEngine::FirstRow)
+        .await
+        .expect("declare_cdc first_row");
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
 
     let (engine, eg) =
-        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
     let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
-    let deps = ActionDeps { cp: &cp, action_engine: &engine, serving: &serving };
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
     let cp_arc = Arc::new(cp.clone());
-    let read_eng: Arc<dyn query_api::serving::ServingEngine> =
-        Arc::new(InProcessServingEngine::new(IcebergCatalog::new(pool.clone())));
+    let read_eng: Arc<dyn query_api::serving::ServingEngine> = Arc::new(
+        InProcessServingEngine::new(IcebergCatalog::new(pool.clone())),
+    );
 
     // insert id=1 (qty=1), update id=1 (qty=9), delete id=1, insert id=2 (qty=2).
-    run_action("createWidget", json!({ "id": "1", "name": "a", "qty": "1" }).as_object().unwrap(), &subj, &deps).await.expect("insert id=1");
-    run_action("updateWidget", json!({ "id": "1", "qty": "9" }).as_object().unwrap(), &subj, &deps).await.expect("update id=1");
-    run_action("deleteWidget", json!({ "id": "1" }).as_object().unwrap(), &subj, &deps).await.expect("delete id=1");
-    run_action("createWidget", json!({ "id": "2", "name": "b", "qty": "2" }).as_object().unwrap(), &subj, &deps).await.expect("insert id=2");
+    run_action(
+        "createWidget",
+        json!({ "id": "1", "name": "a", "qty": "1" })
+            .as_object()
+            .unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("insert id=1");
+    run_action(
+        "updateWidget",
+        json!({ "id": "1", "qty": "9" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("update id=1");
+    run_action(
+        "deleteWidget",
+        json!({ "id": "1" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("delete id=1");
+    run_action(
+        "createWidget",
+        json!({ "id": "2", "name": "b", "qty": "2" })
+            .as_object()
+            .unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("insert id=2");
 
-    let table = TableRef { schema: "main".to_string(), name: "widget".to_string() };
-    let clog = TableRef { schema: "main".to_string(), name: "widget__changelog".to_string() };
+    let table = TableRef {
+        schema: "main".to_string(),
+        name: "widget".to_string(),
+    };
+    let clog = TableRef {
+        schema: "main".to_string(),
+        name: "widget__changelog".to_string(),
+    };
 
     // GET /objects/Widget before flush: FirstRow ⇒ id=1 is qty=1 (first write wins;
     // the qty=9 update and the delete are NOT the earliest event, so ignored for
     // current-state); id=2 is present. This is the baseline consolidate must
     // preserve.
-    let (status_before, body_before) = get(cp_arc.clone(), read_eng.clone(), "/objects/Widget", "writer").await;
+    let (status_before, body_before) = get(
+        cp_arc.clone(),
+        read_eng.clone(),
+        "/objects/Widget",
+        "writer",
+    )
+    .await;
     assert_eq!(status_before, StatusCode::OK, "GET before: {body_before:?}");
     let before = objects_id_qty(&body_before);
-    assert_eq!(before.get("1").map(String::as_str), Some("1"), "first write wins (qty=1, not 9): {before:?}");
+    assert_eq!(
+        before.get("1").map(String::as_str),
+        Some("1"),
+        "first write wins (qty=1, not 9): {before:?}"
+    );
     assert!(before.contains_key("2"), "id=2 present: {before:?}");
 
     // Flush so the deltas land in the base as real Parquet.
     let gov = connect_gov_client(&eg.sock).await;
-    gov.flush_table("main".to_string(), "widget".to_string()).await.expect("flush_table").expect("flush snapshot");
+    gov.flush_table("main".to_string(), "widget".to_string())
+        .await
+        .expect("flush_table")
+        .expect("flush snapshot");
 
     let clog_before = table_rows(&catalog, &pool, &clog).await;
-    assert!(clog_before.len() >= 4, "changelog holds every event (engine-agnostic): {clog_before:?}");
+    assert!(
+        clog_before.len() >= 4,
+        "changelog holds every event (engine-agnostic): {clog_before:?}"
+    );
 
-    assert!(has_shadow(&mut pool.acquire().await.expect("conn"), tid).await.expect("has_shadow"));
+    assert!(
+        has_shadow(&mut pool.acquire().await.expect("conn"), tid)
+            .await
+            .expect("has_shadow")
+    );
 
     // Consolidate: fold the base by FirstRow (smallest loom_offset per identity).
-    let new_snap = gov.consolidate_stream("main".to_string(), "widget".to_string()).await.expect("consolidate_stream");
+    let new_snap = gov
+        .consolidate_stream("main".to_string(), "widget".to_string())
+        .await
+        .expect("consolidate_stream");
     assert!(new_snap > 0, "consolidate produced a real snapshot id");
 
     // Base folds to the first-row winners: id=1's +I (qty=1), id=2's +I (qty=2).
@@ -142,16 +228,33 @@ async fn firstrow_first_write_wins_and_delete_is_ignored_for_current_state() {
         "base folds to FirstRow-per-identity winners: {base_after:?}"
     );
 
-    assert!(!has_shadow(&mut pool.acquire().await.expect("conn"), tid).await.expect("has_shadow"));
+    assert!(
+        !has_shadow(&mut pool.acquire().await.expect("conn"), tid)
+            .await
+            .expect("has_shadow")
+    );
 
     // Changelog untouched by consolidate.
     let clog_after = table_rows(&catalog, &pool, &clog).await;
-    assert_eq!(clog_after, clog_before, "consolidate never touches the changelog");
+    assert_eq!(
+        clog_after, clog_before,
+        "consolidate never touches the changelog"
+    );
 
     // GET /objects/Widget after consolidate is identical to before.
-    let (status_after, body_after) = get(cp_arc.clone(), read_eng.clone(), "/objects/Widget", "writer").await;
+    let (status_after, body_after) = get(
+        cp_arc.clone(),
+        read_eng.clone(),
+        "/objects/Widget",
+        "writer",
+    )
+    .await;
     assert_eq!(status_after, StatusCode::OK, "GET after: {body_after:?}");
-    assert_eq!(objects_id_qty(&body_after), before, "GET identical before/after consolidate");
+    assert_eq!(
+        objects_id_qty(&body_after),
+        before,
+        "GET identical before/after consolidate"
+    );
 
     drop(warehouse);
 }
