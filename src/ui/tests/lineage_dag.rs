@@ -1,4 +1,4 @@
-use loom_ui_core::{NodeKind, lineage_dag};
+use loom_ui_core::{NodeKind, lineage_closure_path, lineage_dag};
 
 #[test]
 fn builds_three_columns_with_edges_through_current() {
@@ -62,4 +62,21 @@ fn empty_closures_yield_only_the_current_node() {
     assert_eq!(dag.nodes.len(), 1);
     assert_eq!(dag.nodes[0].id, "w.z");
     assert!(dag.edges.is_empty());
+}
+
+// The lineage graph keys a dataset by the loom ref {loom, "schema.table"}, NOT by its
+// catalog {schema, table} address. The closure path must therefore be
+// /lineage/datasets/loom/<schema>.<table>/<dir>; the old form
+// /lineage/datasets/<schema>/<table>/<dir> matched no stored edge, so every dataset's
+// mini-DAG collapsed to just the current node.
+#[test]
+fn lineage_closure_path_uses_the_loom_dataset_ref_form() {
+    assert_eq!(
+        lineage_closure_path("public", "employee_floor", "upstream"),
+        "/lineage/datasets/loom/public.employee_floor/upstream"
+    );
+    assert_eq!(
+        lineage_closure_path("main", "employees", "downstream"),
+        "/lineage/datasets/loom/main.employees/downstream"
+    );
 }

@@ -3,8 +3,8 @@
 use gloo_net::http::Request;
 use loom_ui_core::{
     AuthError, DatasetDetail, DatasetRow, PreviewData, RunRow, TransformDefView, TransformSummary,
-    TypeDetail, parse_dataset_detail, parse_datasets, parse_preview, parse_runs,
-    parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
+    TypeDetail, lineage_closure_path, parse_dataset_detail, parse_datasets, parse_preview,
+    parse_runs, parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
 };
 use serde_json::Value;
 use wasm_bindgen::JsValue;
@@ -182,17 +182,21 @@ pub async fn fetch_dataset_detail(
     Ok(parse_dataset_detail(&body))
 }
 
-/// GET /lineage/datasets/{namespace}/{name}/{dir} → the closure's (namespace,name)
-/// pairs. `dir` is "upstream" or "downstream". Decodes `{datasets:[{namespace,name}]}`
-/// defensively — a missing/absent `datasets` array yields an empty vec.
+/// GET the upstream/downstream closure for a catalog dataset `{schema, table}`. loom
+/// keys lineage datasets by the canonical loom ref `{loom, "schema.table"}`, not the
+/// catalog `{schema, table}` address, so the path is built via
+/// [`lineage_closure_path`] (querying `/lineage/datasets/<schema>/<table>/…` matches no
+/// stored edge, collapsing the DAG to the current node). `dir` is "upstream" or
+/// "downstream". Decodes `{datasets:[{namespace,name}]}` defensively — a missing/absent
+/// `datasets` array yields an empty vec.
 pub async fn fetch_lineage(
     base: &str,
     token: &str,
-    namespace: &str,
-    name: &str,
+    schema: &str,
+    table: &str,
     dir: &str,
 ) -> Result<Vec<(String, String)>, FetchError> {
-    let path = format!("/lineage/datasets/{namespace}/{name}/{dir}");
+    let path = lineage_closure_path(schema, table, dir);
     let resp = Request::get(&url(base, &path))
         .header("Authorization", &format!("Bearer {token}"))
         .send()
