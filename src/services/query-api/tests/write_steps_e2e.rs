@@ -141,7 +141,7 @@ async fn write_steps_lands_two_targets_and_one_lineage_atomically() {
     ];
 
     engine
-        .write_steps(&writes, event)
+        .write_steps(&writes, event, &[])
         .await
         .expect("write_steps commits both targets atomically");
 

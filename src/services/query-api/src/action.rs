@@ -778,6 +778,7 @@ async fn run_insert(
 
     // 7. Atomic write: row + lineage in one transaction (no dangling slice). On any
     //    failure the Tx rolls back — no snapshot, no lineage, no partial state.
+    //    Resolved downstream jobs (Task 8) thread here; `&[]` for now.
     deps.action_engine
         .write_object(
             &target.table,
@@ -785,6 +786,7 @@ async fn run_insert(
             &full_values,
             &full_logical,
             event,
+            &[],
         )
         .await?;
 
@@ -1196,6 +1198,7 @@ async fn run_mutate(
                         before,
                         event.clone(),
                         v0,
+                        &[],
                     )
                     .await
             }
@@ -1211,6 +1214,7 @@ async fn run_mutate(
                         before,
                         event.clone(),
                         v0,
+                        &[],
                     )
                     .await
             }
@@ -1405,7 +1409,7 @@ async fn run_multi_step(
         serde_json::json!({ "action": action_name }),
     );
 
-    deps.action_engine.write_steps(&writes, event).await?;
+    deps.action_engine.write_steps(&writes, event, &[]).await?;
 
     if step_results.is_empty() {
         return Err(ActionError::Misconfigured("action has no steps".into()));

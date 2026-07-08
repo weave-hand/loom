@@ -59,6 +59,7 @@ async fn write_object_through_wire_client() {
             ],
             &["Long".to_string(), "String".to_string(), "Long".to_string()],
             event,
+            &[],
         )
         .await
         .expect("write_object via EngineActionClient");

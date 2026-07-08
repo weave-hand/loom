@@ -191,6 +191,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
             &[vec![SqlValue::Int(99), SqlValue::Text("gamma".to_string())]],
             &["Long".to_string(), "String".to_string()],
             event,
+            &[],
         )
         .await
         .expect("overwrite_table succeeds");
@@ -290,7 +291,7 @@ async fn overwrite_table_empty_rows_truncates() {
         payload: json!({}),
     };
     let snap = engine
-        .overwrite_table(&table, &[], &[], &[], event)
+        .overwrite_table(&table, &[], &[], &[], event, &[])
         .await
         .expect("overwrite_table(empty) truncates");
     assert!(snap.0 > 0, "truncate advances the snapshot id");

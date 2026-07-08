@@ -14,6 +14,7 @@ use crate::error::Result;
 pub struct JobId(pub Uuid);
 
 /// A job to enqueue.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NewJob {
     pub kind: String,
     pub payload: serde_json::Value,

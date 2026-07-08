@@ -28,6 +28,17 @@ fn to_serving_write(e: control_plane_core::ControlPlaneError) -> ServingError {
     }
 }
 
+/// Serialize the action's resolved downstream `NewJob`s into the wire `jobs_json`
+/// string. Empty ⇒ empty string (the wire's "no jobs" sentinel), so the engine
+/// side only deserializes when there is actually something to enqueue.
+fn serialize_jobs(jobs: &[control_plane_core::NewJob]) -> Result<String, ServingError> {
+    if jobs.is_empty() {
+        Ok(String::new())
+    } else {
+        serde_json::to_string(jobs).map_err(|e| ServingError::Engine(format!("encode jobs: {e}")))
+    }
+}
+
 /// Build the `ColumnSpec` list for a zero-row `Overwrite` (truncate) step, where
 /// `build_object_batches` cannot run (it rejects empty rows) yet the engine still needs the
 /// schema to re-project the emptied table. Every field is nullable — the same spec shape
@@ -86,7 +97,9 @@ impl ActionEngine for EngineActionClient {
         values: &[SqlValue],
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        let jobs_json = serialize_jobs(jobs)?;
         let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
         let ipc = encode_ipc_stream(&batch)?;
         let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
@@ -99,6 +112,7 @@ impl ActionEngine for EngineActionClient {
                 ipc,
                 columns_json,
                 lineage_json,
+                &jobs_json,
             )
             .await
             .map_err(to_serving)?;
@@ -112,7 +126,9 @@ impl ActionEngine for EngineActionClient {
         rows: &[Vec<SqlValue>],
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        let jobs_json = serialize_jobs(jobs)?;
         let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
         let (ipc, columns_json) = if rows.is_empty() {
             // Delete-all: empty payload drives the truncate branch engine-side.
@@ -136,6 +152,7 @@ impl ActionEngine for EngineActionClient {
                 ipc,
                 columns_json,
                 lineage_json,
+                &jobs_json,
             )
             .await
             .map_err(to_serving)?;
@@ -182,7 +199,9 @@ impl ActionEngine for EngineActionClient {
         before: Option<BeforeImage<'_>>,
         event: control_plane_core::LineageEvent,
         expected_version: i64,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        let jobs_json = serialize_jobs(jobs)?;
         let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
         let (ipc, columns_json) = if tombstone {
             // A tombstone carries only the identity — locate it among the
@@ -241,6 +260,7 @@ impl ActionEngine for EngineActionClient {
                 expected_version,
                 before_ipc,
                 before_columns_json,
+                &jobs_json,
             )
             .await
             .map_err(to_serving_write)?;
@@ -251,7 +271,9 @@ impl ActionEngine for EngineActionClient {
         &self,
         writes: &[StepWrite],
         event: control_plane_core::LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
+        let jobs_json = serialize_jobs(jobs)?;
         // Build one wire `StepWrite` per target: its rows -> multi-row Arrow batch ->
         // IPC stream, plus the `ColumnSpec` JSON. The single lineage event (carrying
         // every target in its outputs) crosses once.
@@ -289,7 +311,7 @@ impl ActionEngine for EngineActionClient {
         }
         let id = self
             .ctl
-            .write_steps(steps, lineage_json)
+            .write_steps(steps, lineage_json, &jobs_json)
             .await
             .map_err(to_serving_write)?;
         Ok(control_plane_core::SnapshotId(id))

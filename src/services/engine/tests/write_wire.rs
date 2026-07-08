@@ -160,6 +160,7 @@ async fn write_object_over_wire() {
             one_row_ipc(1, "a"),
             columns_json.clone(),
             lineage_json.clone(),
+            "",
         )
         .await
         .expect("write_object");
@@ -172,6 +173,7 @@ async fn write_object_over_wire() {
             one_row_ipc(2, "b"),
             columns_json,
             lineage_json,
+            "",
         )
         .await
         .expect("overwrite_table");
@@ -186,6 +188,7 @@ async fn write_object_over_wire() {
             Vec::new(),
             empty_cols,
             serde_json::to_string(&LineageWire::from(&event("delete"))).expect("ev"),
+            "",
         )
         .await
         .expect("truncate");

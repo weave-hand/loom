@@ -348,6 +348,7 @@ pub trait ActionEngine: Send + Sync {
         values: &[SqlValue],
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
 
     /// Replace the ENTIRE live contents of `table` with `rows` (the copy-on-write
@@ -361,6 +362,7 @@ pub trait ActionEngine: Send + Sync {
         rows: &[Vec<SqlValue>],
         logical_types: &[String],
         event: control_plane_core::LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
 
     /// The current O(change) inline version of one identity (`0` if no live
@@ -405,6 +407,7 @@ pub trait ActionEngine: Send + Sync {
         _before: Option<BeforeImage<'_>>,
         _event: control_plane_core::LineageEvent,
         _expected_version: i64,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Err(ServingError::Engine("write_delta unsupported".into()))
     }
@@ -420,6 +423,7 @@ pub trait ActionEngine: Send + Sync {
         &self,
         _writes: &[StepWrite],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Err(ServingError::Engine("write_steps unsupported".into()))
     }
