@@ -286,6 +286,23 @@ fn table_ref_json(s: &str) -> Value {
     json!({ "schema": schema, "name": name })
 }
 
+/// The `POST /admin/roles/{role}/grants` body that makes a *physical* transform's
+/// freshly created output table visible: `read` on the output `TableRef`. A physical
+/// output is a new untyped table with no grant at all, so its lineage node (and any
+/// per-table read) would otherwise be invisible even to the defining admin. Typed
+/// outputs are governed by their type's existing grants (plus the lineage
+/// Table→Type fallback) → `None`. Pure; the define flow POSTs it best-effort.
+#[must_use]
+pub fn output_table_grant(form: &TransformForm) -> Option<Value> {
+    match form.kind {
+        TransformKind::Physical => Some(json!({
+            "action": "read",
+            "table": table_ref_json(&form.output),
+        })),
+        TransformKind::Typed => None,
+    }
+}
+
 /// Validation shared by define and ad-hoc-run (everything but name/schedule).
 fn validate_body(form: &TransformForm, errors: &mut Vec<FieldError>) {
     if form.inputs.is_empty() {

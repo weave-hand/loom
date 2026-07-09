@@ -124,7 +124,13 @@ async fn cut_not_skip_denied_intermediate_hides_ancestor() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(names(&body), vec!["X".to_string()], "cut hides A: {body}");
+    // `define_type` emits a table→type binding edge and a type grant reveals the
+    // backing table's node (Table→Type ACL fallback), so lin.S / lin.X ride along.
+    assert_eq!(
+        names(&body),
+        vec!["X".to_string(), "lin.S".to_string(), "lin.X".to_string()],
+        "cut hides A: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -161,13 +167,22 @@ async fn flat_set_differs_between_admin_and_restricted() {
         "restricted",
     )
     .await;
+    // Backing-table nodes (binding edge + Table→Type fallback) widen both sets;
+    // lin.A is at hop 4, beyond depth 3. restricted still cuts at N.
     assert_eq!(
         names(&admin_body),
-        vec!["A".to_string(), "N".to_string(), "X".to_string()]
+        vec![
+            "A".to_string(),
+            "N".to_string(),
+            "X".to_string(),
+            "lin.N".to_string(),
+            "lin.S".to_string(),
+            "lin.X".to_string(),
+        ]
     );
     assert_eq!(
         names(&r_body),
-        vec!["X".to_string()],
+        vec!["X".to_string(), "lin.S".to_string(), "lin.X".to_string()],
         "restricted: cut at N"
     );
 }
@@ -258,7 +273,10 @@ async fn pagination_pages_every_visible_ref_once() {
         }
     }
     seen.sort();
-    let expected: Vec<String> = (0..6).map(|i| format!("r{i}")).collect();
+    // lin.Z (Z's backing table, via the binding edge + Table→Type fallback) is a
+    // 7th visible ref the windowing must also page exactly once.
+    let mut expected: Vec<String> = (0..6).map(|i| format!("r{i}")).collect();
+    expected.insert(0, "lin.Z".to_string());
     assert_eq!(
         seen, expected,
         "every visible ref once, denied absent, no short-page drop"
@@ -361,9 +379,10 @@ async fn external_source_is_default_allowed() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // lin.S is S's backing table via the binding edge + Table→Type fallback.
     assert_eq!(
         names(&body),
-        vec!["landing.csv".to_string()],
+        vec!["landing.csv".to_string(), "lin.S".to_string()],
         "external allowed, SECRET denied: {body}"
     );
 }

@@ -103,7 +103,7 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
     let bridge = naming();
     // U reads A, X, S but NOT N.
     let subj = subject_reading(&cp, "u", &["A", "X", "S"]).await;
-    let vis = LineageVisibility::new(cp.acl(), cp.lineage(), &bridge);
+    let vis = LineageVisibility::new(cp.acl(), cp.lineage(), cp.ontology(), &bridge);
     let page = vis
         .visible_closure(
             &subj,
@@ -115,7 +115,13 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
         .await
         .unwrap();
     // Only X is reachable through readable nodes; N cut the branch so A is hidden.
-    assert_eq!(names(&page), vec!["X".to_string()], "cut: N hides A");
+    // `define_type` emits a table→type binding edge, and a type grant now reveals
+    // the backing table's node (Table→Type ACL fallback), so ns.S / ns.X ride along.
+    assert_eq!(
+        names(&page),
+        vec!["X".to_string(), "ns.S".to_string(), "ns.X".to_string()],
+        "cut: N hides A"
+    );
 
     // A subject that can also read N sees {X, A, N}.
     let subj2 = subject_reading(&cp, "v", &["A", "N", "X", "S"]).await;
@@ -129,14 +135,22 @@ async fn cut_not_skip_denied_intermediate_hides_its_ancestors() {
         )
         .await
         .unwrap();
+    // ns.A is at hop 4 (S ← X ← N ← A ← ns.A), beyond depth 3, so absent.
     assert_eq!(
         names(&page2),
-        vec!["A".to_string(), "N".to_string(), "X".to_string()]
+        vec![
+            "A".to_string(),
+            "N".to_string(),
+            "X".to_string(),
+            "ns.N".to_string(),
+            "ns.S".to_string(),
+            "ns.X".to_string(),
+        ]
     );
 }
 
 fn vis_for<'a>(cp: &'a MemoryControlPlane, bridge: &'a LineageNaming) -> LineageVisibility<'a> {
-    LineageVisibility::new(cp.acl(), cp.lineage(), bridge)
+    LineageVisibility::new(cp.acl(), cp.lineage(), cp.ontology(), bridge)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -181,8 +195,12 @@ async fn cycle_terminates_via_visited_guard() {
         )
         .await
         .unwrap();
-    // Seed excluded; the only other node is Y. Terminates (no hang).
-    assert_eq!(names(&page), vec!["Y".to_string()]);
+    // Seed excluded; Y plus the two type↔table binding-edge table nodes (readable
+    // via the Table→Type fallback). Terminates (no hang).
+    assert_eq!(
+        names(&page),
+        vec!["Y".to_string(), "ns.X".to_string(), "ns.Y".to_string()]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -232,8 +250,12 @@ async fn external_refs_are_default_allowed_unresolvable_loom_is_denied() {
         )
         .await
         .unwrap();
-    // External present; the malformed loom-namespace ref is fail-closed (absent).
-    assert_eq!(names(&page), vec!["bucket.csv".to_string()]);
+    // External present; the malformed loom-namespace ref is fail-closed (absent);
+    // ns.S is S's backing table via the binding edge + Table→Type fallback.
+    assert_eq!(
+        names(&page),
+        vec!["bucket.csv".to_string(), "ns.S".to_string()]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -270,7 +292,9 @@ async fn windowing_pages_every_visible_ref_once_in_order() {
         }
     }
     seen.sort();
-    assert_eq!(seen, vec!["in0", "in1", "in2", "in3", "in4"]);
+    // ns.Z is Z's backing table (binding edge + Table→Type fallback) — a 6th
+    // visible ref the windowing must also page exactly once.
+    assert_eq!(seen, vec!["in0", "in1", "in2", "in3", "in4", "ns.Z"]);
     // Cursor is the encoding of the last emitted ref on a non-final page.
     let first = vis
         .visible_closure(
@@ -450,8 +474,9 @@ async fn malformed_site_namespace_ref_is_denied_and_cut() {
         .unwrap();
     assert_eq!(
         names(&page),
-        vec!["landing.csv".to_string()],
-        "malformed site-ns ref is cut (G hidden); external still passes"
+        vec!["landing.csv".to_string(), "ns.S".to_string()],
+        "malformed site-ns ref is cut (G hidden); external still passes; ns.S is \
+         S's backing table via the binding edge + Table→Type fallback"
     );
 
     // As a seed: fails closed → empty page (like a denied/unknown seed).
@@ -468,5 +493,81 @@ async fn malformed_site_namespace_ref_is_denied_and_cut() {
     assert!(
         seeded.items.is_empty(),
         "malformed site-ns seed fails closed → empty page"
+    );
+}
+
+/// A table-namespaced ref `{loom, "<schema>.<table>"}` — how loom's emitters key
+/// physical datasets (the landing materializer and transform commits both emit
+/// these, NOT `loom:type` refs).
+fn tbl(schema: &str, name: &str) -> DatasetRef {
+    DatasetRef {
+        namespace: "loom".into(),
+        name: format!("{schema}.{name}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_grant_reveals_backing_table_nodes() {
+    // The subject holds NO Table grants — only Read on the ontology types backed by
+    // those tables (the shape real deployments seed: loom governs by type). The
+    // Table→backing-Type fallback must reveal the table-namespaced lineage nodes,
+    // because the type grant already discloses the table's data via the governed
+    // object read.
+    let cp = cp();
+    cp.lineage()
+        .emit(edge(tbl("ns", "A"), tbl("ns", "S")))
+        .await
+        .unwrap();
+    let bridge = naming();
+    // `subject_reading` defines type "A" backed by table ("ns","A") (and likewise
+    // "S") and grants Read on the *types* only.
+    let subj = subject_reading(&cp, "u", &["A", "S"]).await;
+    let page = vis_for(&cp, &bridge)
+        .visible_closure(
+            &subj,
+            &tbl("ns", "S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        names(&page),
+        vec!["ns.A".to_string()],
+        "a Read grant on a type reveals its backing table's lineage node"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unbound_table_without_grant_stays_hidden() {
+    // A table backed by NO ontology type (e.g. a raw transform output) with no Table
+    // grant stays invisible: the fallback follows real bindings only, never widening
+    // disclosure for unbound tables.
+    let cp = cp();
+    cp.lineage()
+        .emit(edge(tbl("ns", "A"), tbl("ns", "S")))
+        .await
+        .unwrap();
+    cp.lineage()
+        .emit(edge(tbl("ns", "raw"), tbl("ns", "S")))
+        .await
+        .unwrap();
+    let bridge = naming();
+    let subj = subject_reading(&cp, "u", &["A", "S"]).await;
+    let page = vis_for(&cp, &bridge)
+        .visible_closure(
+            &subj,
+            &tbl("ns", "S"),
+            3,
+            LineageDir::Upstream,
+            &PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        names(&page),
+        vec!["ns.A".to_string()],
+        "an unbound, ungranted table stays hidden"
     );
 }

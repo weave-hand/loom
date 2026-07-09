@@ -1214,6 +1214,7 @@ async fn lineage_closure(
     let vis = crate::lineage_filter::LineageVisibility::new(
         st.cp.acl(),
         st.cp.lineage(),
+        st.cp.ontology(),
         st.naming.as_ref(),
     );
     let res = vis
@@ -1338,6 +1339,7 @@ async fn get_lineage_run_events(
             let vis = crate::lineage_filter::LineageVisibility::new(
                 st.cp.acl(),
                 st.cp.lineage(),
+                st.cp.ontology(),
                 st.naming.as_ref(),
             );
             match vis.redact_events(&subject.0, page).await {

@@ -306,6 +306,30 @@ pub async fn define_transform(base: &str, token: &str, def: &Value) -> Result<()
     }
 }
 
+/// POST /admin/roles/{role}/grants — add one coarse grant (expects 2xx). Used by
+/// the transform define flow to self-grant `read` on a physical output table
+/// (body from `output_table_grant`); the admin surface implies the caller holds
+/// the reserved `admin` role, so `role` is `"admin"` there.
+pub async fn post_role_grant(
+    base: &str,
+    token: &str,
+    role: &str,
+    grant: &Value,
+) -> Result<(), FetchError> {
+    let resp = Request::post(&url(base, &format!("/admin/roles/{role}/grants")))
+        .header("Authorization", &format!("Bearer {token}"))
+        .json(grant)
+        .map_err(|_| FetchError::Network)?
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if (200..300).contains(&resp.status()) {
+        Ok(())
+    } else {
+        Err(write_status_err(resp).await)
+    }
+}
+
 /// DELETE /admin/transforms/{name} — idempotent delete (expects 200).
 pub async fn delete_transform(base: &str, token: &str, name: &str) -> Result<(), FetchError> {
     let resp = Request::delete(&url(base, &format!("/admin/transforms/{name}")))

@@ -8,6 +8,11 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 [`FUTURE.md`](FUTURE.md); committed work in [`ROADMAP.md`](ROADMAP.md). Grammar:
 `docs/superpowers/specs/2026-06-20-docs-registers-consolidation-design.md`.
 
+## acl
+
+- [ ] **Catalog reads are auth-only while lineage is per-ref ACL-gated (asymmetry)** `{#iss-catalog-lineage-acl-asymmetry area:acl status:open from:2026-07-09-lineage-table-type-acl-fallback-design pr:- spec:-}`
+  `list_datasets`/`get_dataset`/`dataset_preview` take `_subject` **unused** — any authenticated subject can list and preview any dataset — while the `/lineage` reads are per-ref ACL-gated through `LineageVisibility` (seed-gated, cut-not-skip). So a subject can preview a dataset whose lineage node is invisible to them, and vice-viewable metadata discloses more than the governance model intends for the same object. The Table→Type fallback (`2026-07-09-lineage-table-type-acl-fallback-design`) narrowed the practical gap for typed datasets but the structural asymmetry remains. Needs its own design: either per-dataset catalog gating (reusing the same Table→Type resolution) or an explicitly documented coarse-metadata/fine-lineage split. Also related: non-UI callers of `POST /admin/transforms` get no read grant on a physical output table (the UI self-grants to `admin`), leaving such outputs invisible in lineage until granted or bound to a type.
+
 ## ontology
 
 - [ ] **`mode=stream` (log) against an existing CDC table is silently accepted** `{#iss-stream-log-vs-cdc-declare area:ontology status:open from:2026-07-07-stream-pk-cdc-tables-design pr:- spec:2026-07-07-stream-pk-cdc-tables-design}`

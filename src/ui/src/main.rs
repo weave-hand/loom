@@ -687,9 +687,21 @@ fn workspace(props: &WorkspaceProps) -> Html {
                                 );
                                 let (token, base) = (token.clone(), base.clone());
                                 let reload_list = reload_list.clone();
+                                // A physical transform creates a fresh untyped table;
+                                // self-grant `read` on it (admin surface ⇒ the caller
+                                // holds the reserved `admin` role) so its lineage and
+                                // preview are visible once the first run commits.
+                                // Best-effort: a duplicate grant on redefine is fine.
+                                let grant = loom_ui_core::output_table_grant(&form);
                                 wasm_bindgen_futures::spawn_local(async move {
                                     match net::define_transform(&base, &token, &def_json).await {
                                         Ok(()) => {
+                                            if let Some(g) = grant {
+                                                let _ = net::post_role_grant(
+                                                    &base, &token, "admin", &g,
+                                                )
+                                                .await;
+                                            }
                                             editing_state.set(None);
                                             reload_list();
                                         }
