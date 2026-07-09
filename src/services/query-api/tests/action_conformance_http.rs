@@ -98,6 +98,7 @@ async fn seeded_state() -> AppState {
             name: "widget".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

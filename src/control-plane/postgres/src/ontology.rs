@@ -33,14 +33,16 @@ impl Ontology for PgControlPlane {
             None => true,
         };
         sqlx::query!(
-            "insert into ontology.object_type (name, table_schema, table_name, identity) \
-             values ($1, $2, $3, $4) \
+            "insert into ontology.object_type (name, table_schema, table_name, identity, version) \
+             values ($1, $2, $3, $4, $5) \
              on conflict (name) do update set table_schema = excluded.table_schema, \
-                 table_name = excluded.table_name, identity = excluded.identity",
+                 table_name = excluded.table_name, identity = excluded.identity, \
+                 version = excluded.version",
             ty.name.0,
             ty.table.schema,
             ty.table.name,
             ty.identity,
+            ty.version,
         )
         .execute(&mut *tx)
         .await
@@ -195,7 +197,7 @@ impl Ontology for PgControlPlane {
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         let row = sqlx::query!(
-            "select table_schema, table_name, identity from ontology.object_type where name = $1",
+            "select table_schema, table_name, identity, version from ontology.object_type where name = $1",
             name.0,
         )
         .fetch_optional(&self.pool)
@@ -250,6 +252,7 @@ impl Ontology for PgControlPlane {
             properties: props,
             derived,
             identity: row.identity,
+            version: row.version,
         })
     }
 
@@ -693,24 +696,48 @@ pub async fn identity_for_table(pool: &PgPool, table: &TableRef) -> Result<Optio
     Ok(row.flatten())
 }
 
-/// Whether `table`'s live incarnation is declared a `kind='cdc'` stream table.
-/// Used by the engine serving read to route an identity-bearing CDC table's
-/// current-state fold through `loom_offset` precedence (both the file and
-/// inline tiers carry real framing, and a `-D` winner must be dropped) instead
-/// of the MVCC `begin_snapshot`/`loom_tombstone` precedence a non-CDC identity
-/// table's merge-on-read uses — see `engine_serving::serving::build_merge_view`.
-/// `false` for a table with no live incarnation, no inline storage provisioned
-/// yet, or a non-CDC (batch/log) declaration.
-pub async fn is_cdc_table(pool: &PgPool, table: &TableRef) -> Result<bool> {
+/// Reverse-lookup: the version/sequence column name for the object type stored
+/// at `table`, or None if it has no declared version / does not exist. Used by
+/// the Versioned merge engine's fold sites to read the precedence column live
+/// (mirroring `identity_for_table` for the identity column), and by
+/// `reconcile_stream_mode`'s Versioned declaration validation. Executor-generic
+/// (not `&PgPool`-specific like `identity_for_table`) so the reconcile path can
+/// call it with its `&mut PgConnection`.
+// AssertSqlSafe: static query against ontology.object_type; sqlx regen
+// unavailable in this env (initdb-as-root). Convert to query! when regenerating
+// locally.
+pub async fn version_for_table<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table: &TableRef,
+) -> Result<Option<String>> {
+    let row: Option<Option<String>> = sqlx::query_scalar(AssertSqlSafe(
+        "select version from ontology.object_type \
+         where table_schema = $1 and table_name = $2",
+    ))
+    .bind(&table.schema)
+    .bind(&table.name)
+    .fetch_optional(ex)
+    .await
+    .map_err(backend)?;
+    Ok(row.flatten())
+}
+
+/// The declared stream metadata for `table`'s live incarnation, or `None` when
+/// the table is not a declared stream table (no live incarnation, no inline
+/// storage provisioned, or a plain batch table). Used by the engine serving read
+/// to route a CDC table's fold through `loom_offset` precedence with the table's
+/// declared merge engine — see `engine_serving::serving::build_merge_view`.
+pub async fn stream_meta_for_table(
+    pool: &PgPool,
+    table: &TableRef,
+) -> Result<Option<control_plane_core::StreamMeta>> {
     let mut conn = pool.acquire().await.map_err(backend)?;
     let Some(tid) =
         crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name).await?
     else {
-        return Ok(false);
+        return Ok(None);
     };
-    Ok(crate::stream::pg_stream_meta(&mut *conn, tid)
-        .await?
-        .is_some_and(|m| m.kind == control_plane_core::StreamKind::Cdc))
+    crate::stream::pg_stream_meta(&mut *conn, tid).await
 }
 
 /// Read one named vector-index declaration as a `VectorIndexDef`. Shared by the
@@ -793,6 +820,7 @@ pub(crate) async fn pg_validate_derived_columns(
                 derived: vec![],
                 table: ty.table.clone(),
                 identity: None,
+                version: None,
             }
         };
         targets.insert(l.name, target);

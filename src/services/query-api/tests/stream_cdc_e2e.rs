@@ -82,9 +82,14 @@ async fn cdc_insert_update_delete_lifecycle_via_governed_actions() {
         .expect("ensure_table");
     tx.commit().await.expect("commit");
     let bucket_count = 2;
-    cp.declare_cdc(tid, bucket_count, "id")
-        .await
-        .expect("declare_cdc");
+    cp.declare_cdc(
+        tid,
+        bucket_count,
+        "id",
+        control_plane_core::MergeEngine::LastRow,
+    )
+    .await
+    .expect("declare_cdc");
 
     // Define Widget(id Long identity, name String, qty Long) + createWidget/
     // updateWidget/deleteWidget actions, and grant a writer subject Write+Read.

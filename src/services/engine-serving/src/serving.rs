@@ -127,18 +127,19 @@ pub async fn build_serving_provider(
     let identity = control_plane_postgres::ontology::identity_for_table(&catalog.pool, table)
         .await
         .map_err(to_serving)?;
-    // For an identity-bearing table, also resolve CDC-ness: a `kind='cdc'` base's
-    // flushed file tier can legitimately carry MULTIPLE physical rows (and `-D`
-    // tombstones) per identity, so its fold must use `loom_offset` precedence
-    // (`Precedence::Offset`) rather than assume file rows are already
-    // identity-unique (the pre-CDC assumption non-CDC identity tables still rely on).
-    let is_cdc = if identity.is_some() {
-        control_plane_postgres::ontology::is_cdc_table(&catalog.pool, table)
+    // For an identity-bearing table, resolve CDC-ness AND the declared merge
+    // engine in one lookup. A `kind='cdc'` base's flushed file tier can carry
+    // MULTIPLE physical rows (and `-D` tombstones) per identity, so its fold uses
+    // `loom_offset` precedence (`Precedence::Offset`) with the table's engine.
+    let cdc_meta = if identity.is_some() {
+        control_plane_postgres::ontology::stream_meta_for_table(&catalog.pool, table)
             .await
             .map_err(to_serving)?
+            .filter(|m| m.kind == control_plane_core::StreamKind::Cdc)
     } else {
-        false
+        None
     };
+    let is_cdc = cdc_meta.is_some();
 
     let files_with_stats = catalog
         .files_with_stats(table, snap_id)
@@ -206,16 +207,21 @@ pub async fn build_serving_provider(
             // carry multiple physical rows (and `-D` tombstones) per identity even
             // with no live inline tail, so it still routes through the fold.
             (Some(f), None) if !is_cdc => Arc::new(f),
-            (Some(f), None) => {
-                build_merge_view(ctx, &schema, id, Some(f), None, Precedence::Offset)?
-            }
+            (Some(f), None) => build_merge_view(
+                ctx,
+                &schema,
+                id,
+                Some(f),
+                None,
+                offset_precedence(&catalog.pool, cdc_meta.as_ref(), table).await?,
+            )?,
             (None, None) => return Ok(None),
             // Identity + inline present (with or without a file tier): dedup by
             // identity, using CDC's `loom_offset` precedence when the table is a
             // declared CDC stream, else the MVCC precedence merge.
             (file_opt, Some(i)) => {
                 let precedence = if is_cdc {
-                    Precedence::Offset
+                    offset_precedence(&catalog.pool, cdc_meta.as_ref(), table).await?
                 } else {
                     Precedence::Snapshot
                 };
@@ -246,18 +252,18 @@ fn with_cdc_framing_fields(schema: &SchemaRef) -> SchemaRef {
 /// on. The two physical tiers (file, inline) always carry the SAME pair of
 /// framing columns for a given mode — only which columns those are, and how a
 /// delete is recognized, differs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Precedence {
-    /// Non-CDC identity tables: the file tier is assumed already identity-unique
-    /// (no deletes), so it synthesizes precedence `0` and a `false` tombstone; the
-    /// inline tier's `begin_snapshot` (strictly greater than any file-tier `0`)
-    /// and `loom_tombstone` order later writes as winners and mark deletes.
+    /// Non-CDC identity tables (unchanged): file tier synthesizes precedence `0`
+    /// + `false` tombstone; inline tier uses `begin_snapshot` / `loom_tombstone`.
     Snapshot,
-    /// CDC tables: BOTH tiers carry REAL physical framing — the flushed file
-    /// tier's `+I/+U/-D` subset and any still-live inline tail both stamp
-    /// `loom_offset` (a per-identity monotonic sequence) and `loom_change_kind`;
-    /// a delete is `loom_change_kind = '-D'`. Mirrors `consolidate.rs`'s fold.
-    Offset,
+    /// CDC tables: both tiers carry real `loom_offset`/`loom_change_kind` framing.
+    /// `engine` selects the winner ordering; `version_col` is set only for
+    /// `Versioned` (the quoted domain version column the window orders by).
+    Offset {
+        engine: control_plane_core::MergeEngine,
+        version_col: Option<String>,
+    },
 }
 
 /// Build the identity-dedup merge view for an identity-bearing type. Each tier
@@ -285,6 +291,37 @@ enum Precedence {
 /// filter / final projection are pass-through). Thus the final projection needs no
 /// casts and the view's schema equals `schema` exactly — which the governed layer
 /// and callers require. (`DISTINCT ON` would widen the identity column to nullable.)
+/// Build the CDC `Precedence::Offset` from the table's stream meta, fetching the
+/// version column live for the Versioned engine.
+async fn offset_precedence(
+    pool: &sqlx::PgPool,
+    meta: Option<&control_plane_core::StreamMeta>,
+    table: &TableRef,
+) -> Result<Precedence, EngineServingError> {
+    let engine = meta
+        .map(|m| m.merge_engine)
+        .unwrap_or(control_plane_core::MergeEngine::LastRow);
+    let version_col = if matches!(engine, control_plane_core::MergeEngine::Versioned) {
+        Some(
+            control_plane_postgres::ontology::version_for_table(pool, table)
+                .await
+                .map_err(to_serving)?
+                .ok_or_else(|| {
+                    EngineServingError::Engine(format!(
+                        "cdc table {}.{} is merge_engine=versioned but has no version column",
+                        table.schema, table.name
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
+    Ok(Precedence::Offset {
+        engine,
+        version_col,
+    })
+}
+
 fn build_merge_view(
     ctx: &SessionContext,
     schema: &SchemaRef,
@@ -308,28 +345,68 @@ fn build_merge_view(
     // Mirror data columns in order — the exact output projection.
     let data_cols: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
-    // Project a tier down to [<data_cols>, _loom_prec, _loom_tomb], so both tiers
-    // union under one schema regardless of which physical columns fed them.
-    let tier_select = |prec: Expr, tomb: Expr| -> Vec<Expr> {
+    // Project a tier down to [<data_cols>, _loom_prec, _loom_tomb, (_loom_off)], so
+    // both tiers union under one schema regardless of which physical columns fed
+    // them. `_loom_off` (the physical `loom_offset`) is projected only for Offset
+    // precedence, where the Versioned engine's window tie-break orders by it
+    // (Snapshot/LastRow/FirstRow never reference it; it is dropped by the final
+    // projection).
+    let tier_select = |prec: Expr, tomb: Expr, off: Option<Expr>| -> Vec<Expr> {
         let mut v: Vec<Expr> = data_cols.iter().map(|n| cref(n.as_str())).collect();
         v.push(prec.alias("_loom_prec"));
         v.push(tomb.alias("_loom_tomb"));
+        if let Some(o) = off {
+            v.push(o.alias("_loom_off"));
+        }
         v
     };
-    let (file_prec, file_tomb) = match precedence {
-        Precedence::Snapshot => (lit(0_i64), lit(false)),
-        Precedence::Offset => (cref("loom_offset"), cref("loom_change_kind").eq(lit("-D"))),
-    };
-    let (inline_prec, inline_tomb) = match precedence {
-        Precedence::Snapshot => (cref("begin_snapshot"), cref("loom_tombstone")),
-        Precedence::Offset => (cref("loom_offset"), cref("loom_change_kind").eq(lit("-D"))),
+
+    // The precedence expr projected as `_loom_prec` — the column the per-identity
+    // window orders by. Snapshot synthesizes a literal 0 (the file tier); LastRow
+    // and FirstRow order by loom_offset; Versioned orders by the quoted domain
+    // version column (a user column, case-preserving via Column::new_unqualified).
+    let prec_expr: Expr = match &precedence {
+        Precedence::Snapshot => lit(0_i64),
+        Precedence::Offset {
+            engine,
+            version_col,
+        } => match engine {
+            control_plane_core::MergeEngine::Versioned => {
+                let vcol = version_col.as_deref().ok_or_else(|| {
+                    EngineServingError::Engine(
+                        "Versioned precedence requires a version column".into(),
+                    )
+                })?;
+                Expr::Column(Column::new_unqualified(vcol))
+            }
+            control_plane_core::MergeEngine::LastRow
+            | control_plane_core::MergeEngine::FirstRow => cref("loom_offset"),
+        },
     };
 
+    // Project each tier to [<data_cols>, _loom_prec, _loom_tomb]. Both tiers use
+    // the SAME prec_expr (cloned) and the SAME tombstone mapping; only Snapshot
+    // differs (file tier synthesizes <0, false>; inline uses begin_snapshot /
+    // loom_tombstone). Offset's tombstone is `loom_change_kind = '-D'` (delete is
+    // uniform across all engines) for BOTH tiers — unchanged from today.
+    let (file_prec, file_tomb) = match &precedence {
+        Precedence::Snapshot => (lit(0_i64), lit(false)),
+        Precedence::Offset { .. } => (prec_expr.clone(), cref("loom_change_kind").eq(lit("-D"))),
+    };
+    let (inline_prec, inline_tomb) = match &precedence {
+        Precedence::Snapshot => (cref("begin_snapshot"), cref("loom_tombstone")),
+        Precedence::Offset { .. } => (prec_expr.clone(), cref("loom_change_kind").eq(lit("-D"))),
+    };
+
+    // `_loom_off` is projected only for Offset precedence (the Versioned engine's
+    // window tie-break orders by it). Computed once, cloned into each tier.
+    let off: Option<Expr> =
+        matches!(&precedence, Precedence::Offset { .. }).then(|| cref("loom_offset"));
     let file_df = match file {
         Some(f) => Some(
             ctx.read_table(Arc::new(f))
                 .map_err(to_serving)?
-                .select(tier_select(file_prec, file_tomb))
+                .select(tier_select(file_prec, file_tomb, off.clone()))
                 .map_err(to_serving)?,
         ),
         None => None,
@@ -338,7 +415,7 @@ fn build_merge_view(
         Some(i) => Some(
             ctx.read_table(Arc::new(i))
                 .map_err(to_serving)?
-                .select(tier_select(inline_prec, inline_tomb))
+                .select(tier_select(inline_prec, inline_tomb, off))
                 .map_err(to_serving)?,
         ),
         None => None,
@@ -354,16 +431,36 @@ fn build_merge_view(
         }
     };
 
-    // ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC): rank 1 is the
-    // greatest-precedence row per identity (row_number returns non-null UInt64).
+    // Per-identity window: rank 1 is the winner. Direction + keys come from the
+    // engine: LastRow/Versioned order _loom_prec DESC (greatest precedence wins);
+    // FirstRow orders ASC (smallest offset wins). Versioned adds a _loom_off
+    // (loom_offset) DESC tie-break (last-write-within-version wins). Snapshot is
+    // unchanged.
+    let order_keys = match &precedence {
+        Precedence::Snapshot => vec![cref("_loom_prec").sort(false, false)],
+        Precedence::Offset { engine, .. } => match engine {
+            control_plane_core::MergeEngine::LastRow
+            | control_plane_core::MergeEngine::Versioned => {
+                let mut keys = vec![cref("_loom_prec").sort(false, false)];
+                if matches!(engine, control_plane_core::MergeEngine::Versioned) {
+                    keys.push(cref("_loom_off").sort(false, false));
+                }
+                keys
+            }
+            control_plane_core::MergeEngine::FirstRow => {
+                vec![cref("_loom_prec").sort(true, false)]
+            }
+        },
+    };
     let ranked = row_number()
         .partition_by(vec![cref(identity)])
-        .order_by(vec![cref("_loom_prec").sort(false, false)])
+        .order_by(order_keys)
         .build()
         .map_err(to_serving)?
         .alias("_loom_rn");
-    // Keep the winner per identity, hide tombstoned winners, then project back to the
-    // mirror data schema (dropping _loom_prec / _loom_tomb / _loom_rn).
+    // Keep the winner per identity, hide tombstoned winners, then project back to
+    // the mirror data schema — UNCHANGED (the version column is a user column
+    // already in data_cols; the _loom_* helpers are dropped).
     let merged = unioned
         .window(vec![ranked])
         .map_err(to_serving)?

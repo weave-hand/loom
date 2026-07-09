@@ -99,6 +99,7 @@ async fn seed() -> (MemoryControlPlane, RoleId) {
             name: "widget".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

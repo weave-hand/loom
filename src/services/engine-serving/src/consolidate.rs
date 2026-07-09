@@ -82,6 +82,28 @@ pub async fn consolidate_stream(
         ))
     })?;
 
+    // Resolve the domain version column for a Versioned engine (None for the
+    // offset-only engines). A declared versioned CDC table whose type has no
+    // version column is a mis-configuration — loud error, never a silent fold.
+    let version_col = if matches!(
+        meta.merge_engine,
+        control_plane_core::MergeEngine::Versioned
+    ) {
+        Some(
+            control_plane_postgres::ontology::version_for_table(pool, table)
+                .await
+                .map_err(to_serving)?
+                .ok_or_else(|| {
+                    EngineServingError::Engine(format!(
+                        "cdc table {}.{} (tid {tid}) is merge_engine=versioned but its type has no version column",
+                        table.schema, table.name
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
+
     // Serialize the read(files+inline)+fold+overwrite window below against a
     // concurrent `flush_table`/`gc_table` on the SAME table: same per-table
     // advisory-lock key (`iceberg_flush::lock_key`, via the shared `lock_table`
@@ -94,7 +116,16 @@ pub async fn consolidate_stream(
     // flush/GC. The lock is released explicitly right after the overwrite
     // commits and the trigger flags below are cleared.
     let lock = lock_table(pool, table).await.map_err(to_serving)?;
-    let result = consolidate_locked(pool, catalog, table, tid, &identity).await;
+    let result = consolidate_locked(
+        pool,
+        catalog,
+        table,
+        tid,
+        &identity,
+        meta.merge_engine,
+        version_col.as_deref(),
+    )
+    .await;
     lock.release().await;
     result
 }
@@ -105,6 +136,8 @@ async fn consolidate_locked(
     table: &TableRef,
     tid: i64,
     identity: &str,
+    engine: control_plane_core::MergeEngine,
+    version_col: Option<&str>,
 ) -> Result<i64, EngineServingError> {
     let ice = IcebergCatalog::new(pool.clone());
     let current = match ice.current_snapshot(table).await {
@@ -180,7 +213,24 @@ async fn consolidate_locked(
     } else {
         format!("select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files")
     };
-    // Greatest loom_offset per identity wins; a winner tombstoned by `-D` (a
+    // Per-engine winner ordering (winner = ROW_NUMBER rank 1). LastRow is the
+    // unchanged default (byte-identical). Versioned orders by the quoted domain
+    // version column desc, tie-broken by loom_offset desc (highest version wins;
+    // last-write-within-version wins). FirstRow takes the smallest offset.
+    let order_clause = match engine {
+        control_plane_core::MergeEngine::LastRow => "loom_offset desc".to_string(),
+        control_plane_core::MergeEngine::FirstRow => "loom_offset asc".to_string(),
+        control_plane_core::MergeEngine::Versioned => {
+            // Unreachable: consolidate_stream resolves version_col for Versioned
+            // before locking. Defense in depth — fall back to loom_offset if ever None.
+            // `nulls last` matches `build_merge_view`'s `.sort(false, false)` (DESC
+            // NULLS_LAST) so a nullable version column folds identically on read and
+            // after consolidate (a NULL version ranks lowest, never wins).
+            let vcol = version_col.unwrap_or("loom_offset");
+            format!("{} desc nulls last, loom_offset desc", quote_ident(vcol))
+        }
+    };
+    // Greatest-precedence per identity wins; a winner tombstoned by `-D` (a
     // delete) is dropped, so the identity does not resurrect in the folded base.
     // The base's physical framing carries no `loom_tombstone` column (only the
     // three reserved `loom_change_kind`/`loom_bucket`/`loom_offset` — see
@@ -190,7 +240,7 @@ async fn consolidate_locked(
     let fold_sql = format!(
         "select {col_list}, loom_change_kind, loom_bucket, loom_offset from ( \
              select *, row_number() over ( \
-                 partition by {id_quoted} order by loom_offset desc \
+                 partition by {id_quoted} order by {order_clause} \
              ) as _rn \
              from ({union_sql}) base_input \
          ) t where _rn = 1 and loom_change_kind <> '-D'"

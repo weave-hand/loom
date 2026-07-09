@@ -194,6 +194,7 @@ async fn setup_with_cap(
         derived: vec![],
         table: table.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .expect("define Chunk type");
@@ -289,6 +290,7 @@ async fn setup_with_mask(
         derived: vec![],
         table: table.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .expect("define Chunk type");

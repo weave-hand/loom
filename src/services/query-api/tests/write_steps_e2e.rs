@@ -45,6 +45,7 @@ async fn define_pair_type(cp: &PgControlPlane, type_name: &str, table_name: &str
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

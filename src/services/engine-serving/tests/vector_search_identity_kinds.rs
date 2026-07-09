@@ -108,6 +108,7 @@ fn object_type(name: &str, table: &TableRef, id_ty: &str) -> ObjectType {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     }
 }
 

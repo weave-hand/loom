@@ -31,6 +31,7 @@ fn customer(identity: Option<String>) -> ObjectType {
             name: "customer".into(),
         },
         identity,
+        version: None,
     }
 }
 

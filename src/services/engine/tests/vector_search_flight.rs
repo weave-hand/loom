@@ -69,6 +69,7 @@ async fn vector_search_flight_top_k() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");
@@ -204,6 +205,7 @@ async fn vector_search_no_index_is_not_found() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");
@@ -297,6 +299,7 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

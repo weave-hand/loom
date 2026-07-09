@@ -37,6 +37,7 @@ fn widget(props: Vec<PropertyDef>) -> ObjectType {
             name: "widget".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 
@@ -176,6 +177,7 @@ fn gadget() -> ObjectType {
             name: "gadget".into(),
         },
         identity: None,
+        version: None,
     }
 }
 

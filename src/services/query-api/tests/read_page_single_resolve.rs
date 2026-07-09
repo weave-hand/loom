@@ -152,6 +152,7 @@ fn person() -> ObjectType {
             name: "person".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 

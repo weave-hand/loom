@@ -203,6 +203,7 @@ fn object_type_without_eq_still_partial_eq() {
             name: "t".into(),
         },
         identity: None,
+        version: None,
     };
     assert_eq!(t.clone(), t);
 }

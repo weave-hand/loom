@@ -33,6 +33,7 @@ fn governed(denied: &[&str], masked: &[&str]) -> GovernedType {
                 name: "orders".into(),
             },
             identity: Some("id".into()),
+            version: None,
         },
         row_filters: vec![],
         denied: denied

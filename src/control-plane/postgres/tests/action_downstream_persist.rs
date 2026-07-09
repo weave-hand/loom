@@ -18,6 +18,7 @@ async fn action_downstream_round_trips() {
             name: "widget".into(),
         },
         identity: Some("sku".into()),
+        version: None,
         properties: vec![PropertyDef {
             name: "sku".into(),
             ty: "String".into(),

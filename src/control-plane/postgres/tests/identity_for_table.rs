@@ -15,6 +15,7 @@ async fn resolves_identity_from_ontology() {
             name: "t".into(),
         },
         identity: Some("id".into()),
+        version: None,
         properties: vec![PropertyDef {
             name: "id".into(),
             ty: "String".into(),
@@ -62,6 +63,7 @@ async fn returns_none_when_identity_column_is_null() {
             name: "noid".into(),
         },
         identity: None,
+        version: None,
         properties: vec![PropertyDef {
             name: "id".into(),
             ty: "String".into(),

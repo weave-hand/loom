@@ -80,6 +80,7 @@ async fn build_faulting_app() -> axum::Router {
             name: "fault_type".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

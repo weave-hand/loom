@@ -452,3 +452,13 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "version-property",
+    crate = "version_property",
+    srcs = ["tests/version_property.rs"],
+    crate_root = "tests/version_property.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)

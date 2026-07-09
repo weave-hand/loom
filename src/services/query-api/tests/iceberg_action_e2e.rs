@@ -47,6 +47,7 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

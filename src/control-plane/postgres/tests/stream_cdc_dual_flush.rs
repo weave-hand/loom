@@ -140,9 +140,14 @@ async fn cdc_flush_dual_writes_base_and_changelog_on_one_tx() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, bucket_count, "id")
-        .await
-        .expect("declare_cdc");
+    cp.declare_cdc(
+        tid,
+        bucket_count,
+        "id",
+        control_plane_core::MergeEngine::LastRow,
+    )
+    .await
+    .expect("declare_cdc");
 
     // Seed id=1, val=100 (a plain +I append) — small enough to inline.
     inline_append(

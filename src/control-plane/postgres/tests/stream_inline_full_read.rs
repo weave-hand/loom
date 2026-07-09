@@ -113,9 +113,14 @@ async fn full_read_includes_minus_u_that_live_batch_excludes() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, bucket_count, "id")
-        .await
-        .expect("declare_cdc");
+    cp.declare_cdc(
+        tid,
+        bucket_count,
+        "id",
+        control_plane_core::MergeEngine::LastRow,
+    )
+    .await
+    .expect("declare_cdc");
 
     // Seed the initial live row id=1, val=100 (a plain +I append).
     iceberg_inline::inline_append(

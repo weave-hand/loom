@@ -53,6 +53,7 @@ async fn build_covers_all_rows_live_at_s() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

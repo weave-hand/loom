@@ -83,6 +83,7 @@ async fn setup(
         derived: vec![],
         table: thing,
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

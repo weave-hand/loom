@@ -47,6 +47,10 @@ pub struct ObjectType {
     /// The property that is this type's primary key, if declared. Names one of
     /// `properties`. `None` = no declared identity (back-compatible).
     pub identity: Option<String>,
+    /// The property that is this type's monotonic version/sequence column, used
+    /// as precedence by the `Versioned` CDC merge engine. `None` = no version
+    /// column (back-compatible). At most one version property per type.
+    pub version: Option<String>,
 }
 
 impl ObjectType {
@@ -77,6 +81,7 @@ impl ObjectType {
                     name: table.1.into(),
                 },
                 identity: None,
+                version: None,
             },
         }
     }
@@ -141,6 +146,15 @@ impl ObjectTypeBuilder {
     /// identity is used (action/read paths).
     pub fn identity(mut self, prop: impl Into<String>) -> Self {
         self.inner.identity = Some(prop.into());
+        self
+    }
+
+    /// Declare `prop` as the type's version/sequence column (used by the
+    /// `Versioned` merge engine). Like `identity`, NOT validated here or at
+    /// define time: a dangling name surfaces only when the versioned engine
+    /// reads it (the declaration surface validates orderability, not existence).
+    pub fn version(mut self, prop: impl Into<String>) -> Self {
+        self.inner.version = Some(prop.into());
         self
     }
 

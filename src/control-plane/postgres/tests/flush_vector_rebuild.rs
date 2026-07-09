@@ -59,6 +59,7 @@ async fn setup(
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");
@@ -222,6 +223,7 @@ async fn noop_flush_enqueues_nothing() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");
