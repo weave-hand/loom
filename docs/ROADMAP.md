@@ -25,7 +25,7 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## transform
 
-- [ ] **Stream engine — Continuous / standing queries (slice 4)** `{#road-stream-continuous area:transform status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-06-stream-engine-design}`
+- [ ] **Stream engine — Continuous / standing queries (slice 4)** `{#road-stream-continuous area:transform status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-09-stream-continuous-design}`
   Offset-watermarked micro-batch transform mode; MV output committed as its own subscribable changelog. Extends [[fut-transform-followups]].
-- [ ] **Stream engine — Stream joins / delta-join analog (slice 5)** `{#road-stream-joins area:transform status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-06-stream-engine-design}`
+- [ ] **Stream engine — Stream joins / delta-join analog (slice 5)** `{#road-stream-joins area:transform status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-09-stream-joins-design}`
   Lookup-join (point-lookup against a PK index, [[fut-stream-pk-index]]) + micro-batch stream-stream join. True stateful incremental join deferred ([[fut-stream-incremental-join]]).
