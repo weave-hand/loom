@@ -30,6 +30,7 @@ impl ActionEngine for CapturingEngine {
         _values: &[SqlValue],
         _logical_types: &[String],
         event: LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         *self.run_id.lock().unwrap() = Some(event.run_id);
         Ok(SnapshotId(1))
@@ -42,6 +43,7 @@ impl ActionEngine for CapturingEngine {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Err(ServingError::Engine("overwrite_table unsupported".into()))
     }

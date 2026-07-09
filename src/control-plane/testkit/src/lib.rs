@@ -19,11 +19,11 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Assignment, Auth, Cardinality,
     Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
-    Effect, EventType, IndexSpec, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, LinkBacking, LinkDef,
-    LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType, Ontology, Page, PageReq,
-    ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy, RoleId, RolePolicy, RowFilter,
-    RunId, ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName,
-    VectorIndexDef,
+    Effect, EventType, IndexSpec, JobTemplate, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
+    LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType,
+    Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
+    RoleId, RolePolicy, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableControlPlane,
+    TableRef, Transforms, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -1309,6 +1309,68 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .unwrap(),
         place_order,
         "multi-step action round-trips unchanged (both steps, bind preserved)",
+    );
+
+    // --- Action downstream round-trip (slice 4) ---
+    // An action WITH downstream templates round-trips unchanged on both adapters
+    // (memory + postgres). `Gadget` is already seeded above with an `id` property,
+    // so the `@self.id` payload ref passes define-time validation. Reuses the
+    // single-step + chained `.downstream(...)` builder idiom (Task 1).
+    let with_ds = ActionDef::single_step(
+        ActionName("createGadgetWithJob".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    )
+    .downstream(vec![JobTemplate {
+        kind: "transform".into(),
+        payload: serde_json::json!({ "gid": "@self.id" }),
+    }]);
+    o.define_action(with_ds.clone())
+        .await
+        .expect("define action with downstream");
+    let got = o
+        .get_action(&ActionName("createGadgetWithJob".into()))
+        .await
+        .expect("get action with downstream");
+    assert_eq!(
+        got.downstream, with_ds.downstream,
+        "downstream round-trips unchanged on both adapters"
+    );
+
+    // Back-compat: an action WITHOUT downstream still round-trips with an empty vec
+    // (the field's default), exercising the legacy/flat shape through both adapters.
+    let plain = ActionDef::single_step(
+        ActionName("createPlain".into()),
+        tn("Gadget"),
+        ActionKind::Insert,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    );
+    assert!(
+        plain.downstream.is_empty(),
+        "freshly built action has no downstream by default"
+    );
+    o.define_action(plain.clone()).await.unwrap();
+    let got_plain = o
+        .get_action(&ActionName("createPlain".into()))
+        .await
+        .expect("get plain action");
+    assert_eq!(got_plain, plain, "plain action round-trips unchanged");
+    assert!(
+        got_plain.downstream.is_empty(),
+        "action without downstream returns empty downstream (back-compat)"
     );
 
     // --- Derived properties ---
@@ -3175,6 +3237,112 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
             Err(ControlPlaneError::Validation(_))
         ),
         "define_action on unknown target type rejected"
+    );
+
+    // define-time validation of action `downstream` job templates (slice 4): an unknown
+    // job `kind`, a payload `@self.<prop>` ref to a non-existent property, and `@self.id`
+    // against an identity-less target must each be rejected as Validation. Seed an
+    // identity-bearing `Widget` (so `@self.id` resolves) and a no-identity `Blob` (so it
+    // does not — the `id` property exists iff identity is declared).
+    cp.define_type(ObjectType {
+        name: tn("Widget"),
+        table: TableRef {
+            schema: "main".into(),
+            name: "widget".into(),
+        },
+        properties: vec![PropertyDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            constraints: control_plane_core::PropertyConstraints::default(),
+        }],
+        derived: vec![],
+        identity: Some("id".into()),
+        version: None,
+    })
+    .await
+    .expect("define Widget type");
+    cp.define_type(ObjectType {
+        name: tn("Blob"),
+        table: TableRef {
+            schema: "main".into(),
+            name: "blob".into(),
+        },
+        properties: vec![PropertyDef {
+            name: "data".into(),
+            ty: "String".into(),
+            required: false,
+            constraints: control_plane_core::PropertyConstraints::default(),
+        }],
+        derived: vec![],
+        identity: None,
+        version: None,
+    })
+    .await
+    .expect("define Blob type");
+    // downstream kind must be in the allowlist.
+    assert!(
+        matches!(
+            cp.define_action(
+                ActionDef::single_step(
+                    ActionName("badKind".into()),
+                    tn("Widget"),
+                    ActionKind::Insert,
+                    vec![],
+                    vec![],
+                )
+                .downstream(vec![JobTemplate {
+                    kind: "no_such_kind".into(),
+                    payload: serde_json::json!({}),
+                }])
+            )
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "unknown downstream job kind rejected at define time"
+    );
+    // @self.<prop> must name a real property of the primary target.
+    assert!(
+        matches!(
+            cp.define_action(
+                ActionDef::single_step(
+                    ActionName("badRef".into()),
+                    tn("Widget"),
+                    ActionKind::Insert,
+                    vec![],
+                    vec![],
+                )
+                .downstream(vec![JobTemplate {
+                    kind: "transform".into(),
+                    payload: serde_json::json!({ "x": "@self.nope" }),
+                }])
+            )
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "payload @self.<unknown prop> rejected at define time"
+    );
+    // @self.id requires the target to declare an identity (Blob has none, so `id` is not
+    // a property of Blob).
+    assert!(
+        matches!(
+            cp.define_action(
+                ActionDef::single_step(
+                    ActionName("needsId".into()),
+                    tn("Blob"),
+                    ActionKind::Insert,
+                    vec![],
+                    vec![],
+                )
+                .downstream(vec![JobTemplate {
+                    kind: "transform".into(),
+                    payload: serde_json::json!({ "id": "@self.id" }),
+                }])
+            )
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "@self.id on an identity-less target rejected at define time"
     );
 
     // Deferred boundary: `Table` targets are NOT existence-checked, so a Table grant

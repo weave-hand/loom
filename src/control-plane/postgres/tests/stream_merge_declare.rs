@@ -123,6 +123,7 @@ async fn versioned_no_version_property_is_validation_error() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::Versioned,
         }),
+        &[],
     )
     .await;
     assert!(
@@ -174,6 +175,7 @@ async fn versioned_non_orderable_version_property_is_validation_error() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::Versioned,
         }),
+        &[],
     )
     .await;
     assert!(
@@ -227,6 +229,7 @@ async fn versioned_orderable_ok_then_redeclare_different_engine_is_conflict() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::Versioned,
         }),
+        &[],
     )
     .await
     .expect("versioned land_cdc against orderable version property");
@@ -265,6 +268,7 @@ async fn versioned_orderable_ok_then_redeclare_different_engine_is_conflict() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::LastRow,
         }),
+        &[],
     )
     .await;
     assert!(
@@ -314,6 +318,7 @@ async fn first_row_last_row_accepted_with_no_version_property() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::FirstRow,
         }),
+        &[],
     )
     .await
     .expect("first_row land_cdc");
@@ -365,6 +370,7 @@ async fn first_row_last_row_accepted_with_no_version_property() {
             bucket_key: "id".into(),
             merge_engine: MergeEngine::LastRow,
         }),
+        &[],
     )
     .await
     .expect("last_row land_cdc");

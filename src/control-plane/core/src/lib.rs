@@ -2,6 +2,7 @@
 //! No I/O — adapters (memory, postgres) implement these against a backend.
 
 mod acl;
+mod action_downstream;
 mod auth;
 mod catalog;
 mod compact_job;
@@ -31,6 +32,8 @@ pub use acl::{
     RolePolicy, RowFilter, ScalarValue, SubjectId, check_grant_target, check_policy_write,
     validate_row_filter,
 };
+pub use action_downstream::validate_action_downstream;
+pub use action_downstream::validate_downstream_scope;
 pub use auth::{
     Auth, LockoutPolicy, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount,
     ServiceToken, UserSummary,
@@ -62,12 +65,12 @@ pub use logical_type::{
 };
 pub use ontology::{
     ActionDef, ActionDefBuilder, ActionKind, ActionName, ActionStep, Aggregation, Assignment,
-    AssignmentSource, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType,
-    ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
+    AssignmentSource, Cardinality, DerivedPropertyDef, JobTemplate, LinkBacking, LinkDef,
+    ObjectType, ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
     VectorIndexDef, validate_derived_columns,
 };
 pub use page::{Cursor, Page, PageReq};
-pub use queue::{Job, JobFailure, JobId, NewJob, Queue, RetryPolicy};
+pub use queue::{Job, JobFailure, JobId, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use stream::{BucketOffsets, MergeEngine, StreamKind, StreamMeta, StreamTables};
 pub use stream_consolidate_job::{STREAM_CONSOLIDATE_JOB_KIND, StreamConsolidateJob};

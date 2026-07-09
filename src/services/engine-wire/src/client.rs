@@ -215,6 +215,7 @@ impl GrpcQueueClient {
         ipc: Vec<u8>,
         columns_json: String,
         lineage_json: String,
+        jobs_json: &str,
     ) -> Result<i64> {
         let resp = self
             .inner
@@ -225,6 +226,7 @@ impl GrpcQueueClient {
                 ipc,
                 columns_json,
                 lineage_json,
+                jobs_json: jobs_json.to_string(),
             })
             .await
             .map_err(be)?
@@ -240,6 +242,7 @@ impl GrpcQueueClient {
         &self,
         steps: Vec<pb::StepWrite>,
         lineage_json: String,
+        jobs_json: &str,
     ) -> Result<i64> {
         let resp = self
             .inner
@@ -247,6 +250,7 @@ impl GrpcQueueClient {
             .write_steps(pb::WriteStepsRequest {
                 steps,
                 lineage_json,
+                jobs_json: jobs_json.to_string(),
             })
             .await
             .map_err(be)?
@@ -263,6 +267,7 @@ impl GrpcQueueClient {
         ipc: Vec<u8>,
         columns_json: String,
         lineage_json: String,
+        jobs_json: &str,
     ) -> Result<i64> {
         let resp = self
             .inner
@@ -273,6 +278,7 @@ impl GrpcQueueClient {
                 ipc,
                 columns_json,
                 lineage_json,
+                jobs_json: jobs_json.to_string(),
             })
             .await
             .map_err(be)?
@@ -328,6 +334,7 @@ impl GrpcQueueClient {
         expected_version: i64,
         before_ipc: Vec<u8>,
         before_columns_json: String,
+        jobs_json: &str,
     ) -> Result<i64> {
         let resp = self
             .inner
@@ -343,6 +350,7 @@ impl GrpcQueueClient {
                 expected_version,
                 before_ipc,
                 before_columns_json,
+                jobs_json: jobs_json.to_string(),
             })
             .await
             .map_err(write_status)?

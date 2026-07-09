@@ -318,6 +318,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "action_downstream_persist",
+    crate = "action_downstream_persist",
+    srcs = ["tests/action_downstream_persist.rs"],
+    crate_root = "tests/action_downstream_persist.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "acl",
     crate = "acl",
     srcs = ["tests/acl.rs"],

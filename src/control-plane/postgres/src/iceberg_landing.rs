@@ -127,6 +127,7 @@ pub async fn land(
         lineage,
         stream_buckets,
         None,
+        &[],
     )
     .await
 }
@@ -140,7 +141,9 @@ pub async fn land(
 #[expect(
     clippy::too_many_arguments,
     reason = "same nine cohesive params as `land`, plus the CDC stream declaration \
-              (`cdc`), mutually exclusive with `stream_buckets` — see `combine_stream_decl`"
+              (`cdc`, mutually exclusive with `stream_buckets` — see `combine_stream_decl`) \
+              and the resolved downstream `jobs` to enqueue atomically with the write \
+              (slice 4; empty for the non-action callers via `land`)"
 )]
 pub async fn land_cdc(
     pool: &PgPool,
@@ -153,6 +156,7 @@ pub async fn land_cdc(
     lineage: LineageEvent,
     stream_buckets: Option<i32>,
     cdc: Option<CdcDecl>,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     let decl = combine_stream_decl(stream_buckets, cdc)?;
 
@@ -184,10 +188,11 @@ pub async fn land_cdc(
             lineage,
             Some(limits.flush_byte_threshold),
             &decl,
+            jobs,
         )
         .await
     } else {
-        land_parquet(pool, catalog, table, columns, batches, lineage, &decl).await
+        land_parquet(pool, catalog, table, columns, batches, lineage, &decl, jobs).await
     }
 }
 
@@ -800,6 +805,11 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
 /// STREAM write (the table is already a declared stream table, or this request
 /// declares one — log or cdc) takes [`land_parquet_stream`], which stamps gapless
 /// per-bucket offsets into the written Parquet atomically with the snapshot commit.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the landing params (pool, catalog, table, columns, batches, lineage, stream decl) \
+              plus the slice-4 downstream jobs the action path threads into the commit"
+)]
 async fn land_parquet(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -808,6 +818,7 @@ async fn land_parquet(
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
     decl: &StreamDecl,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     // Read-only probe (no snapshot): does the table already exist, and is it already
     // a declared stream table? Mirrors `inline_append`'s pre-`ensure_table` read.
@@ -837,6 +848,7 @@ async fn land_parquet(
             lineage,
             decl,
             pre_existing,
+            jobs,
         )
         .await;
     }
@@ -851,6 +863,7 @@ async fn land_parquet(
         CommitExtras {
             lineage: Some(&lineage),
             data_trigger_tables: std::slice::from_ref(table),
+            jobs,
             ..CommitExtras::default()
         },
         false,
@@ -883,6 +896,7 @@ async fn land_parquet_stream(
     lineage: LineageEvent,
     decl: &StreamDecl,
     pre_existing: bool,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     // Concatenate the write's batches: offsets are assigned in row order across the
     // whole write, and the framing columns are stamped onto the one batch.
@@ -1003,6 +1017,7 @@ async fn land_parquet_stream(
             lineage: Some(&lineage),
             data_trigger_tables: std::slice::from_ref(table),
             reuse_snapshot: Some(at),
+            jobs,
             ..CommitExtras::default()
         };
         match crate::iceberg_writer::append_batches_on_tx(

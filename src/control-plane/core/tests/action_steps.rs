@@ -64,6 +64,7 @@ fn multi_step_round_trips() {
                 bind: None,
             },
         ],
+        downstream: Vec::new(),
     };
     let v = serde_json::to_value(&a).expect("serialize");
     assert!(v.get("steps").is_some(), "stepped form carries steps");
@@ -111,6 +112,7 @@ fn builder_defines_multi_step_with_cross_step_ref() {
                 bind: None,
             },
         ],
+        downstream: Vec::new(),
     };
     assert_eq!(built, expected);
 }
@@ -121,7 +123,7 @@ fn legacy_flat_json_lifts_to_one_step() {
     let json = serde_json::json!({
         "name": "createWidget",
         "target": "Widget",
-        "kind": "Insert",
+        "kind": "insert",
         "parameters": [{ "name": "id", "ty": "Long", "required": true }],
         "assignments": []
     });

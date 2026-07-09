@@ -46,6 +46,7 @@ impl ActionEngine for NullAction {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Ok(SnapshotId(0))
     }
@@ -57,6 +58,7 @@ impl ActionEngine for NullAction {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Err(ServingError::Engine("overwrite_table unsupported".into()))
     }

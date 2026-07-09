@@ -80,6 +80,7 @@ impl ActionEngine for StubAction {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(0))
     }
@@ -91,6 +92,7 @@ impl ActionEngine for StubAction {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> std::result::Result<control_plane_core::SnapshotId, ServingError> {
         Err(ServingError::Engine("overwrite_table unsupported".into()))
     }
@@ -863,6 +865,7 @@ pub async fn define_create_order_with_lines_action(cp: &PgControlPlane) {
                     bind: None,
                 },
             ],
+            downstream: Vec::new(),
         })
         .await
         .unwrap();

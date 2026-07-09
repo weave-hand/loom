@@ -55,6 +55,7 @@ impl ActionEngine for MultiEngine {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         *self.single_calls.lock().unwrap() += 1;
         Ok(SnapshotId(1))
@@ -67,6 +68,7 @@ impl ActionEngine for MultiEngine {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         *self.single_calls.lock().unwrap() += 1;
         Ok(SnapshotId(1))
@@ -76,6 +78,7 @@ impl ActionEngine for MultiEngine {
         &self,
         writes: &[StepWrite],
         event: LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         let recorded = writes
             .iter()
@@ -170,6 +173,7 @@ fn action() -> ActionDef {
                 bind: Some("li".into()),
             },
         ],
+        downstream: Vec::new(),
     }
 }
 

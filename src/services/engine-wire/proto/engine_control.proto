@@ -110,6 +110,7 @@ message WriteObjectRequest {
   bytes  ipc = 3;            // one-row Arrow IPC stream (built + encoded client-side)
   string columns_json = 4;   // serde_json of Vec<ColumnSpec>
   string lineage_json = 5;   // serde_json of LineageWire
+  string jobs_json = 6;      // serde_json of Vec<NewJob> to enqueue atomically; empty = none
 }
 message WriteObjectResponse { int64 snapshot_id = 1; }
 
@@ -124,6 +125,7 @@ message StepWrite {
 message WriteStepsRequest {
   repeated StepWrite steps = 1;
   string lineage_json = 2;    // serde_json of LineageWire (all step targets in its outputs)
+  string jobs_json = 3;       // serde_json of Vec<NewJob> to enqueue atomically; empty = none
 }
 message WriteStepsResponse { int64 snapshot_id = 1; }
 
@@ -133,6 +135,7 @@ message OverwriteTableRequest {
   bytes  ipc = 3;            // N-row Arrow IPC stream; empty = truncate (delete-all)
   string columns_json = 4;
   string lineage_json = 5;
+  string jobs_json = 6;      // serde_json of Vec<NewJob> to enqueue atomically; empty = none
 }
 message OverwriteTableResponse { int64 snapshot_id = 1; }
 
@@ -156,6 +159,7 @@ message WriteDeltaRequest {
   int64  expected_version = 8;
   bytes  before_ipc = 9;             // optional before-image: full one-row Arrow IPC of the prior row; empty => absent
   string before_columns_json = 10;  // Vec<ColumnSpec> describing before_ipc (positionally aligned)
+  string jobs_json = 11;            // serde_json of Vec<NewJob> to enqueue atomically; empty = none
 }
 message WriteDeltaResponse { int64 snapshot_id = 1; }
 

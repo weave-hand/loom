@@ -51,6 +51,7 @@ impl ActionEngine for OkEngine {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Ok(control_plane_core::SnapshotId(1))
     }
@@ -62,6 +63,7 @@ impl ActionEngine for OkEngine {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         Err(ServingError::Engine("overwrite_table unsupported".into()))
     }

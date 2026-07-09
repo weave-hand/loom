@@ -821,6 +821,24 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "action-downstream-atomicity",
+    crate = "action_downstream_atomicity",
+    srcs = ["tests/action_downstream_atomicity.rs"],
+    crate_root = "tests/action_downstream_atomicity.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "render",
     crate = "render",
@@ -1066,6 +1084,19 @@ rust_test(
     edition = "2024",
     deps = [
         ":query-api",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "downstream-resolve",
+    crate = "downstream_resolve",
+    srcs = ["tests/downstream_resolve.rs"],
+    crate_root = "tests/downstream_resolve.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
         "//third-party:serde_json",
     ],
 )

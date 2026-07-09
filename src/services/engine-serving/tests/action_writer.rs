@@ -196,7 +196,7 @@ async fn write_overwrite_truncate() {
     let writer = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
 
     let s1 = writer
-        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"))
+        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"), &[])
         .await
         .expect("write_object");
     assert!(s1.0 > 0);
@@ -251,7 +251,7 @@ async fn overwrite_table_enqueues_declared_index_rebuilds() {
     let writer = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
 
     writer
-        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"))
+        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"), &[])
         .await
         .expect("write_object");
     assert_eq!(
@@ -315,7 +315,7 @@ async fn write_delta_threads_consolidate_threshold_to_production_path() {
 
     // Seed id=1 (a plain +I append — not a delta, never touches the trigger).
     writer
-        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"))
+        .write_object(&table, &cols(), &one_row_ipc(1, "a"), event("insert"), &[])
         .await
         .expect("seed insert");
     assert_eq!(

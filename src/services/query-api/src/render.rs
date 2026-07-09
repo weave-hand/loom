@@ -108,8 +108,9 @@ fn render_typed(repr: JsonRepr, cell: &SqlValue) -> Value {
 }
 
 /// Best-effort rendering by the cell's own variant — the shared fallback for unknown
-/// types and declared/value mismatches.
-fn natural(cell: &SqlValue) -> Value {
+/// types and declared/value mismatches. Also the `SqlValue → JSON` coercion reused by
+/// `crate::downstream` when resolving `@self.<prop>` payload refs at action-invoke time.
+pub(crate) fn natural(cell: &SqlValue) -> Value {
     match cell {
         SqlValue::Null => Value::Null,
         SqlValue::Int(i) => json!(i),

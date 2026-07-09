@@ -48,6 +48,7 @@ impl ActionEngine for StubAction {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Err(ServingError::Engine("unused".into()))
     }
@@ -59,6 +60,7 @@ impl ActionEngine for StubAction {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Err(ServingError::Engine("unused".into()))
     }

@@ -58,6 +58,7 @@ impl ActionEngine for RecordingEngine {
         _values: &[SqlValue],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         self.writes.fetch_add(1, Ordering::SeqCst);
         Ok(SnapshotId(1))
@@ -70,6 +71,7 @@ impl ActionEngine for RecordingEngine {
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
         _event: control_plane_core::LineageEvent,
+        _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
         Err(ServingError::Engine("overwrite_table unsupported".into()))
     }

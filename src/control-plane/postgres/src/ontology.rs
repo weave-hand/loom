@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use control_plane_core::{
     ActionDef, ActionName, ActionStep, Aggregation, Assignment, AssignmentSource,
-    ControlPlaneError, DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, ObjectType, Ontology,
-    Page, PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName, VectorIndexDef,
+    ControlPlaneError, DerivedPropertyDef, IndexSpec, JobTemplate, LinkBacking, LinkDef,
+    ObjectType, Ontology, Page, PageReq, ParamDef, PropertyDef, Result, TableRef, TypeName,
+    VectorIndexDef,
 };
 use sqlx::{AssertSqlSafe, PgPool};
 
@@ -318,11 +319,31 @@ impl Ontology for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn define_action(&self, action: ActionDef) -> Result<()> {
-        if action.steps.is_empty() {
-            return Err(ControlPlaneError::Validation(format!(
-                "action `{}` has no steps",
-                action.name.0
-            )));
+        let primary_step = match action.steps.first() {
+            Some(s) => s,
+            None => {
+                return Err(ControlPlaneError::Validation(format!(
+                    "action `{}` has no steps",
+                    action.name.0
+                )));
+            }
+        };
+        // Load the primary step's full ObjectType (properties + identity) and validate
+        // every downstream template against it BEFORE opening the define tx. `get_type`
+        // uses its own connection; a NotFound here is left to the per-step existence check
+        // inside the tx below, which raises the canonical Validation error for unknown
+        // types (mirroring the memory fake). The boolean `object_type_exists` does NOT
+        // suffice — it carries no properties/identity for the validator.
+        match self.get_type(&primary_step.target).await {
+            Ok(primary_target) => {
+                control_plane_core::validate_downstream_scope(&action)?;
+                control_plane_core::validate_action_downstream(
+                    &action.downstream,
+                    &primary_target,
+                )?;
+            }
+            Err(ControlPlaneError::NotFound(_)) => {}
+            Err(e) => return Err(e),
         }
         let mut tx = self.pool.begin().await.map_err(backend)?;
         // Every step's target type must exist. The explicit check makes the error a clear
@@ -362,6 +383,17 @@ impl Ontology for PgControlPlane {
         .map_err(backend)?;
         sqlx::query!(
             "delete from ontology.action_step where action_name = $1",
+            action.name.0,
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(backend)?;
+        // The action-row insert is `on conflict do nothing`, so a redefine never
+        // deletes the parent row and the FK `on delete cascade` here never fires —
+        // the explicit delete is what keeps downstream idempotent on redefine (mirrors
+        // the action_assignment/action_param/action_step deletes above).
+        sqlx::query!(
+            "delete from ontology.action_downstream where action_name = $1",
             action.name.0,
         )
         .execute(&mut *tx)
@@ -431,13 +463,27 @@ impl Ontology for PgControlPlane {
                 .map_err(backend)?;
             }
         }
+        for (ordinal, jt) in action.downstream.iter().enumerate() {
+            sqlx::query!(
+                "insert into ontology.action_downstream (action_name, ordinal, kind, payload) \
+                 values ($1, $2, $3, $4)",
+                action.name.0,
+                ordinal as i32,
+                jt.kind,
+                jt.payload,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+        }
         tx.commit().await.map_err(backend)?;
         Ok(())
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_action(&self, name: &ActionName) -> Result<()> {
-        // Steps/params/assignments cascade from the action row (0030/0009/0025).
+        // Steps/params/assignments/downstream cascade from the action row
+        // (0039/0030/0009/0025).
         sqlx::query!("delete from ontology.action where name = $1", name.0)
             .execute(&self.pool)
             .await
@@ -511,9 +557,24 @@ impl Ontology for PgControlPlane {
                 bind: sr.bind,
             });
         }
+        let downstream_rows = sqlx::query!(
+            "select kind, payload from ontology.action_downstream where action_name = $1 order by ordinal",
+            name.0,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let downstream: Vec<JobTemplate> = downstream_rows
+            .into_iter()
+            .map(|r| JobTemplate {
+                kind: r.kind,
+                payload: r.payload,
+            })
+            .collect();
         Ok(ActionDef {
             name: name.clone(),
             steps,
+            downstream,
         })
     }
 
