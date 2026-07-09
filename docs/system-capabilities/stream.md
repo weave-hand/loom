@@ -271,8 +271,9 @@ never leak into the projected output.
   (LastRow / FirstRow / Versioned) are built; the *aggregate-class* engines
   (Aggregation per-column sum/max/min/count + PartialUpdate last-non-null field
   merge) are deferred — see *Merge engines*.
-- `#fut-stream-framing-write-paths` — the transform and multi-target
-  (`write_steps`) write paths still drop framing; only the single-table
+- `#road-stream-framing-write-paths` (promoted from `#fut-stream-framing-write-paths`
+  2026-07-09) — the multi-step-action (`write_steps`) and transform-commit
+  (`IcebergTx::commit`) write paths still drop framing; only the single-table
   inline/flush/overwrite paths documented above stamp and preserve it.
 - `#fut-stream-partitioning` — log-table bucketing is within-batch
   round-robin with no cross-batch balancing cursor, and CDC bucketing has no
