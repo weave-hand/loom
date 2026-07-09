@@ -68,6 +68,7 @@ fn ontology_payloads_roundtrip() {
             name: "customer".into(),
         },
         identity: Some("id".into()),
+        version: None,
     };
     roundtrip(&ty);
     roundtrip(&Page {

@@ -127,6 +127,7 @@ async fn run_wire_vertical(backend: WireBackend) {
             derived: vec![],
             table: tref("main", "customer"),
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

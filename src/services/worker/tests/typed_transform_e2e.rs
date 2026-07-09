@@ -216,6 +216,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
             derived: vec![],
             table: customers.clone(),
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -227,6 +228,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
             derived: vec![],
             table: slim.clone(),
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -371,6 +373,7 @@ async fn nonconforming_result_abandons_without_commit() {
             derived: vec![],
             table: customers.clone(),
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -383,6 +386,7 @@ async fn nonconforming_result_abandons_without_commit() {
             derived: vec![],
             table: bad.clone(),
             identity: None,
+            version: None,
         })
         .await
         .unwrap();

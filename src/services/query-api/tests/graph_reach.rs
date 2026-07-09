@@ -62,6 +62,7 @@ fn person_type(identity: Option<String>) -> ObjectType {
             name: "person".into(),
         },
         identity,
+        version: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn company_type() -> ObjectType {
             name: "company".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 
@@ -98,6 +100,7 @@ fn team_type() -> ObjectType {
             name: "team".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 
@@ -116,6 +119,7 @@ fn secret_type() -> ObjectType {
             name: "secret".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 

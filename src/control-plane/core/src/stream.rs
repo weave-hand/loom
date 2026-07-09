@@ -16,6 +16,55 @@ pub enum StreamKind {
     Cdc,
 }
 
+/// The replace-class merge policy for a CDC current-state base: which row wins
+/// per identity when both fold sites (`consolidate_stream` compaction and
+/// `build_merge_view` merge-on-read) collapse multiple physical rows. A `-D`
+/// winner drops the identity under ALL engines. The durable changelog is
+/// engine-agnostic — engines govern only current-state. See
+/// `docs/superpowers/specs/2026-07-08-stream-merge-engines-design.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeEngine {
+    /// Greatest `loom_offset` per identity wins (the default; byte-identical to
+    /// the pre-engine fold).
+    LastRow,
+    /// Smallest `loom_offset` wins — "first write wins"; later events for that
+    /// identity are ignored for current-state (they still land in the changelog).
+    FirstRow,
+    /// A user-declared domain `version` column sets precedence (highest version
+    /// wins; `loom_offset` tie-breaks). Handles out-of-order arrival.
+    Versioned,
+}
+
+impl MergeEngine {
+    /// The persisted `stream.stream_table.merge_engine` wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeEngine::LastRow => "last_row",
+            MergeEngine::FirstRow => "first_row",
+            MergeEngine::Versioned => "versioned",
+        }
+    }
+}
+
+impl std::str::FromStr for MergeEngine {
+    type Err = crate::error::ControlPlaneError;
+
+    /// Parse the persisted token. Unknown tokens are a loud error (a corrupt
+    /// row / a bad `?merge_engine=` query param), never a silent default.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "last_row" => Ok(MergeEngine::LastRow),
+            "first_row" => Ok(MergeEngine::FirstRow),
+            "versioned" => Ok(MergeEngine::Versioned),
+            other => Err(crate::error::ControlPlaneError::Validation(format!(
+                "unknown merge engine '{other}'"
+            ))),
+        }
+    }
+}
+
 /// A declared stream table's metadata: its fixed bucket count, its kind, and —
 /// for a CDC table — the identity column it buckets on (`hash(bucket_key) %
 /// bucket_count`). `bucket_key` is `None` for a log table.
@@ -28,6 +77,10 @@ pub struct StreamMeta {
     /// (slice 2b); `None` for a log table or a CDC table not yet given its
     /// changelog pointer. Soft pointer — no FK.
     pub changelog_table_id: Option<i64>,
+    /// The replace-class merge engine governing this CDC table's current-state
+    /// fold (compaction + merge-on-read). Default `LastRow`. Log tables carry
+    /// `LastRow` too (unused — only CDC tables fold).
+    pub merge_engine: MergeEngine,
 }
 
 #[async_trait]
@@ -50,8 +103,15 @@ pub trait StreamTables {
     /// The bucket count if table_id is a declared log table, else None.
     async fn stream_bucket_count(&self, table_id: i64) -> Result<Option<i32>>;
     /// Declare table_id as a PK/CDC table with bucket_count buckets keyed on
-    /// `bucket_key` (the identity column). Idempotent, first-wins on all fields.
-    async fn declare_cdc(&self, table_id: i64, bucket_count: i32, bucket_key: &str) -> Result<()>;
+    /// `bucket_key` (the identity column), folded by `merge_engine`. Idempotent,
+    /// first-wins on all fields.
+    async fn declare_cdc(
+        &self,
+        table_id: i64,
+        bucket_count: i32,
+        bucket_key: &str,
+        merge_engine: MergeEngine,
+    ) -> Result<()>;
     /// Full stream metadata for table_id if it is a declared stream table, else None.
     async fn stream_meta(&self, table_id: i64) -> Result<Option<StreamMeta>>;
     /// Point a CDC table's registry row at its durable changelog table's mirror

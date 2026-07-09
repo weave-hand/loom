@@ -42,6 +42,7 @@ fn object_type_builder_matches_literal() {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     assert_eq!(built, literal);
 }

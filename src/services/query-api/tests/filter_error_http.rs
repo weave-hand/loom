@@ -86,6 +86,7 @@ async fn seed(deny_amount: bool) -> MemoryControlPlane {
             name: "order".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

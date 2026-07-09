@@ -94,6 +94,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: cust.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -128,6 +129,7 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

@@ -302,6 +302,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "version-for-table",
+    crate = "version_for_table",
+    srcs = ["tests/version_for_table.rs"],
+    crate_root = "tests/version_for_table.rs",
+    deps = [":postgres", "//src/control-plane/core:core", "//third-party:sqlx", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "action_kind_persist",
     crate = "action_kind_persist",
     srcs = ["tests/action_kind_persist.rs"],
@@ -1387,5 +1395,22 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-merge-declare",
+    crate = "stream_merge_declare",
+    srcs = ["tests/stream_merge_declare.rs"],
+    crate_root = "tests/stream_merge_declare.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )

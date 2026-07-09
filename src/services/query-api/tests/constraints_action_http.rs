@@ -124,6 +124,7 @@ async fn seed() -> MemoryControlPlane {
             name: "widget".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

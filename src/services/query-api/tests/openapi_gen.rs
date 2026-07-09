@@ -145,6 +145,7 @@ fn customer() -> ObjectType {
         derived: vec![],
         table: tref("main", "customer"),
         identity: Some("id".into()),
+        version: None,
     }
 }
 
@@ -160,6 +161,7 @@ fn order() -> ObjectType {
         derived: vec![],
         table: tref("main", "orders"),
         identity: Some("id".into()),
+        version: None,
     }
 }
 

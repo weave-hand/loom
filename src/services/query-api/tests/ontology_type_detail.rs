@@ -85,6 +85,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             name: "customers".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -97,6 +98,7 @@ async fn seeded_control_plane() -> MemoryControlPlane {
             name: "orders".into(),
         },
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

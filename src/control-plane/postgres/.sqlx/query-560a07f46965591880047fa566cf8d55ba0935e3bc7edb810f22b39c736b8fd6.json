@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key, merge_engine) values ($1, $2, 'cdc', $3, $4) on conflict (table_id) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "560a07f46965591880047fa566cf8d55ba0935e3bc7edb810f22b39c736b8fd6"
+}

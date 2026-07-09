@@ -46,6 +46,7 @@ async fn ivf_build_writes_decodable_blob_and_mirror_kind() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

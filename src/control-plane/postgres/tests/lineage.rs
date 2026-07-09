@@ -45,6 +45,7 @@ async fn postgres_binding_edge_is_source_guarded() {
             name: table.into(),
         },
         identity: None,
+        version: None,
     };
 
     // Count binding events whose output node is loom:type/GuardX.

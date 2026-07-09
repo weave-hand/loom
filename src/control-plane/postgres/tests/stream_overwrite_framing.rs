@@ -103,7 +103,9 @@ async fn stream_overwrite_preserves_framing() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 1, "id").await.expect("declare_cdc");
+    cp.declare_cdc(tid, 1, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
 
     // Insert + flush so the base holds framed file rows.
     inline_append(

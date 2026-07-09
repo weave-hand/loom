@@ -134,6 +134,7 @@ async fn no_bound_index_is_deterministic_error() {
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

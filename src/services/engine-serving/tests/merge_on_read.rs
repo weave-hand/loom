@@ -51,6 +51,7 @@ async fn define_type(
             name: name.into(),
         },
         identity: identity.map(str::to_string),
+        version: None,
         properties: vec![
             PropertyDef {
                 name: "id".into(),
@@ -81,6 +82,7 @@ async fn define_camel_type(cp: &control_plane_postgres::PgControlPlane, schema: 
             name: name.into(),
         },
         identity: Some("id".to_string()),
+        version: None,
         properties: vec![
             PropertyDef {
                 name: "id".into(),

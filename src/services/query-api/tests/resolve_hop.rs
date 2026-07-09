@@ -26,6 +26,7 @@ fn simple_type(name: &str, table: &str) -> ObjectType {
             name: table.into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 

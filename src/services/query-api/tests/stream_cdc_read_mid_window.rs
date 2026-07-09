@@ -62,7 +62,9 @@ async fn cdc_read_after_flush_before_consolidate_dedups_and_hides_deletes() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id").await.expect("declare_cdc");
+    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;

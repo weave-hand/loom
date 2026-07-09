@@ -570,6 +570,7 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
             .collect(),
         derived,
         identity: req.identity,
+        version: None,
     };
     match st.cp.ontology().define_type(otype).await {
         Ok(()) => (

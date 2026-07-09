@@ -82,6 +82,7 @@ async fn setup(
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -347,6 +348,7 @@ async fn setup_ranges_and_text(
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

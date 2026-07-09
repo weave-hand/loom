@@ -60,6 +60,7 @@ fn customer_type(identity: Option<String>) -> ObjectType {
             name: "customer".into(),
         },
         identity,
+        version: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn order_type(identity: Option<String>) -> ObjectType {
             name: "order".into(),
         },
         identity,
+        version: None,
     }
 }
 

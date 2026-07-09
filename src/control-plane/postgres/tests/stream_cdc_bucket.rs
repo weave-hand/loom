@@ -91,9 +91,14 @@ async fn cdc_identity_stays_in_one_bucket_across_appends() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, bucket_count, "id")
-        .await
-        .expect("declare_cdc");
+    cp.declare_cdc(
+        tid,
+        bucket_count,
+        "id",
+        control_plane_core::MergeEngine::LastRow,
+    )
+    .await
+    .expect("declare_cdc");
 
     // Append A: id=2, id=1 (id=1 at ROW INDEX 1). Append B: id=1, id=3 (id=1 at
     // ROW INDEX 0). Row indexing restarts at 0 for every append, so under the

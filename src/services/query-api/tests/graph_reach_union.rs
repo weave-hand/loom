@@ -58,6 +58,7 @@ fn person_type(identity: Option<String>) -> ObjectType {
             name: "person".into(),
         },
         identity,
+        version: None,
     }
 }
 
@@ -76,6 +77,7 @@ fn company_type() -> ObjectType {
             name: "company".into(),
         },
         identity: Some("id".into()),
+        version: None,
     }
 }
 

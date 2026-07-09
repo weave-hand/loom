@@ -81,6 +81,7 @@ async fn bind_accepts_conforming_type_and_persists_it() {
         derived: vec![],
         table: customer(),
         identity: None,
+        version: None,
     };
     bind(&cat, &cp, type_def.clone()).await.unwrap();
 
@@ -113,6 +114,7 @@ async fn bind_collects_all_violations_and_persists_nothing() {
         derived: vec![],
         table: customer(),
         identity: None,
+        version: None,
     };
 
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
@@ -169,6 +171,7 @@ async fn bind_accepts_identity_naming_a_required_property() {
         derived: vec![],
         table: customer(),
         identity: Some("id".into()),
+        version: None,
     };
     bind(&cat, &cp, type_def).await.unwrap();
 }
@@ -188,6 +191,7 @@ async fn bind_rejects_identity_naming_unknown_property() {
         derived: vec![],
         table: customer(),
         identity: Some("nope".into()),
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -219,6 +223,7 @@ async fn bind_rejects_identity_naming_non_required_property() {
         derived: vec![],
         table: customer(),
         identity: Some("email".into()),
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -247,6 +252,7 @@ async fn bind_rejects_an_unknown_table() {
             name: "ghost".into(),
         },
         identity: None,
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     assert!(matches!(err, BindError::TableNotFound(_)), "got {err:?}");
@@ -290,6 +296,7 @@ async fn bind_rejects_a_property_name_starting_with_underscore() {
         derived: vec![],
         table: reserved_table(),
         identity: None,
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -322,6 +329,7 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
         }],
         table: customer(),
         identity: None,
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -379,6 +387,7 @@ async fn define_purchase_graph(cp: &impl Ontology) {
         derived: vec![],
         table: customer(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -388,6 +397,7 @@ async fn define_purchase_graph(cp: &impl Ontology) {
         derived: vec![],
         table: purchase_table(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -437,6 +447,7 @@ async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
         derived: derived.clone(),
         table: customer(),
         identity: None,
+        version: None,
     };
     bind(&cat, &cp, type_def).await.unwrap();
 
@@ -475,6 +486,7 @@ async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
         ],
         table: customer(),
         identity: None,
+        version: None,
     };
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -503,6 +515,7 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
         derived: vec![],
         table: customer(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -512,6 +525,7 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
         derived: vec![],
         table: purchase_table(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();

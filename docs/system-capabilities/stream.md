@@ -9,7 +9,7 @@ across the whole write→flush→consolidate lifecycle. It is distilled from the
 two shipped slices' design specs and their landed commits; open work is listed
 at the end.
 
-_As of 3a9cd68b._
+_As of 831adab7._
 
 ## Declaration: log vs. CDC, and the shared registry
 
@@ -198,6 +198,46 @@ read+fold+overwrite window; `pg_advisory_xact_lock` blocks rather than
 skip/retries, exactly mirroring `flush_table`'s own contention behavior
 against a concurrent flush/GC.
 
+## Merge engines
+
+A declared CDC table folds its current-state base per-identity by a per-table,
+**immutable** `merge_engine` (`stream.stream_table.merge_engine`, migration
+`0040`; default `last_row`). Both fold sites — compaction
+(`consolidate_stream`) and merge-on-read (`build_merge_view`) — render the same
+engine to their `ROW_NUMBER() ... ORDER BY` window, so the choice is honored
+identically on read and after a consolidate. A `-D` winner drops the identity
+under **all** engines; the durable changelog is engine-agnostic (it keeps every
+event regardless).
+
+| Engine | Winner = rank 1 (`PARTITION BY identity ORDER BY …`) | Needs a version col |
+| --- | --- | --- |
+| `last_row` (default) | `loom_offset DESC` — byte-identical to the pre-engine fold | no |
+| `first_row` | `loom_offset ASC` — "first write wins"; later `+U`/`-D` events for a key are ignored for current-state (they still land in the changelog) | no |
+| `versioned` | `"<version_col>" DESC, loom_offset DESC` — highest domain version wins; offset tie-breaks (last-write-within-version). Handles out-of-order arrival | yes |
+
+The engine is chosen at CDC bind time: `?merge_engine=<engine>` on
+`POST /models/{type}` (alongside `?mode=cdc&buckets=N`), defaulting to
+`last_row`. **Declaration-time validation** (`reconcile_stream_mode`, the seam
+every declarer — HTTP or direct `land_cdc` — passes through) rejects
+`merge_engine=versioned` unless the bound type declares a `version` property
+(`ObjectType.version`, an ordinary user column, migration `0039`) of an
+orderable logical type (`Integer` / `Long` / `Timestamp`); a redeclare with a
+different engine is a `Conflict`. The version column is resolved live at the
+fold sites via `version_for_table` (mirroring `identity_for_table`), never
+copied onto the registry.
+
+**`Versioned` stays correct across consolidate cycles.** A consolidate
+physically rewrites the base to the highest-version winner; a *later* event
+carrying a *lower* version still loses on the next read, because the folded
+winner's version is preserved in the base. (The `last_row` default renders the
+exact `loom_offset DESC` expressions in use before this work, so non-CDC and
+non-versioned paths are byte-identical.)
+
+The *aggregate-class* engines — Aggregation (per-column sum/max/min/count) and
+PartialUpdate (last-non-null field merge), which *combine* rows rather than pick
+one and need per-column merge-policy on the ontology model — are deferred
+(`#fut-stream-merge-aggregate`).
+
 ## Reads stay correct across the whole lifecycle
 
 Current-state reads (`GET /objects`, link traversal, `GET /datasets`) are
@@ -219,15 +259,18 @@ provider for this shape, so `GET /objects` in the window after a flush but
 before the next consolidation duplicated rows per identity and could
 resurrect a `−D`-deleted id. A regression test (`stream_cdc_read_mid_window`)
 pins the fix: reads in that window are deduped and tombstone-correct
-regardless of whether consolidation has run yet. `ontology::is_cdc_table`
-(`ontology.rs:614`) is the new predicate that routes a table into the
-`Offset` precedence; framing columns are exposed to the fold internally but
+regardless of whether consolidation has run yet. `ontology::stream_meta_for_table`
+is the predicate that routes a CDC table into the engine-aware `Offset`
+precedence (fetching kind + `merge_engine` in one lookup); framing columns are
+exposed to the fold internally but
 never leak into the projected output.
 
 ## Known gaps
 
-- `#fut-stream-merge-engines` — only LastRow is implemented; FirstRow /
-  Versioned / Aggregation + partial-update merge engines are deferred.
+- `#fut-stream-merge-aggregate` — only the *replace-class* merge engines
+  (LastRow / FirstRow / Versioned) are built; the *aggregate-class* engines
+  (Aggregation per-column sum/max/min/count + PartialUpdate last-non-null field
+  merge) are deferred — see *Merge engines*.
 - `#fut-stream-framing-write-paths` — the transform and multi-target
   (`write_steps`) write paths still drop framing; only the single-table
   inline/flush/overwrite paths documented above stamp and preserve it.

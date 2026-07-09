@@ -68,6 +68,7 @@ async fn setup(
         derived: vec![],
         table: person.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();
@@ -148,6 +149,7 @@ async fn setup_active(
         derived: vec![],
         table: person.clone(),
         identity: Some("id".into()),
+        version: None,
     })
     .await
     .unwrap();

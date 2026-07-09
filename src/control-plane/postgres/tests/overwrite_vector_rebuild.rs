@@ -58,6 +58,7 @@ async fn setup(
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type");

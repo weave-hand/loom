@@ -140,6 +140,7 @@ fn gadget() -> ObjectType {
             name: "gadget".into(),
         },
         identity: None,
+        version: None,
     }
 }
 

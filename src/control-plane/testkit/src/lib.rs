@@ -58,6 +58,7 @@ async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
             name: name.to_lowercase(),
         },
         identity: None,
+        version: None,
     })
     .await
     .expect("define type");
@@ -648,6 +649,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: Some("id".into()),
     };
     o.define_type(customer.clone())
         .await
@@ -671,6 +673,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     };
     o.define_type(order.clone()).await.expect("define Order");
 
@@ -692,6 +695,17 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         o.get_type(&tn("Order")).await.unwrap().identity,
         None,
         "an undeclared identity stays None"
+    );
+    // A declared version property round-trips through define_type/get_type.
+    let versioned = o.get_type(&tn("Customer")).await.unwrap();
+    assert_eq!(
+        versioned.version.as_deref(),
+        Some("id"),
+        "declared version persists through define_type/get_type",
+    );
+    assert!(
+        o.get_type(&tn("Order")).await.unwrap().version.is_none(),
+        "an undeclared version stays None"
     );
     assert_eq!(
         o.get_type(&tn("Order"))
@@ -739,6 +753,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
@@ -787,6 +802,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     o.define_type(constrained.clone())
         .await
@@ -815,6 +831,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     assert!(
         matches!(
@@ -839,6 +856,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         }],
         derived: vec![],
         identity: None,
+        version: None,
     };
     assert!(
         matches!(
@@ -990,6 +1008,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Widget");
@@ -1118,6 +1137,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Gadget");
@@ -1236,6 +1256,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define Order");
@@ -1264,6 +1285,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .expect("define LineItem");
@@ -1314,6 +1336,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         table: tref("main", "account"),
         identity: None,
+        version: None,
     })
     .await
     .expect("define Account with derived");
@@ -1340,6 +1363,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         derived: vec![],
         table: tref("main", "account"),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -1362,6 +1386,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Transaction"),
         table: tref("main", "txn"),
         identity: None,
+        version: None,
         properties: vec![
             prop("id", "Long"),
             prop("amount", "Double"),
@@ -1392,6 +1417,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "x".into(),
@@ -1409,6 +1435,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             name: tn("Account"),
             table: tref("main", "account"),
             identity: None,
+            version: None,
             properties: vec![prop("id", "Long")],
             derived: vec![DerivedPropertyDef {
                 name: "x".into(),
@@ -1431,6 +1458,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "balance".into(),
@@ -1447,6 +1475,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         name: tn("Account"),
         table: tref("main", "account"),
         identity: None,
+        version: None,
         properties: vec![prop("id", "Long")],
         derived: vec![DerivedPropertyDef {
             name: "y".into(),
@@ -1484,6 +1513,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     o.define_type(doc.clone()).await.expect("define Document");
 
@@ -4268,6 +4298,7 @@ pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP) {
             name: table.into(),
         },
         identity: None,
+        version: None,
     };
 
     // define type X bound to main.customers -> emits binding edge {customers -> type/X}
@@ -4383,6 +4414,7 @@ async fn seed_type<O: Ontology>(o: &O, name: &str, schema: &str, table: &str) {
         properties: vec![],
         derived: vec![],
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -4931,6 +4963,7 @@ where
         }],
         derived: vec![],
         identity: Some("id".into()),
+        version: None,
     };
     cp.define_type(mk_type("RcA", &ta)).await.unwrap();
     cp.define_type(mk_type("RcB", &tb)).await.unwrap();
@@ -5155,6 +5188,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -5165,6 +5199,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -5213,6 +5248,7 @@ where
             properties: vec![],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -5420,17 +5456,43 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
         "other tables unaffected"
     );
     // CDC declaration: kind='cdc', bucket_key recorded, idempotent first-wins.
-    cp.declare_cdc(2, 4, "id").await.expect("declare cdc");
+    cp.declare_cdc(2, 4, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare cdc");
     let meta = cp.stream_meta(2).await.expect("meta").expect("declared");
     assert_eq!(meta.bucket_count, 4);
     assert_eq!(meta.kind, control_plane_core::StreamKind::Cdc);
     assert_eq!(meta.bucket_key.as_deref(), Some("id"));
-    cp.declare_cdc(2, 8, "other")
+    assert_eq!(
+        meta.merge_engine,
+        control_plane_core::MergeEngine::LastRow,
+        "default merge engine is LastRow"
+    );
+    cp.declare_cdc(2, 8, "other", control_plane_core::MergeEngine::LastRow)
         .await
         .expect("idempotent redeclare no-ops");
     let meta2 = cp.stream_meta(2).await.expect("meta").expect("declared");
     assert_eq!(meta2.bucket_count, 4, "first declaration's fields stand");
     assert_eq!(meta2.bucket_key.as_deref(), Some("id"));
+    // merge_engine round-trips a non-default engine on a fresh table, and a
+    // redeclare with a different engine is first-wins (idempotent no-op).
+    cp.declare_cdc(3, 2, "id", control_plane_core::MergeEngine::FirstRow)
+        .await
+        .expect("declare cdc first_row");
+    let me = cp.stream_meta(3).await.expect("meta").expect("declared");
+    assert_eq!(me.merge_engine, control_plane_core::MergeEngine::FirstRow);
+    cp.declare_cdc(3, 2, "id", control_plane_core::MergeEngine::Versioned)
+        .await
+        .expect("idempotent redeclare no-ops");
+    assert_eq!(
+        cp.stream_meta(3)
+            .await
+            .expect("meta")
+            .expect("declared")
+            .merge_engine,
+        control_plane_core::MergeEngine::FirstRow,
+        "first declaration's engine stands"
+    );
     // changelog_table_id is null until explicitly set, then round-trips.
     let m = cp.stream_meta(2).await.expect("meta").expect("row");
     assert_eq!(
@@ -5453,6 +5515,11 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
     assert_eq!(
         log_meta.changelog_table_id, None,
         "log table has no changelog pointer"
+    );
+    assert_eq!(
+        log_meta.merge_engine,
+        control_plane_core::MergeEngine::LastRow,
+        "log table carries the default LastRow engine (unused but present)"
     );
     // Unknown table → None.
     assert!(cp.stream_meta(999).await.expect("meta").is_none());

@@ -147,6 +147,7 @@ async fn e2e_seed_widget_table(cp: &PgControlPlane) {
             ],
             derived: vec![],
             identity: None,
+            version: None,
         })
         .await
         .unwrap();
@@ -304,7 +305,9 @@ async fn write_delta_threads_consolidate_threshold_to_production_path() {
         .await
         .expect("ensure_table");
     tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id").await.expect("declare_cdc");
+    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
 
     let threshold = 2;
     let writer = IcebergActionWriter::new(catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX)

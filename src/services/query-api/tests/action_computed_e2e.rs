@@ -106,6 +106,7 @@ async fn setup_gadget_writer_with_total_constraints(
             properties: gadget_properties(total_constraints),
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .unwrap();

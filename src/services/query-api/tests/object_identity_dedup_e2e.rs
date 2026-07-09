@@ -113,6 +113,7 @@ async fn setup(
         derived: vec![],
         table: tref("main", "customer"),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -126,6 +127,7 @@ async fn setup(
         derived: vec![],
         table: tref("main", "orders"),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -140,6 +142,7 @@ async fn setup(
         derived: vec![],
         table: tref("main", "person"),
         identity: Some("ssn".into()),
+        version: None,
     })
     .await
     .unwrap();

@@ -33,6 +33,7 @@ fn governed(masked: &[&str]) -> GovernedType {
                 name: "person".into(),
             },
             identity: Some("id".into()),
+            version: None,
         },
         row_filters: vec![],
         denied: HashSet::new(),

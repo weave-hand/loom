@@ -105,6 +105,7 @@ async fn cdc_declaration_creates_changelog_table_mirror_row_and_pointer() {
         Some(CdcDecl {
             buckets: 2,
             bucket_key: "id".into(),
+            merge_engine: control_plane_core::MergeEngine::LastRow,
         }),
     )
     .await

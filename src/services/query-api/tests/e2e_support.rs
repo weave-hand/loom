@@ -488,6 +488,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: cust.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -516,6 +517,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: ord.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -544,6 +546,7 @@ pub async fn setup_iceberg(
         derived: vec![],
         table: li.clone(),
         identity: None,
+        version: None,
     })
     .await
     .unwrap();
@@ -744,6 +747,7 @@ pub async fn seed_vector_type(
             ],
             derived: vec![],
             identity: Some("id".into()),
+            version: None,
         })
         .await
         .expect("define_type Docs");
@@ -908,6 +912,55 @@ pub async fn define_widget(cp: &PgControlPlane) -> TypeName {
         .await
         .unwrap();
     widget
+}
+
+/// A `VWidget` type keyed on `id` with a `seq` (Long) **version** column — for the
+/// Versioned merge-engine e2e. `createVWidget` (insert id+qty+seq), `bumpVWidget`
+/// (update id+seq), and `deleteVWidget` (delete id) let a test emit multiple
+/// versions of one identity and a delete. The `seq` column is the type's declared
+/// `version` property (precedence for the Versioned engine).
+pub async fn define_versioned_widget(cp: &PgControlPlane) -> TypeName {
+    let ty = TypeName("VWidget".into());
+    cp.ontology()
+        .define_type(
+            ObjectType::build("VWidget", ("main", "vwidget"))
+                .prop_req("id", "Long")
+                .prop("qty", "Long")
+                .prop_req("seq", "Long")
+                .identity("id")
+                .version("seq")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createVWidget", "VWidget", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("qty", "Long")
+                .param_req("seq", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("bumpVWidget", "VWidget", ActionKind::Update)
+                .param_req("id", "Long")
+                .param_req("seq", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("deleteVWidget", "VWidget", ActionKind::Delete)
+                .param_req("id", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    ty
 }
 
 /// Grant `Write` + `Read` on `widget` to a fresh `writer` subject (role `writers`),
