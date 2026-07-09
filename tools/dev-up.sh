@@ -17,7 +17,12 @@
 # Ports default to 18080/18081 to stay clear of a local k3d cluster on 8080/8081.
 #
 # Log in with LOOM_ADMIN_USER / LOOM_ADMIN_PASS (defaults admin / admin).
-# Ctrl-C stops the composite and the embedded Postgres cleanly.
+# Ctrl-C stops the composite and the embedded Postgres cleanly (TERM with a 10s
+# KILL escalation). A previous run that died without its trap (SIGKILL'd script,
+# dead terminal) is self-healed on the next boot: a leftover loom composite on
+# the target ports, leftover workers of the same data dir, and a stale embedded
+# postmaster are all reclaimed before starting; a foreign process on the port is
+# refused up front instead of failing deep in the composite's bind.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -44,13 +49,98 @@ fi
 # server-kill trap used to overwrite the dir-removal trap and leak /tmp/loom-*.
 server_pid=""
 worker_pid=""
+
+# TERM a child and give it 10s to exit before KILL. A bare fire-and-forget
+# `kill` used to let a slow composite (and the embedded Postgres it owns)
+# outlive the script. $1=pid $2=label.
+stop_child() {
+  local pid="$1" label="$2"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || true
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.5
+  done
+  echo "dev-up: $label (pid $pid) ignored TERM for 10s — killing" >&2
+  kill -9 "$pid" 2>/dev/null || true
+}
+
+# If an embedded postmaster for THIS data dir is still alive (a composite that
+# crashed or was SIGKILL'd never stops its Postgres), stop it directly.
+# postmaster.pid line 1 is the pid; liveness is verified first so a stale file
+# is just ignored. pg_ctl stop only signals via the pid file, so it needs no
+# LD_LIBRARY_PATH; fall back to a plain kill if the cache was removed.
+stop_stale_postgres() {
+  local pidfile="$DATA_PATH/pgdata/postmaster.pid" pgpid pgctl
+  [[ -f "$pidfile" ]] || return 0
+  pgpid="$(head -1 "$pidfile" 2>/dev/null)"
+  [[ -n "$pgpid" ]] && kill -0 "$pgpid" 2>/dev/null || return 0
+  echo "dev-up: stopping stale embedded Postgres (pid $pgpid)"
+  pgctl="$(find "$DATA_PATH/cache" -maxdepth 3 -path '*/bin/pg_ctl' 2>/dev/null | head -1)"
+  if [[ -x "$pgctl" ]] && "$pgctl" -D "$DATA_PATH/pgdata" stop -m fast >/dev/null 2>&1; then
+    return 0
+  fi
+  stop_child "$pgpid" "stale postgres"
+}
+
 cleanup() {
-  [[ -n "$worker_pid" ]] && kill "$worker_pid" 2>/dev/null
-  [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null
+  stop_child "$worker_pid" "worker"
+  stop_child "$server_pid" "composite"
+  # The composite normally stops its embedded Postgres on TERM; this catches
+  # one it left behind (crash / forced kill).
+  stop_stale_postgres
   (( EPHEMERAL )) && rm -rf "$DATA_PATH"
   return 0
 }
 trap cleanup EXIT INT TERM
+
+# True iff something is listening on host:port ($1). Bash /dev/tcp connect in a
+# subshell — no dependency on ss/nc being installed.
+port_busy() { (exec 3<>"/dev/tcp/${1%:*}/${1##*:}") 2>/dev/null; }
+
+# Preflight one listen address ($1): fail fast on a colliding listener instead
+# of a confusing late bind error deep in the composite. A leftover `loom`
+# composite (a previous dev-up whose script died without its trap — SIGKILL,
+# dead terminal) is reclaimed automatically; anything else is refused.
+reclaim_addr() {
+  local addr="$1" port="${1##*:}" pid comm
+  port_busy "$addr" || return 0
+  pid="$(ss -tlnp 2>/dev/null | sed -n "s/.*:$port .*pid=\([0-9]*\).*/\1/p" | head -1)"
+  comm="$(cat "/proc/${pid:-0}/comm" 2>/dev/null || true)"
+  if [[ "$comm" == "loom" ]]; then
+    echo "dev-up: reclaiming $addr from leftover loom composite (pid $pid)"
+    stop_child "$pid" "leftover composite"
+    for _ in $(seq 1 10); do port_busy "$addr" || break; sleep 0.5; done
+  fi
+  if port_busy "$addr"; then
+    echo "dev-up: $addr is already in use${comm:+ by '$comm'}${pid:+ (pid $pid)} — stop it or pick another port" >&2
+    echo "        find it: ss -tlnp | grep :$port" >&2
+    exit 1
+  fi
+}
+
+# A leftover worker from a previous run against THIS data dir (script died
+# without its trap). Not caught by the port preflight (workers hold no port),
+# and it would reconnect to the new engine socket and double-drain the queue.
+# Matched by LOOM_DATA_PATH in the process environment, so workers of other
+# data dirs / other users' runs are untouched.
+reclaim_stale_workers() {
+  local pid
+  for pid in $(pgrep -f worker_bin 2>/dev/null); do
+    if tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null \
+         | grep -qx "LOOM_DATA_PATH=$DATA_PATH"; then
+      echo "dev-up: stopping leftover worker (pid $pid)"
+      stop_child "$pid" "leftover worker"
+    fi
+  done
+}
+
+reclaim_addr "$QAPI_ADDR"
+reclaim_addr "$INGEST_ADDR"
+reclaim_stale_workers
+# Self-heal a persistent LOOM_DATA_PATH whose previous run died uncleanly: a
+# live stale postmaster would make the embedded boot fail on its lock file.
+stop_stale_postgres
 if (( ${#DATA_PATH} > 80 )); then
   echo "dev-up: LOOM_DATA_PATH is ${#DATA_PATH} chars — too long for Postgres' ~107-byte" >&2
   echo "        Unix socket path. Use a shorter path (e.g. /tmp/loom)." >&2
@@ -98,7 +188,7 @@ if [[ -z "$PGROOT" ]]; then
     kill -0 "$xpid" 2>/dev/null || break
     sleep 0.5
   done
-  kill "$xpid" 2>/dev/null || true; wait "$xpid" 2>/dev/null || true
+  stop_child "$xpid" "extraction boot"; wait "$xpid" 2>/dev/null || true
   rm -rf "$DATA_PATH/pgdata"   # discard any partial cluster the extraction boot began
 fi
 [[ -n "$PGROOT" ]] || { echo "dev-up: embedded Postgres extraction failed" >&2; exit 1; }
