@@ -13,8 +13,9 @@ mod transforms;
 pub use transforms::{
     FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformForm,
     TransformIo, TransformKind, TransformSummary, clamp_drawer_width, form_to_body, form_to_def,
-    kind_badge_label, parse_runs, parse_transform_def, parse_transform_list, run_state_status,
-    run_state_tone, schema_from_dataset_details, schema_from_types, trigger_label,
+    kind_badge_label, output_table_grant, parse_runs, parse_transform_def, parse_transform_list,
+    run_state_status, run_state_tone, schema_from_dataset_details, schema_from_types,
+    trigger_label,
 };
 
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
@@ -550,6 +551,23 @@ pub struct LineageDag {
 
 fn dataset_id(ns: &str, name: &str) -> String {
     format!("{ns}.{name}")
+}
+
+/// loom's canonical lineage namespace. Every governed dataset is keyed in the
+/// lineage graph by the OpenLineage ref `{namespace: "loom", name: "<schema>.<table>"}`
+/// (`control_plane_core::DatasetId::dataset_ref`), NOT by its catalog `{schema, table}`
+/// address. Mirrored here because this crate is wasm and cannot depend on `core`.
+pub const LOOM_DATASET_NAMESPACE: &str = "loom";
+
+/// Build the lineage closure endpoint path for a catalog dataset. A dataset is
+/// addressed in the catalog by `{schema, table}`, but keyed in the lineage graph by
+/// the loom ref `{namespace: "loom", name: "<schema>.<table>"}`, so the closure query
+/// MUST use that form — querying `/lineage/datasets/<schema>/<table>/…` matches no
+/// stored edge and the mini-DAG collapses to just the current node. `dir` is
+/// `"upstream"` or `"downstream"`.
+#[must_use]
+pub fn lineage_closure_path(schema: &str, table: &str, dir: &str) -> String {
+    format!("/lineage/datasets/{LOOM_DATASET_NAMESPACE}/{schema}.{table}/{dir}")
 }
 
 /// Build the three-column mini-DAG for `current` from its upstream/downstream closures.
