@@ -5,7 +5,7 @@
 //! payload `@self.<prop>` ref to a non-existent property) is rejected loudly at define
 //! time rather than silently producing an undispatchable / unresolvable job at runtime.
 
-use crate::{ControlPlaneError, JobTemplate, KNOWN_JOB_KINDS, ObjectType};
+use crate::{ActionDef, ActionKind, ControlPlaneError, JobTemplate, KNOWN_JOB_KINDS, ObjectType};
 
 /// Collect every `@<name>` / `@self.<name>` reference leaf in a JSON payload. A leaf is
 /// any JSON string starting with `@`; the leading `@` and an optional `self.` prefix are
@@ -44,6 +44,30 @@ fn ref_names(payload: &serde_json::Value) -> Vec<String> {
 /// `@self.id` when the target declares no identity (the `id` property exists iff identity
 /// is declared, since identity must name one of `properties`). Pure/static — no I/O, no
 /// expression evaluation.
+/// Phase-1 scope gate: `downstream` is honored only on a single-step `Insert`
+/// action — the engine consumes downstream jobs on the `write_object` (insert)
+/// path only. Update/Delete (`write_delta`) and multi-step (`write_steps`)
+/// consumption is slice-4 phase 2; until then, declaring `downstream` on those
+/// shapes is rejected at define time so a job is never silently dropped on an
+/// unconsumed write path. Remove this gate once phase 2 lands those paths.
+pub fn validate_downstream_scope(action: &ActionDef) -> Result<(), ControlPlaneError> {
+    if action.downstream.is_empty() {
+        return Ok(());
+    }
+    let single_step_insert = action
+        .steps
+        .first()
+        .is_some_and(|s| action.steps.len() == 1 && s.kind == ActionKind::Insert);
+    if !single_step_insert {
+        return Err(ControlPlaneError::Validation(
+            "downstream is only supported on single-step Insert actions in this release \
+             (Update/Delete/multi-step downstream arrives in slice-4 phase 2)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_action_downstream(
     downstream: &[JobTemplate],
     primary_target: &ObjectType,

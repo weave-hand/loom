@@ -33,6 +33,7 @@ pub use acl::{
     validate_row_filter,
 };
 pub use action_downstream::validate_action_downstream;
+pub use action_downstream::validate_downstream_scope;
 pub use auth::{
     Auth, LockoutPolicy, NewServiceAccount, NewUser, PasswordCredential, ServiceAccount,
     ServiceToken, UserSummary,
