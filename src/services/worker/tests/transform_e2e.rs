@@ -13,14 +13,15 @@ use arrow_array::{Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, Job, JobId, LineageEvent, NewJob,
-    OutputMode, Queue, RetryPolicy, RunId, RunState, RunTrigger, SnapshotId, TRANSFORM_JOB_KIND,
-    TableControlPlane, TableRef, TransformBody, TransformDef, TransformJob, TransformName,
-    TransformRun,
+    OutputMode, PageReq, Queue, RetryPolicy, RunId, RunState, RunTrigger, SnapshotId, StreamTables,
+    TRANSFORM_JOB_KIND, TableControlPlane, TableRef, TransformBody, TransformDef, TransformJob,
+    TransformName, TransformRun,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
+use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient, FlightTicket};
 use store_config::{ObjectStoreConfig, build_write_store};
@@ -1113,5 +1114,137 @@ async fn run_lifecycle_fails_terminally_on_bad_sql() {
         r.error.as_deref().unwrap_or_default().contains("sql:"),
         "error text recorded on the run, got: {:?}",
         r.error
+    );
+}
+
+/// A transform defined while its output was undeclared, whose output is THEN
+/// declared a stream table, must fail at run time: the engine refuses the
+/// `CommitTransform`, the worker ABANDONS (deterministic, no retry), the run is
+/// Failed-terminal with the refusal message, and nothing is registered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_refuses_stream_output_abandons_terminal() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    let src = tref("t", "src");
+    let dst = tref("t", "out");
+
+    // Seed t.src with a couple rows so the run reaches the commit guard rather
+    // than abandoning earlier on "unknown input table".
+    let (schema, batches) = ipc_body(&[1, 2]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&src),
+        None,
+    )
+    .await
+    .expect("land");
+
+    // 1. Define the transform WHILE `dst` is undeclared (define-time guard passes).
+    let def = TransformDef {
+        name: TransformName("stream_out".into()),
+        body: TransformBody::Physical {
+            inputs: vec![src.clone()],
+            output: dst.clone(),
+            sql: "select * from src".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    cp.transforms()
+        .define_transform(def.clone())
+        .await
+        .expect("define");
+
+    // 2. NOW declare `dst` a stream table (create its mirror, then declare_stream).
+    let mut tx = pool.begin().await.expect("begin");
+    let at = next_snapshot(&mut tx, None).await.expect("snap");
+    let tid = ensure_table(&mut tx, &dst.schema, &dst.name, at)
+        .await
+        .expect("ensure");
+    tx.commit().await.expect("commit");
+    cp.declare_stream(tid, 4).await.expect("declare_stream");
+
+    // 3. Submit + dequeue over the wire + run -> refused at IcebergTx::commit.
+    let rid = uuid::Uuid::new_v4();
+    let run = TransformRun {
+        run_id: rid,
+        transform: Some(def.name.clone()),
+        trigger: RunTrigger::AdHoc,
+        state: RunState::Queued,
+        body: def.body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.transforms()
+        .submit_run(run, def.body.to_job(rid))
+        .await
+        .expect("submit");
+
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let job = ctx
+        .control
+        .dequeue(&[TRANSFORM_JOB_KIND.to_string()], "e2e-worker")
+        .await
+        .expect("dequeue")
+        .expect("a queued transform job");
+    let err = handle_transform(&ctx, job)
+        .await
+        .expect_err("stream commit must fail");
+
+    // 4. Assertions: ABANDON (not retry), Failed-terminal, refusal message, nothing registered.
+    assert!(
+        matches!(err.policy, RetryPolicy::Abandon),
+        "stream refusal is deterministic -> Abandon, got {:?}",
+        err.policy
+    );
+    assert!(
+        err.error.contains("stream-table target refused:"),
+        "err text: {}",
+        err.error
+    );
+    let r = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(r.state, RunState::Failed, "run must be Failed-terminal");
+
+    // Nothing registered: `dst` has a live snapshot (from declare_stream) but no files.
+    let ice = IcebergCatalog::new(pool.clone());
+    let snap = ice.current_snapshot(&dst).await.expect("snap");
+    let live = ice
+        .files(&dst, snap.id, PageReq::unbounded())
+        .await
+        .expect("files");
+    assert!(
+        live.items.is_empty(),
+        "nothing registered against the stream table"
     );
 }

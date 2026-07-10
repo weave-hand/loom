@@ -23,6 +23,7 @@ fn status(e: control_plane_core::ControlPlaneError) -> Status {
     match e {
         NotFound(m) => Status::not_found(m.to_string()),
         Conflict(m) => Status::aborted(m.to_string()),
+        Validation(m) => Status::invalid_argument(m),
         other => Status::internal(other.to_string()),
     }
 }

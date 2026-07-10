@@ -357,11 +357,17 @@ async fn run_wire_transform(
             req.run_id,
         )
         .await
-        .map_err(|e| {
-            JobFailure::retry(
+        .map_err(|e| match e {
+            // A refusal (stream-target guard) or any deterministic control-plane
+            // validation fault is not retryable — abandon so the run fails terminally
+            // instead of retrying until the queue gives up.
+            ControlPlaneError::Validation(m) => {
+                JobFailure::abandon(format!("commit_transform refused: {m}"))
+            }
+            other => JobFailure::retry(
                 ctx.worker_tuning.backoff(attempts),
-                format!("commit_transform: {e}"),
-            )
+                format!("commit_transform: {other}"),
+            ),
         })?;
     if snap.is_none() {
         return Err(JobFailure::abandon("commit produced no snapshot id"));
