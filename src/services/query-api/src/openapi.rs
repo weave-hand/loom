@@ -194,6 +194,7 @@ pub struct DatasetPreviewResponse {
     ),
     paths(
         crate::http::get_object,
+        crate::http::get_changes,
         crate::http::get_linked,
         crate::http::get_linked_chain,
         crate::http::get_graph,

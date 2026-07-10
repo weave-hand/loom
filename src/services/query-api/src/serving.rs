@@ -94,6 +94,21 @@ pub enum ServingError {
     /// failure.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The engine does not implement this capability (e.g. the changelog feed on
+    /// the wire client before the engine-wire hop lands) → 501.
+    #[error("unsupported by this engine: {0}")]
+    Unsupported(String),
+}
+
+/// The resolved per-connect governance the feed seam ships to the engine: the
+/// subject's folded row filters + denied/masked columns (from `GovernedType`),
+/// engine-side re-applied per batch via `GovernedTableProvider`. Vec (not
+/// HashSet) so the seam type is order-stable and wire-encodable later.
+#[derive(Debug, Clone, Default)]
+pub struct ChangeFeedPolicy {
+    pub row_filters: Vec<control_plane_core::RowFilter>,
+    pub denied: Vec<String>,
+    pub masked: Vec<String>,
 }
 
 /// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
@@ -309,6 +324,40 @@ pub trait ServingEngine: Send + Sync {
         Err(ServingError::Engine(
             "vector search not supported by this engine".to_string(),
         ))
+    }
+
+    /// The per-bucket high-water positions of `table`'s changelog (`None` = not
+    /// a declared CDC table). Doubles as the "is this subscribable" probe.
+    async fn changelog_latest(
+        &self,
+        table: &control_plane_core::TableRef,
+    ) -> Result<Option<std::collections::BTreeMap<i32, i64>>, ServingError> {
+        let _ = table;
+        Err(ServingError::Unsupported("changelog feed".into()))
+    }
+
+    /// One bounded, governed, ordered page of `table`'s changelog feed from
+    /// per-bucket `positions`. See `engine_serving::changelog_feed_scan`.
+    async fn changelog_feed(
+        &self,
+        table: &control_plane_core::TableRef,
+        positions: &std::collections::BTreeMap<i32, i64>,
+        limit: usize,
+        policy: &ChangeFeedPolicy,
+    ) -> Result<control_plane_core::ChangeFeedPage, ServingError> {
+        let _ = (table, positions, limit, policy);
+        Err(ServingError::Unsupported("changelog feed".into()))
+    }
+
+    /// Block until a CDC write commits against `table` or `timeout` elapses
+    /// (the notify wakeup + poll fallback). Ok on timeout.
+    async fn await_changelog(
+        &self,
+        table: &control_plane_core::TableRef,
+        timeout: std::time::Duration,
+    ) -> Result<(), ServingError> {
+        let _ = (table, timeout);
+        Err(ServingError::Unsupported("changelog feed".into()))
     }
 
     /// The SQL dialect this engine speaks. Defaults to `DataFusionDialect` — loom's

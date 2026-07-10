@@ -88,6 +88,26 @@ rust_test(
 )
 
 rust_test(
+    name = "subscribe-http",
+    crate = "subscribe_http",
+    srcs = ["tests/subscribe_http.rs"],
+    crate_root = "tests/subscribe_http.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/runtime:runtime",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
     name = "ontology-type-detail",
     crate = "ontology_type_detail",
     srcs = ["tests/ontology_type_detail.rs"],

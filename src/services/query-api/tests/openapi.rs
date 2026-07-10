@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 fn expected() -> BTreeSet<(String, String)> {
     [
         ("get", "/objects/{type_name}"),
+        ("get", "/objects/{type_name}/changes"),
         ("get", "/objects/{from_type}/links/{link_name}"),
         ("get", "/objects/{from_type}/links"),
         ("get", "/objects/{type_name}/graph/{link_name}"),
