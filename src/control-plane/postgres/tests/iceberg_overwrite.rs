@@ -106,6 +106,7 @@ async fn overwrite_expires_old_and_preserves_time_travel() {
         &columns(),
         vec![batch(4)],
         Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
     )
     .await
     .expect("overwrite");
@@ -159,7 +160,7 @@ async fn replaced_files_carry_per_column_stats() {
     .expect("append");
 
     // ids 0..4 -> min 0, max 3.
-    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![batch(4)], None)
+    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![batch(4)], None, &[])
         .await
         .expect("overwrite");
 
@@ -209,7 +210,7 @@ async fn truncate_overwrite_with_zero_files() {
     .expect("append");
 
     // zero new files -> truncation.
-    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![], None)
+    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![], None, &[])
         .await
         .expect("truncate");
     assert!(s2.0 > s1.0, "truncate advances the snapshot");
@@ -264,6 +265,7 @@ async fn overwrite_emits_lineage() {
         &columns(),
         vec![batch(4)],
         Some(&lineage(run, "wh", "lin")),
+        &[],
     )
     .await
     .expect("overwrite");

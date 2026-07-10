@@ -135,6 +135,7 @@ async fn stream_overwrite_preserves_framing() {
         &cols,
         vec![framed_batch(&[4, 5], 0, 0)],
         Some(&lin()),
+        &[],
     )
     .await
     .expect("overwrite");
@@ -197,6 +198,7 @@ async fn batch_overwrite_has_no_framing() {
         &cols,
         vec![id_batch(&[4, 5])],
         Some(&lin()),
+        &[],
     )
     .await
     .expect("overwrite");

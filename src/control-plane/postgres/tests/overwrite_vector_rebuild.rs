@@ -143,9 +143,17 @@ async fn overwrite_enqueues_one_rebuild_per_declared_index() {
 
     let (_schema, batches) = vec4_batches(&[(1, [0.1, 0.2, 0.3, 0.4])]);
     let ev = test_lineage(RunId(uuid::Uuid::new_v4()), &table);
-    overwrite_parquet_snapshot(&pool, &catalog, &table, &vec4_columns(), batches, Some(&ev))
-        .await
-        .expect("overwrite");
+    overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &table,
+        &vec4_columns(),
+        batches,
+        Some(&ev),
+        &[],
+    )
+    .await
+    .expect("overwrite");
 
     assert_eq!(
         job_count_by_state(&pool, BUILD_VECTOR_INDEX_JOB_KIND, "available").await,
@@ -180,6 +188,7 @@ async fn truncate_overwrite_enqueues_rebuilds() {
         &vec4_columns(),
         vec4_batches(&[]).1,
         Some(&ev),
+        &[],
     )
     .await
     .expect("truncate");
@@ -209,6 +218,7 @@ async fn pending_rebuild_dedupes_across_overwrites() {
         &vec4_columns(),
         batches1,
         Some(&ev1),
+        &[],
     )
     .await
     .expect("overwrite 1");
@@ -228,6 +238,7 @@ async fn pending_rebuild_dedupes_across_overwrites() {
         &vec4_columns(),
         batches2,
         Some(&ev2),
+        &[],
     )
     .await
     .expect("overwrite 2");
@@ -254,6 +265,7 @@ async fn pending_rebuild_dedupes_across_overwrites() {
         &vec4_columns(),
         batches3,
         Some(&ev3),
+        &[],
     )
     .await
     .expect("overwrite 3");

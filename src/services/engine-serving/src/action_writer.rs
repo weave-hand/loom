@@ -150,6 +150,7 @@ impl IcebergActionWriter {
         columns: &[ColumnSpec],
         ipc: &[u8],
         event: LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, EngineServingError> {
         let batches = if ipc.is_empty() {
             Vec::new()
@@ -165,6 +166,7 @@ impl IcebergActionWriter {
             columns,
             batches,
             Some(&event),
+            jobs,
         )
         .await
         .map_err(|e| EngineServingError::Engine(e.to_string()))

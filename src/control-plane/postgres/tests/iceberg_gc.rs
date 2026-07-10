@@ -222,6 +222,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         &columns(),
         vec![batch(4)],
         Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
     )
     .await
     .expect("ow s2");
@@ -234,6 +235,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         &columns(),
         vec![batch(2)],
         Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
     )
     .await
     .expect("ow s3");
@@ -359,7 +361,7 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
     )
     .await
     .expect("land");
-    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![batch(4)], None)
+    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![batch(4)], None, &[])
         .await
         .expect("ow");
     let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
@@ -409,9 +411,10 @@ async fn gc_serializes_with_concurrent_flush() {
     .await
     .expect("land");
     let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
-    let s2 = overwrite_parquet_snapshot(&pool, &catalog_g, &t, &columns(), vec![batch(4)], None)
-        .await
-        .expect("ow");
+    let s2 =
+        overwrite_parquet_snapshot(&pool, &catalog_g, &t, &columns(), vec![batch(4)], None, &[])
+            .await
+            .expect("ow");
     age_snapshot(&pool, s2.0).await;
     inline_append(
         &pool,

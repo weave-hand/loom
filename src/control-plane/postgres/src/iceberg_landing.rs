@@ -1128,10 +1128,13 @@ pub async fn overwrite_parquet_snapshot(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
+    let mut all_jobs = rebuild_jobs;
+    all_jobs.extend_from_slice(jobs); // action downstream jobs; pg_insert_if_absent dedups
     if batches.iter().all(|b| b.num_rows() == 0) {
-        return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
+        return overwrite_truncate(pool, table, lineage, &all_jobs).await;
     }
     // A declared stream table's physical schema carries framing; an overwrite must
     // preserve it (else the replacement looks like a dropped-columns schema change
@@ -1155,7 +1158,7 @@ pub async fn overwrite_parquet_snapshot(
         CommitExtras {
             lineage,
             overwrite: true,
-            jobs: &rebuild_jobs,
+            jobs: &all_jobs,
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },
