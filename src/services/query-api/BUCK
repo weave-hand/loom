@@ -1821,6 +1821,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "cow-consolidate-e2e",
+    crate = "cow_consolidate_e2e",
+    srcs = ["tests/cow_consolidate_e2e.rs"],
+    crate_root = "tests/cow_consolidate_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//src/testing:seed",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "cow-inline-shadow-gov-e2e",
     crate = "cow_inline_shadow_gov_e2e",
     srcs = ["tests/cow_inline_shadow_gov_e2e.rs"],
