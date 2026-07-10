@@ -521,6 +521,7 @@ pub async fn write_steps(
     catalog: &SqlCatalog,
     steps: Vec<StepLand>,
     lineage: LineageEvent,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     if steps.is_empty() {
         return Err(ControlPlaneError::Validation(
@@ -581,6 +582,12 @@ pub async fn write_steps(
     crate::lineage::pg_emit(&mut *tx, &lineage).await?;
     let written: Vec<TableRef> = staged.iter().map(|s| s.table.clone()).collect();
     crate::transforms::pg_fire_data_triggers(&mut tx, &written, Some(lineage.run_id.0)).await?;
+    // The action's resolved downstream jobs (multi-step phase 2) ride this same commit
+    // tx — enqueued iff the multi-target write commits (commit-or-neither), mirroring
+    // the single-step insert/update/delete paths' enqueue-before-commit.
+    for job in jobs {
+        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
+    }
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }

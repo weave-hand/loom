@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, JobTemplate, ObjectType,
-    ParamDef, PolicyTarget, PropertyConstraints, RangeConstraint, RoleId, SubjectId,
-    TRANSFORM_JOB_KIND, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, ControlPlane, Effect,
+    JobTemplate, ObjectType, ParamDef, PolicyTarget, PropertyConstraints, RangeConstraint, RoleId,
+    SubjectId, TRANSFORM_JOB_KIND, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -473,6 +473,117 @@ async fn committed_delete_enqueues_downstream_job() {
     let payloads = job_payloads(&pool, TRANSFORM_JOB_KIND).await;
     assert_eq!(payloads.len(), 1);
     assert_eq!(payloads[0]["orderId"], json!(99));
+
+    drop(eg);
+}
+
+/// `LineItem(id Long required identity, orderId Long required)` — the multi-step
+/// case's non-primary target.
+async fn define_line_item(cp: &PgControlPlane) {
+    cp.ontology()
+        .define_type(
+            ObjectType::build("LineItem", ("main", "line_item"))
+                .prop_req("id", "Long")
+                .prop_req("orderId", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+}
+
+/// A multi-step `createOrderWithLine` action: step 0 inserts the Order (bind `order`,
+/// identity-bearing — the PRIMARY step); step 1 inserts a related LineItem via a
+/// cross-step `orderId = @order.id` `StepRef`. `downstream` rides the `ActionDef` (not
+/// any one step) and — once `write_steps` threads `jobs` through — resolves against the
+/// FIRST step's row, exactly as the single-step paths key off their sole step.
+fn create_order_with_line_action(downstream: Vec<JobTemplate>) -> ActionDef {
+    ActionDef {
+        name: ActionName("createOrderWithLine".into()),
+        steps: vec![
+            ActionStep {
+                target: tn("Order"),
+                kind: ActionKind::Insert,
+                parameters: vec![ParamDef {
+                    name: "id".into(),
+                    ty: "Long".into(),
+                    required: true,
+                    binds: None,
+                }],
+                assignments: vec![],
+                bind: Some("order".into()),
+            },
+            ActionStep {
+                target: tn("LineItem"),
+                kind: ActionKind::Insert,
+                parameters: vec![ParamDef {
+                    name: "lineId".into(),
+                    ty: "Long".into(),
+                    required: true,
+                    binds: Some("id".into()),
+                }],
+                assignments: vec![Assignment::step_ref("orderId", "order", "id")],
+                bind: None,
+            },
+        ],
+        downstream,
+    }
+}
+
+/// A committed MULTI-STEP action enqueues exactly ONE `transform` job, resolved against
+/// the FIRST step's (the primary, identity-bearing Order insert's) row — not the second
+/// step's LineItem. This is `write_steps`'s atomic-enqueue happy path (slice 4 phase 2).
+/// Before this task, `downstream` on a multi-step action is rejected at define time by
+/// `validate_downstream_scope` (the phase-1/Task-1 gate); once the gate is relaxed but
+/// before `run_multi_step`/`write_steps` thread `jobs` through, the job is silently
+/// dropped at runtime despite the write committing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_multi_step_enqueues_downstream_job_keyed_by_primary_row() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp, PropertyConstraints::default()).await;
+    define_line_item(&cp).await;
+    cp.ontology()
+        .define_action(create_order_with_line_action(vec![
+            order_transform_template(),
+        ]))
+        .await
+        .unwrap();
+
+    let (subj, _role) = writer_on(&cp, &["Order", "LineItem"]).await;
+
+    let (engine, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrderWithLine",
+        &json!({ "id": "42", "lineId": "1" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "multi-step create: {body}");
+
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        1,
+        "one downstream transform job rides the committed multi-step write"
+    );
+    let payloads = job_payloads(&pool, TRANSFORM_JOB_KIND).await;
+    assert_eq!(payloads.len(), 1);
+    // Keyed by the FIRST step's (Order's) id, not the second step's LineItem id.
+    assert_eq!(payloads[0]["orderId"], json!(42));
 
     drop(eg);
 }

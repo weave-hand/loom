@@ -115,6 +115,7 @@ impl IcebergActionWriter {
         &self,
         writes: &[StepWrite],
         event: LineageEvent,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, EngineServingError> {
         let mut steps = Vec::with_capacity(writes.len());
         for w in writes {
@@ -135,7 +136,7 @@ impl IcebergActionWriter {
                 overwrite: w.overwrite,
             });
         }
-        iceberg_landing::write_steps(&self.pool, &self.catalog, steps, event)
+        iceberg_landing::write_steps(&self.pool, &self.catalog, steps, event, jobs)
             .await
             .map_err(|e| EngineServingError::Engine(e.to_string()))
     }

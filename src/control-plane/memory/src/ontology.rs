@@ -212,7 +212,6 @@ impl Ontology for MemoryControlPlane {
         // Validate downstream templates against the primary target's full ObjectType
         // (properties + identity). `primary_target` borrows `ont.types`; the borrow ends
         // here, before the `ont.actions` mutable insert below.
-        control_plane_core::validate_downstream_scope(&action)?;
         control_plane_core::validate_action_downstream(&action.downstream, primary_target)?;
         ont.actions.insert(action.name.0.clone(), action);
         Ok(())

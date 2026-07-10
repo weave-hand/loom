@@ -264,6 +264,7 @@ async fn write_steps_fires_per_matched_def() {
         &catalog,
         steps,
         lineage(RunId(uuid::Uuid::new_v4()), &in1),
+        &[],
     )
     .await
     .expect("write_steps");

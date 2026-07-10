@@ -1355,6 +1355,11 @@ async fn run_multi_step(
     let mut step_env = crate::params::StepEnv::new();
     let mut writes: Vec<StepWrite> = Vec::with_capacity(action.steps.len());
     let mut step_results: Vec<StepResult> = Vec::with_capacity(action.steps.len());
+    // The first (primary) step's resolved row, captured below — `downstream` templates
+    // resolve `@self.<prop>` refs against it, keyed by the action's primary identity
+    // exactly as the single-step insert/update/delete paths key off their sole step.
+    let mut primary_pairs: Vec<(String, SqlValue)> = Vec::new();
+    let mut first = true;
 
     // Resolve + govern each step in declared order, building its staged write. NOTHING is written
     // in this loop — `write_steps` runs once, after the whole action clears governance.
@@ -1375,6 +1380,16 @@ async fn run_multi_step(
         //    projecting the shared body to this step's params.
         let step_body = project_body(step, body);
         let pairs = crate::params::resolve_action_row(step, target, &step_body, now, &step_env)?;
+
+        // Capture the FIRST step's resolved row (before it's consumed below) as the
+        // `downstream` resolution key — a clone, since `pairs` stays in use for the rest
+        // of this iteration. Gated on a separate `first` flag rather than
+        // `primary_pairs.is_empty()`: a legitimately-empty row must not be reinterpreted
+        // as "not yet captured".
+        if first {
+            primary_pairs = pairs.clone();
+            first = false;
+        }
 
         // c/d/e. Fine governance (identical to the single-object gates, per step) + build the
         //        step's staged write. Any denial/violation returns here — before any write.
@@ -1417,7 +1432,14 @@ async fn run_multi_step(
         serde_json::json!({ "action": action_name }),
     );
 
-    deps.action_engine.write_steps(&writes, event, &[]).await?;
+    // Resolve the action's downstream templates against the primary (first) step's
+    // resolved row, so the jobs ride the multi-step write's commit tx — atomic
+    // commit-or-neither, exactly as the single-step paths do.
+    let jobs = crate::downstream::resolve_downstream(&action.downstream, &primary_pairs);
+
+    deps.action_engine
+        .write_steps(&writes, event, &jobs)
+        .await?;
 
     if step_results.is_empty() {
         return Err(ActionError::Misconfigured("action has no steps".into()));

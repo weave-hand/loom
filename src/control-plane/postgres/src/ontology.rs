@@ -336,7 +336,6 @@ impl Ontology for PgControlPlane {
         // suffice — it carries no properties/identity for the validator.
         match self.get_type(&primary_step.target).await {
             Ok(primary_target) => {
-                control_plane_core::validate_downstream_scope(&action)?;
                 control_plane_core::validate_action_downstream(
                     &action.downstream,
                     &primary_target,
