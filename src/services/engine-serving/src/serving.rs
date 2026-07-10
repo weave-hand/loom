@@ -617,7 +617,7 @@ async fn build_inline_provider(
 /// arrow `DataType`; an unrecognized logical type is a hard error (the mirror should
 /// never hold one). This schema — not the per-file Parquet footers — is what the
 /// provider presents, so an additively-evolved table reads as its superset.
-fn arrow_schema_from_mirror(
+pub(crate) fn arrow_schema_from_mirror(
     cols: &[control_plane_core::ColumnDef],
 ) -> Result<SchemaRef, EngineServingError> {
     let fields = cols

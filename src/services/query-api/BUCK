@@ -17,6 +17,7 @@ rust_library(
         "//third-party:arrow-flight",
         "//third-party:async-trait",
         "//third-party:axum",
+        "//third-party:base64",
         "//third-party:futures",
         "//third-party:serde",
         "//third-party:serde_json",
@@ -60,6 +61,37 @@ rust_test(
     crate = "http_smoke",
     srcs = ["tests/http_smoke.rs"],
     crate_root = "tests/http_smoke.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//src/services/runtime:runtime",
+        "//third-party:async-trait",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
+rust_test(
+    name = "subscribe-cursor",
+    crate = "subscribe_cursor",
+    srcs = ["tests/subscribe_cursor.rs"],
+    crate_root = "tests/subscribe_cursor.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+    ],
+)
+
+rust_test(
+    name = "subscribe-http",
+    crate = "subscribe_http",
+    srcs = ["tests/subscribe_http.rs"],
+    crate_root = "tests/subscribe_http.rs",
     edition = "2024",
     deps = [
         ":query-api",
@@ -1979,6 +2011,65 @@ loom_fixture_test(
         "//src/services/engine-wire:engine-wire",
         "//third-party:axum",
         "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-subscribe-scan",
+    crate = "stream_subscribe_scan",
+    srcs = ["tests/stream_subscribe_scan.rs"],
+    crate_root = "tests/stream_subscribe_scan.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-subscribe-e2e",
+    crate = "stream_subscribe_e2e",
+    srcs = ["tests/stream_subscribe_e2e.rs"],
+    crate_root = "tests/stream_subscribe_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-subscribe-gov-e2e",
+    crate = "stream_subscribe_gov_e2e",
+    srcs = ["tests/stream_subscribe_gov_e2e.rs"],
+    crate_root = "tests/stream_subscribe_gov_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
     ],

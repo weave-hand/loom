@@ -457,3 +457,81 @@ impl StreamTables for PgControlPlane {
         pg_set_changelog_table_id(self.pool(), table_id, changelog_table_id).await
     }
 }
+
+/// Fire the changelog wakeup for a CDC base table's inline write. MUST be called
+/// INSIDE the write's transaction: `pg_notify` in a tx is buffered until commit,
+/// so a rolled-back write is silent — the same fire-and-forget-in-commit shape as
+/// the queue's enqueue (`queue::pg_insert`). Channel: `loom_changelog:{table_id}`.
+pub(crate) async fn pg_notify_changelog<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table_id: i64,
+) -> Result<()> {
+    sqlx::query(sqlx::AssertSqlSafe(
+        "select pg_notify('loom_changelog:' || $1::text, '')",
+    ))
+    .bind(table_id)
+    .execute(ex)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Block until a CDC inline write commits against `table`, or `timeout` elapses —
+/// whichever first (the poll-fallback bound for a missed notify). Never errors on
+/// timeout. Mirrors the queue's `await_jobs` waiter (`queue.rs:152`). Note the
+/// listen-after-scan race: an event committed between the caller's empty scan and
+/// this LISTEN is missed and picked up on the next poll — bounded by `timeout`.
+pub async fn await_changelog(
+    pool: &sqlx::PgPool,
+    table: &TableRef,
+    timeout: std::time::Duration,
+) -> Result<()> {
+    let tid = {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name)
+            .await?
+            .ok_or_else(|| {
+                ControlPlaneError::NotFound(format!(
+                    "no mirror table for {}.{}",
+                    table.schema, table.name
+                ))
+            })?
+    };
+    let mut listener = sqlx::postgres::PgListener::connect_with(pool)
+        .await
+        .map_err(backend)?;
+    listener
+        .listen(&format!("loom_changelog:{tid}"))
+        .await
+        .map_err(backend)?;
+    // A notification, or the polling-fallback timeout — whichever first.
+    drop(tokio::time::timeout(timeout, listener.recv()).await);
+    Ok(())
+}
+
+/// The per-bucket high-water offsets (`BucketOffsets::peek_offset` per bucket)
+/// for a declared CDC table — the `?cursor=latest` join-the-tail positions, and
+/// the feed handler's "is this subscribable + how many buckets" probe. `None`
+/// when `table` has no live mirror row, no stream declaration, or is not CDC.
+pub async fn changelog_positions_latest(
+    pool: &sqlx::PgPool,
+    table: &TableRef,
+) -> Result<Option<std::collections::BTreeMap<i32, i64>>> {
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name).await?
+    else {
+        return Ok(None);
+    };
+    let Some(meta) = pg_stream_meta(&mut *conn, tid).await? else {
+        return Ok(None);
+    };
+    if meta.kind != control_plane_core::StreamKind::Cdc {
+        return Ok(None);
+    }
+    let mut out = std::collections::BTreeMap::new();
+    for bucket in 0..meta.bucket_count {
+        out.insert(bucket, pg_peek_offset(&mut *conn, tid, bucket).await?);
+    }
+    Ok(Some(out))
+}

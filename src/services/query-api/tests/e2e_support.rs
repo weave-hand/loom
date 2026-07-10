@@ -197,6 +197,42 @@ impl query_api::serving::ServingEngine for InProcessServingEngine {
         Ok(batches_to_rows(vec![batch]))
     }
 
+    async fn changelog_latest(
+        &self,
+        table: &control_plane_core::TableRef,
+    ) -> Result<Option<std::collections::BTreeMap<i32, i64>>, ServingError> {
+        control_plane_postgres::stream::changelog_positions_latest(&self.catalog.pool, table)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
+    async fn changelog_feed(
+        &self,
+        table: &control_plane_core::TableRef,
+        positions: &std::collections::BTreeMap<i32, i64>,
+        limit: usize,
+        policy: &query_api::serving::ChangeFeedPolicy,
+    ) -> Result<control_plane_core::ChangeFeedPage, ServingError> {
+        let tp = engine_serving::TablePolicy {
+            row_filters: policy.row_filters.clone(),
+            denied: policy.denied.iter().cloned().collect(),
+            masked: policy.masked.iter().cloned().collect(),
+        };
+        engine_serving::feed::changelog_feed_scan(&self.catalog, table, None, positions, limit, &tp)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
+    async fn await_changelog(
+        &self,
+        table: &control_plane_core::TableRef,
+        timeout: std::time::Duration,
+    ) -> Result<(), ServingError> {
+        control_plane_postgres::stream::await_changelog(&self.catalog.pool, table, timeout)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
     fn dialect(&self) -> &'static dyn query_api::sql::SqlDialect {
         &DataFusionDialect
     }
@@ -286,6 +322,76 @@ pub async fn get(
         serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     };
     (status, json)
+}
+
+/// Drive the router and read the chunked NDJSON body incrementally: parse lines
+/// as frames arrive, stop after `max_lines` (dropping the body = client
+/// disconnect) or when the stream ends (`?max_events=` bounded mode). Panics if
+/// `timeout` elapses first. Non-200 responses collect the whole body into a
+/// single element.
+pub async fn get_ndjson(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    uri: &str,
+    subject: &str,
+    max_lines: usize,
+    timeout: std::time::Duration,
+) -> (StatusCode, Vec<serde_json::Value>) {
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine: Arc::new(StubAction),
+            default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    if status != StatusCode::OK {
+        let bytes = res.into_body().collect().await.unwrap().to_bytes();
+        let v = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::String(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ));
+        return (status, vec![v]);
+    }
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut body = res.into_body();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut lines = Vec::new();
+    while lines.len() < max_lines {
+        let frame = tokio::time::timeout_at(deadline, http_body_util::BodyExt::frame(&mut body))
+            .await
+            .expect("get_ndjson timed out waiting for a frame");
+        let Some(frame) = frame else { break }; // stream ended (bounded mode)
+        let frame = frame.expect("body frame");
+        if let Some(data) = frame.data_ref() {
+            buf.extend_from_slice(data);
+            while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=nl).collect();
+                let line = &line[..line.len() - 1];
+                if !line.is_empty() {
+                    lines.push(serde_json::from_slice(line).expect("NDJSON line parses"));
+                }
+            }
+        }
+    }
+    (status, lines)
 }
 
 /// A `ServingEngine` that has no data backend — every data read errors. The lineage

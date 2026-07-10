@@ -94,6 +94,7 @@ impl AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/objects/:type_name", get(get_object))
+        .route("/objects/:type_name/changes", get(get_changes))
         .route("/objects/:from_type/links/:link_name", get(get_linked))
         .route("/objects/:from_type/links", get(get_linked_chain))
         .route("/objects/:type_name/graph/:link_name", get(get_graph))
@@ -538,6 +539,150 @@ async fn get_object(
     {
         Ok(rows) => Json(crate::render::objects_to_json(&rows, None)).into_response(),
         Err(e) => query_error_response(e, "object read serving fault"),
+    }
+}
+
+/// Subscribe to a CDC type's ordered change-event feed (chunked NDJSON).
+///
+/// Each line is one change event `{bucket, offset, change_kind, fields, cursor}`;
+/// `cursor` is the opaque resume position AFTER that event. `?cursor=` accepts
+/// `earliest` (default), `latest` (join the tail), or a previously returned
+/// opaque cursor (type-bound). Ordering is per-bucket (gapless offsets); the
+/// stream stays open (notify-driven, poll-fallback) unless `?max_events=` bounds
+/// it. Policy is resolved at connect; a mid-stream policy change takes effect on
+/// the next reconnect.
+#[utoipa::path(
+    get, path = "/objects/{type_name}/changes",
+    params(
+        ("type_name" = String, Path, description = "Ontology object type (must back a declared CDC table)"),
+        ("cursor" = Option<String>, Query, description = "`earliest` (default) | `latest` | an opaque cursor from a previous event line"),
+        ("fields" = Option<String>, Query, description = "Comma-separated projection over the governed columns"),
+        ("max_events" = Option<u64>, Query, description = "Close the stream after N events (unset = endless tail)"),
+    ),
+    responses(
+        (status = 200, description = "NDJSON change-event stream, one JSON object per line", body = String, content_type = "application/x-ndjson"),
+        (status = 400, description = "Malformed/foreign cursor, unknown field, bad max_events, or the type's table is not a declared CDC table"),
+        (status = 403, description = "Forbidden by ACL policy (checked before existence)"),
+        (status = 404, description = "Unknown type"),
+        (status = 501, description = "The serving engine does not implement the changelog feed"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "objects",
+)]
+async fn get_changes(
+    State(st): State<AppState>,
+    Path(type_name): Path<String>,
+    Query(q): Query<crate::subscribe::ChangesQuery>,
+    subject: Subject,
+) -> axum::response::Response {
+    use crate::governed::{OnMissing, resolve_governed};
+    use crate::subscribe::{CursorSpec, parse_cursor};
+
+    // 1. Governance prologue: coarse Read gate before existence, then policy.
+    let g = match resolve_governed(
+        st.cp.ontology(),
+        st.cp.acl(),
+        &subject.0,
+        &TypeName(type_name.clone()),
+        OnMissing::NotFound,
+    )
+    .await
+    {
+        Ok(g) => g,
+        Err(e) => return query_error_response(e, "changes read gate fault"),
+    };
+    let table = g.otype.table.clone();
+
+    // 2. Cursor syntax + type binding (client faults before any engine call).
+    let spec = match parse_cursor(q.cursor.as_deref()) {
+        Ok(s) => s,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
+    if let CursorSpec::Resume(c) = &spec
+        && c.t != type_name
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "cursor was minted for another type",
+        )
+            .into_response();
+    }
+
+    // 3. ?fields= intersects the governed allowed set.
+    let allowed = g.allowed();
+    let fields = match q.fields.as_deref() {
+        None => None,
+        Some(raw) => {
+            let want: Vec<String> = raw
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            if let Some(bad) = want.iter().find(|f| !allowed.contains(f)) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown or denied field `{bad}`"),
+                )
+                    .into_response();
+            }
+            Some(want)
+        }
+    };
+
+    // 4. Probe the engine: subscribable? (also yields the bucket set).
+    let latest = match st.serving.changelog_latest(&table).await {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "type is not backed by a declared CDC table",
+            )
+                .into_response();
+        }
+        Err(crate::serving::ServingError::Unsupported(_)) => {
+            return (
+                StatusCode::NOT_IMPLEMENTED,
+                "changelog feed not available on this engine",
+            )
+                .into_response();
+        }
+        Err(e) => return internal_error("changelog latest fault", e),
+    };
+
+    // 5. Boot positions: earliest = 0 per bucket; latest = the high-water map;
+    // resume = the cursor's map normalized onto the live bucket set (missing
+    // buckets start at 0; unknown buckets dropped).
+    let positions = match spec {
+        CursorSpec::Earliest => latest.keys().map(|b| (*b, 0)).collect(),
+        CursorSpec::Latest => latest,
+        CursorSpec::Resume(c) => latest
+            .keys()
+            .map(|b| (*b, c.b.get(b).copied().unwrap_or(0)))
+            .collect(),
+    };
+
+    let policy = crate::serving::ChangeFeedPolicy {
+        row_filters: g.row_filters.clone(),
+        denied: g.denied.iter().cloned().collect(),
+        masked: g.masked.iter().cloned().collect(),
+    };
+    let stream = crate::subscribe::ndjson_feed_stream(crate::subscribe::FeedState {
+        serving: st.serving.clone(),
+        table,
+        type_name,
+        positions,
+        policy,
+        fields,
+        remaining: q.max_events,
+    });
+    match axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "application/x-ndjson")
+        .body(axum::body::Body::from_stream(stream))
+    {
+        Ok(resp) => resp,
+        Err(e) => internal_error("changes response build fault", e),
     }
 }
 

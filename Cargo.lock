@@ -4506,6 +4506,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "axum 0.7.9",
+ "base64",
  "control-plane-core",
  "engine-wire",
  "http-body-util",

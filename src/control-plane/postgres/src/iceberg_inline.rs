@@ -673,6 +673,13 @@ pub(crate) async fn inline_append_decl(
             }
             q.execute(&mut *conn).await.map_err(backend)?;
         }
+
+        // Subscribe wakeup (road-stream-subscribe): one fire-and-forget notify
+        // per committed CDC write batch, buffered until this tx commits. Log
+        // tables don't notify (no changelog feed in this slice).
+        if matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc) {
+            crate::stream::pg_notify_changelog(&mut *conn, tid).await?;
+        }
     } else {
         // Batch table: unchanged behaviour (loom_bucket/loom_offset stay NULL,
         // loom_change_kind defaults to '+I').
@@ -1244,6 +1251,14 @@ pub async fn write_inline_delta(
     for job in jobs {
         crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
     }
+
+    // Subscribe wakeup: the -U/+U/-D events just written become visible on
+    // commit; the notify is buffered with them (mirrors queue.rs's
+    // pg_notify-in-commit).
+    if cdc {
+        crate::stream::pg_notify_changelog(&mut *tx, tid).await?;
+    }
+
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
