@@ -158,6 +158,63 @@ Flush is idempotent under at-least-once redelivery: two concurrent
 advisory-locked loser re-reads and no-ops), pinned by an over-the-wire
 regression test (#134).
 
+**Scalable COW slice 2 — tombstone-aware consolidation** closes the
+unbounded-inline-growth gap slice 1 (#331) deliberately left: a shadow-bearing
+non-CDC identity table's inline tier (plain appends, `+U` versions, `-D`
+tombstones) accrues without bound because the byte-trigger flush is
+suppressed for as long as `has_shadow` is set. `consolidate_cow_locked`
+(`src/services/engine-serving/src/consolidate.rs`) folds the base Parquet
+**and** the entire live inline tier into a new base snapshot — it drains the
+plain appends a shadowed table accumulated while its flush was suppressed
+too, so consolidation *is* the flush for a mutated table. The fold
+materializes `build_merge_view`'s `Precedence::Snapshot` view directly: the
+file tier ranks `<0, false>`, the inline tier ranks `<begin_snapshot,
+loom_tombstone>`, `ROW_NUMBER() PARTITION BY identity ORDER BY prec DESC`
+picks the rank-1 winner per identity, and a tombstoned winner is dropped from
+the output — so a read before and after consolidation is byte-identical by
+construction.
+
+The commit uses a **consuming** overwrite, not the blanket one:
+`overwrite_parquet_snapshot_consuming` (`iceberg_landing.rs`) carries a
+targeted `InlineEndCap { table_id, row_ids }` that retires **exactly** the
+inline rows the fold actually read, leaving every other live inline row
+alone. This closes the race the blanket inline cap left open — a mutation
+committing between the fold's read and the overwrite's commit (mutations take
+only a per-identity advisory lock, never a table lock) used to be end-capped
+without ever being folded, a silent lost write. With the consuming cap that
+row survives live and keeps shadowing the new base; the hot mutation path
+stays lock-free. `write_mirror`'s dispatch rule now reads: the blanket inline
+cap runs only when `overwrite && end_cap.is_none()`, i.e. only for a caller
+that has no targeted set to hand it. The same fix applies to CDC compaction's
+`consolidate_locked`, which previously blanket-capped mid-consolidation CDC
+rows unfolded — an equivalent silent-loss bug, fixed with the same primitive
+(closing `iss-consolidate-stream-lost-write`).
+
+`clear_has_shadow_if_quiescent` clears a table's `has_shadow` flag only when
+no live shadow delta remains after the consolidating overwrite, re-enabling
+the byte-trigger flush for that table. The flush backstop
+(`flush_locked`) no longer trusts the flag alone for safety: it derives
+correctness from its own read set (`shadow_rows_among`), since a flush can
+only corrupt state by appending rows it actually read — a race-free
+invariant that holds regardless of the flag's staleness window.
+
+**Dispatch is shared, not duplicated.** `consolidate_stream` now dispatches
+through `consolidate_table`, which routes per table kind: a CDC table folds
+via the existing `Precedence::Offset` fold, a non-CDC identity table with
+`has_shadow` set folds via the new `Precedence::Snapshot` (COW) fold above,
+and any other table is a no-op. The `stream_consolidate` job kind and the
+`ConsolidateStream` RPC name are unchanged — only the internal dispatch
+gained a table-kind branch. Non-CDC mutations now auto-enqueue consolidation
+through the same `consolidate_trigger` counter flush/CDC already share (the
+`cdc &&` gate that previously excluded them is dropped). Lineage source tags
+distinguish the two folds at the same event site: `"consolidate_stream"` for
+the CDC path, `"consolidate_cow"` for the COW path. The overwrite commit also
+enqueues one deduped `build_vector_index` job per index declared on the
+table via `rebuild_jobs_for`, so a vector index's stale cold entries are now
+durably removed by consolidation rather than only masked at query time (see
+query-api's vector-search post-filter, #400). Slice 3 (identity-change /
+upsert) stays deferred as `#fut-cow-identity-change`.
+
 ## Engine-wire control plane and the Arrow Flight data plane
 
 The engine exposes a typed gRPC `EngineControl` surface on its UDS —
