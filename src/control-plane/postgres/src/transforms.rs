@@ -357,6 +357,23 @@ impl Transforms for PgControlPlane {
                 .collect();
             validate_no_trigger_cycle(&nodes)?;
         }
+        // Define-time UX guard (not the authority — the commit-time guards are the hard
+        // gate): resolve the def's output table and refuse if it is already a declared
+        // stream/CDC table. A Physical output is the literal `TableRef`; a Typed output
+        // resolves via its bound backing table. An output that does not exist yet passes.
+        let output_table: Option<TableRef> = match &def.body {
+            TransformBody::Physical { output, .. } => Some(output.clone()),
+            TransformBody::Typed { output, .. } => {
+                let bodies = [(def.name.clone(), def.body.clone())];
+                pg_type_tables(&mut *tx, &bodies)
+                    .await?
+                    .get(output)
+                    .cloned()
+            }
+        };
+        if let Some(t) = &output_table {
+            crate::stream::pg_refuse_stream_target(&mut tx, t).await?;
+        }
         sqlx::query!(
             "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
              values ($1, $2, $3, $4, $5) \

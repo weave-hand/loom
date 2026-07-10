@@ -1519,3 +1519,16 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "define-transform-refuse",
+    crate = "define_transform_refuse",
+    srcs = ["tests/define_transform_refuse.rs"],
+    crate_root = "tests/define_transform_refuse.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
