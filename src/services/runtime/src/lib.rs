@@ -5,8 +5,8 @@
 mod auth;
 pub use auth::{
     AuthState, Subject, auth_openapi, login_lockout, login_routes, protect, require_auth,
-    service_account_openapi, service_account_routes, service_token_max_ttl, session_routes,
-    session_ttl, status_for,
+    resolve_bearer, service_account_openapi, service_account_routes, service_token_max_ttl,
+    session_routes, session_ttl, status_for,
 };
 pub use control_plane_core::LockoutPolicy;
 

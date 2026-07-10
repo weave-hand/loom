@@ -13,6 +13,7 @@ pub mod engine_action_client;
 pub mod engine_client;
 pub mod expr;
 pub mod filter;
+pub(crate) mod flight_auth;
 pub mod flight_export;
 pub mod governed;
 pub mod handler;
