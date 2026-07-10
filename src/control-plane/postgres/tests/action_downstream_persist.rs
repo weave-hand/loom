@@ -1,6 +1,6 @@
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, JobTemplate, ObjectType, Ontology, PropertyDef, TableRef,
-    TypeName,
+    ActionDef, ActionKind, ActionName, JobTemplate, ObjectType, Ontology, ParamDef, PropertyDef,
+    TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use serde_json::json;
@@ -34,7 +34,12 @@ async fn action_downstream_round_trips() {
         ActionName("createWidget".into()),
         TypeName("Widget".into()),
         ActionKind::Insert,
-        vec![],
+        vec![ParamDef {
+            name: "sku".into(),
+            ty: "String".into(),
+            required: true,
+            binds: None,
+        }],
         vec![],
     )
     .downstream(vec![
