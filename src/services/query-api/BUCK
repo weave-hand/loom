@@ -2057,6 +2057,25 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-subscribe-gov-e2e",
+    crate = "stream_subscribe_gov_e2e",
+    srcs = ["tests/stream_subscribe_gov_e2e.rs"],
+    crate_root = "tests/stream_subscribe_gov_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-cdc-consolidate",
     crate = "stream_cdc_consolidate",
     srcs = ["tests/stream_cdc_consolidate.rs"],
