@@ -56,7 +56,7 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
     let parsed: TransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad transform payload: {e}")))?;
     let run_id = parsed.run_id;
-    mark_running_if_tracked(ctx, run_id, attempts).await?;
+    mark_running_if_tracked(&ctx.control, ctx.worker_tuning, run_id, attempts).await?;
     let inputs: Vec<(String, TableRef)> = parsed
         .inputs
         .iter()
@@ -84,7 +84,7 @@ pub async fn handle_transform(ctx: &TransformCtx, job: Job) -> std::result::Resu
         },
     )
     .await;
-    report_run_failure(ctx, run_id, &result).await;
+    report_run_failure(&ctx.control, run_id, &result).await;
     result
 }
 
@@ -100,24 +100,27 @@ pub async fn handle_typed_transform(
     let parsed: TypedTransformJob = serde_json::from_value(job.payload)
         .map_err(|e| JobFailure::abandon(format!("bad typed-transform payload: {e}")))?;
     let run_id = parsed.run_id;
-    mark_running_if_tracked(ctx, run_id, attempts).await?;
+    mark_running_if_tracked(&ctx.control, ctx.worker_tuning, run_id, attempts).await?;
     let result = handle_typed_transform_inner(ctx, attempts, &parsed).await;
-    report_run_failure(ctx, run_id, &result).await;
+    report_run_failure(&ctx.control, run_id, &result).await;
     result
 }
 
 /// Mark a tracked run `Running` before execution. A failure to reach the engine
 /// is retryable — the run record stays `Queued` and the retry re-marks it. A
-/// no-op when the job carries no `run_id` (ad-hoc).
-async fn mark_running_if_tracked(
-    ctx: &TransformCtx,
+/// no-op when the job carries no `run_id` (ad-hoc). Takes the wire client +
+/// tuning directly (not a whole ctx struct) so it's shared by every zero-pool
+/// job handler's ctx type, not just `TransformCtx` (see `stream_mv.rs`).
+pub(crate) async fn mark_running_if_tracked(
+    control: &GrpcQueueClient,
+    worker_tuning: WorkerTuning,
     run_id: Option<uuid::Uuid>,
     attempts: i32,
 ) -> std::result::Result<(), JobFailure> {
     if let Some(rid) = run_id {
-        ctx.control.mark_run_running(rid).await.map_err(|e| {
+        control.mark_run_running(rid).await.map_err(|e| {
             JobFailure::retry(
-                ctx.worker_tuning.backoff(attempts),
+                worker_tuning.backoff(attempts),
                 format!("mark_run_running: {e}"),
             )
         })?;
@@ -209,9 +212,10 @@ struct WireTransform<'a> {
 
 /// Best-effort failure reporting: the run record must reflect the failure, but
 /// a reporting error must not mask the original failure (the queue's
-/// retry/abandon decision stands either way).
-async fn report_run_failure(
-    ctx: &TransformCtx,
+/// retry/abandon decision stands either way). Takes the wire client directly
+/// (not a whole ctx struct), same reasoning as `mark_running_if_tracked`.
+pub(crate) async fn report_run_failure(
+    control: &GrpcQueueClient,
     run_id: Option<uuid::Uuid>,
     result: &std::result::Result<(), JobFailure>,
 ) {
@@ -219,7 +223,7 @@ async fn report_run_failure(
         return;
     };
     let terminal = matches!(f.policy, RetryPolicy::Abandon);
-    if let Err(e) = ctx.control.finish_run_failed(rid, &f.error, terminal).await {
+    if let Err(e) = control.finish_run_failed(rid, &f.error, terminal).await {
         tracing::warn!(run_id = %rid, error = %e, "failed to report run failure");
     }
 }
