@@ -142,3 +142,46 @@ pub trait StreamTables {
     /// `table_id`. Idempotent overwrite; only meaningful for a `kind='cdc'` row.
     async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()>;
 }
+
+/// The canonical watermark key for a standing query: the qualified name of the
+/// table it materializes. Keyed by the OUTPUT (not the def name) so the
+/// watermark survives a def rename exactly when the output — and therefore
+/// resuming — is kept, and ad-hoc (nameless) runs need no special case.
+#[must_use]
+pub fn mv_key(output: &crate::TableRef) -> String {
+    format!("{}.{}", output.schema, output.name)
+}
+
+/// One bucket's watermark CAS: advance `bucket` from `from` to `to`. `from` is
+/// the offset the delta was read at (0 = no row yet); a mismatch means a
+/// concurrent run already covered the delta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatermarkAdvance {
+    pub bucket: i32,
+    pub from: i64,
+    pub to: i64,
+}
+
+/// Per-standing-query offset watermarks: the next-unprocessed `loom_offset`
+/// per `(mv, source_table_id, bucket)`. Advancing is a CAS — `Conflict` on a
+/// stale `from` — and is issued inside the output-commit transaction by the
+/// postgres adapter, so the watermark moves iff the output lands.
+#[async_trait]
+pub trait MvWatermarks {
+    /// The recorded watermarks for `(mv, source_table_id)` — buckets with no
+    /// row are absent (read as 0).
+    async fn mv_watermarks(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+    ) -> Result<std::collections::BTreeMap<i32, i64>>;
+    /// CAS-advance each bucket; any stale `from` is `Conflict` (all-or-nothing
+    /// is the postgres tx's job — this standalone surface applies in order and
+    /// stops at the first conflict).
+    async fn advance_mv_watermark(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+        advances: &[WatermarkAdvance],
+    ) -> Result<()>;
+}

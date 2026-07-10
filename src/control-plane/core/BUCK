@@ -475,3 +475,17 @@ rust_test(
     visibility = ["PUBLIC"],
     deps = [":core"],
 )
+
+rust_test(
+    name = "stream-mv-core",
+    crate = "stream_mv_core",
+    srcs = ["tests/stream_mv_core.rs"],
+    crate_root = "tests/stream_mv_core.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+    ],
+)

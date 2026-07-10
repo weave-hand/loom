@@ -36,6 +36,7 @@ pub const KNOWN_JOB_KINDS: &[&str] = &[
     crate::STREAM_CONSOLIDATE_JOB_KIND,
     crate::TRANSFORM_JOB_KIND,
     crate::TYPED_TRANSFORM_JOB_KIND,
+    crate::STREAM_MV_JOB_KIND,
 ];
 
 /// A claimed job handed to a worker.
