@@ -189,6 +189,7 @@ pub async fn land_cdc(
             Some(limits.flush_byte_threshold),
             &decl,
             jobs,
+            None,
         )
         .await
     } else {

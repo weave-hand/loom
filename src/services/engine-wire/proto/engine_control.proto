@@ -21,6 +21,7 @@ service EngineControl {
   rpc OverwriteTable (OverwriteTableRequest) returns (OverwriteTableResponse);
   rpc CurrentInlineVersion (CurrentInlineVersionRequest) returns (CurrentInlineVersionResponse);
   rpc WriteDelta           (WriteDeltaRequest)           returns (WriteDeltaResponse);
+  rpc CommitMicroBatch     (CommitMicroBatchRequest)     returns (CommitMicroBatchResponse);
   // Governance reads (query-api reads ACL + ontology over the wire).
   rpc Check            (CheckRequest)            returns (CheckResponse);
   rpc PoliciesFor      (PoliciesForRequest)      returns (PoliciesForResponse);
@@ -91,6 +92,32 @@ message CommitTransformRequest {
   optional string run_id = 7;     // transform run to mark Succeeded once staged, if any
 }
 message CommitTransformResponse { optional int64 snapshot_id = 1; }
+
+// One bucket's watermark CAS for a `CommitMicroBatch` commit: advance `bucket`
+// from `from` to `to` (mirrors `control_plane_core::WatermarkAdvance`).
+message MvAdvance { int32 bucket = 1; int64 from = 2; int64 to = 3; }
+
+// Atomically: inline-append `ipc` to `schema.name` (declared/confirmed a
+// `buckets`-bucket log stream table), CAS-advance `mv`'s per-bucket watermarks
+// against `source_schema.source_name`, and mark `run_id` succeeded — one
+// Postgres transaction. A stale `advances` entry (or a declare conflict, e.g. an
+// existing batch table as output) rolls the WHOLE commit back — nothing partial.
+// `ipc` empty AND `advances` empty is a no-op micro-batch: it just closes
+// `run_id` (`Succeeded { snapshot_id: 0 }`) and creates no output table.
+message CommitMicroBatchRequest {
+  string mv = 1;                  // watermark key (`mv_key`), usually schema.name of output
+  string source_schema = 2;       // the delta's source table (watermark's source_table_id)
+  string source_name = 3;
+  string schema = 4;              // output TableRef
+  string name = 5;
+  int32  buckets = 6;             // output's declared log-stream bucket count
+  bytes  ipc = 7;                 // the micro-batch result rows (Arrow IPC stream)
+  string columns_json = 8;        // serde_json Vec<ColumnSpec> — output's schema
+  string lineage_json = 9;        // serde_json LineageWire
+  repeated MvAdvance advances = 10;
+  optional string run_id = 11;    // transform run to mark Succeeded, if any
+}
+message CommitMicroBatchResponse { optional int64 snapshot_id = 1; }
 
 message MarkRunRunningRequest  { string run_id = 1; }
 message MarkRunRunningResponse {}

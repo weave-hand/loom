@@ -443,6 +443,59 @@ impl GrpcQueueClient {
         Ok(resp.snapshot_id)
     }
 
+    /// Commit one micro-batch of a standing query's output: inline-append `ipc`
+    /// to `schema.name` (declared/confirmed a `buckets`-bucket log stream table),
+    /// CAS-advance `mv`'s per-bucket watermarks against
+    /// `source_schema.source_name`, and mark `run_id` succeeded — one atomic
+    /// engine-side transaction. Returns the new snapshot id (`None` if the
+    /// micro-batch was empty — no rows, no advances). A stale `advances` entry
+    /// (or a declare conflict) surfaces as [`ControlPlaneError::Conflict`] (via
+    /// [`cp_status`], preserving `Aborted` — mirrors `commit_transform`), rolling
+    /// back the whole commit. `advances` are already-built [`pb::MvAdvance`]s
+    /// (mirrors `write_steps`'s `Vec<pb::StepWrite>`).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the CommitMicroBatchRequest wire shape one-for-one; a params struct would only obscure the call site"
+    )]
+    pub async fn commit_micro_batch(
+        &self,
+        mv: String,
+        source_schema: String,
+        source_name: String,
+        schema: String,
+        name: String,
+        buckets: i32,
+        columns: &[control_plane_core::ColumnSpec],
+        ipc: Vec<u8>,
+        lineage: &control_plane_core::LineageEvent,
+        advances: Vec<pb::MvAdvance>,
+        run_id: Option<uuid::Uuid>,
+    ) -> Result<Option<i64>> {
+        let columns_json = serde_json::to_string(columns).map_err(be)?;
+        let lineage_json =
+            serde_json::to_string(&convert::LineageWire::from(lineage)).map_err(be)?;
+        let resp = self
+            .inner
+            .clone()
+            .commit_micro_batch(pb::CommitMicroBatchRequest {
+                mv,
+                source_schema,
+                source_name,
+                schema,
+                name,
+                buckets,
+                ipc,
+                columns_json,
+                lineage_json,
+                advances,
+                run_id: run_id.map(|u| u.to_string()),
+            })
+            .await
+            .map_err(cp_status)?
+            .into_inner();
+        Ok(resp.snapshot_id)
+    }
+
     /// Mark a transform run Running (dequeued by a worker).
     pub async fn mark_run_running(&self, run_id: uuid::Uuid) -> Result<()> {
         self.inner

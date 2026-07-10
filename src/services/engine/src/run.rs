@@ -130,6 +130,7 @@ pub async fn run(
         pool: pool.clone(),
         retention: cfg.gc_retention,
         writer,
+        flush_byte_threshold: tuning.flush_byte_threshold,
     };
     let flight = FlightDataService {
         catalog,
