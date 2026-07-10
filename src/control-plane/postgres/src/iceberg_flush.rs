@@ -95,12 +95,13 @@ async fn flush_locked(
         return flush_locked_cdc(catalog, pool, table, &ice, current, run_id).await;
     }
 
-    // Shadow guard (belt and suspenders): a table carrying inline shadow deltas must
-    // never be drained by the byte-trigger flush — flushing a row-version/tombstone
-    // into Parquet would duplicate or resurrect a file row. `inline_append` already
-    // refuses to enqueue this job for a shadowed table, but a flush job can have been
-    // enqueued BEFORE the mutation landed, so this is the backstop. Mirrors the
-    // no-live-rows self-heal below: reset the trigger and report the no-op.
+    // Shadow guard (fast path; the authoritative guard is the read-set check below):
+    // a table carrying inline shadow deltas must never be drained by the byte-trigger
+    // flush — flushing a row-version/tombstone into Parquet would duplicate or
+    // resurrect a file row. `inline_append` already refuses to enqueue this job for a
+    // shadowed table, but a flush job can have been enqueued BEFORE the mutation
+    // landed, so this is a cheap early-out. Mirrors the no-live-rows self-heal below:
+    // reset the trigger and report the no-op.
     let mut conn = pool.acquire().await.map_err(backend)?;
     if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await?
         && has_shadow(&mut conn, tid).await?
@@ -120,6 +121,19 @@ async fn flush_locked(
         }
         return Ok(None);
     };
+
+    // Safety derives from the DATA, not the flag: a flush can only corrupt by
+    // appending rows it READ, so checking the read set is race-free — a delta
+    // committing after this read is not in `row_ids` and is not written. This
+    // closes the conditional-clear write-skew (spec §3): if a shadow row is in
+    // the set, the flag was cleared wrongly; restore it and no-op.
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    if crate::iceberg_inline::shadow_rows_among(&mut conn, tid, &row_ids).await? {
+        crate::iceberg_inline::set_has_shadow(&mut conn, tid).await?;
+        reset_inline_trigger(&mut conn, tid).await?;
+        return Ok(None);
+    }
+    drop(conn);
 
     // Physical schema (model/inferred logical types) for create-if-absent.
     let columns: Vec<ColumnSpec> = ice

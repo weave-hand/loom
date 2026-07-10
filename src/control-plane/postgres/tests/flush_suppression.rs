@@ -252,6 +252,143 @@ async fn flush_is_suppressed_after_a_mutation() {
     }
 }
 
+/// The `has_shadow` flag is only the fast path — the authoritative guard is the
+/// read-set check in `flush_locked` (Task 3). Simulates `clear_has_shadow_if_
+/// quiescent`'s documented benign write-skew (spec §3): the flag gets wrongly
+/// cleared while a shadow delta is still live. `flush_table` must still refuse to
+/// drain it: `Ok(None)`, the delta row stays live (never end-capped), no new
+/// Parquet file is projected, and `has_shadow` reads `true` again (self-healed).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flush_refuses_shadow_rows_in_its_read_set_even_without_the_flag() {
+    let fx = PgFixture::shared();
+    let (_, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let run = RunId(uuid::Uuid::new_v4());
+    let table = table();
+
+    // Land a real Parquet file {id:1, qty:1} — a file-only object (no inline storage
+    // yet), which is the primary copy-on-write target.
+    let seed_cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("qty".to_string(), "long".to_string(), false),
+    ];
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    writer
+        .seed_arrays(
+            &table.schema,
+            &table.name,
+            &seed_cols,
+            &[SeedCol::Long(vec![1]), SeedCol::Long(vec![1])],
+        )
+        .await;
+
+    let cols = vec![id_spec(), qty_spec()];
+    let v0 =
+        iceberg_inline::current_inline_version(&pool, &table, &[id_spec()], "id", &id_batch(1))
+            .await
+            .expect("current version");
+
+    // Mutate: write a VERSION delta {id:1, qty:9}. This flags has_shadow.
+    iceberg_inline::write_inline_delta(
+        &pool,
+        &table,
+        &cols,
+        "id",
+        false,
+        &full_row_batch(1, 9),
+        None,
+        lineage(run, &table),
+        v0,
+        None,
+        &[],
+    )
+    .await
+    .expect("version delta");
+
+    let tid = tid_of(&pool, &table).await;
+    let mut conn = pool.acquire().await.expect("acquire");
+    assert!(
+        iceberg_inline::has_shadow(&mut conn, tid)
+            .await
+            .expect("has_shadow"),
+        "a mutated table must be flagged as carrying a shadow"
+    );
+
+    // Simulate the conditional-clear write-skew: the flag gets cleared even though
+    // the shadow delta is still live.
+    iceberg_inline::clear_has_shadow(&mut conn, tid)
+        .await
+        .expect("clear_has_shadow");
+    assert!(
+        !iceberg_inline::has_shadow(&mut conn, tid)
+            .await
+            .expect("has_shadow after clear"),
+        "flag is now wrongly clear while a shadow delta is still live"
+    );
+    drop(conn);
+
+    // Use the SAME catalog/warehouse the seed wrote into, so a (would-be) flush
+    // writes/reads the real physical location.
+    let catalog = writer.sql_catalog().await;
+    let ice = IcebergCatalog::new(pool.clone());
+
+    let before = ice
+        .current_snapshot(&table)
+        .await
+        .expect("current before flush");
+    let files_before = ice
+        .files(&table, before.id, PageReq::unbounded())
+        .await
+        .expect("files before flush");
+
+    // The read-set guard must still refuse the flush, even with the flag clear.
+    let result = flush_table(&catalog, &pool, &table, run)
+        .await
+        .expect("refused flush must not error");
+    assert!(
+        result.is_none(),
+        "flush must be refused: its read set contains a shadow row even though \
+         the flag was wrongly clear"
+    );
+
+    // No new snapshot or Parquet file was produced.
+    let after = ice
+        .current_snapshot(&table)
+        .await
+        .expect("current after flush");
+    assert_eq!(
+        after.id, before.id,
+        "a refused flush allocates no new snapshot"
+    );
+    let files_after = ice
+        .files(&table, after.id, PageReq::unbounded())
+        .await
+        .expect("files after flush");
+    assert_eq!(
+        files_after.items.len(),
+        files_before.items.len(),
+        "a refused flush must not write any new Parquet file"
+    );
+
+    // The delta row is still live — nothing end-capped.
+    let (_, row_ids_after, _) = ice
+        .inline_live_batch(&table, after.id)
+        .await
+        .expect("inline_live_batch after flush")
+        .expect("the inline row is still live (nothing was flushed)");
+    assert_eq!(row_ids_after.len(), 1, "the version delta is still live");
+
+    // Self-healed: has_shadow reads true again.
+    let mut conn = pool.acquire().await.expect("acquire");
+    assert!(
+        iceberg_inline::has_shadow(&mut conn, tid)
+            .await
+            .expect("has_shadow after refused flush"),
+        "the refused flush must restore has_shadow (self-heal)"
+    );
+}
+
 /// A table that has taken NO mutation (`has_shadow == false`) must flush normally
 /// via the byte-trigger path — the suppression guard must not over-fire.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

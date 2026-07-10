@@ -865,6 +865,41 @@ pub async fn clear_has_shadow_if_quiescent(conn: &mut PgConnection, tid: i64) ->
     Ok(result.rows_affected() > 0)
 }
 
+/// True if ANY of `row_ids` (the exact set a flush just read via
+/// `inline_live_batch`) is a LIVE inline shadow row — a tombstone or a
+/// row-version/delete change (`loom_tombstone` or `loom_change_kind in ('+U',
+/// '-D')`), i.e. `end_snapshot is null`.
+///
+/// This is the Task 3 read-set guard: safety derives from the DATA a flush is
+/// about to write, not from the `has_shadow` flag. A flush can only corrupt by
+/// appending rows it read, so checking exactly the read set is race-free — a
+/// shadow delta that commits after the read is not in `row_ids` and this
+/// returns `false` for it (correctly; that delta cannot have been drained).
+/// Called from `flush_locked` right after it destructures `inline_live_batch`'s
+/// `row_ids`, before any Parquet work.
+///
+/// AssertSqlSafe: `row_ids` is bound as `$1`; the `inline_<tid>` relation name
+/// is a dynamic identifier spliced via [`inline_table_name`] (see
+/// [`end_cap_inline_rows_by_id`] for the identical idiom).
+pub async fn shadow_rows_among(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    row_ids: &[i64],
+) -> Result<bool> {
+    let sql = format!(
+        "select exists(select 1 from {} where loom_row_id = any($1) \
+         and end_snapshot is null \
+         and (loom_tombstone or loom_change_kind in ('+U', '-D')))",
+        inline_table_name(tid),
+    );
+    let v: bool = sqlx::query_scalar(AssertSqlSafe(sql))
+        .bind(row_ids.to_vec())
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(v)
+}
+
 /// Extract the id column's cell (row 0) from `batch`, typed by its `ColumnSpec`.
 /// The id value never crosses a crate boundary as a `Cell`/`SqlValue`: callers pass
 /// it inside an Arrow batch and name the id column, and this locates it by name.
