@@ -61,6 +61,10 @@ impl<T> Versioned<T> {
     }
 }
 
+/// Per-`(mv, source_table_id, bucket)` watermark map — aliased so the
+/// `MemoryControlPlane` field stays under clippy's `type_complexity` threshold.
+type MvWatermarkMap = std::collections::HashMap<(String, i64, i32), i64>;
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
@@ -73,6 +77,7 @@ pub struct MemoryControlPlane {
     transforms: Arc<Mutex<TransformsState>>,
     offsets: Arc<Mutex<std::collections::HashMap<(i64, i32), i64>>>,
     stream_tables: Arc<Mutex<std::collections::HashMap<i64, control_plane_core::StreamMeta>>>,
+    mv_watermarks: Arc<Mutex<MvWatermarkMap>>,
     lock_timeout: Duration,
 }
 
@@ -89,6 +94,7 @@ impl MemoryControlPlane {
             transforms: Arc::new(Mutex::new(TransformsState::default())),
             offsets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             stream_tables: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            mv_watermarks: Arc::new(Mutex::new(std::collections::HashMap::new())),
             lock_timeout,
         }
     }

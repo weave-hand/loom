@@ -189,6 +189,7 @@ pub async fn land_cdc(
             Some(limits.flush_byte_threshold),
             &decl,
             jobs,
+            None,
         )
         .await
     } else {
@@ -648,7 +649,7 @@ pub(crate) async fn ensure_iceberg_table(
 /// present in the physical read (`IcebergCatalog::physical_columns`) that the
 /// flush path uses to carry them into Parquet. A batch table never gets these —
 /// `ice_schema`/the mirror stay exactly as before this column existed.
-pub(crate) fn framing_column_specs() -> Vec<ColumnSpec> {
+pub fn framing_column_specs() -> Vec<ColumnSpec> {
     vec![
         ColumnSpec {
             name: "loom_change_kind".into(),

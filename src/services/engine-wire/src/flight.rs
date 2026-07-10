@@ -112,6 +112,37 @@ impl GovernedStatementQuery {
     }
 }
 
+/// A loom-native `do_get` ticket requesting a standing query's framed source
+/// delta: every `(loom_bucket, loom_offset)`-ordered event of `schema.name` at
+/// or beyond `mv`'s committed watermark. INTERNAL data plane: the response
+/// carries the `loom_*` framing columns (the worker derives its watermark CAS
+/// bounds from them, then strips them before running user SQL). The required
+/// `mv` field keeps it disjoint (`deny_unknown_fields`) from every other shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MvDeltaTicket {
+    pub mv: String,
+    pub schema: String,
+    pub name: String,
+}
+
+impl MvDeltaTicket {
+    /// JSON-encode for the `Ticket.ticket` bytes.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json of an owned serializable type is infallible; matches VectorSearchTicket::encode"
+    )]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("MvDeltaTicket is always serializable")
+    }
+
+    /// Decode from `Ticket.ticket` bytes.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// A loom-native as-of read ticket: run `sql` with every referenced table read at
 /// snapshot `as_of_snapshot` instead of its current snapshot. Bypasses the standard
 /// `CommandStatementQuery` (loom's external Flight SQL interop surface) so that
@@ -143,7 +174,7 @@ impl AsOfStatementQuery {
 /// ORDER is load-bearing and lives here, next to the ticket types whose
 /// `deny_unknown_fields` disjointness it depends on: the protobuf Flight SQL
 /// ticket is tried first (a legacy JSON ticket always starts with `{`, an invalid
-/// protobuf `Any`, so the file path is never misrouted), then the four JSON
+/// protobuf `Any`, so the file path is never misrouted), then the five JSON
 /// shapes fall through in order, the file ticket terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineTicket {
@@ -153,6 +184,8 @@ pub enum EngineTicket {
     GovernedSql(GovernedStatementQuery),
     /// Loom-native as-of SQL plane: client SQL + a resolved snapshot id.
     AsOfSql(AsOfStatementQuery),
+    /// Standing-query framed source delta plane (internal data plane).
+    MvDelta(MvDeltaTicket),
     /// k-NN vector-search plane.
     VectorSearch(VectorSearchTicket),
     /// File-ticket data plane: an explicit live-file set to stream.
@@ -201,7 +234,7 @@ impl EngineTicket {
     /// the SQL. Try the protobuf decode first; a legacy JSON ticket always starts
     /// with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
     /// (The decode-then-`is::<>()` ordering is load-bearing.) The JSON planes then
-    /// fall through in order — `deny_unknown_fields` on all four JSON shapes makes
+    /// fall through in order — `deny_unknown_fields` on all five JSON shapes makes
     /// each stage unambiguous — with the file ticket terminal.
     pub fn decode(bytes: &[u8]) -> std::result::Result<Self, TicketError> {
         if let Ok(any) = Any::decode(bytes)
@@ -226,6 +259,15 @@ impl EngineTicket {
         // and the others do not carry.
         if let Ok(q) = AsOfStatementQuery::decode(bytes) {
             return Ok(EngineTicket::AsOfSql(q));
+        }
+        // loom-native mv-delta ticket (JSON): disjoint fields (deny_unknown_fields)
+        // from the other JSON tickets — the required `mv` field is unique to this
+        // shape, so it can never alias `GovernedStatementQuery`/`AsOfStatementQuery`/
+        // `VectorSearchTicket`/`FlightTicket`. Tried after `AsOfSql` (both are
+        // two/three-field shapes so order between them is arbitrary) and before
+        // `VectorSearch` (also arbitrary — kept ticket-type declaration order).
+        if let Ok(mv) = MvDeltaTicket::decode(bytes) {
+            return Ok(EngineTicket::MvDelta(mv));
         }
         // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
         // (deny_unknown_fields on both) make this unambiguous.
@@ -268,23 +310,43 @@ impl FlightTableClient {
         })
     }
 
-    /// Send a [`FlightTicket`] via `do_get` and collect all returned
-    /// [`RecordBatch`]es. The engine streams schema-first Arrow IPC; this
-    /// method reconstructs the batches and returns them as a `Vec`.
-    pub async fn fetch(&self, ticket: FlightTicket) -> Result<Vec<RecordBatch>> {
+    /// Send a raw `Ticket.ticket` payload via `do_get` and collect all returned
+    /// [`RecordBatch`]es. The engine streams schema-first Arrow IPC; this method
+    /// reconstructs the batches and returns them as a `Vec`. Shared ticket→batches
+    /// plumbing for every JSON-ticket `do_get` consumer on this client (`fetch`,
+    /// `fetch_mv_delta`); `vector_search` stays separate — it needs the gRPC status
+    /// code preserved, not flattened by [`crate::client::be`].
+    async fn do_get_batches(&self, ticket: Vec<u8>) -> Result<Vec<RecordBatch>> {
         let resp = self
             .inner
             .clone()
             .do_get(Ticket {
-                ticket: ticket.encode().into(),
+                ticket: ticket.into(),
             })
             .await
             .map_err(crate::client::be)?;
-        let batches: Vec<RecordBatch> = decode_batches(resp)
+        decode_batches(resp)
             .try_collect()
             .await
-            .map_err(crate::client::be)?;
-        Ok(batches)
+            .map_err(crate::client::be)
+    }
+
+    /// Send a [`FlightTicket`] via `do_get` and collect all returned
+    /// [`RecordBatch`]es. The engine streams schema-first Arrow IPC; this
+    /// method reconstructs the batches and returns them as a `Vec`.
+    pub async fn fetch(&self, ticket: FlightTicket) -> Result<Vec<RecordBatch>> {
+        self.do_get_batches(ticket.encode()).await
+    }
+
+    /// Fetch a standing query's framed source delta (see [`MvDeltaTicket`]).
+    pub async fn fetch_mv_delta(
+        &self,
+        mv: String,
+        schema: String,
+        name: String,
+    ) -> Result<Vec<RecordBatch>> {
+        let ticket = MvDeltaTicket { mv, schema, name };
+        self.do_get_batches(ticket.encode()).await
     }
 
     /// Send a [`VectorSearchTicket`] via `do_get` and collect the kNN result rows.

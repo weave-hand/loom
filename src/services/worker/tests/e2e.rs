@@ -106,17 +106,19 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
     );
 
     let svc = EngineControlService {
-        cp,
+        cp: cp.clone(),
         catalog: control_catalog,
         pool: pool.clone(),
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
+        flush_byte_threshold: i64::MAX,
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,
         serving_catalog: control_plane_postgres::iceberg_catalog::IcebergCatalog::new(pool.clone()),
         serving_store: None,
         pool,
+        cp,
     };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);

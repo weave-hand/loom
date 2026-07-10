@@ -5733,3 +5733,137 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
     // Unknown table → None.
     assert!(cp.stream_meta(999).await.expect("meta").is_none());
 }
+
+/// Contract for the MvWatermarks concern: absent reads empty; from=0 inserts;
+/// CAS advances; a stale `from` is Conflict and leaves the row untouched; keys
+/// (mv, source_table_id, bucket) are independent.
+pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks + Sync)) {
+    use control_plane_core::{ControlPlaneError, WatermarkAdvance};
+    // Absent: empty map.
+    let wm = cp.mv_watermarks("s.out", 1).await.expect("read");
+    assert!(wm.is_empty(), "no rows yet");
+    // from=0 inserts.
+    cp.advance_mv_watermark(
+        "s.out",
+        1,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 5,
+        }],
+    )
+    .await
+    .expect("bootstrap advance");
+    assert_eq!(
+        cp.mv_watermarks("s.out", 1).await.expect("read").get(&0),
+        Some(&5)
+    );
+    // CAS advance.
+    cp.advance_mv_watermark(
+        "s.out",
+        1,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 5,
+            to: 9,
+        }],
+    )
+    .await
+    .expect("cas advance");
+    // Stale from: Conflict, value untouched.
+    let stale = cp
+        .advance_mv_watermark(
+            "s.out",
+            1,
+            &[WatermarkAdvance {
+                bucket: 0,
+                from: 5,
+                to: 12,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(stale, Err(ControlPlaneError::Conflict(_))),
+        "stale CAS conflicts"
+    );
+    assert_eq!(
+        cp.mv_watermarks("s.out", 1).await.expect("read").get(&0),
+        Some(&9)
+    );
+    // A from>0 advance on an ABSENT bucket is also a Conflict (never a skip-insert).
+    let absent = cp
+        .advance_mv_watermark(
+            "s.out",
+            1,
+            &[WatermarkAdvance {
+                bucket: 3,
+                from: 4,
+                to: 6,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(absent, Err(ControlPlaneError::Conflict(_))),
+        "absent row + from>0 conflicts"
+    );
+    // A from=0 advance on an ALREADY-ADVANCED (non-zero) row is a Conflict, not a
+    // clobber back to `to` — the bootstrap-insert path must never overwrite live
+    // progress (bucket 0 is at 9 here).
+    let reboot = cp
+        .advance_mv_watermark(
+            "s.out",
+            1,
+            &[WatermarkAdvance {
+                bucket: 0,
+                from: 0,
+                to: 3,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(reboot, Err(ControlPlaneError::Conflict(_))),
+        "from=0 on a non-zero row conflicts, never clobbers"
+    );
+    assert_eq!(
+        cp.mv_watermarks("s.out", 1).await.expect("read").get(&0),
+        Some(&9),
+        "value untouched after rejected from=0"
+    );
+    // Independence: other mv key / source table / bucket unaffected.
+    cp.advance_mv_watermark(
+        "s.other",
+        1,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 2,
+        }],
+    )
+    .await
+    .expect("other mv");
+    cp.advance_mv_watermark(
+        "s.out",
+        2,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 3,
+        }],
+    )
+    .await
+    .expect("other source");
+    cp.advance_mv_watermark(
+        "s.out",
+        1,
+        &[WatermarkAdvance {
+            bucket: 1,
+            from: 0,
+            to: 7,
+        }],
+    )
+    .await
+    .expect("other bucket");
+    let wm = cp.mv_watermarks("s.out", 1).await.expect("read");
+    assert_eq!(wm.get(&0), Some(&9));
+    assert_eq!(wm.get(&1), Some(&7));
+}

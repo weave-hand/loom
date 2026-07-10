@@ -16,6 +16,7 @@ use arrow_flight::{
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
 use control_plane_core::{Catalog, SnapshotId, TableRef};
+use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
@@ -55,6 +56,9 @@ pub struct FlightDataService {
     pub serving_catalog: IcebergCatalog,
     /// `Some(ServingStore { bucket, store })` for an S3 warehouse; `None` => local filesystem.
     pub serving_store: Option<ServingStore>,
+    /// The mv-delta plane's control-plane handle (`StreamTables`/`MvWatermarks`
+    /// reads — `mv_delta_scan`'s `cp` argument).
+    pub cp: PgControlPlane,
 }
 
 impl FlightDataService {
@@ -162,6 +166,44 @@ impl FlightDataService {
         )))
     }
 
+    /// Standing-query framed source delta plane: stream `t.mv`'s framed delta of
+    /// `t.schema.t.name` (see [`engine_wire::flight::MvDeltaTicket`]) and
+    /// Flight-encode the result. `mv_delta_scan`'s two deterministic refusals
+    /// (unknown source table; source not a declared log stream table) map to
+    /// `failed_precondition` — distinct from the generic [`serving_status`]
+    /// mapping, so a worker abandoning the run on either can key off the gRPC
+    /// code rather than parsing the message. Every other `EngineServingError`
+    /// (a real backend/planning fault) maps through `serving_status` unchanged.
+    async fn do_get_mv_delta(
+        &self,
+        t: engine_wire::flight::MvDeltaTicket,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let table = TableRef {
+            schema: t.schema,
+            name: t.name,
+        };
+        let (_schema, batches) = engine_serving::mv_delta::mv_delta_scan(
+            &self.cp,
+            &self.catalog,
+            &self.pool,
+            &table,
+            &t.mv,
+        )
+        .await
+        .map_err(|e| match &e {
+            engine_serving::EngineServingError::Engine(msg) if msg.starts_with("mv delta:") => {
+                Status::failed_precondition(msg.clone())
+            }
+            _ => serving_status(e),
+        })?;
+
+        // The schema is discarded here on purpose, same as `do_get_files`:
+        // `FlightDataEncoderBuilder` derives it from the batches.
+        Ok(Self::encode_response(futures::stream::iter(
+            batches.into_iter().map(Ok::<_, FlightError>),
+        )))
+    }
+
     /// File-ticket data plane: stream an explicit live-file set. Every
     /// ticket-named path must belong to the table's live snapshot (see the
     /// defense-in-depth comment inline).
@@ -249,6 +291,7 @@ impl FlightService for FlightDataService {
             EngineTicket::Sql(sql) => self.do_get_sql(sql).await,
             EngineTicket::GovernedSql(q) => self.do_get_governed_sql(q).await,
             EngineTicket::AsOfSql(q) => self.do_get_as_of_sql(q).await,
+            EngineTicket::MvDelta(t) => self.do_get_mv_delta(t).await,
             EngineTicket::VectorSearch(vs) => self.do_get_vector_search(vs).await,
             EngineTicket::Files(ft) => self.do_get_files(ft).await,
         }

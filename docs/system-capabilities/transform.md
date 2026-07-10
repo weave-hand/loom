@@ -2,18 +2,24 @@
 
 This document describes what the transform subsystem of loom can do today: the
 queue-driven derivation pillar that reads committed table snapshots over the
-engine wire, runs SQL with DataFusion (physical table-to-table or typed, in the
-ontology's vocabulary), and commits the result as a new snapshot plus lineage,
-atomically. Transforms execute on the **zero-pool worker**
-(`src/services/worker/src/transform.rs`) — the worker holds no Postgres pool
-and no Iceberg catalog; inputs stream over Arrow Flight and the commit goes
-through a single `EngineControl::CommitTransform` RPC. The former pool-owning
-transform service (`src/services/transform/`) has been deleted (#342). The
-shared payload/conformance types live in `control_plane_core`
-(`transform_job.rs`, `conform.rs`) and the read/write compute layer is
-`datafusion-io`.
+engine wire, runs SQL with DataFusion (physical table-to-table, typed in the
+ontology's vocabulary, or a standing micro-batch query over a stream source),
+and commits the result as a new snapshot plus lineage, atomically. Transforms
+execute on the **zero-pool worker** (`src/services/worker/src/transform.rs`,
+plus `src/services/worker/src/stream_mv.rs` for the micro-batch body) — the
+worker holds no Postgres pool and no Iceberg catalog; inputs stream over Arrow
+Flight and the commit goes through a single engine RPC
+(`EngineControl::CommitTransform`, or `CommitMicroBatch` for a standing
+query). The former pool-owning transform service (`src/services/transform/`)
+has been deleted (#342). The shared payload/conformance types live in
+`control_plane_core` (`transform_job.rs`, `conform.rs`, `stream_mv_job.rs`)
+and the read/write compute layer is `datafusion-io`. The micro-batch body's
+own mechanics — the watermark/CAS exactly-once story, the delta-decomposability
+contract, composability, and its deferred items — are documented in
+[stream.md](stream.md)'s **Continuous / standing queries** section, not
+duplicated here.
 
-_As of 403f7a6a._
+_As of 8610d15d._
 
 ## Queue-driven SQL transforms
 
@@ -140,13 +146,15 @@ There is one execution model: the **zero-pool worker** (`src/services/worker/`)
 closure** (a structural invariant pinned by the worker BUCK layout). It
 connects to the engine over a UDS, runs the generic `control_plane_worker`
 loop against a gRPC queue client, and drains `flush_table`, `gc_table`,
-`compact_table`, `build_vector_index`, `transform`, and `typed-transform`
-jobs. The single-RPC jobs share one shape (`run_wire_job`); compaction and
-transforms are the full engine-wire compute pattern: read inputs over
-gRPC/Flight, compute locally (coalesce for compaction, DataFusion SQL for
-transforms), rewrite to the object store, and commit the result through a
-single engine RPC (`CompactTable` / `CommitTransform`) — zero direct catalog
-access (#342). The two read their inputs **differently, by design**:
+`compact_table`, `build_vector_index`, `transform`, `typed-transform`, and
+`stream_mv` jobs. The single-RPC jobs share one shape (`run_wire_job`);
+compaction, transforms, and the micro-batch standing-query body are the full
+engine-wire compute pattern: read inputs over gRPC/Flight, compute locally
+(coalesce for compaction, DataFusion SQL for transforms and micro-batches),
+rewrite to the object store, and commit the result through a single engine RPC
+(`CompactTable` / `CommitTransform` / `CommitMicroBatch`) — zero direct
+catalog access (#342). The three read their inputs **differently, by
+design**:
 **compaction** lists a table's cold Parquet `data_file` set and streams those
 file bytes over Arrow Flight — it repackages files, so the cold set is exactly
 its input; **transforms** read each input's **merged** rows — the hot inline PG
@@ -160,7 +168,11 @@ correctness bug (`iss-transform-inline-blind`) fixed by moving the input read to
 the merged serving path; a live-but-empty input (no inline, no files) is not
 registered in the serving catalog, so the worker treats a planning error on an
 existing input as an empty relation (see `#iss-serving-empty-table-not-found`).
-Worker config parsing is strict: a malformed tuning knob fails startup instead
+The `stream_mv` micro-batch body reads neither the raw cold files nor the full
+merged table: it fetches only the **offset delta since the standing query's
+committed watermark** — files∪inline, framed, per-bucket-ordered — via a
+dedicated internal Flight ticket (`MvDeltaTicket`/`mv_delta_scan`; see
+[stream.md](stream.md)). Worker config parsing is strict: a malformed tuning knob fails startup instead
 of silently falling back to the default (#202). Job payloads and kind strings
 were wire-frozen across the migration, so jobs queued against the old binary
 were executable by either binary during cutover. Transform inputs are
@@ -171,8 +183,14 @@ recorded follow-up under `#fut-transform-followups`).
 
 Transforms are a sixth control-plane concern (`Transforms`, `control_plane_core::transforms`):
 a `TransformDef` names a `TransformBody` — `Physical` (table inputs/output +
-SQL) or `Typed` (ontology-type inputs/output + SQL), each mirroring the
-matching queue job payload one-for-one, including `output_mode`. `define_transform`
+SQL), `Typed` (ontology-type inputs/output + SQL), or `MicroBatch` (source
+stream table + output stream table + SQL, a standing micro-batch query
+re-run over the source's offset delta on each trigger — the stream engine's
+continuous-query slice; see [stream.md](stream.md)'s **Continuous / standing
+queries** section for the watermark/CAS/composability story), each mirroring
+the matching queue job payload one-for-one (`Physical`/`Typed` carry
+`output_mode`; `MicroBatch` emits the dedicated `stream_mv` job kind instead —
+see **Worker execution model** below). `define_transform`
 is an upsert (redefining an existing name replaces its body), backed by
 `list_transforms`/`get_transform`/`delete_transform` (delete is idempotent and
 history-preserving: runs keep their frozen body and transform name as plain
@@ -370,9 +388,14 @@ body's `to_job(run_id)`.
   authoring/enqueue authorization is ungoverned (the admin HTTP surface is
   admin-gated, but that is coarse instance-admin, not a transform-authoring
   capability of its own).
-- `#fut-transform-followups` — watermark/incremental output, optional
-  Ballista escalation, streaming input scans for the wire path (define-time
-  DAG validation landed with data triggers).
+- `#fut-transform-followups` — optional Ballista escalation and streaming
+  (non-materializing) input scans for the wire path remain deferred
+  (define-time DAG validation landed with data triggers). The watermark/
+  incremental-output clause is now largely subsumed: the `MicroBatch` body
+  ships per-delta watermarked incremental output for standing queries (see
+  [stream.md](stream.md)'s **Continuous / standing queries**); what remains
+  open there is true incremental (retract-correct) operators for
+  whole-history aggregations, not incremental output per se.
 - `#fut-datafusion-type-coverage` — only the canonical scalar set round-trips;
   timestamps, dates, decimals, and small/unsigned ints abandon the job.
 - `#fut-worker-lazy-compact-ctx` — the zero-pool worker builds its compaction

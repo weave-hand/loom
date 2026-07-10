@@ -21,7 +21,7 @@ use tonic::Request;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn do_get_governed_applies_policy() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
+    let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let dsn = fx.pg_dsn(&db);
     let wh = tempfile::tempdir().expect("warehouse");
@@ -39,6 +39,7 @@ async fn do_get_governed_applies_policy() {
         serving_catalog: IcebergCatalog::new(pool.clone()),
         serving_store: None,
         pool,
+        cp,
     };
 
     // Policy: only rows with id >= 2 are visible on `s.orders`.

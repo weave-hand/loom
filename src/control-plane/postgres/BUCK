@@ -272,6 +272,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "mv-watermarks",
+    crate = "mv_watermarks",
+    srcs = ["tests/mv_watermarks.rs"],
+    crate_root = "tests/mv_watermarks.rs",
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "stream-bucket-check",
     crate = "stream_bucket_check",
     srcs = ["tests/stream_bucket_check.rs"],
@@ -376,6 +384,25 @@ loom_fixture_test(
         "//third-party:arrow-schema",
         "//third-party:serde_json",
         "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-mv-triggers",
+    crate = "stream_mv_triggers",
+    srcs = ["tests/stream_mv_triggers.rs"],
+    crate_root = "tests/stream_mv_triggers.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:time",
         "//third-party:tokio",

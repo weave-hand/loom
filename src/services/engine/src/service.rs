@@ -38,6 +38,20 @@ fn parse_run_id(s: &str) -> std::result::Result<uuid::Uuid, Status> {
     uuid::Uuid::parse_str(s).map_err(|e| Status::invalid_argument(format!("bad run_id: {e}")))
 }
 
+/// `pb::MvAdvance` -> `control_plane_core::WatermarkAdvance`, shared by
+/// `commit_micro_batch`'s empty-output-with-advances branch and its normal
+/// landing path below.
+fn convert_advances(advances: &[pb::MvAdvance]) -> Vec<control_plane_core::WatermarkAdvance> {
+    advances
+        .iter()
+        .map(|a| control_plane_core::WatermarkAdvance {
+            bucket: a.bucket,
+            from: a.from,
+            to: a.to,
+        })
+        .collect()
+}
+
 fn de_arg<T: serde::de::DeserializeOwned>(
     json: &str,
     what: &str,
@@ -59,6 +73,10 @@ pub struct EngineControlService {
     pub retention: std::time::Duration,
     /// Governed-write executor (relocated from query-api).
     pub writer: engine_serving::IcebergActionWriter,
+    /// Inline-row bytes above which a flush-to-Parquet job is enqueued
+    /// (`EngineTuning::flush_byte_threshold`) — threaded into `commit_micro_batch`'s
+    /// `inline_append_mv` call, exactly as the writer's own inline-writing paths use it.
+    pub flush_byte_threshold: i64,
 }
 
 #[tonic::async_trait]
@@ -318,6 +336,142 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         let snap = tx.commit().await.map_err(status)?;
         Ok(Response::new(pb::CommitTransformResponse {
             snapshot_id: snap.map(|s| s.0),
+        }))
+    }
+
+    /// The atomicity heart of the stream-continuous slice: inline-land a
+    /// micro-batch result declared a log stream table, CAS-advance the source's
+    /// per-bucket watermark, and mark the driving run succeeded — one Postgres
+    /// transaction (`inline_append_mv`). Empty output (`ipc` empty) lands and
+    /// declares nothing: with advances present (a filtering micro-batch) it still
+    /// CAS-advances the watermark + marks the run in one tx; with no advances it
+    /// just closes `run_id`.
+    async fn commit_micro_batch(
+        &self,
+        req: Request<pb::CommitMicroBatchRequest>,
+    ) -> std::result::Result<Response<pb::CommitMicroBatchResponse>, Status> {
+        let r = req.into_inner();
+        let run_id = r.run_id.as_deref().map(parse_run_id).transpose()?;
+
+        if r.ipc.is_empty() {
+            // No output rows to land. Two sub-cases, both land NOTHING and
+            // declare NO output table:
+            //  - advances present  => a filtering micro-batch consumed a delta
+            //    but produced nothing; advance the watermark + mark the run
+            //    ATOMICALLY (else the consumed delta reprocesses forever).
+            //  - advances empty     => an empty source delta / spurious wakeup;
+            //    just mark the run.
+            let advances = convert_advances(&r.advances);
+            if advances.is_empty() {
+                if let Some(rid) = run_id {
+                    self.cp
+                        .transforms()
+                        .finish_run(
+                            rid,
+                            control_plane_core::RunOutcome::Succeeded { snapshot_id: 0 },
+                        )
+                        .await
+                        .map_err(status)?;
+                }
+            } else {
+                // Resolve the source tid for the watermark key (absent =>
+                // invalid_argument, same as the landing path below).
+                let mut conn = self
+                    .pool
+                    .acquire()
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let source_table_id = control_plane_postgres::iceberg_mirror::live_table_id(
+                    &mut conn,
+                    &r.source_schema,
+                    &r.source_name,
+                )
+                .await
+                .map_err(status)?
+                .ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "commit_micro_batch: unknown source table {}.{}",
+                        r.source_schema, r.source_name
+                    ))
+                })?;
+                drop(conn);
+                control_plane_postgres::iceberg_inline::advance_mv_watermark_only(
+                    &self.pool,
+                    &control_plane_postgres::iceberg_inline::MvCommit {
+                        mv: r.mv,
+                        source_table_id,
+                        advances,
+                        run_id,
+                    },
+                )
+                .await
+                .map_err(status)?;
+            }
+            return Ok(Response::new(pb::CommitMicroBatchResponse {
+                snapshot_id: None,
+            }));
+        }
+
+        let columns: Vec<control_plane_core::ColumnSpec> = serde_json::from_str(&r.columns_json)
+            .map_err(|e| Status::invalid_argument(format!("bad columns_json: {e}")))?;
+        let wire: engine_wire::convert::LineageWire = serde_json::from_str(&r.lineage_json)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage_json: {e}")))?;
+        let lineage = control_plane_core::LineageEvent::try_from(wire)
+            .map_err(|e| Status::invalid_argument(format!("bad lineage: {e}")))?;
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let source_table_id = control_plane_postgres::iceberg_mirror::live_table_id(
+            &mut conn,
+            &r.source_schema,
+            &r.source_name,
+        )
+        .await
+        .map_err(status)?
+        .ok_or_else(|| {
+            Status::invalid_argument(format!(
+                "commit_micro_batch: unknown source table {}.{}",
+                r.source_schema, r.source_name
+            ))
+        })?;
+        drop(conn);
+
+        let (ipc_schema, ipc_batches) = datafusion_io::decode_ipc(&r.ipc)
+            .map_err(|e| Status::invalid_argument(format!("bad ipc: {e}")))?;
+        let batch = arrow_select::concat::concat_batches(&ipc_schema, &ipc_batches)
+            .map_err(|e| Status::invalid_argument(format!("bad ipc: {e}")))?;
+
+        let advances = convert_advances(&r.advances);
+
+        let out_table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let mv_commit = control_plane_postgres::iceberg_inline::MvCommit {
+            mv: r.mv,
+            source_table_id,
+            advances,
+            run_id,
+        };
+
+        let snap = control_plane_postgres::iceberg_inline::inline_append_mv(
+            &self.pool,
+            &out_table,
+            &columns,
+            &batch,
+            lineage,
+            Some(self.flush_byte_threshold),
+            r.buckets,
+            &mv_commit,
+        )
+        .await
+        .map_err(status)?;
+
+        Ok(Response::new(pb::CommitMicroBatchResponse {
+            snapshot_id: Some(snap.0),
         }))
     }
 

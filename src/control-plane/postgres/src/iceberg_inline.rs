@@ -433,6 +433,7 @@ pub async fn inline_append(
         flush_threshold,
         &decl,
         &[],
+        None,
     )
     .await
 }
@@ -443,7 +444,8 @@ pub async fn inline_append(
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors the landing params it forwards (pool, table, columns, batch, lineage, \
-              flush threshold, stream decl) plus the slice-4 downstream jobs the action path threads in"
+              flush threshold, stream decl) plus the slice-4 downstream jobs the action path threads in, \
+              plus the road-stream-continuous MV-commit extras (watermark CAS + run mark)"
 )]
 pub(crate) async fn inline_append_decl(
     pool: &PgPool,
@@ -454,6 +456,7 @@ pub(crate) async fn inline_append_decl(
     flush_threshold: Option<i64>,
     decl: &crate::stream::StreamDecl,
     jobs: &[NewJob],
+    mv: Option<&MvCommit>,
 ) -> Result<SnapshotId> {
     let mut tx = pool.begin().await.map_err(backend)?;
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
@@ -705,6 +708,23 @@ pub(crate) async fn inline_append_decl(
         }
     }
 
+    // road-stream-continuous MV-commit extras: CAS-advance the source's per-bucket
+    // watermark(s) and mark the driving run succeeded, on THIS transaction — placed
+    // immediately after the row-insert loop so a `Conflict` here (a stale CAS) or a
+    // `NotFound` (an unknown run) propagates via `?` and rolls back the WHOLE append
+    // (rows, declare, and — since this runs before them — the flush trigger, lineage,
+    // jobs, and data triggers below). That's the exactly-once mechanism: the
+    // watermark moves iff the output rows land, and neither lands iff the other fails.
+    if let Some(m) = mv {
+        for adv in &m.advances {
+            crate::stream::pg_advance_mv_watermark(&mut *conn, &m.mv, m.source_table_id, adv)
+                .await?;
+        }
+        if let Some(rid) = m.run_id {
+            crate::transforms::pg_mark_run_succeeded(&mut *conn, rid, at.0).await?;
+        }
+    }
+
     // 3b. Flush trigger: accrue this batch's live bytes; on crossing the
     // (per-table or global) threshold, enqueue one flush_table job, atomically
     // with the rows. `None` => triggering disabled (preserves prior behaviour).
@@ -759,6 +779,66 @@ pub(crate) async fn inline_append_decl(
 
     tx.commit().await.map_err(backend)?;
     Ok(at)
+}
+
+/// The micro-batch extras committed atomically with an MV's output append: the
+/// per-bucket watermark CAS (Conflict rolls the whole tx back — the
+/// exactly-once mechanism) and the run's success mark.
+pub struct MvCommit {
+    pub mv: String,
+    pub source_table_id: i64,
+    pub advances: Vec<control_plane_core::WatermarkAdvance>,
+    pub run_id: Option<uuid::Uuid>,
+}
+
+/// Advance an MV's per-bucket watermark and mark its run succeeded in ONE
+/// transaction, WITHOUT landing output — the "micro-batch consumed a source
+/// delta but its SQL produced zero output rows" case (a filtering MV). The
+/// watermark MUST still advance or the consumed delta is reprocessed forever.
+/// A CAS `Conflict` aborts the tx (a concurrent run superseded this one). No
+/// output table is declared or touched.
+pub async fn advance_mv_watermark_only(pool: &PgPool, mv: &MvCommit) -> Result<()> {
+    let mut tx = pool.begin().await.map_err(backend)?;
+    for adv in &mv.advances {
+        crate::stream::pg_advance_mv_watermark(&mut *tx, &mv.mv, mv.source_table_id, adv).await?;
+    }
+    if let Some(rid) = mv.run_id {
+        crate::transforms::pg_mark_run_succeeded(&mut *tx, rid, 0).await?;
+    }
+    tx.commit().await.map_err(backend)?;
+    Ok(())
+}
+
+/// Land one micro-batch result: inline-append `batch` to `table` declared (or
+/// confirmed) a log stream table with `buckets` buckets — framing stamped,
+/// flush byte-trigger armed, data triggers fired (composability) — plus the
+/// [`MvCommit`] extras, all on ONE transaction.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors inline_append_decl's params, fixed to a Log declaration built from `buckets`"
+)]
+pub async fn inline_append_mv(
+    pool: &PgPool,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batch: &RecordBatch,
+    lineage: LineageEvent,
+    flush_threshold: Option<i64>,
+    buckets: i32,
+    mv: &MvCommit,
+) -> Result<SnapshotId> {
+    inline_append_decl(
+        pool,
+        table,
+        columns,
+        batch,
+        lineage,
+        flush_threshold,
+        &crate::stream::StreamDecl::Log(buckets),
+        &[],
+        Some(mv),
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------

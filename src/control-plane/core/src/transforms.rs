@@ -54,6 +54,17 @@ pub enum TransformBody {
         #[serde(default)]
         output_mode: OutputMode,
     },
+    /// A standing micro-batch query (a materialized view): `sql` re-runs over
+    /// `source`'s per-bucket offset delta on each trigger; the result appends to
+    /// `output`, itself declared a log stream table with `buckets` buckets. The
+    /// watermark is keyed by the OUTPUT (`mv_key`), not this def's name.
+    #[serde(rename = "microbatch")]
+    MicroBatch {
+        source: TableRef,
+        output: TableRef,
+        buckets: i32,
+        sql: String,
+    },
 }
 
 impl TransformBody {
@@ -90,6 +101,21 @@ impl TransformBody {
                     output: output.clone(),
                     sql: sql.clone(),
                     output_mode: *output_mode,
+                    run_id: Some(run_id),
+                }),
+            ),
+            Self::MicroBatch {
+                source,
+                output,
+                buckets,
+                sql,
+            } => (
+                crate::STREAM_MV_JOB_KIND,
+                serde_json::to_value(crate::StreamMvJob {
+                    source: source.clone(),
+                    output: output.clone(),
+                    buckets: *buckets,
+                    sql: sql.clone(),
                     run_id: Some(run_id),
                 }),
             ),
@@ -272,6 +298,29 @@ pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
     if let Some(expr) = &def.schedule {
         validate_cron(expr)?;
     }
+    if let TransformBody::MicroBatch {
+        source,
+        output,
+        buckets,
+        sql,
+    } = &def.body
+    {
+        if *buckets < 1 {
+            return Err(ControlPlaneError::Validation(format!(
+                "microbatch output bucket count must be >= 1, got {buckets}"
+            )));
+        }
+        if sql.trim().is_empty() {
+            return Err(ControlPlaneError::Validation(
+                "microbatch sql must not be empty".into(),
+            ));
+        }
+        if source == output {
+            return Err(ControlPlaneError::Validation(
+                "microbatch source and output must differ".into(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -308,6 +357,9 @@ impl TriggerNode {
                     .collect(),
                 types.get(output).cloned(),
             ),
+            TransformBody::MicroBatch { source, output, .. } => {
+                (vec![source.clone()], Some(output.clone()))
+            }
         };
         Self {
             name: name.0.clone(),

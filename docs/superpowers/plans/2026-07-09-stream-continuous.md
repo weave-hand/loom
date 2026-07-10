@@ -314,6 +314,16 @@ In `src/control-plane/core/src/queue.rs:31`, add `crate::STREAM_MV_JOB_KIND,` to
 
 `buck2 build -v0 --console none //src/...` — every non-exhaustive `match` over `TransformBody` now errors (adapters' body encode/decode in `postgres/src/transforms.rs` + `memory/src/transforms.rs`, any UI/admin mapping). For serde-driven encode/decode sites no change is needed (the enum serializes itself); for explicit matches add a `MicroBatch` arm mirroring `Physical` (its io is already physical `TableRef`s — no ontology resolution). Read each site; do not blind-arm with `_ =>`.
 
+**EXCEPTION — the define-time refuse-guard site (`define_transform`, `postgres/src/transforms.rs`, landed after this plan by #416).** The `output_table` match feeding `pg_refuse_stream_target` must NOT group `MicroBatch` with `Physical`. A MicroBatch MV legitimately owns its declared log-stream output and writes to it via the sanctioned `CommitMicroBatch` path, so it is **exempt** from the legacy-write refuse guard — give it its own arm returning `None`:
+
+```rust
+    TransformBody::Physical { output, .. } => Some(output.clone()),
+    TransformBody::MicroBatch { .. } => None, // exempt: MV owns its stream output via CommitMicroBatch
+    TransformBody::Typed { output, .. } => { /* resolve via pg_type_tables */ }
+```
+
+Without the exemption, re-defining a running MV (whose output is a declared stream after the first commit; the insert is `on conflict do update`) would be refused. Task 6 adds a regression test for this. (Human-confirmed decision, 2026-07-10.)
+
 - [ ] **Step 6: Run the test + whole-tree build**
 
 Run: `buck2 test --console none //src/control-plane/core:stream-mv-core` — PASS.
@@ -487,7 +497,7 @@ pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
 
 - [ ] **Step 5: Memory adapter**
 
-Add `pub(crate) mv_watermarks: parking_lot::Mutex<HashMap<(String, i64, i32), i64>>` to `MemoryControlPlane` (mirroring `offsets`), and implement `MvWatermarks` with the same CAS semantics (absent = 0 only satisfies `from == 0`; mismatch → `Conflict`).
+Add `pub(crate) mv_watermarks: Arc<Mutex<HashMap<(String, i64, i32), i64>>>` to `MemoryControlPlane` (mirroring `offsets` — the `Arc` wrapper is REQUIRED: `MemoryControlPlane` `#[derive(Clone)]`s and shares all state via `Arc<Mutex<…>>`, so a bare `Mutex` would give cloned handles independent watermark maps and silently break shared-state semantics; initialize with `Arc::new(Mutex::new(HashMap::new()))` in the constructor beside `offsets`), and implement `MvWatermarks` with the same CAS semantics (absent = 0 only satisfies `from == 0`; mismatch → `Conflict`).
 
 - [ ] **Step 6: Run + commit**
 
@@ -724,7 +734,9 @@ pub async fn inline_append_mv(
 In `engine/src/service.rs`, `commit_micro_batch` (template: `commit_transform` for decode + status mapping, `write_object` for IPC decode):
 
 1. Decode `columns_json`, `lineage_json` (`LineageWire`), optional `run_id`.
-2. **Empty case** (`ipc` empty AND `advances` empty): if `run_id` present, `self.cp.transforms().finish_run(rid, RunOutcome::Succeeded { snapshot_id: 0 })`; respond `snapshot_id: None`.
+2. **Empty-output case** (key on `ipc.is_empty()` — NOT `ipc` AND `advances` both empty). No output rows to land, so declare/land NOTHING. Two sub-cases:
+   - **`advances` empty** (an empty source delta / spurious wakeup): if `run_id` present, `finish_run(rid, RunOutcome::Succeeded { snapshot_id: 0 })`; respond `snapshot_id: None`.
+   - **`advances` non-empty** (a FILTERING micro-batch — it consumed a non-empty delta but its SQL produced zero output rows): resolve the source tid (absent → `invalid_argument`) and call the new `advance_mv_watermark_only(&self.pool, &MvCommit { … })` — CAS-advance the per-bucket watermark + `pg_mark_run_succeeded(_, rid, 0)` in ONE tx (a `Conflict` → `aborted`), landing/declaring no output. This is REQUIRED: the watermark MUST advance past the consumed delta or a filtering MV reprocesses it on every trigger forever. Respond `snapshot_id: None`. (Spec-gap resolution, human-flagged 2026-07-10 — see Task 5 which naturally produces this case.)
 3. Resolve the source tid: `live_table_id(&mut conn, &r.source_schema, &r.source_name)` → absent is `invalid_argument` (the delta it claims to consume cannot exist).
 4. Decode the IPC batch(es), concat to one `RecordBatch` (the `write_object` convention).
 5. `inline_append_mv(&self.pool, &out_table, &columns, &batch, lineage, Some(self.tuning.flush_byte_threshold…), r.buckets, &MvCommit { mv: r.mv, source_table_id, advances, run_id })` — thread the flush threshold exactly as the other inline-writing handlers do.
@@ -777,7 +789,8 @@ Legs (one flow):
 4. `flush_table(pool, catalog, &src)` (moves the processed rows to files), then `land` two more rows `(4, 40), (5, 50)`; run micro-batch #2 (fresh run id). Assert convergence #2: output = ALL 5 doubled rows, no duplicates — the delta scan crossed the flush boundary and the watermark excluded batch #1.
 5. **Structural subscribability:** via `IcebergCatalog::inline_live_batch_full` on `s.doubled` (plus its flushed files if any), assert every output row carries `loom_change_kind = "+I"` and `loom_bucket = 0` with offsets exactly `0..5` (gapless from zero); `cp.stream_meta(out_tid)` is `Some(Log)`.
 6. **Idempotent re-run:** micro-batch #3 with no new source rows → `Ok`, output still 5 rows, run `Succeeded` (the empty-delta path).
-7. **Deterministic abandon:** a job whose source is a plain batch table → `Err(JobFailure { policy: Abandon, .. })`.
+7. **Filtering micro-batch (empty output, non-empty delta):** use an MV whose SQL filters (e.g. `select id, val from events where val > 1000`) and `land` new source rows that ALL fail the predicate, then run the micro-batch. Assert: `Ok`; the output table gains NO rows (and the watermark for THIS mv ADVANCED past the consumed delta — `cp.mv_watermarks(mv_key, src_tid)` moved); run `Succeeded`. Re-running with no new source rows stays a no-op (does not reprocess the filtered delta). This exercises Task 4's `ipc.is_empty() && !advances.is_empty()` empty-output branch end-to-end — the worker (steps 4/6/8) naturally sends non-empty advances with empty IPC. (Can be a distinct MV/run within this flow or a sibling test.)
+8. **Deterministic abandon:** a job whose source is a plain batch table → `Err(JobFailure { policy: Abandon, .. })`.
 
 Wire `loom_fixture_test` target `stream-mv-e2e` mirroring `transform-e2e` (`worker/BUCK:185`), deps mirroring it plus nothing new.
 
@@ -848,6 +861,7 @@ Create `src/control-plane/postgres/tests/stream_mv_triggers.rs`, mirroring `test
 2. **Debounce:** land again WITHOUT draining → still exactly one `Queued` run (at-most-one-pending).
 3. **Composability:** define `mv2` (`source: s.mv1`, `on_input_commit: true`); commit an MV1 micro-batch via `inline_append_mv(pool, &s_mv1, …, &MvCommit { mv: "s.mv1", source_table_id: events_tid, advances: [{0, 0, n}], run_id: None })` → an `stream_mv` job for `mv2` is enqueued by the SAME transaction (dequeue + payload check): an MV's output commit is a first-class data-trigger seam.
 4. **Cycle rejection:** with `mv_a: s.t1 → s.t2` defined (`on_input_commit`), defining `mv_b: s.t2 → s.t1` (`on_input_commit`) is a `Validation` error naming both defs.
+5. **Redefine-after-first-commit (refuse-guard exemption regression):** define `mv1: s.events → s.mv1`, commit a micro-batch to `s.mv1` (via `inline_append_mv`, so `s.mv1` is now a declared log stream), then **re-`define_transform`** `mv1` with edited `sql` (same output) → succeeds (`Ok`), NOT a `Validation` refusal. This locks in the `MicroBatch { .. } => None` exemption Task 1 added to the define-time `pg_refuse_stream_target` site (see Task 1 Step 5's EXCEPTION note). Contrast: a `Physical`/`Typed` transform re-targeting `s.mv1` is still refused (existing #416 behavior — do not regress it).
 
 Wire `loom_fixture_test` target `stream-mv-triggers` mirroring `data-triggers` in `src/control-plane/postgres/BUCK`.
 

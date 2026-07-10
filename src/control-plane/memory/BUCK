@@ -148,6 +148,15 @@ rust_test(
 )
 
 rust_test(
+    name = "mv-watermarks",
+    crate = "mv_watermarks",
+    srcs = ["tests/mv_watermarks.rs"],
+    crate_root = "tests/mv_watermarks.rs",
+    edition = "2024",
+    deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+rust_test(
     name = "auth",
     crate = "auth",
     srcs = ["tests/auth.rs"],
