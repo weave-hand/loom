@@ -287,3 +287,192 @@ async fn empty_downstream_enqueues_no_job() {
         "an action with no downstream enqueues no job"
     );
 }
+
+/// A single-step `updateOrder` Update action (identity-only param — a PATCH that
+/// touches the row without changing any other column) with the given `downstream`
+/// templates. Order has no non-identity property (see `define_order`), so the
+/// only settable param is the identity itself; that is enough to exercise the
+/// write_delta path and its downstream enqueue.
+fn update_order_action(downstream: Vec<JobTemplate>) -> ActionDef {
+    ActionDef::single_step(
+        ActionName("updateOrder".into()),
+        tn("Order"),
+        ActionKind::Update,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    )
+    .downstream(downstream)
+}
+
+/// A single-step `deleteOrder` Delete action (identity-only) with the given
+/// `downstream` templates.
+fn delete_order_action(downstream: Vec<JobTemplate>) -> ActionDef {
+    ActionDef::single_step(
+        ActionName("deleteOrder".into()),
+        tn("Order"),
+        ActionKind::Delete,
+        vec![ParamDef {
+            name: "id".into(),
+            ty: "Long".into(),
+            required: true,
+            binds: None,
+        }],
+        vec![],
+    )
+    .downstream(downstream)
+}
+
+/// A committed UPDATE enqueues exactly ONE `transform` job, resolved against the
+/// updated row's identity — the write_delta path's atomic-enqueue happy path
+/// (slice 4 phase 2). Before this task, `updateOrder`'s `downstream` is rejected
+/// at define time by `validate_downstream_scope` (phase-1 gate); once the gate is
+/// relaxed but before `write_delta` threads `jobs` through, the job is silently
+/// dropped at runtime.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_update_enqueues_downstream_job() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp, PropertyConstraints::default()).await;
+    cp.ontology()
+        .define_action(create_order_action(vec![]))
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(update_order_action(vec![order_transform_template()]))
+        .await
+        .unwrap();
+
+    let (subj, _role) = writer_on(&cp, &["Order"]).await;
+
+    let (engine, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    // Seed: insert order id=42. createOrder has no downstream, so this enqueues
+    // no transform job of its own.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrder",
+        &json!({ "id": "42" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed insert: {body}");
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "the seed insert (no downstream) enqueues no job"
+    );
+
+    // Update: touches id=42 via write_delta; downstream enqueues one job on commit.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/updateOrder",
+        &json!({ "id": "42" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "update: {body}");
+
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        1,
+        "one downstream transform job rides the committed update"
+    );
+    let payloads = job_payloads(&pool, TRANSFORM_JOB_KIND).await;
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["orderId"], json!(42));
+
+    drop(eg);
+}
+
+/// A committed DELETE enqueues exactly ONE `transform` job, keyed by the deleted
+/// identity — the write_delta tombstone path's atomic-enqueue happy path (slice 4
+/// phase 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_delete_enqueues_downstream_job() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp, PropertyConstraints::default()).await;
+    cp.ontology()
+        .define_action(create_order_action(vec![]))
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(delete_order_action(vec![order_transform_template()]))
+        .await
+        .unwrap();
+
+    let (subj, _role) = writer_on(&cp, &["Order"]).await;
+
+    let (engine, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    // Seed: insert order id=99. createOrder has no downstream, so this enqueues
+    // no transform job of its own.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrder",
+        &json!({ "id": "99" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed insert: {body}");
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "the seed insert (no downstream) enqueues no job"
+    );
+
+    // Delete: removes id=99 via write_delta's tombstone; downstream enqueues one
+    // job on commit, keyed by the deleted identity.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/deleteOrder",
+        &json!({ "id": "99" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete: {body}");
+
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        1,
+        "one downstream transform job rides the committed delete"
+    );
+    let payloads = job_payloads(&pool, TRANSFORM_JOB_KIND).await;
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["orderId"], json!(99));
+
+    drop(eg);
+}

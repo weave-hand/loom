@@ -44,24 +44,28 @@ fn ref_names(payload: &serde_json::Value) -> Vec<String> {
 /// `@self.id` when the target declares no identity (the `id` property exists iff identity
 /// is declared, since identity must name one of `properties`). Pure/static — no I/O, no
 /// expression evaluation.
-/// Phase-1 scope gate: `downstream` is honored only on a single-step `Insert`
-/// action — the engine consumes downstream jobs on the `write_object` (insert)
-/// path only. Update/Delete (`write_delta`) and multi-step (`write_steps`)
-/// consumption is slice-4 phase 2; until then, declaring `downstream` on those
-/// shapes is rejected at define time so a job is never silently dropped on an
-/// unconsumed write path. Remove this gate once phase 2 lands those paths.
+/// Phase-2 scope gate: `downstream` is honored only on a single-step action —
+/// the engine consumes downstream jobs on the `write_object` (insert) and
+/// `write_delta` (update/delete) paths. Multi-step (`write_steps`) consumption
+/// arrives with a later slice; until then, declaring `downstream` on a
+/// multi-step action is rejected at define time so a job is never silently
+/// dropped on an unconsumed write path. Remove this gate once multi-step
+/// lands.
 pub fn validate_downstream_scope(action: &ActionDef) -> Result<(), ControlPlaneError> {
     if action.downstream.is_empty() {
         return Ok(());
     }
-    let single_step_insert = action
-        .steps
-        .first()
-        .is_some_and(|s| action.steps.len() == 1 && s.kind == ActionKind::Insert);
-    if !single_step_insert {
+    let single_step_supported = action.steps.len() == 1
+        && action.steps.first().is_some_and(|s| {
+            matches!(
+                s.kind,
+                ActionKind::Insert | ActionKind::Update | ActionKind::Delete
+            )
+        });
+    if !single_step_supported {
         return Err(ControlPlaneError::Validation(
-            "downstream is only supported on single-step Insert actions in this release \
-             (Update/Delete/multi-step downstream arrives in slice-4 phase 2)"
+            "downstream is only supported on single-step actions in this release \
+             (multi-step downstream arrives with the write_steps path)"
                 .into(),
         ));
     }

@@ -480,6 +480,12 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         let event: control_plane_core::LineageEvent = wire
             .try_into()
             .map_err(|e: String| Status::invalid_argument(format!("bad lineage: {e}")))?;
+        let jobs: Vec<control_plane_core::NewJob> = if r.jobs_json.is_empty() {
+            Vec::new()
+        } else {
+            serde_json::from_str(&r.jobs_json)
+                .map_err(|e| Status::invalid_argument(format!("bad jobs_json: {e}")))?
+        };
         let snap = self
             .writer
             .write_delta(
@@ -492,6 +498,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
                 &r.before_columns_json,
                 event,
                 r.expected_version,
+                &jobs,
             )
             .await
             .map_err(serving_status)?;

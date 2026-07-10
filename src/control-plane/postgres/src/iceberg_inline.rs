@@ -1031,7 +1031,7 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
 /// distinct keys and never contend. Inline delta rows are never end-capped here.
 #[allow(
     clippy::too_many_arguments,
-    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness + optional consolidate threshold; a params struct would only obscure the call sites"
+    reason = "the delta write's public contract carries table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness + optional consolidate threshold + downstream jobs; a params struct would only obscure the call sites"
 )]
 pub async fn write_inline_delta(
     pool: &PgPool,
@@ -1044,6 +1044,7 @@ pub async fn write_inline_delta(
     lineage: LineageEvent,
     expected_version: i64,
     consolidate_threshold: Option<i64>,
+    jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     // `before` (the prior row with its OWN positionally-aligned ColumnSpecs) is USED
     // by the CDC emit branch below; a non-CDC table ignores it and stays byte-identical.
@@ -1237,6 +1238,12 @@ pub async fn write_inline_delta(
         Some(lineage.run_id.0),
     )
     .await?;
+    // The action's resolved downstream jobs (Update/Delete phase 2) ride this same
+    // commit tx — enqueued iff the delta write commits (commit-or-neither), mirroring
+    // the insert path's `write_object` and the `stream_consolidate` enqueue above.
+    for job in jobs {
+        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
+    }
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }

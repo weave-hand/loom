@@ -196,7 +196,7 @@ impl IcebergActionWriter {
     /// `EngineServingError::Conflict` if the CAS lost a race.
     #[allow(
         clippy::too_many_arguments,
-        reason = "mirrors iceberg_inline::write_inline_delta's public contract — table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness; a params struct would only obscure the call site"
+        reason = "mirrors iceberg_inline::write_inline_delta's public contract — table + id-batch + version-vs-tombstone + optional before-image + lineage + CAS witness + downstream jobs; a params struct would only obscure the call site"
     )]
     pub async fn write_delta(
         &self,
@@ -209,6 +209,7 @@ impl IcebergActionWriter {
         before_columns_json: &str,
         event: LineageEvent,
         expected_version: i64,
+        jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, EngineServingError> {
         let batch = datafusion_io::decode_ipc(ipc)
             .map_err(|e| EngineServingError::Engine(e.to_string()))?
@@ -245,6 +246,7 @@ impl IcebergActionWriter {
             event,
             expected_version,
             Some(self.consolidate_delta_threshold),
+            jobs,
         )
         .await
         .map_err(|e| match e {

@@ -1103,6 +1103,11 @@ async fn run_mutate(
         .cloned()
         .collect();
 
+    // Slice-4 phase 2: resolve the action's downstream templates against the resolved
+    // row (identity + any SET columns), so the jobs ride the write's commit tx — same
+    // atomic commit-or-neither contract as the insert path.
+    let jobs = crate::downstream::resolve_downstream(&action.downstream, &pairs);
+
     // Fine-grained Write policies for the subject on this type. Fetched once; the
     // per-row governance (`enforce_mutate_policy`) is re-run against the freshly-read
     // row on every retry, so a CAS re-read re-governs the current winner.
@@ -1201,7 +1206,7 @@ async fn run_mutate(
                         before,
                         event.clone(),
                         v0,
-                        &[],
+                        &jobs,
                     )
                     .await
             }
@@ -1217,7 +1222,7 @@ async fn run_mutate(
                         before,
                         event.clone(),
                         v0,
-                        &[],
+                        &jobs,
                     )
                     .await
             }

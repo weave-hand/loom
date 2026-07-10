@@ -343,6 +343,7 @@ async fn write_delta_threads_consolidate_threshold_to_production_path() {
             &serde_json::to_string(&cols()).expect("before_columns_json"),
             event("update"),
             v0,
+            &[],
         )
         .await
         .expect("update delta crossing the threshold");
