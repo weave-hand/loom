@@ -15,6 +15,7 @@ pub mod expr;
 pub mod filter;
 pub(crate) mod flight_auth;
 pub mod flight_export;
+pub mod flight_sql;
 pub mod governed;
 pub mod handler;
 pub mod http;

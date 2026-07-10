@@ -44,6 +44,11 @@ pub async fn serve(
     let cp_flight = cp.clone();
     let auth_flight: Arc<dyn control_plane_core::Auth + Send + Sync> = auth.auth.clone();
 
+    // Clones for the optional external Flight SQL wire, captured before `cp`/`auth` move —
+    // same pattern as the export's `cp_flight`/`auth_flight` above.
+    let cp_sql = cp.clone();
+    let auth_sql: Arc<dyn control_plane_core::Auth + Send + Sync> = auth.auth.clone();
+
     let admin_state = service_runtime::AdminState {
         auth: auth.auth.clone(),
         cp: direct.clone(),
@@ -100,6 +105,20 @@ pub async fn serve(
         spawn_flight_export(bind, &engine_socket, auth_flight, cp_flight, max_rows).await?;
     }
 
+    // Optional external Flight SQL wire (opt-in via LOOM_SQL_WIRE_BIND_ADDR; typed seam —
+    // this wire's knobs are the typed `SqlWireTuning`, not raw env reads, per
+    // fut-flight-export-config-seam).
+    if let Some(bind) = app_cfg.sql_wire.bind_addr.clone() {
+        spawn_sql_wire(
+            &bind,
+            &engine_socket,
+            auth_sql,
+            cp_sql,
+            app_cfg.sql_wire.max_rows,
+        )
+        .await?;
+    }
+
     service_runtime::serve_with_shutdown(listener, app, shutdown).await?;
     Ok(())
 }
@@ -138,6 +157,45 @@ async fn spawn_flight_export(
             .await
         {
             tracing::error!(error = %e, "Flight export server exited");
+        }
+    });
+    Ok(())
+}
+
+async fn spawn_sql_wire(
+    bind: &str,
+    engine_socket: &str,
+    auth_sql: Arc<dyn control_plane_core::Auth + Send + Sync>,
+    cp_sql: Arc<dyn ControlPlane>,
+    max_rows: u32,
+) -> Result<(), BoxErr> {
+    use arrow_flight::flight_service_server::FlightServiceServer;
+
+    use crate::flight_sql::FlightSqlWireService;
+
+    let addr: std::net::SocketAddr = bind.parse().map_err(|e| -> BoxErr {
+        format!("LOOM_SQL_WIRE_BIND_ADDR `{bind}` invalid: {e}").into()
+    })?;
+    let flight_engine =
+        engine_wire::flight::FlightSqlClient::connect(engine_socket.to_string()).await?;
+    let wire = FlightSqlWireService::new(auth_sql, cp_sql, flight_engine, max_rows);
+
+    // Bind eagerly so an operator who explicitly requested the SQL wire gets a hard
+    // startup failure (port in use, permission) rather than a silently-down listener.
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| -> BoxErr {
+            format!("binding LOOM_SQL_WIRE_BIND_ADDR `{addr}` failed: {e}").into()
+        })?;
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    let _sql_wire_task = tokio::spawn(async move {
+        tracing::info!(%addr, "starting external Flight SQL wire");
+        if let Err(e) = tonic::transport::Server::builder()
+            .add_service(FlightServiceServer::new(wire))
+            .serve_with_incoming(incoming)
+            .await
+        {
+            tracing::error!(error = %e, "Flight SQL wire server exited");
         }
     });
     Ok(())

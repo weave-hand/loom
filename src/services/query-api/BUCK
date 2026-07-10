@@ -19,6 +19,7 @@ rust_library(
         "//third-party:axum",
         "//third-party:base64",
         "//third-party:futures",
+        "//third-party:prost",
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:thiserror",
