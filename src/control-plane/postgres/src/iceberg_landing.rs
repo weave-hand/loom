@@ -451,7 +451,7 @@ async fn land_additive(
 /// the field-id schema built from `columns` (via [`ice_schema`]); the caller registers
 /// the returned files into a snapshot in its own transaction. This is the pure-IO half
 /// shared by the additive-land and multi-target `write_steps` paths.
-async fn write_object_data_files(
+pub async fn write_object_data_files(
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],

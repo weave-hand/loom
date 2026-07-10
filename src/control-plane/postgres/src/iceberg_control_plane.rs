@@ -135,6 +135,17 @@ impl Tx for IcebergTx {
             tx.commit().await.map_err(backend)?;
             return Ok(None);
         }
+        // Refuse stream/CDC-registered targets before any create/register: the
+        // transform-commit seam is framing-unaware. `staged_compacts` are NOT guarded —
+        // compaction is schema-invariant (columns `&[]`, files keep their framing) and
+        // the stream consolidate path rides overwrite, not this seam. Placed before
+        // `ensure_iceberg_table` so a refused commit creates no bare Iceberg table.
+        let mut refuse: Vec<&TableRef> = staged_files.iter().map(|(t, _, _)| t).collect();
+        refuse.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+        refuse.dedup();
+        for table in refuse {
+            crate::stream::pg_refuse_stream_target(&mut tx, table).await?;
+        }
         // 1. Ensure the real Iceberg table(s) exist — idempotent, on the catalog's own
         //    connection (the same pre-tx create pattern `append_parquet_snapshot` uses;
         //    a bare empty table is the only artifact if the held tx later rolls back).
