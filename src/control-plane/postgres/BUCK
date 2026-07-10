@@ -579,6 +579,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "overwrite-consuming",
+    crate = "overwrite_consuming",
+    srcs = ["tests/overwrite_consuming.rs"],
+    crate_root = "tests/overwrite_consuming.rs",
+    deps = [
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-compact",
     crate = "iceberg_compact",
     srcs = ["tests/iceberg_compact.rs"],
