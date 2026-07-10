@@ -72,7 +72,9 @@ pub use ontology::{
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{Job, JobFailure, JobId, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
-pub use stream::{BucketOffsets, MergeEngine, StreamKind, StreamMeta, StreamTables};
+pub use stream::{
+    BucketOffsets, ChangeEvent, ChangeFeedPage, MergeEngine, StreamKind, StreamMeta, StreamTables,
+};
 pub use stream_consolidate_job::{STREAM_CONSOLIDATE_JOB_KIND, StreamConsolidateJob};
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use transform_job::{

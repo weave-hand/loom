@@ -83,6 +83,30 @@ pub struct StreamMeta {
     pub merge_engine: MergeEngine,
 }
 
+/// One logical change event off a CDC table's changelog feed — the
+/// transport-agnostic record (`road-stream-subscribe`): NDJSON-serialized on the
+/// HTTP path today, protobuf-ready for a future gRPC duplex transport. `fields`
+/// holds the governed USER columns only (masked columns arrive as the mask
+/// marker); the `loom_*` framing surfaces only as this envelope's
+/// `bucket`/`offset`/`change_kind`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangeEvent {
+    pub bucket: i32,
+    pub offset: i64,
+    /// `+I` | `-U` | `+U` | `-D` (the persisted `loom_change_kind` token).
+    pub change_kind: String,
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// One bounded page of the changelog feed scan: the events (ordered by
+/// `(bucket, offset)`) plus the per-bucket resume positions AFTER them —
+/// `next[bucket]` is the next offset a resumed scan should start from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChangeFeedPage {
+    pub events: Vec<ChangeEvent>,
+    pub next: std::collections::BTreeMap<i32, i64>,
+}
+
 #[async_trait]
 pub trait BucketOffsets {
     /// Allocate a contiguous run of `count` offsets for `(table_id, bucket)` and
