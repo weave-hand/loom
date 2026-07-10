@@ -22,8 +22,10 @@ pub struct GovernedTable {
 }
 
 /// A fully-resolved governed catalog: one `GovernedTable` per type the caller may see.
-/// A table with no entry is treated as fully visible — the caller (slice 2) owns
-/// deny-by-default at the edge by never listing a type without a grant.
+/// The engine's governed-SQL path is CLOSED-WORLD over this catalog: a live table with
+/// no entry is not registered at all (unresolvable, indistinguishable from nonexistent).
+/// The edge (query-api) lists exactly the tables the subject may read; the engine
+/// enforces the omission. An entry with an empty policy is fully visible.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GovernedCatalog {
