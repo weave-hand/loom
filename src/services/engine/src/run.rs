@@ -125,7 +125,7 @@ pub async fn run(
     .with_consolidate_delta_threshold(tuning.consolidate_delta_threshold);
 
     let control = EngineControlService {
-        cp,
+        cp: cp.clone(),
         catalog: catalog.clone(),
         pool: pool.clone(),
         retention: cfg.gc_retention,
@@ -136,6 +136,7 @@ pub async fn run(
         serving_catalog: IcebergCatalog::new(pool.clone()),
         serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
         pool,
+        cp,
     };
 
     // Signal readiness: the caller binds `listener` before spawning us, so the

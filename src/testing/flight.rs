@@ -94,9 +94,13 @@ pub async fn spawn_engine_uds(
     let pool = fx.pool_for(db).await;
     // One shared catalog, mirroring production `engine::run::run`.
     let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(db), warehouse).await);
+    // One shared control-plane handle, cloned into each service that needs it
+    // (mirrors production `engine::run::run`'s single `cp` cloned into both
+    // `EngineControlService` and `FlightDataService`).
+    let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
 
     let control = opts.control.then(|| {
-        let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+        let cp = cp.clone();
         let writer = IcebergActionWriter::new(
             catalog.clone(),
             pool.clone(),
@@ -117,6 +121,7 @@ pub async fn spawn_engine_uds(
             serving_catalog: IcebergCatalog::new(pool.clone()),
             serving_store: None,
             pool,
+            cp,
         })
     });
 
