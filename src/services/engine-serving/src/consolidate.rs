@@ -334,6 +334,8 @@ async fn consolidate_locked(
     };
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
+    // Unconditional (unlike COW's `clear_has_shadow_if_quiescent`): `has_shadow` is
+    // never consulted on the CDC path — the flush gate short-circuits on `is_cdc` first.
     clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
     // Disarm the consolidate trigger too, so the next accrual of CDC deltas can
     // re-enqueue a `stream_consolidate` job (chosen over keying the re-arm off
