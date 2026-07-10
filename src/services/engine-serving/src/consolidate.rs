@@ -253,9 +253,17 @@ async fn consolidate_locked(
     let folded = df.collect().await.map_err(to_serving)?;
 
     let lineage = consolidate_event(table);
-    let snap = overwrite_parquet_snapshot(pool, catalog, table, &user_cols, folded, Some(&lineage))
-        .await
-        .map_err(to_serving)?;
+    let snap = overwrite_parquet_snapshot(
+        pool,
+        catalog,
+        table,
+        &user_cols,
+        folded,
+        Some(&lineage),
+        &[],
+    )
+    .await
+    .map_err(to_serving)?;
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
     clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;

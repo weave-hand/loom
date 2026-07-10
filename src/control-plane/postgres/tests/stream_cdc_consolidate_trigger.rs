@@ -128,6 +128,7 @@ async fn crossing_delta_threshold_enqueues_exactly_one_and_debounces() {
         lin(),
         v0,
         Some(threshold),
+        &[],
     )
     .await
     .expect("cdc update delta crossing the threshold");
@@ -163,6 +164,7 @@ async fn crossing_delta_threshold_enqueues_exactly_one_and_debounces() {
         lin(),
         v1,
         Some(threshold),
+        &[],
     )
     .await
     .expect("second cdc update delta");

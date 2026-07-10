@@ -470,7 +470,6 @@ lives entirely in the service layer.
 ## Known gaps
 
 - `#road-action-computed-assignments` — expression-valued action properties (bounded pure grammar), spec'd not built
-- `#road-action-enqueue-downstream` — actions that atomically enqueue a downstream job, spec'd not built
 - `#road-auth-comprehensive` — build-vs-adopt decision for a fuller identity layer
 - `#fut-lineage-stitching` — run-grouped lifecycle stitching of events
 - `#fut-openlineage-validation` — validate emitted OpenLineage payloads

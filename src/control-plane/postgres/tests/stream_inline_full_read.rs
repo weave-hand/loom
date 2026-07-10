@@ -154,6 +154,7 @@ async fn full_read_includes_minus_u_that_live_batch_excludes() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("cdc update delta");

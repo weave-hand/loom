@@ -109,6 +109,7 @@ async fn overwrite_end_caps_stale_inline_row() {
         &columns(),
         vec![inline_batch(&[2])],
         None,
+        &[],
     )
     .await
     .expect("overwrite id=2");

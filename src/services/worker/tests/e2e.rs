@@ -363,6 +363,7 @@ async fn gc_job_flows_through_worker_and_reclaims_object() {
         &columns(),
         vec![inline_batch(&[0, 1, 2, 3])],
         None,
+        &[],
     )
     .await
     .expect("overwrite");

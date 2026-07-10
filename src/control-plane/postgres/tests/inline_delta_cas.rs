@@ -123,6 +123,7 @@ async fn delta_write_and_cas_conflict() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("version delta with correct expected_version");
@@ -152,6 +153,7 @@ async fn delta_write_and_cas_conflict() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await;
     assert!(
@@ -181,6 +183,7 @@ async fn delta_write_and_cas_conflict() {
         lin(),
         v0_id2,
         None,
+        &[],
     )
     .await;
     assert!(r2.is_ok(), "a different identity must not conflict: {r2:?}");
@@ -222,6 +225,7 @@ async fn tombstone_delta_marks_deleted() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("tombstone delta");
@@ -312,6 +316,7 @@ async fn file_only_object_tombstone_first_lifecycle() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("tombstone-first delta on a file-only object must succeed");
@@ -403,6 +408,7 @@ async fn concurrent_first_provisioning_of_distinct_identities() {
                 lin(),
                 0,
                 None,
+                &[],
             )
             .await
         }));

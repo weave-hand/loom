@@ -141,6 +141,7 @@ async fn cold_hits_suppressed_with_no_row_filter() {
         lineage(RunId(uuid::Uuid::new_v4()), &docs_table),
         v0,
         None,
+        &[],
     )
     .await
     .unwrap();
@@ -180,6 +181,7 @@ async fn cold_hits_suppressed_with_no_row_filter() {
         lineage(RunId(uuid::Uuid::new_v4()), &docs_table),
         v0d,
         None,
+        &[],
     )
     .await
     .unwrap();
@@ -246,6 +248,7 @@ async fn cold_hit_suppressed_with_row_filter_regression() {
         lineage(RunId(uuid::Uuid::new_v4()), &docs_table),
         v0,
         None,
+        &[],
     )
     .await
     .unwrap();

@@ -2,10 +2,11 @@
 //!
 //! See [`validate_action_downstream`] — the pure/static gate both adapters call from
 //! `Ontology::define_action` so a misconfigured `downstream` (unknown job kind, or a
-//! payload `@self.<prop>` ref to a non-existent property) is rejected loudly at define
-//! time rather than silently producing an undispatchable / unresolvable job at runtime.
+//! payload `@self.<prop>` ref to a column the primary step does not write) is rejected
+//! loudly at define time rather than silently producing an undispatchable / unresolvable
+//! job at runtime.
 
-use crate::{ActionDef, ActionKind, ControlPlaneError, JobTemplate, KNOWN_JOB_KINDS, ObjectType};
+use crate::{ActionStep, ControlPlaneError, JobTemplate, KNOWN_JOB_KINDS};
 
 /// Collect every `@<name>` / `@self.<name>` reference leaf in a JSON payload. A leaf is
 /// any JSON string starting with `@`; the leading `@` and an optional `self.` prefix are
@@ -34,48 +35,28 @@ fn ref_names(payload: &serde_json::Value) -> Vec<String> {
     out
 }
 
-/// Validate every downstream template of an action against its primary target's
-/// [`ObjectType`]:
+/// Validate every downstream template of an action against its primary step's
+/// **produced columns**:
 /// - `kind` is a known worker kind ([`KNOWN_JOB_KINDS`]); and
-/// - every payload `@self.<prop>` leaf names a real property of `primary_target`.
+/// - every payload `@self.<prop>` leaf names a column `primary_step` actually writes.
 ///
-/// Property names only — params are out of scope this slice, keeping define-time and the
-/// (later) runtime resolver consistent: any non-property `@`-leaf is rejected, including
-/// `@self.id` when the target declares no identity (the `id` property exists iff identity
-/// is declared, since identity must name one of `properties`). Pure/static — no I/O, no
-/// expression evaluation.
-/// Phase-1 scope gate: `downstream` is honored only on a single-step `Insert`
-/// action — the engine consumes downstream jobs on the `write_object` (insert)
-/// path only. Update/Delete (`write_delta`) and multi-step (`write_steps`)
-/// consumption is slice-4 phase 2; until then, declaring `downstream` on those
-/// shapes is rejected at define time so a job is never silently dropped on an
-/// unconsumed write path. Remove this gate once phase 2 lands those paths.
-pub fn validate_downstream_scope(action: &ActionDef) -> Result<(), ControlPlaneError> {
-    if action.downstream.is_empty() {
-        return Ok(());
-    }
-    let single_step_insert = action
-        .steps
-        .first()
-        .is_some_and(|s| action.steps.len() == 1 && s.kind == ActionKind::Insert);
-    if !single_step_insert {
-        return Err(ControlPlaneError::Validation(
-            "downstream is only supported on single-step Insert actions in this release \
-             (Update/Delete/multi-step downstream arrives in slice-4 phase 2)"
-                .into(),
-        ));
-    }
-    Ok(())
-}
-
+/// Produced columns = each parameter's [`crate::ParamDef::binds_property`] union each
+/// assignment's `property` — exactly the row `resolve_action_row` (query-api) builds at
+/// invoke time, so a template accepted here is guaranteed to resolve at runtime instead of
+/// silently degrading to a literal `@self.<prop>` string. This is stricter than (and
+/// replaces) validating against the target's full `ObjectType.properties`: a real property
+/// the step neither binds via a param nor sets via an assignment is rejected, including
+/// `@self.id` when no param/assignment produces the identity column. Pure/static — no I/O,
+/// no expression evaluation.
 pub fn validate_action_downstream(
     downstream: &[JobTemplate],
-    primary_target: &ObjectType,
+    primary_step: &ActionStep,
 ) -> Result<(), ControlPlaneError> {
-    let prop_names: std::collections::HashSet<&str> = primary_target
-        .properties
+    let produced: std::collections::HashSet<&str> = primary_step
+        .parameters
         .iter()
-        .map(|p| p.name.as_str())
+        .map(crate::ParamDef::binds_property)
+        .chain(primary_step.assignments.iter().map(|a| a.property.as_str()))
         .collect();
     for jt in downstream {
         if !KNOWN_JOB_KINDS.contains(&jt.kind.as_str()) {
@@ -85,10 +66,9 @@ pub fn validate_action_downstream(
             )));
         }
         for name in ref_names(&jt.payload) {
-            if !prop_names.contains(name.as_str()) {
+            if !produced.contains(name.as_str()) {
                 return Err(ControlPlaneError::Validation(format!(
-                    "downstream payload references unknown `@self.{name}` (not a property of `{}`)",
-                    primary_target.name.0
+                    "downstream payload references `@self.{name}`, which the action does not write (add it as a parameter or assignment)"
                 )));
             }
         }

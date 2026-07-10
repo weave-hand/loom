@@ -183,6 +183,7 @@ async fn notify_fires_in_commit_and_latest_positions_track_peek() {
         lin(),
         v,
         None,
+        &[],
     )
     .await
     .expect("update");

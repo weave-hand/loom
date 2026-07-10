@@ -328,19 +328,15 @@ impl Ontology for PgControlPlane {
                 )));
             }
         };
-        // Load the primary step's full ObjectType (properties + identity) and validate
-        // every downstream template against it BEFORE opening the define tx. `get_type`
-        // uses its own connection; a NotFound here is left to the per-step existence check
-        // inside the tx below, which raises the canonical Validation error for unknown
-        // types (mirroring the memory fake). The boolean `object_type_exists` does NOT
-        // suffice — it carries no properties/identity for the validator.
+        // Confirm the primary step's target type exists BEFORE opening the define tx and
+        // validate every downstream template against the primary step's produced columns
+        // (params + assignments) — the validator no longer needs the loaded `ObjectType`.
+        // `get_type` uses its own connection; a NotFound here is left to the per-step
+        // existence check inside the tx below, which raises the canonical Validation error
+        // for unknown types (mirroring the memory fake).
         match self.get_type(&primary_step.target).await {
-            Ok(primary_target) => {
-                control_plane_core::validate_downstream_scope(&action)?;
-                control_plane_core::validate_action_downstream(
-                    &action.downstream,
-                    &primary_target,
-                )?;
+            Ok(_) => {
+                control_plane_core::validate_action_downstream(&action.downstream, primary_step)?;
             }
             Err(ControlPlaneError::NotFound(_)) => {}
             Err(e) => return Err(e),
