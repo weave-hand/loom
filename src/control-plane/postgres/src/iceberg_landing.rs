@@ -571,6 +571,19 @@ pub async fn write_steps(
     // `Overwrite` end-caps both tiers + re-projects the schema with zero files (a truncate).
     let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
+
+    // Refuse any stream/CDC-registered target before registering files: the
+    // multi-target path is framing-unaware, so a stream target would corrupt the
+    // stream (missing/garbage framing). In-tx placement makes the refusal atomic —
+    // if any step targets a stream table, the whole commit rolls back (nothing
+    // lands), honoring the all-or-nothing contract multi-step actions promise.
+    let mut refuse: Vec<&TableRef> = staged.iter().map(|s| &s.table).collect();
+    refuse.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+    refuse.dedup();
+    for table in refuse {
+        crate::stream::pg_refuse_stream_target(&mut tx, table).await?;
+    }
+
     for s in &staged {
         let mode = if s.overwrite {
             WriteMode::Overwrite
