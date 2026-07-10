@@ -105,50 +105,17 @@ fn cell_to_json(array: &dyn Array, row: usize) -> Value {
     }
 }
 
-/// One bounded, governed, ordered page of `base`'s changelog feed from
-/// per-bucket `positions` (bucket -> first offset not yet consumed; the caller
-/// supplies EVERY bucket). Returns the events ordered by `(bucket, offset)`
-/// (cross-bucket interleaving is positional, not chronological) plus the
-/// advanced positions. `-U` before-images are included — the changelog contract
-/// is full events.
-///
-/// The union is disjoint by construction: the slice-2b flush appends every change
-/// row to the changelog table AND end-caps the same inline rows in one tx, so an
-/// event is inline XOR a changelog file — no dedup, no watermark. Governance wraps
-/// the union view BEFORE the ordered read; the reserved framing columns are never
-/// denied/masked, so ordering/resume survive while user columns are filtered/masked.
-pub async fn changelog_feed_scan(
+/// Tier 1 of the feed union: the changelog Iceberg files (absent until the
+/// first flush). Resolves the changelog table ref for `base`, reads its
+/// current snapshot/schema/files, and builds the framed
+/// `IcebergMirrorTableProvider`. Returns `None` when nothing has flushed yet
+/// (no changelog mirror row, or a mirror row with zero files).
+async fn build_file_tier(
     catalog: &IcebergCatalog,
     base: &TableRef,
-    serving_store: Option<&ServingStore>,
-    positions: &BTreeMap<i32, i64>,
-    limit: usize,
-    policy: &TablePolicy,
-) -> Result<ChangeFeedPage, EngineServingError> {
-    let empty = || ChangeFeedPage {
-        events: vec![],
-        next: positions.clone(),
-    };
-    if positions.is_empty() || limit == 0 {
-        return Ok(empty());
-    }
-
-    let ctx = SessionContext::new();
-    // Object stores (idempotent, per `build_serving_provider`): the local
-    // filesystem for absolute `file://` warehouse paths always; the S3 store under
-    // `s3://{bucket}` when a serving store is configured.
-    ctx.register_object_store(
-        ObjectStoreUrl::local_filesystem().as_ref(),
-        Arc::new(LocalFileSystem::new()),
-    );
-    if let Some(ServingStore { bucket, store }) = serving_store {
-        let url = ObjectStoreUrl::parse(format!("s3://{bucket}")).map_err(to_serving)?;
-        ctx.register_object_store(url.as_ref(), store.clone());
-    }
-
-    // --- Tier 1: the changelog Iceberg files (absent until the first flush). ---
+) -> Result<Option<IcebergMirrorTableProvider>, EngineServingError> {
     let clog = changelog_table_ref(base);
-    let file_provider = match catalog.current_snapshot(&clog).await {
+    match catalog.current_snapshot(&clog).await {
         Ok(snap) => {
             let cols = catalog
                 .schema(&clog, snap.id)
@@ -161,120 +128,56 @@ pub async fn changelog_feed_scan(
                 .await
                 .map_err(to_serving)?;
             if files.is_empty() {
-                None
+                Ok(None)
             } else {
-                Some(IcebergMirrorTableProvider::try_new_with_schema(
+                Ok(Some(IcebergMirrorTableProvider::try_new_with_schema(
                     files, framed,
-                ))
+                )))
             }
         }
         // No changelog mirror row yet (nothing flushed): file tier absent.
-        Err(ControlPlaneError::NotFound(_)) => None,
-        Err(e) => return Err(to_serving(e)),
-    };
+        Err(ControlPlaneError::NotFound(_)) => Ok(None),
+        Err(e) => Err(to_serving(e)),
+    }
+}
 
-    // --- Tier 2: the base table's LIVE inline tail (full — keeps -U), whose
-    // physical columns already carry the framing (iceberg_inline). ---
-    let base_snap = catalog.current_snapshot(base).await.map_err(to_serving)?;
-    let inline_provider = match catalog
-        .inline_live_batch_full(base, base_snap.id)
+/// Tier 2 of the feed union: the base table's LIVE inline tail (full — keeps
+/// `-U`), whose physical columns already carry the framing (`iceberg_inline`).
+/// `snapshot_id` is `base`'s current snapshot id, already resolved by the
+/// caller (who also needs it for the union's column projection).
+async fn build_inline_tier(
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    snapshot_id: control_plane_core::SnapshotId,
+) -> Result<Option<MemTable>, EngineServingError> {
+    match catalog
+        .inline_live_batch_full(base, snapshot_id)
         .await
         .map_err(to_serving)?
     {
         Some((_tid, _row_ids, batch)) => {
             let schema = batch.schema();
-            Some(MemTable::try_new(schema, vec![vec![batch]]).map_err(to_serving)?)
+            Ok(Some(
+                MemTable::try_new(schema, vec![vec![batch]]).map_err(to_serving)?,
+            ))
         }
-        None => None,
-    };
-
-    // --- Disjoint UNION ALL, both tiers projected to the SAME column order:
-    // [user_cols..., loom_change_kind, loom_bucket, loom_offset]. ---
-    let base_cols = catalog
-        .schema(base, base_snap.id)
-        .await
-        .map_err(to_serving)?
-        .columns;
-    let mut names: Vec<String> = base_cols.iter().map(|c| c.name.clone()).collect();
-    names.extend([
-        "loom_change_kind".to_string(),
-        "loom_bucket".to_string(),
-        "loom_offset".to_string(),
-    ]);
-    let select: Vec<Expr> = names
-        .iter()
-        .map(|n| Expr::Column(Column::new_unqualified(n)))
-        .collect();
-
-    let mut tiers = Vec::new();
-    if let Some(f) = file_provider {
-        tiers.push(
-            ctx.read_table(Arc::new(f))
-                .map_err(to_serving)?
-                .select(select.clone())
-                .map_err(to_serving)?,
-        );
+        None => Ok(None),
     }
-    if let Some(i) = inline_provider {
-        tiers.push(
-            ctx.read_table(Arc::new(i))
-                .map_err(to_serving)?
-                .select(select.clone())
-                .map_err(to_serving)?,
-        );
-    }
-    // Fold the tiers into one union, propagating `DataFrame::union` errors via `?`.
-    let mut acc: Option<datafusion::prelude::DataFrame> = None;
-    for tier in tiers {
-        acc = Some(match acc {
-            None => tier,
-            Some(prev) => prev.union(tier).map_err(to_serving)?,
-        });
-    }
-    let Some(unioned) = acc else {
-        return Ok(empty());
-    };
+}
 
-    // --- Governance BEFORE the ordered read: wrap the union view. Framing
-    // columns are never denied/masked (reserved names), so ordering survives;
-    // row filters and column masks apply to the user columns. ---
-    let governed = GovernedTableProvider::new(unioned.into_view(), policy.clone())?;
-    let df = ctx.read_table(Arc::new(governed)).map_err(to_serving)?;
-
-    // --- Resume predicate: OR over buckets of (bucket = b AND offset >= next_b). ---
-    let mut pred: Option<Expr> = None;
-    for (b, off) in positions {
-        let leaf = col("loom_bucket")
-            .eq(lit(*b))
-            .and(col("loom_offset").gt_eq(lit(*off)));
-        pred = Some(match pred {
-            None => leaf,
-            Some(p) => p.or(leaf),
-        });
-    }
-    let Some(pred) = pred else {
-        return Ok(empty());
-    };
-
-    // --- Order + bound. ---
-    let batches = df
-        .filter(pred)
-        .map_err(to_serving)?
-        .sort(vec![
-            col("loom_bucket").sort(true, false),
-            col("loom_offset").sort(true, false),
-        ])
-        .map_err(to_serving)?
-        .limit(0, Some(limit))
-        .map_err(to_serving)?
-        .collect()
-        .await
-        .map_err(to_serving)?;
-
-    // --- Decode: framing -> envelope; every other (governed) column -> fields. ---
+/// Decode: framing -> envelope; every other (governed) column -> fields.
+/// Walks `batches` in order, extracting the reserved `loom_bucket` /
+/// `loom_offset` / `loom_change_kind` framing columns per row (never masked
+/// by governance) and every remaining column into the event's JSON `fields`
+/// via `cell_to_json`. `positions` seeds the returned `next` map, which is
+/// folded forward per row (`bucket -> offset + 1`).
+fn decode_page(
+    batches: &[arrow::record_batch::RecordBatch],
+    positions: &BTreeMap<i32, i64>,
+) -> Result<ChangeFeedPage, EngineServingError> {
     let mut events = Vec::new();
     let mut next = positions.clone();
-    for batch in &batches {
+    for batch in batches {
         let schema = batch.schema();
         let bidx = schema.index_of("loom_bucket").map_err(to_serving)?;
         let oidx = schema.index_of("loom_offset").map_err(to_serving)?;
@@ -323,4 +226,172 @@ pub async fn changelog_feed_scan(
         }
     }
     Ok(ChangeFeedPage { events, next })
+}
+
+/// Registers the object stores a feed scan's `SessionContext` needs
+/// (idempotent, per `build_serving_provider`): the local filesystem for
+/// absolute `file://` warehouse paths always; the S3 store under
+/// `s3://{bucket}` when a serving store is configured.
+fn register_object_stores(
+    ctx: &SessionContext,
+    serving_store: Option<&ServingStore>,
+) -> Result<(), EngineServingError> {
+    ctx.register_object_store(
+        ObjectStoreUrl::local_filesystem().as_ref(),
+        Arc::new(LocalFileSystem::new()),
+    );
+    if let Some(ServingStore { bucket, store }) = serving_store {
+        let url = ObjectStoreUrl::parse(format!("s3://{bucket}")).map_err(to_serving)?;
+        ctx.register_object_store(url.as_ref(), store.clone());
+    }
+    Ok(())
+}
+
+/// The union's column projection, common to both tiers: `[user_cols...,
+/// loom_change_kind, loom_bucket, loom_offset]`.
+fn union_select_columns(base_cols: &[control_plane_core::ColumnDef]) -> Vec<Expr> {
+    let mut names: Vec<String> = base_cols.iter().map(|c| c.name.clone()).collect();
+    names.extend([
+        "loom_change_kind".to_string(),
+        "loom_bucket".to_string(),
+        "loom_offset".to_string(),
+    ]);
+    names
+        .iter()
+        .map(|n| Expr::Column(Column::new_unqualified(n)))
+        .collect()
+}
+
+/// Projects each present tier to `select` and folds them into one disjoint
+/// `UNION ALL`, propagating `DataFrame::union` errors via `?`. `None` when
+/// neither tier is present (both flush-absent and inline-absent).
+fn union_tiers(
+    ctx: &SessionContext,
+    file_provider: Option<IcebergMirrorTableProvider>,
+    inline_provider: Option<MemTable>,
+    select: &[Expr],
+) -> Result<Option<datafusion::prelude::DataFrame>, EngineServingError> {
+    let mut tiers = Vec::new();
+    if let Some(f) = file_provider {
+        tiers.push(
+            ctx.read_table(Arc::new(f))
+                .map_err(to_serving)?
+                .select(select.to_vec())
+                .map_err(to_serving)?,
+        );
+    }
+    if let Some(i) = inline_provider {
+        tiers.push(
+            ctx.read_table(Arc::new(i))
+                .map_err(to_serving)?
+                .select(select.to_vec())
+                .map_err(to_serving)?,
+        );
+    }
+    let mut acc: Option<datafusion::prelude::DataFrame> = None;
+    for tier in tiers {
+        acc = Some(match acc {
+            None => tier,
+            Some(prev) => prev.union(tier).map_err(to_serving)?,
+        });
+    }
+    Ok(acc)
+}
+
+/// The resume predicate: OR over buckets of `(bucket = b AND offset >=
+/// next_b)`. `None` when `positions` is empty (caller already short-circuits
+/// on that, but this stays total).
+fn build_resume_predicate(positions: &BTreeMap<i32, i64>) -> Option<Expr> {
+    let mut pred: Option<Expr> = None;
+    for (b, off) in positions {
+        let leaf = col("loom_bucket")
+            .eq(lit(*b))
+            .and(col("loom_offset").gt_eq(lit(*off)));
+        pred = Some(match pred {
+            None => leaf,
+            Some(p) => p.or(leaf),
+        });
+    }
+    pred
+}
+
+/// One bounded, governed, ordered page of `base`'s changelog feed from
+/// per-bucket `positions` (bucket -> first offset not yet consumed; the caller
+/// supplies EVERY bucket). Returns the events ordered by `(bucket, offset)`
+/// (cross-bucket interleaving is positional, not chronological) plus the
+/// advanced positions. `-U` before-images are included — the changelog contract
+/// is full events.
+///
+/// The union is disjoint by construction: the slice-2b flush appends every change
+/// row to the changelog table AND end-caps the same inline rows in one tx, so an
+/// event is inline XOR a changelog file — no dedup, no watermark. Governance wraps
+/// the union view BEFORE the ordered read; the reserved framing columns are never
+/// denied/masked, so ordering/resume survive while user columns are filtered/masked.
+pub async fn changelog_feed_scan(
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    serving_store: Option<&ServingStore>,
+    positions: &BTreeMap<i32, i64>,
+    limit: usize,
+    policy: &TablePolicy,
+) -> Result<ChangeFeedPage, EngineServingError> {
+    let empty = || ChangeFeedPage {
+        events: vec![],
+        next: positions.clone(),
+    };
+    if positions.is_empty() || limit == 0 {
+        return Ok(empty());
+    }
+
+    let ctx = SessionContext::new();
+    register_object_stores(&ctx, serving_store)?;
+
+    // --- Tier 1: the changelog Iceberg files (absent until the first flush). ---
+    let file_provider = build_file_tier(catalog, base).await?;
+
+    // --- Tier 2: the base table's LIVE inline tail (full — keeps -U), whose
+    // physical columns already carry the framing (iceberg_inline). ---
+    let base_snap = catalog.current_snapshot(base).await.map_err(to_serving)?;
+    let inline_provider = build_inline_tier(catalog, base, base_snap.id).await?;
+
+    // --- Disjoint UNION ALL, both tiers projected to the SAME column order:
+    // [user_cols..., loom_change_kind, loom_bucket, loom_offset]. ---
+    let base_cols = catalog
+        .schema(base, base_snap.id)
+        .await
+        .map_err(to_serving)?
+        .columns;
+    let select = union_select_columns(&base_cols);
+    let Some(unioned) = union_tiers(&ctx, file_provider, inline_provider, &select)? else {
+        return Ok(empty());
+    };
+
+    // --- Governance BEFORE the ordered read: wrap the union view. Framing
+    // columns are never denied/masked (reserved names), so ordering survives;
+    // row filters and column masks apply to the user columns. ---
+    let governed = GovernedTableProvider::new(unioned.into_view(), policy.clone())?;
+    let df = ctx.read_table(Arc::new(governed)).map_err(to_serving)?;
+
+    // --- Resume predicate: OR over buckets of (bucket = b AND offset >= next_b). ---
+    let Some(pred) = build_resume_predicate(positions) else {
+        return Ok(empty());
+    };
+
+    // --- Order + bound. ---
+    let batches = df
+        .filter(pred)
+        .map_err(to_serving)?
+        .sort(vec![
+            col("loom_bucket").sort(true, false),
+            col("loom_offset").sort(true, false),
+        ])
+        .map_err(to_serving)?
+        .limit(0, Some(limit))
+        .map_err(to_serving)?
+        .collect()
+        .await
+        .map_err(to_serving)?;
+
+    // --- Decode: framing -> envelope; every other (governed) column -> fields. ---
+    decode_page(&batches, positions)
 }
