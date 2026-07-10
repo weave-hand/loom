@@ -20,7 +20,7 @@ use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
-use engine_serving::consolidate_stream;
+use engine_serving::consolidate_table;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 
@@ -73,7 +73,7 @@ async fn consolidate_stream_defers_to_a_held_table_lock() {
     let pool2 = pool.clone();
     let table2 = table.clone();
     let consolidate_task =
-        tokio::spawn(async move { consolidate_stream(&cp2, &catalog2, &pool2, &table2).await });
+        tokio::spawn(async move { consolidate_table(&cp2, &catalog2, &pool2, &table2).await });
 
     // Give the spawned task a moment to actually reach and block on the lock,
     // then assert it has NOT proceeded past the gate while the lock is held.
