@@ -420,7 +420,10 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             .writer
             .write_steps(&writes, event, &jobs)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| match e {
+                engine_serving::EngineServingError::Validation(m) => Status::invalid_argument(m),
+                other => Status::internal(other.to_string()),
+            })?;
         Ok(Response::new(pb::WriteStepsResponse {
             snapshot_id: snap.0,
         }))

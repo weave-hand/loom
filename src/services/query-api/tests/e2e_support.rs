@@ -1349,3 +1349,56 @@ pub async fn post_action_raw(
     };
     (status, headers, json)
 }
+
+/// Sibling to [`post_action_raw`] for error bodies that render as plain text rather
+/// than JSON (e.g. `ActionError::Unsupported`/`BadParams`/`Misconfigured`, each a bare
+/// `(StatusCode, String).into_response()` in `http.rs`). `post_action_raw`'s JSON
+/// decode falls back to `Value::Null` on a non-JSON body, which loses the message; this
+/// falls back to `Value::String(<raw text>)` instead (mirrors the fallback `get_ndjson`
+/// already uses for its non-200 case), so callers can assert on the refusal text.
+pub async fn post_action_text(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    action_engine: Arc<dyn query_api::serving::ActionEngine>,
+    uri: &str,
+    body: &serde_json::Value,
+    subject: &str,
+) -> (StatusCode, serde_json::Value) {
+    let token = session_token(&cp, subject).await;
+    let app = protect(
+        router(AppState {
+            cp: cp.clone() as Arc<dyn ControlPlane>,
+            serving: eng,
+            action_engine,
+            default_limit: 1000,
+            naming: query_api::lineage_filter::local_naming(),
+        }),
+        AuthState {
+            auth: cp.clone(),
+            session_ttl: std::time::Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::String(
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ))
+    };
+    (status, json)
+}

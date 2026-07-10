@@ -138,7 +138,10 @@ impl IcebergActionWriter {
         }
         iceberg_landing::write_steps(&self.pool, &self.catalog, steps, event, jobs)
             .await
-            .map_err(|e| EngineServingError::Engine(e.to_string()))
+            .map_err(|e| match e {
+                ControlPlaneError::Validation(m) => EngineServingError::Validation(m),
+                other => EngineServingError::Engine(other.to_string()),
+            })
     }
 
     /// Copy-on-write overwrite (UPDATE/DELETE): replace the table's entire live

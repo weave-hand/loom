@@ -24,6 +24,7 @@ fn to_serving<E: std::fmt::Display>(e: E) -> ServingError {
 fn to_serving_write(e: control_plane_core::ControlPlaneError) -> ServingError {
     match e {
         control_plane_core::ControlPlaneError::Conflict(m) => ServingError::Conflict(m),
+        control_plane_core::ControlPlaneError::Validation(m) => ServingError::Unsupported(m),
         other => ServingError::Engine(other.to_string()),
     }
 }

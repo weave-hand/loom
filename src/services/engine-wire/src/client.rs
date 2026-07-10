@@ -254,7 +254,7 @@ impl GrpcQueueClient {
                 jobs_json: jobs_json.to_string(),
             })
             .await
-            .map_err(be)?
+            .map_err(cp_status)?
             .into_inner();
         Ok(resp.snapshot_id)
     }

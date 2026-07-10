@@ -1439,7 +1439,11 @@ async fn run_multi_step(
 
     deps.action_engine
         .write_steps(&writes, event, &jobs)
-        .await?;
+        .await
+        .map_err(|e| match e {
+            crate::serving::ServingError::Unsupported(m) => ActionError::Unsupported(m),
+            other => ActionError::from(other),
+        })?;
 
     if step_results.is_empty() {
         return Err(ActionError::Misconfigured("action has no steps".into()));
