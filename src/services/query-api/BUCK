@@ -629,6 +629,36 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "external-sql-wire-e2e",
+    crate = "external_sql_wire_e2e",
+    srcs = ["tests/external_sql_wire_e2e.rs"],
+    crate_root = "tests/external_sql_wire_e2e.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":query-api",
+        ":e2e-support",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-schema",
+        "//third-party:futures",
+        "//third-party:prost",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "datafusion-inline-union",
     crate = "datafusion_inline_union",
     srcs = ["tests/datafusion_inline_union.rs"],
