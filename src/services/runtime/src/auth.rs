@@ -79,7 +79,12 @@ impl<S: Send + Sync> FromRequestParts<S> for Subject {
 /// traffic dominates), then a service token. Both are constant-time hash lookups, so
 /// order is performance-only. This is the single sequencing point so there stays
 /// exactly one path that produces `Unauthorized`.
-async fn resolve_bearer(
+///
+/// Public: this is the single bearer-resolution seam shared by the HTTP
+/// `require_auth` middleware AND the Flight surfaces (the governed export's
+/// `flight_auth::authenticate`, and the external SQL wire) — both accept a
+/// session token or a service token via the same fallback order.
+pub async fn resolve_bearer(
     auth: &(dyn Auth + Send + Sync),
     hash: &[u8; 32],
     now: OffsetDateTime,

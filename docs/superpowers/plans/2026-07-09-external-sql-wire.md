@@ -24,6 +24,47 @@ Carried from the spec + CLAUDE.md; every task implicitly includes these:
 
 ---
 
+## Plan-review corrections (applied 2026-07-10, branch on newer main)
+
+A plan-review gate re-verified every anchor against the current tree (this branch
+is based on a main that moved after the plan was written). **Verdict: PASS.** Every
+symbol/signature/snippet is type-correct; only the following need noting. Apply
+these when you reach the relevant task — grep to confirm exact current lines.
+
+- **e2e-support helper drift** (`src/services/query-api/tests/e2e_support.rs`):
+  `subject_with_role` ~`:241`, `grant_read` ~`:250`, `session_token` ~`:264`
+  (all +36); `grant_read_filtered` ~`:753`, `grant_read_columns` ~`:777` (+106).
+  **`grant_read_columns` arg order is `(deny_columns, mask_columns)`** — confirm at
+  the def before use.
+- **BUCK target drift**: `governed-flight-export-e2e` is now at
+  `src/services/query-api/BUCK:589-616` (was `:556`). Its actual deps are
+  `//src/testing:seed`, `//src/testing:flight`, `:query-api`, `:e2e-support`,
+  engine, engine-wire, core, postgres, arrow-array/flight/ipc/schema, futures,
+  iceberg, serde_json, tempfile, time, tokio, tokio-stream, tonic, uuid. **There is
+  NO `prost` dep** — add it to the e2e target only if the forged-ticket `Any`
+  construction needs it at compile time.
+- **New `rust_test` targets** (Tasks 4, 5): mirror `export-command` (`BUCK` ~`:752`)
+  including `edition = "2024"` and `crate`/`crate_root` — the plan's target snippets
+  omit those. Confirm the memory-crate label is `//src/control-plane/memory:memory`.
+- **`resolve_bearer` re-export** (Task 3): add it to the runtime crate-root **auth**
+  `pub use auth::{…}` block (`src/services/runtime/src/lib.rs:6-10`) — NOT the crypto
+  block where `token_sha256` lives (`:19`). The plan's "next to `token_sha256`" is
+  imprecise.
+- **`NewServiceAccount`** (`core/src/auth.rs:70`) fields are `subject_id: SubjectId`,
+  `name: String` — Task 7's `name: "ci-bot"` needs `.into()`/`.to_string()`.
+- **`config` is already `pub mod config;`** (`lib.rs:9`) — Task 5's "make pub if not"
+  is a no-op; the test's `query_api::config::QueryApiConfig` path already works.
+- **Task 3 `internal` helper decision** (keep in `flight_export` vs hoist into
+  `flight_auth`) is bounded and actionable — pick whichever keeps both modules
+  clippy-clean with no import cycle.
+- Cosmetic: Task 3's Files note says service-token acceptance is proven in "Task 6's
+  e2e" — it is **Task 7** case 4. `land` is `control_plane_postgres::iceberg_landing::land`
+  (imported at `e2e_support.rs:40`), not an e2e-support fn.
+
+Everything else in the plan (the closed-world loop shape, `execute_governed_stream`,
+`resolve_governed_catalog`, `SqlWireTuning`, the serve.rs spawn mirror) was verified
+to match real signatures and compile as written.
+
 ## File Structure
 
 **Create:**

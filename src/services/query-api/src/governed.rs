@@ -6,8 +6,8 @@
 use std::collections::HashSet;
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, Decision, ObjectType, Ontology, PageReq, PolicyTarget,
-    PropertyDef, RowFilter, SubjectId, TypeName,
+    Acl, Action, ControlPlaneError, Decision, GovernedCatalog, GovernedTable, ObjectType, Ontology,
+    PageReq, PolicyTarget, PropertyDef, RowFilter, SubjectId, TypeName,
 };
 
 use crate::handler::{Direction, Hop, QueryError};
@@ -119,6 +119,45 @@ pub(crate) async fn load_policy(
         masked.extend(p.mask_columns);
     }
     Ok((row_filters, denied, masked))
+}
+
+/// Resolve the subject's per-request governed catalog: one `GovernedTable` per
+/// ontology type the subject holds a coarse Read grant on (deny-by-default — an
+/// ungranted type is OMITTED, and the engine's closed-world registration makes an
+/// omitted table unresolvable). Fail-closed: any ACL/ontology error aborts the
+/// whole resolution — never an empty-policy fallback entry. If two allowed types
+/// bind the same table the first (by list order) wins — each type's policy is
+/// independently reachable over the HTTP read path already, so this leaks nothing
+/// beyond existing capability; a warn fires for audit.
+pub async fn resolve_governed_catalog(
+    ontology: &(dyn Ontology + Send + Sync),
+    acl: &(dyn Acl + Send + Sync),
+    subject: &SubjectId,
+) -> Result<GovernedCatalog, QueryError> {
+    let types = ontology.list_types(PageReq::unbounded()).await?;
+    let mut tables: Vec<GovernedTable> = Vec::new();
+    for ty in types.items {
+        let target = PolicyTarget::Type(ty.name.clone());
+        if acl.check(subject, Action::Read, &target).await? == Decision::Deny {
+            continue;
+        }
+        if tables.iter().any(|gt| gt.table == ty.table) {
+            tracing::warn!(
+                table = ?ty.table,
+                ty = %ty.name.0,
+                "duplicate table binding in governed catalog; first entry wins"
+            );
+            continue;
+        }
+        let (row_filters, denied, masked) = load_policy(acl, subject, &target).await?;
+        tables.push(GovernedTable {
+            table: ty.table,
+            row_filters,
+            denied: denied.into_iter().collect(),
+            masked: masked.into_iter().collect(),
+        });
+    }
+    Ok(GovernedCatalog { tables })
 }
 
 /// The governed output-column set of one read, in SELECT order: the visible physical

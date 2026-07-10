@@ -272,7 +272,7 @@ async fn masked_column_redacted_through_group_by() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn empty_policy_is_full_visibility() {
+async fn empty_policy_entry_is_full_visibility() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -281,8 +281,16 @@ async fn empty_policy_is_full_visibility() {
     let cols = vec![("id".to_string(), "long".to_string(), false)];
     writer.seed("s", "t", &cols, &[3]).await;
     let catalog = IcebergCatalog::new(pool);
-    // No GovernedTable entry at all => fully visible.
-    let cat = GovernedCatalog::default();
+    // A catalog ENTRY with an empty policy => fully visible (distinct from an
+    // unlisted table, which is closed-world below).
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: gt("s", "t"),
+            row_filters: vec![],
+            denied: vec![],
+            masked: vec![],
+        }],
+    };
     let batches = run(
         &catalog,
         "SELECT \"id\" FROM \"s\".\"t\" ORDER BY \"id\"",
@@ -290,6 +298,31 @@ async fn empty_policy_is_full_visibility() {
     )
     .await;
     assert_eq!(collect_i64(&batches, 0), vec![0, 1, 2]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unlisted_table_is_not_registered() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let cols = vec![("id".to_string(), "long".to_string(), false)];
+    writer.seed("s", "t", &cols, &[3]).await;
+    let catalog = IcebergCatalog::new(pool);
+    // No GovernedTable entry at all => the table is not registered — closed-world.
+    let cat = GovernedCatalog::default();
+    let result =
+        execute_governed_sql_stream(&catalog, "SELECT \"id\" FROM \"s\".\"t\"", &cat, None).await;
+    let Err(err) = result else {
+        panic!("unlisted table must not resolve");
+    };
+    let msg = err.to_string().to_lowercase();
+    assert!(
+        msg.contains("not found") || msg.contains("no table"),
+        "error must read like table-not-found, indistinguishable from a nonexistent \
+         table; got: {msg}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

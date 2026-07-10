@@ -385,6 +385,28 @@ impl FlightSqlClient {
         Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
     }
 
+    /// Execute arbitrary client `sql` under a caller-resolved governed catalog,
+    /// returning the decoded result stream. Single-hop `do_get` of a
+    /// `GovernedStatementQuery` ticket (the standard `CommandStatementQuery`
+    /// cannot carry the catalog). The stream never materialises in the caller —
+    /// query-api's external SQL wire relays it straight out.
+    pub async fn execute_governed_stream(
+        &self,
+        sql: String,
+        catalog: GovernedCatalog,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>> {
+        let ticket = GovernedStatementQuery { sql, catalog };
+        let resp = self
+            .inner
+            .clone()
+            .do_get(Ticket {
+                ticket: ticket.encode().into(),
+            })
+            .await
+            .map_err(crate::client::sql_status)?;
+        Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
+    }
+
     /// Execute `sql` with every referenced table read at `as_of_snapshot`, buffering
     /// the streamed result. Single-hop `do_get` of an `AsOfStatementQuery` ticket
     /// (the standard `CommandStatementQuery` cannot carry the snapshot id).

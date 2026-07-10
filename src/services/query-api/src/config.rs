@@ -34,23 +34,67 @@ impl ServingTuning {
     }
 }
 
-/// The query-api binary's composed config: serving tuning. `#[serde(default)]`
-/// so a partial config file deserializes (omitted domains fall to their `Default`). Loaded
-/// via `loom_config::load` (defaults < file < env) through the `LayeredConfig` impl below.
+/// External Flight SQL wire tuning. `bind_addr` unset => the listener does not
+/// start (opt-in, like the Flight export). Typed from day one — the new wire's
+/// knobs never join the export's raw env reads (fut-flight-export-config-seam).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SqlWireTuning {
+    pub bind_addr: Option<String>,
+    pub max_rows: u32,
+}
+
+impl Default for SqlWireTuning {
+    fn default() -> Self {
+        Self {
+            bind_addr: None,
+            max_rows: 1_000_000,
+        }
+    }
+}
+
+impl SqlWireTuning {
+    pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
+        if let Some(v) = vars.get("LOOM_SQL_WIRE_BIND_ADDR") {
+            self.bind_addr = Some(v.clone());
+        }
+        overlay_opt(vars, "LOOM_SQL_WIRE_MAX_ROWS", &mut self.max_rows)?;
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if let Some(addr) = &self.bind_addr {
+            addr.parse::<std::net::SocketAddr>()
+                .map_err(|e| invalid("LOOM_SQL_WIRE_BIND_ADDR", e))?;
+        }
+        if self.max_rows == 0 {
+            return Err(invalid("LOOM_SQL_WIRE_MAX_ROWS", "must be >= 1"));
+        }
+        Ok(())
+    }
+}
+
+/// The query-api binary's composed config: serving tuning + external SQL wire
+/// tuning. `#[serde(default)]` so a partial config file deserializes (omitted
+/// domains fall to their `Default`). Loaded via `loom_config::load` (defaults <
+/// file < env) through the `LayeredConfig` impl below.
 #[derive(Default, serde::Deserialize)]
 #[serde(default)]
 pub struct QueryApiConfig {
     pub serving: ServingTuning,
+    pub sql_wire: SqlWireTuning,
 }
 
 impl loom_config::LayeredConfig for QueryApiConfig {
     fn overlay_env(&mut self, env: &HashMap<String, String>) -> Result<(), ConfigError> {
         self.serving.overlay_env(env)?;
+        self.sql_wire.overlay_env(env)?;
         Ok(())
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
         self.serving.validate()?;
+        self.sql_wire.validate()?;
         Ok(())
     }
 }

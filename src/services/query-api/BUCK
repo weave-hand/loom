@@ -19,6 +19,7 @@ rust_library(
         "//third-party:axum",
         "//third-party:base64",
         "//third-party:futures",
+        "//third-party:prost",
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:thiserror",
@@ -182,6 +183,18 @@ rust_test(
     deps = [
         ":query-api",
         "//third-party:serde_json",
+    ],
+)
+
+rust_test(
+    name = "sql-wire-config",
+    crate = "sql_wire_config",
+    srcs = ["tests/sql_wire_config.rs"],
+    crate_root = "tests/sql_wire_config.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/loom-config:loom-config",
     ],
 )
 
@@ -616,6 +629,36 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "external-sql-wire-e2e",
+    crate = "external_sql_wire_e2e",
+    srcs = ["tests/external_sql_wire_e2e.rs"],
+    crate_root = "tests/external_sql_wire_e2e.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":query-api",
+        ":e2e-support",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-schema",
+        "//third-party:futures",
+        "//third-party:prost",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "datafusion-inline-union",
     crate = "datafusion_inline_union",
     srcs = ["tests/datafusion_inline_union.rs"],
@@ -759,6 +802,20 @@ rust_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//third-party:arrow",
+    ],
+)
+
+rust_test(
+    name = "governed-catalog-resolve",
+    crate = "governed_catalog_resolve",
+    srcs = ["tests/governed_catalog_resolve.rs"],
+    crate_root = "tests/governed_catalog_resolve.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
     ],
 )
 

@@ -12,6 +12,8 @@ Results are **typed objects**, not positional rows: the wire shape is `{"objects
 
 Governed reads also feed a second wire: the Arrow Flight **export** listener streams a governed typed-object slice out columnar (the ticket carries a loom `ExportCommand`, not SQL — the ACL'd SQL is compiled server-side per `do_get`, so a forged ticket is still a governed request).
 
+A third TCP listener, `FlightSqlWireService` (opt-in via `LOOM_SQL_WIRE_BIND_ADDR`, capped by `LOOM_SQL_WIRE_MAX_ROWS`; typed `SqlWireTuning`), accepts a bearer-authenticated caller's own **arbitrary** SQL over the standard Flight SQL protobuf commands and forwards it to the engine's governed-SQL plane under a per-request `GovernedCatalog` resolved server-side from the subject's ACL — see the "Governed SQL over arbitrary queries, and external egress" section of [`engine.md`](engine.md) for the governance design.
+
 ## Derived properties
 
 An `ObjectType` can declare derived properties that aggregate over one of its links — `Customer.orderCount = COUNT` of linked Orders, `totalSpend = SUM(amount)` — computed at read time as correlated subqueries appended to the object read's SELECT (FK and join-table link shapes both supported; COUNT/SUM coalesce to 0 on the empty set, AVG/MIN/MAX go null). Governance is both-ends: the subject must hold `Read` on the linked type and the linked type's row filters apply *inside* the subquery; if the linked type or the aggregated column is unreadable, the derived property is silently **omitted** (treated like a denied column), never an error. Derived properties are projected only — they are not filterable or sortable, and they are served on the plain object read, not on traversal output.

@@ -256,9 +256,34 @@ Two governed egress surfaces exist beyond the internal read path:
   `scan()` unconditionally ANDs the row filter on the full schema (so filters
   may reference denied columns) before projection and `'***'` masking.
   `execute_governed_sql_stream` registers one governed provider per live table
-  and runs the client's SQL over them, dispatched by a `GovernedStatementQuery`
-  Flight ticket. Internal-only today; the external TCP listener is the
-  deferred next slice.
+  **closed-world** — a table absent from the caller's catalog is unresolvable
+  to DataFusion, not merely denied, so there is no existence leak through plan
+  errors — and runs the client's SQL over them, dispatched by a
+  `GovernedStatementQuery` Flight ticket.
+- **External SQL wire** (query-api's `FlightSqlWireService`, `flight_sql.rs`):
+  a raw TCP `FlightService` making the governed catalog primitive above
+  externally consumable, opt-in via `LOOM_SQL_WIRE_BIND_ADDR` (typed
+  `SqlWireTuning`, unset by default). Each call authenticates a bearer token
+  through the shared `flight_auth` seam (`service_runtime::resolve_bearer` —
+  login session tokens and service tokens both accepted), then resolves that
+  subject's ACL into a per-request `GovernedCatalog`
+  (`resolve_governed_catalog`, deny-by-default) and forwards the client's own
+  SQL to the engine's internal governed-SQL plane over the Unix-domain socket
+  (`FlightSqlClient::execute_governed_stream` → `GovernedStatementQuery`) —
+  the SQL itself is never parsed or rewritten; governance is entirely in the
+  catalog the server resolves, not in the query text. `do_get` decodes
+  **only** a protobuf `TicketStatementQuery` (the standard Flight SQL
+  statement-handle ticket carrying the client's SQL string); it never accepts
+  a loom-native ticket such as `GovernedStatementQuery` itself, which would let
+  an external caller hand the engine a catalog of its own choosing — a total
+  governance bypass. A stream-side row cap (`LOOM_SQL_WIRE_MAX_ROWS`) errors
+  the stream once cumulative rows exceed the limit, since the client's
+  arbitrary SQL can't be rewritten with a `LIMIT` sentinel the way the export
+  path's compiled SQL is. Errors are class-preserving: a plan/validation fault
+  from the client's own SQL is `invalid_argument` (safe to echo — it's in the
+  client's own vocabulary), everything else is an opaque `internal` (detail
+  logged server-side only). Plaintext TCP — TLS is deferred to
+  [[fut-flight-export-tls]], behind an operator-supplied terminator.
 - **Governed Arrow Flight export** (#204): query-api hosts a TCP Flight
   server whose ticket carries a loom export *command* (typed object + slice
   filters), never SQL. `do_get` re-derives the ACL'd SQL per call for the
@@ -339,8 +364,6 @@ already advanced.
 
 ## Known gaps
 
-- `#fut-external-sql-wire` — the external SQL wire (TCP listener + auth over
-  the governed-catalog engine path).
 - `#fut-flight-sql-surface` — the rest of the Flight SQL command surface
   (prepared statements, catalog-metadata commands).
 - `#fut-flight-export-tls` — TLS/mTLS on the external Flight export wire.

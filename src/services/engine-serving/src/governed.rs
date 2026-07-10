@@ -280,12 +280,13 @@ impl TableProvider for GovernedTableProvider {
     }
 }
 
-/// Run client `sql` over every live Iceberg table wrapped in its `GovernedTableProvider`,
-/// returning the result stream. For each live table: build the inner serving provider
-/// (file ∪ inline), resolve its `TablePolicy` from `governed`, wrap it in a
-/// `GovernedTableProvider`, register it schema-qualified, then run the SQL. Governance
-/// is enforced by the providers, so the client SQL is arbitrary — it can never observe
-/// a denied column, an unmasked value, or a filter-excluded row.
+/// Run client `sql` over every live Iceberg table **listed in the governed catalog**,
+/// wrapped in its `GovernedTableProvider`, returning the result stream. For each such
+/// live table: build the inner serving provider (file ∪ inline), resolve its
+/// `TablePolicy` from `governed`, wrap it in a `GovernedTableProvider`, register it
+/// schema-qualified, then run the SQL. Governance is enforced by the providers, so the
+/// client SQL is arbitrary — it can never observe a denied column, an unmasked value,
+/// or a filter-excluded row.
 pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,
@@ -294,6 +295,13 @@ pub async fn execute_governed_sql_stream(
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = SessionContext::new();
     for table in catalog.live_tables().await.map_err(to_serving)? {
+        // Closed-world: a live table with NO GovernedTable entry is not
+        // registered at all — it does not exist for this session. Deny-by-
+        // default holds even if the edge under-lists (unbound datasets,
+        // ungranted types). See 2026-07-09-external-sql-wire-design.md.
+        if governed.table_for(&table).is_none() {
+            continue;
+        }
         let Some(inner) =
             build_serving_provider(&ctx, catalog, &table, serving_store, None).await?
         else {

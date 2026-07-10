@@ -22,8 +22,7 @@ use control_plane_core::{Auth, ControlPlane, SubjectId};
 use engine_wire::flight::FlightSqlClient;
 use futures::{StreamExt, TryStreamExt};
 use serde::{Deserialize, Serialize};
-use service_runtime::{Subject, token_sha256};
-use time::OffsetDateTime;
+use service_runtime::Subject;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::handler::{GovernedRead, ObjectQuery, QueryError, compile_object_read};
@@ -156,25 +155,6 @@ impl FlightExportService {
     }
 }
 
-/// Resolve the bearer token in the gRPC `authorization` metadata to a verified subject.
-/// Missing/invalid/expired → `Unauthenticated`; an auth-store fault → `Internal`.
-async fn authenticate(
-    auth: &(dyn Auth + Send + Sync),
-    md: &tonic::metadata::MetadataMap,
-) -> Result<SubjectId, Status> {
-    let token = md
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
-    let hash = token_sha256(token);
-    match auth.resolve_session(&hash, OffsetDateTime::now_utc()).await {
-        Ok(Some(sid)) => Ok(sid),
-        Ok(None) => Err(Status::unauthenticated("invalid or expired token")),
-        Err(e) => Err(internal("flight export auth store fault", e)),
-    }
-}
-
 /// Log a backend/internal fault server-side and return an opaque gRPC `Internal` status. The
 /// detail (`error = %e`) is for operators only — no internal detail (SQL fragments, table/column
 /// names, engine messages) reaches the external client. Mirrors the HTTP path's `internal_error`
@@ -219,7 +199,8 @@ impl FlightService for FlightExportService {
         &self,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        let subject = authenticate(self.auth.as_ref(), request.metadata()).await?;
+        let subject =
+            crate::flight_auth::authenticate(self.auth.as_ref(), request.metadata()).await?;
         let descriptor = request.into_inner();
         let cmd = ExportCommand::decode(&descriptor.cmd)
             .map_err(|e| Status::invalid_argument(format!("bad export command: {e}")))?;
@@ -245,7 +226,8 @@ impl FlightService for FlightExportService {
         &self,
         request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        let subject = authenticate(self.auth.as_ref(), request.metadata()).await?;
+        let subject =
+            crate::flight_auth::authenticate(self.auth.as_ref(), request.metadata()).await?;
         let ticket = request.into_inner();
         let cmd = ExportCommand::decode(&ticket.ticket)
             .map_err(|e| Status::invalid_argument(format!("bad export ticket: {e}")))?;
