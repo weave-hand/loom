@@ -268,7 +268,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             name: r.name,
         };
         let snapshot_id =
-            engine_serving::consolidate_stream(&self.cp, &self.catalog, &self.pool, &table)
+            engine_serving::consolidate_table(&self.cp, &self.catalog, &self.pool, &table)
                 .await
                 .map_err(serving_status)?;
         Ok(Response::new(pb::ConsolidateStreamResponse { snapshot_id }))

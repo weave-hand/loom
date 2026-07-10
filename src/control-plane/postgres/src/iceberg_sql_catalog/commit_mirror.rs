@@ -27,7 +27,13 @@ use super::error::from_sqlx_error;
 pub struct CommitExtras<'a> {
     /// Emit this lineage event in the commit tx (landing / flush provenance).
     pub lineage: Option<&'a LineageEvent>,
-    /// Retire these inline rows at the commit's snapshot (flush compaction).
+    /// Retire these inline rows at the commit's snapshot (flush compaction, or a
+    /// targeted overwrite that consumed a known inline row set). In overwrite mode
+    /// (`overwrite: true`), a `Some` here REPLACES the blanket live-inline-row cap
+    /// `write_mirror` would otherwise apply: the caller consumed exactly this row
+    /// set (the consolidation fold) and every other live inline row must SURVIVE —
+    /// a delta committed mid-consolidation keeps shadowing the new base. `None`
+    /// (the `Default`) in overwrite mode falls back to the blanket cap.
     pub end_cap: Option<InlineEndCap<'a>>,
     /// Overwrite/replace mode: end-cap every currently-live data file for the table
     /// at the commit's snapshot (before projecting the new files), so the new set is
@@ -139,8 +145,9 @@ impl SqlCatalog {
     #[expect(
         clippy::too_many_arguments,
         reason = "one cohesive commit-projection call: the tx + table identity + \
-                  staged snapshot + precomputed columns/files + overwrite mode, plus \
-                  the optional reuse-snapshot for the atomic stream direct-write path"
+                  staged snapshot + precomputed columns/files + overwrite mode + \
+                  blanket-inline-cap decision, plus the optional reuse-snapshot for \
+                  the atomic stream direct-write path"
     )]
     async fn write_mirror(
         &self,
@@ -150,6 +157,7 @@ impl SqlCatalog {
         columns: &[ProjectedColumn],
         files: &[ProjectedFile],
         overwrite: bool,
+        blanket_inline_cap: bool,
         reuse_snapshot: Option<SnapshotId>,
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
@@ -181,7 +189,13 @@ impl SqlCatalog {
         // after `project_files` would wrongly retire the just-projected files too.
         if overwrite {
             end_cap_live_data_files(conn, tid, at).await?;
-            crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
+            // A targeted InlineEndCap riding this same commit supersedes the
+            // blanket cap: the caller consumed a known inline row set (the
+            // consolidation fold) and everything else must SURVIVE — a delta
+            // committed mid-consolidation keeps shadowing the new base.
+            if blanket_inline_cap {
+                crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
+            }
         }
         reconcile_and_project(conn, tid, at, columns).await?;
         project_files(conn, tid, at, files).await?;
@@ -389,6 +403,11 @@ impl SqlCatalog {
             .with_retryable(true));
         }
 
+        // A targeted end-cap riding an overwrite commit supersedes the blanket
+        // live-inline-row cap `write_mirror` would otherwise apply (see
+        // `CommitExtras::end_cap`); non-overwrite commits never blanket-cap
+        // regardless, so this only matters when `extras.overwrite` is set.
+        let blanket_inline_cap = extras.overwrite && extras.end_cap.is_none();
         let at = self
             .write_mirror(
                 &mut *tx,
@@ -397,6 +416,7 @@ impl SqlCatalog {
                 mirror_columns,
                 mirror_files,
                 extras.overwrite,
+                blanket_inline_cap,
                 extras.reuse_snapshot,
             )
             .await

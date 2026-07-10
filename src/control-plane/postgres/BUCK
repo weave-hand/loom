@@ -579,6 +579,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "overwrite-consuming",
+    crate = "overwrite_consuming",
+    srcs = ["tests/overwrite_consuming.rs"],
+    crate_root = "tests/overwrite_consuming.rs",
+    deps = [
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-compact",
     crate = "iceberg_compact",
     srcs = ["tests/iceberg_compact.rs"],
@@ -738,6 +759,24 @@ loom_fixture_test(
     crate = "inline_tombstone",
     srcs = ["tests/inline_tombstone.rs"],
     crate_root = "tests/inline_tombstone.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "inline-shadow-read",
+    crate = "inline_shadow_read",
+    srcs = ["tests/inline_shadow_read.rs"],
+    crate_root = "tests/inline_shadow_read.rs",
     deps = [
         ":postgres",
         "//src/control-plane/core:core",
@@ -1433,6 +1472,24 @@ loom_fixture_test(
     crate = "stream_cdc_consolidate_trigger",
     srcs = ["tests/stream_cdc_consolidate_trigger.rs"],
     crate_root = "tests/stream_cdc_consolidate_trigger.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "cow-consolidate-trigger",
+    crate = "cow_consolidate_trigger",
+    srcs = ["tests/cow_consolidate_trigger.rs"],
+    crate_root = "tests/cow_consolidate_trigger.rs",
     deps = [
         ":postgres",
         "//src/control-plane/core:core",

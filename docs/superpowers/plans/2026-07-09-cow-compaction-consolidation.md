@@ -16,7 +16,7 @@ Carried from the spec; every task implicitly includes these:
 - **Clippy is strict (pedantic + restriction):** no `unwrap`/`expect`/`indexing_slicing`/`panic`/`todo`/`map_err_ignore` in production lib/bin code; `#[expect(lint, reason = "...")]` for justified local exceptions. Test code is exempt via the test macros.
 - **All new SQL is runtime `AssertSqlSafe`** (dynamic `inline_<tid>` identifiers / the standalone `shadow_flag` table — the slice-1 precedent, see `set_has_shadow`). No `query!` changes are planned, so no `tools/sqlx-prepare.sh` run should be needed; if one sneaks in, regenerate and commit `.sqlx/`.
 - **Run prek before every commit:** `buck2 run //tools:prek -- run --all-files` (stage new files with `git add` first — prek skips untracked files). Markdown: no trailing whitespace, exactly one trailing newline.
-- **Non-regression is part of every task's definition of done.** These existing targets must stay green throughout: `//src/control-plane/postgres:flush-suppression`, `:overwrite-end-caps-inline` (the blanket cap on the *plain* overwrite is asserted there and must not change), `:inline-delta-cas`, `:inline-tombstone`, `//src/services/engine-serving:merge-on-read`, `:consolidate-lock`, `//src/services/query-api:cow-inline-shadow-e2e`, `:cow-inline-shadow-gov-e2e`, `:stream-cdc-consolidate`, `//src/services/worker:stream-consolidate-job`.
+- **Non-regression is part of every task's definition of done.** These existing targets must stay green throughout: `//src/control-plane/postgres:flush-suppression`, `:overwrite-end-caps-inline` (the blanket cap on the *plain* overwrite is asserted there and must not change), `:action_downstream_overwrite` (the action downstream-job forwarding through `overwrite_parquet_snapshot` — must survive the Task 1 refactor), `:inline-delta-cas`, `:inline-tombstone`, `//src/services/engine-serving:merge-on-read`, `:consolidate-lock`, `//src/services/query-api:cow-inline-shadow-e2e`, `:cow-inline-shadow-gov-e2e`, `:stream-cdc-consolidate`, `//src/services/worker:stream-consolidate-job`.
 - **Build/test commands:** build `buck2 build -v0 --console none //src/...`; test `buck2 test --console none <targets>` (cloud: `-M none` on builds, scope tests, `buck2 clean` between heavy phases; a full local suite needs `-j 8`).
 
 ---
@@ -93,16 +93,16 @@ Document on `CommitExtras.end_cap` (`commit_mirror.rs:31`) that in overwrite mod
 
 - [ ] **Step 4: Add `overwrite_parquet_snapshot_consuming` + extend `overwrite_truncate`**
 
-In `iceberg_landing.rs`, refactor `overwrite_parquet_snapshot` (`:1117`) into a private `overwrite_with_cap(pool, catalog, table, columns, batches, lineage, consumed: Option<InlineEndCap<'_>>)`:
-- zero-row branch → `overwrite_truncate(pool, table, lineage, &rebuild_jobs, consumed)` — extend `overwrite_truncate` (`:1165`) with `consumed: Option<InlineEndCap<'_>>`: when `Some`, call `end_cap_inline_rows_by_id` instead of `end_cap_live_inline_rows` at `:1179`.
-- non-zero branch → `append_parquet_snapshot(…, CommitExtras { lineage, overwrite: true, end_cap: consumed, jobs: &rebuild_jobs, data_trigger_tables: …, ..Default::default() }, include_framing)`.
+In `iceberg_landing.rs`, refactor `overwrite_parquet_snapshot` (`:1124`) into a private `overwrite_with_cap(pool, catalog, table, columns, batches, lineage, jobs: &[NewJob], consumed: Option<InlineEndCap<'_>>)`. **Keep the `jobs` forwarding** — the current public fn merges caller-supplied downstream jobs (`all_jobs = rebuild_jobs ++ jobs`, `:1133-1135`) and the action path (`action_writer.rs:162`) relies on it (pinned by the `action_downstream_overwrite` test). The helper computes `all_jobs` exactly as today, then:
+- zero-row branch → `overwrite_truncate(pool, table, lineage, &all_jobs, consumed)` — extend `overwrite_truncate` (`:1175`) with `consumed: Option<InlineEndCap<'_>>`: when `Some`, call `end_cap_inline_rows_by_id` instead of `end_cap_live_inline_rows` at `:1189`.
+- non-zero branch → `append_parquet_snapshot(…, CommitExtras { lineage, overwrite: true, end_cap: consumed, jobs: &all_jobs, data_trigger_tables: std::slice::from_ref(table), ..CommitExtras::default() }, include_framing)` (mirror the current `:1158-1165` verbatim except `end_cap: consumed`).
 
-Public surface: `overwrite_parquet_snapshot` delegates with `None` (byte-identical); new `pub async fn overwrite_parquet_snapshot_consuming(…, consumed: InlineEndCap<'_>)` delegates with `Some(consumed)`. Doc-comment the consuming variant with the survival semantics (spec §2).
+Public surface: `overwrite_parquet_snapshot(…, jobs)` delegates with `(jobs, None)` (byte-identical — same `jobs`, no cap); new `pub async fn overwrite_parquet_snapshot_consuming(…, consumed: InlineEndCap<'_>)` delegates with `(&[], Some(consumed))` — consolidation carries no downstream jobs of its own (the rebuild jobs are added inside `overwrite_with_cap`). Doc-comment the consuming variant with the survival semantics (spec §2).
 
 - [ ] **Step 5: Run the tests**
 
-Run: `buck2 test --console none //src/control-plane/postgres:overwrite-consuming //src/control-plane/postgres:overwrite-end-caps-inline //src/control-plane/postgres:iceberg-overwrite //src/control-plane/postgres:iceberg-flush`
-Expected: PASS (new + all blanket/flush behavior unchanged).
+Run: `buck2 test --console none //src/control-plane/postgres:overwrite-consuming //src/control-plane/postgres:overwrite-end-caps-inline //src/control-plane/postgres:iceberg-overwrite //src/control-plane/postgres:iceberg-flush //src/control-plane/postgres:action_downstream_overwrite`
+Expected: PASS (new + all blanket/flush behavior unchanged; `action_downstream_overwrite` proves the `jobs` forwarding survives the refactor).
 
 - [ ] **Step 6: Run prek + commit**
 
@@ -321,7 +321,7 @@ pub async fn consolidate_table(
 
 where the file tier selects `{col_list}, 0 as _loom_prec, false as _loom_tomb` and the inline tier `{col_list}, begin_snapshot as _loom_prec, loom_tombstone as _loom_tomb`. Comment: "the `Precedence::Snapshot` merge (`build_merge_view`, serving.rs) materialized — reads before/after are identical by construction."
 
-5. Collect; lineage `consolidate_event`-style with payload `{"source": "consolidate_cow"}` (factor a `source: &str` param into `consolidate_event` at `:41`); commit via `overwrite_parquet_snapshot_consuming(pool, catalog, table, &user_cols, folded, Some(&lineage), InlineEndCap { table_id: tid, row_ids: &row_ids })`.
+5. Collect; lineage `consolidate_event`-style with payload `{"source": "consolidate_cow"}` (factor a `source: &str` param into `consolidate_event` at `:41` — this **also touches the existing CDC call site** at `consolidate.rs:255`, which becomes `consolidate_event(table, "consolidate_stream")` to preserve its current tag; a one-line edit, so the CDC *fold* is unchanged but its call site is not literally untouched); commit via `overwrite_parquet_snapshot_consuming(pool, catalog, table, &user_cols, folded, Some(&lineage), InlineEndCap { table_id: tid, row_ids: &row_ids })`.
 6. Post-commit clears: `clear_has_shadow_if_quiescent`, `reset_inline_trigger`, `clear_consolidate_trigger` (each idempotent; comment the crash-heal ordering, spec §3).
 
 Update `lib.rs:15` (`pub use consolidate::consolidate_table;`), `service.rs:270` (call + doc), and `consolidate_lock.rs`'s two references. Update the module doc (`consolidate.rs:1-13`) to describe both arms.

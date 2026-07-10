@@ -159,7 +159,16 @@ overwrite doesn't silently drop `loom_*` from the physical schema mid-life),
 A **new, distinct worker job kind** (`stream_consolidate`, separate from
 `flush_table` and the Parquet-coalescing `compact_table`, which only merges
 small files and never folds deltas) drives engine-side LastRow compaction
-(`src/services/engine-serving/src/consolidate.rs`):
+(`src/services/engine-serving/src/consolidate.rs`). The RPC/job-kind name
+(`ConsolidateStream`/`stream_consolidate`) is unchanged, but the entry point
+is now `consolidate_table`, which dispatches per table kind: a declared CDC
+table takes the fold below; a non-CDC identity table with a live shadow
+(`has_shadow`) takes the sibling `Precedence::Snapshot` (COW) fold documented
+in `docs/system-capabilities/engine.md`'s consolidation section; any other
+table is a no-op. The two folds share the trigger, the dispatch entry point,
+and the wire names — only the fold and its precedence differ.
+
+The CDC fold itself:
 
 - Reads the CDC base's physical framed rows — live Parquet files **union**
   any still-live inline tail (so a consolidate that races ahead of a flush
@@ -169,9 +178,15 @@ small files and never folds deltas) drives engine-side LastRow compaction
 - Folds by **`loom_offset` descending per identity** (`row_number() over
   (partition by <identity> order by loom_offset desc)`, `_rn = 1`), dropping
   a `−D`-tombstoned winner so a deleted identity does not resurrect.
-- Rewrites the base via `overwrite_parquet_snapshot` (framing-preserving,
-  same primitive the COW UPDATE/DELETE path uses), clears `has_shadow`, and
-  disarms the consolidate trigger (below).
+- Rewrites the base via `overwrite_parquet_snapshot_consuming`
+  (framing-preserving, the same targeted primitive the COW consolidation fold
+  uses): the commit carries an `InlineEndCap` naming exactly the row ids the
+  fold read and folded, so a mutation committing mid-consolidation is left
+  live rather than end-capped unfolded — the drive-by fix for
+  `iss-consolidate-stream-lost-write` (the CDC arm previously blanket-capped
+  every live inline row via plain `overwrite_parquet_snapshot`, which could
+  silently drop such a race). Also clears `has_shadow` and disarms the
+  consolidate trigger (below).
 - **Never touches the changelog** — it is the durable, always-resumable log;
   its retention rides the age-based `gc_table` pass, not compaction.
 - A non-CDC table, or a CDC table with no snapshot yet, is a documented

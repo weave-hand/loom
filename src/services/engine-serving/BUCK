@@ -225,6 +225,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "cow-consolidate",
+    crate = "cow_consolidate",
+    srcs = ["tests/cow_consolidate.rs"],
+    crate_root = "tests/cow_consolidate.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "execute-query-stream",
     crate = "execute_query_stream",
     srcs = ["tests/execute_query_stream.rs"],

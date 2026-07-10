@@ -31,7 +31,7 @@ use crate::iceberg_mirror::{
     stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
-use crate::iceberg_sql_catalog::{CommitExtras, SqlCatalog};
+use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
 use crate::stream::StreamDecl;
@@ -1143,11 +1143,68 @@ pub async fn overwrite_parquet_snapshot(
     lineage: Option<&LineageEvent>,
     jobs: &[NewJob],
 ) -> Result<SnapshotId> {
+    overwrite_with_cap(pool, catalog, table, columns, batches, lineage, jobs, None).await
+}
+
+/// The **consuming** overwrite/replace commit primitive: identical to
+/// [`overwrite_parquet_snapshot`] except the inline end-cap is TARGETED rather
+/// than blanket. `consumed` names exactly the inline rows the caller folded into
+/// `batches` (the consolidation fold, later tasks); only those rows are retired —
+/// every other live inline row of the table SURVIVES the commit and keeps
+/// shadowing the new base, including a mutation that landed mid-consolidation
+/// (after the fold read its input snapshot but before this commit lands). Carries
+/// no downstream jobs of its own — consolidation has none; the vector-index
+/// rebuild jobs are still computed and enqueued internally, exactly as the plain
+/// overwrite does.
+pub async fn overwrite_parquet_snapshot_consuming(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: Option<&LineageEvent>,
+    consumed: InlineEndCap<'_>,
+) -> Result<SnapshotId> {
+    overwrite_with_cap(
+        pool,
+        catalog,
+        table,
+        columns,
+        batches,
+        lineage,
+        &[],
+        Some(consumed),
+    )
+    .await
+}
+
+/// Shared body of [`overwrite_parquet_snapshot`] and
+/// [`overwrite_parquet_snapshot_consuming`] — everything is identical between
+/// the two (rebuild-job computation, the zero-file/real-file branch split, the
+/// `CommitExtras` shape) except whether the inline end-cap is blanket (`None`,
+/// plain overwrite — every live inline row retires) or targeted (`Some`,
+/// consuming overwrite — only the named rows retire, everything else survives).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one cohesive commit call: routing target (pool/catalog/table/columns), payload \
+              (batches), behavior (lineage/jobs), and the blanket-vs-targeted inline cap \
+              (consumed) — the two public entrypoints differ only in the last two args"
+)]
+async fn overwrite_with_cap(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: Option<&LineageEvent>,
+    jobs: &[NewJob],
+    consumed: Option<InlineEndCap<'_>>,
+) -> Result<SnapshotId> {
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
     let mut all_jobs = rebuild_jobs;
     all_jobs.extend_from_slice(jobs); // action downstream jobs; pg_insert_if_absent dedups
     if batches.iter().all(|b| b.num_rows() == 0) {
-        return overwrite_truncate(pool, table, lineage, &all_jobs).await;
+        return overwrite_truncate(pool, table, lineage, &all_jobs, consumed).await;
     }
     // A declared stream table's physical schema carries framing; an overwrite must
     // preserve it (else the replacement looks like a dropped-columns schema change
@@ -1171,6 +1228,7 @@ pub async fn overwrite_parquet_snapshot(
         CommitExtras {
             lineage,
             overwrite: true,
+            end_cap: consumed,
             jobs: &all_jobs,
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
@@ -1180,17 +1238,25 @@ pub async fn overwrite_parquet_snapshot(
     .await
 }
 
-/// The zero-file branch of [`overwrite_parquet_snapshot`]: in one Postgres tx allocate
+/// The zero-file branch of [`overwrite_with_cap`]: in one Postgres tx allocate
 /// a mirror snapshot, ensure the table row, end-cap every live data file at that
 /// snapshot, and emit `lineage`. Touches no object storage and no Iceberg metadata —
 /// loom reads resolve `current_snapshot` through `iceberg_mirror.snapshot`, so the
 /// truncation is immediately visible and prior snapshots still time-travel.
+///
+/// `consumed`, when `Some`, retires exactly those inline rows
+/// (`end_cap_inline_rows_by_id`) instead of blanket-capping every live inline
+/// row — same targeted-vs-blanket rule as the non-empty branch, so a truncating
+/// consolidation fold (all input rows folded into nothing, e.g. a full delete)
+/// still leaves an unrelated concurrent mutation's inline row live.
 async fn overwrite_truncate(
     pool: &PgPool,
     table: &TableRef,
     lineage: Option<&LineageEvent>,
     jobs: &[NewJob],
+    consumed: Option<InlineEndCap<'_>>,
 ) -> Result<SnapshotId> {
+    use crate::iceberg_inline::{end_cap_inline_rows_by_id, end_cap_live_inline_rows};
     use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
     use crate::lineage::pg_emit;
 
@@ -1199,7 +1265,10 @@ async fn overwrite_truncate(
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
     end_cap_live_data_files(conn, tid, at).await?;
-    crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
+    match &consumed {
+        Some(cap) => end_cap_inline_rows_by_id(conn, cap.table_id, cap.row_ids, at).await?,
+        None => end_cap_live_inline_rows(conn, tid, at).await?,
+    }
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;
     }

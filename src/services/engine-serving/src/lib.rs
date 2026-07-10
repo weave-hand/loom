@@ -13,7 +13,7 @@ pub mod serving;
 pub mod vector_search;
 
 pub use action_writer::{IcebergActionWriter, StepWrite};
-pub use consolidate::consolidate_stream;
+pub use consolidate::consolidate_table;
 pub use feed::changelog_feed_scan;
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
