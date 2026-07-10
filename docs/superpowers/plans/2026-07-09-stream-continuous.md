@@ -314,6 +314,16 @@ In `src/control-plane/core/src/queue.rs:31`, add `crate::STREAM_MV_JOB_KIND,` to
 
 `buck2 build -v0 --console none //src/...` — every non-exhaustive `match` over `TransformBody` now errors (adapters' body encode/decode in `postgres/src/transforms.rs` + `memory/src/transforms.rs`, any UI/admin mapping). For serde-driven encode/decode sites no change is needed (the enum serializes itself); for explicit matches add a `MicroBatch` arm mirroring `Physical` (its io is already physical `TableRef`s — no ontology resolution). Read each site; do not blind-arm with `_ =>`.
 
+**EXCEPTION — the define-time refuse-guard site (`define_transform`, `postgres/src/transforms.rs`, landed after this plan by #416).** The `output_table` match feeding `pg_refuse_stream_target` must NOT group `MicroBatch` with `Physical`. A MicroBatch MV legitimately owns its declared log-stream output and writes to it via the sanctioned `CommitMicroBatch` path, so it is **exempt** from the legacy-write refuse guard — give it its own arm returning `None`:
+
+```rust
+    TransformBody::Physical { output, .. } => Some(output.clone()),
+    TransformBody::MicroBatch { .. } => None, // exempt: MV owns its stream output via CommitMicroBatch
+    TransformBody::Typed { output, .. } => { /* resolve via pg_type_tables */ }
+```
+
+Without the exemption, re-defining a running MV (whose output is a declared stream after the first commit; the insert is `on conflict do update`) would be refused. Task 6 adds a regression test for this. (Human-confirmed decision, 2026-07-10.)
+
 - [ ] **Step 6: Run the test + whole-tree build**
 
 Run: `buck2 test --console none //src/control-plane/core:stream-mv-core` — PASS.
@@ -848,6 +858,7 @@ Create `src/control-plane/postgres/tests/stream_mv_triggers.rs`, mirroring `test
 2. **Debounce:** land again WITHOUT draining → still exactly one `Queued` run (at-most-one-pending).
 3. **Composability:** define `mv2` (`source: s.mv1`, `on_input_commit: true`); commit an MV1 micro-batch via `inline_append_mv(pool, &s_mv1, …, &MvCommit { mv: "s.mv1", source_table_id: events_tid, advances: [{0, 0, n}], run_id: None })` → an `stream_mv` job for `mv2` is enqueued by the SAME transaction (dequeue + payload check): an MV's output commit is a first-class data-trigger seam.
 4. **Cycle rejection:** with `mv_a: s.t1 → s.t2` defined (`on_input_commit`), defining `mv_b: s.t2 → s.t1` (`on_input_commit`) is a `Validation` error naming both defs.
+5. **Redefine-after-first-commit (refuse-guard exemption regression):** define `mv1: s.events → s.mv1`, commit a micro-batch to `s.mv1` (via `inline_append_mv`, so `s.mv1` is now a declared log stream), then **re-`define_transform`** `mv1` with edited `sql` (same output) → succeeds (`Ok`), NOT a `Validation` refusal. This locks in the `MicroBatch { .. } => None` exemption Task 1 added to the define-time `pg_refuse_stream_target` site (see Task 1 Step 5's EXCEPTION note). Contrast: a `Physical`/`Typed` transform re-targeting `s.mv1` is still refused (existing #416 behavior — do not regress it).
 
 Wire `loom_fixture_test` target `stream-mv-triggers` mirroring `data-triggers` in `src/control-plane/postgres/BUCK`.
 
