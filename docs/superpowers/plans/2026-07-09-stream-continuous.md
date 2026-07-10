@@ -487,7 +487,7 @@ pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
 
 - [ ] **Step 5: Memory adapter**
 
-Add `pub(crate) mv_watermarks: parking_lot::Mutex<HashMap<(String, i64, i32), i64>>` to `MemoryControlPlane` (mirroring `offsets`), and implement `MvWatermarks` with the same CAS semantics (absent = 0 only satisfies `from == 0`; mismatch → `Conflict`).
+Add `pub(crate) mv_watermarks: Arc<Mutex<HashMap<(String, i64, i32), i64>>>` to `MemoryControlPlane` (mirroring `offsets` — the `Arc` wrapper is REQUIRED: `MemoryControlPlane` `#[derive(Clone)]`s and shares all state via `Arc<Mutex<…>>`, so a bare `Mutex` would give cloned handles independent watermark maps and silently break shared-state semantics; initialize with `Arc::new(Mutex::new(HashMap::new()))` in the constructor beside `offsets`), and implement `MvWatermarks` with the same CAS semantics (absent = 0 only satisfies `from == 0`; mismatch → `Conflict`).
 
 - [ ] **Step 6: Run + commit**
 
