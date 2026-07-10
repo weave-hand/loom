@@ -19,9 +19,10 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, ControlPlane, Effect,
-    JobTemplate, ObjectType, ParamDef, PolicyTarget, PropertyConstraints, RangeConstraint, RoleId,
-    SubjectId, TRANSFORM_JOB_KIND, TypeName,
+    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, CompareOp,
+    ControlPlane, Effect, JobTemplate, ObjectType, ParamDef, Policy, PolicyTarget,
+    PropertyConstraints, RangeConstraint, RoleId, RowFilter, ScalarValue, SubjectId,
+    TRANSFORM_JOB_KIND, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -473,6 +474,204 @@ async fn committed_delete_enqueues_downstream_job() {
     let payloads = job_payloads(&pool, TRANSFORM_JOB_KIND).await;
     assert_eq!(payloads.len(), 1);
     assert_eq!(payloads[0]["orderId"], json!(99));
+
+    drop(eg);
+}
+
+/// An UPDATE rejected AFTER downstream resolution enqueues NO job — the write_delta
+/// rollback-atomicity twin of `pre_write_rejection_enqueues_no_job`. `resolve_downstream`
+/// runs at the top of `run_mutate` (before the CAS retry loop), so by the time
+/// `mutate_governance`'s row_filter leg denies the freshly-read existing row, `jobs` is
+/// already a populated `Vec<NewJob>` sitting on the stack — the only thing that can stop
+/// it reaching the queue is that `write_delta` (the sole enqueue site) is never called.
+/// A fine-grained Write row_filter that only admits `id == 999` denies the real row
+/// (`id == 42`), so `enforce_mutate_policy`'s existing-row check (leg 1) 403s before any
+/// write is issued.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn update_rejected_after_resolution_enqueues_no_job() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp, PropertyConstraints::default()).await;
+    cp.ontology()
+        .define_action(create_order_action(vec![]))
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(update_order_action(vec![order_transform_template()]))
+        .await
+        .unwrap();
+
+    let (subj, role) = writer_on(&cp, &["Order"]).await;
+
+    let (engine, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    // Seed: insert order id=42 (no policy in force yet, so the seed insert is
+    // unaffected). createOrder has no downstream, so this enqueues no job.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrder",
+        &json!({ "id": "42" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed insert: {body}");
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "the seed insert (no downstream) enqueues no job"
+    );
+
+    // A fine-grained Write row_filter that only admits id == 999 — the real row
+    // (id == 42) fails it, so the UPDATE's existing-row governance leg denies.
+    cp.acl()
+        .set_policy(
+            &role,
+            Action::Write,
+            Policy {
+                target: PolicyTarget::Type(tn("Order")),
+                row_filter: Some(RowFilter::Compare {
+                    property: "id".into(),
+                    op: CompareOp::Eq,
+                    value: ScalarValue::Int(999),
+                }),
+                deny_columns: vec![],
+                mask_columns: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    // Update: id=42's existing row fails the row_filter ⇒ 403 before write_delta.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/updateOrder",
+        &json!({ "id": "42" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "row_filter-denied update is a 403: {body}"
+    );
+
+    // The atomic contract: no job was enqueued for the rolled-back update.
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "a post-resolution rejection must enqueue no downstream job"
+    );
+
+    drop(eg);
+}
+
+/// A DELETE rejected AFTER downstream resolution enqueues NO job — the delete-path
+/// twin of `update_rejected_after_resolution_enqueues_no_job`. DELETE shares
+/// `mutate_governance`'s existing-row row_filter leg with UPDATE (leg 1 runs
+/// regardless of `is_update`), so the same denied-row setup 403s before `write_delta`
+/// commits the tombstone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delete_rejected_after_resolution_enqueues_no_job() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    define_order(&cp, PropertyConstraints::default()).await;
+    cp.ontology()
+        .define_action(create_order_action(vec![]))
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(delete_order_action(vec![order_transform_template()]))
+        .await
+        .unwrap();
+
+    let (subj, role) = writer_on(&cp, &["Order"]).await;
+
+    let (engine, eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(InProcessServingEngine::new(
+        IcebergCatalog::new(pool.clone()),
+    ));
+    let action_engine: Arc<dyn ActionEngine> = Arc::new(engine);
+    let cp = Arc::new(cp);
+
+    // Seed: insert order id=99 (no policy in force yet). createOrder has no
+    // downstream, so this enqueues no job.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/createOrder",
+        &json!({ "id": "99" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed insert: {body}");
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "the seed insert (no downstream) enqueues no job"
+    );
+
+    // A fine-grained Write row_filter that only admits id == 999 — the real row
+    // (id == 99) fails it, so the DELETE's existing-row governance leg denies.
+    cp.acl()
+        .set_policy(
+            &role,
+            Action::Write,
+            Policy {
+                target: PolicyTarget::Type(tn("Order")),
+                row_filter: Some(RowFilter::Compare {
+                    property: "id".into(),
+                    op: CompareOp::Eq,
+                    value: ScalarValue::Int(999),
+                }),
+                deny_columns: vec![],
+                mask_columns: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    // Delete: id=99's existing row fails the row_filter ⇒ 403 before write_delta.
+    let (status, _headers, body) = post_action_raw(
+        cp.clone(),
+        serving.clone(),
+        action_engine.clone(),
+        "/actions/deleteOrder",
+        &json!({ "id": "99" }),
+        subj.0.as_str(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "row_filter-denied delete is a 403: {body}"
+    );
+
+    // The atomic contract: no job was enqueued for the rolled-back delete.
+    assert_eq!(
+        job_count(&pool, TRANSFORM_JOB_KIND).await,
+        0,
+        "a post-resolution rejection must enqueue no downstream job"
+    );
 
     drop(eg);
 }
