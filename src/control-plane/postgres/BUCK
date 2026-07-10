@@ -1358,6 +1358,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "refuse-stream-target",
+    crate = "refuse_stream_target",
+    srcs = ["tests/refuse_stream_target.rs"],
+    crate_root = "tests/refuse_stream_target.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-changelog-notify",
     crate = "stream_changelog_notify",
     srcs = ["tests/stream_changelog_notify.rs"],
