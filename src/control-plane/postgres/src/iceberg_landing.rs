@@ -672,7 +672,7 @@ pub(crate) fn augment_with_framing(
 
 /// The durable changelog table's `TableRef` for a CDC base table: same schema,
 /// name suffixed `__changelog` (slice 2b, spec §4).
-pub(crate) fn changelog_table_ref(base: &TableRef) -> TableRef {
+pub fn changelog_table_ref(base: &TableRef) -> TableRef {
     TableRef {
         schema: base.schema.clone(),
         name: format!("{}__changelog", base.name),

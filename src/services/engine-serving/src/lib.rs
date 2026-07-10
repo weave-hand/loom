@@ -6,6 +6,7 @@
 
 pub mod action_writer;
 pub mod consolidate;
+pub mod feed;
 pub mod governed;
 pub mod provider;
 pub mod serving;
@@ -13,6 +14,7 @@ pub mod vector_search;
 
 pub use action_writer::{IcebergActionWriter, StepWrite};
 pub use consolidate::consolidate_stream;
+pub use feed::changelog_feed_scan;
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };
