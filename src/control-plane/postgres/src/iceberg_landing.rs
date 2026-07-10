@@ -1152,7 +1152,17 @@ pub async fn overwrite_parquet_snapshot_consuming(
     lineage: Option<&LineageEvent>,
     consumed: InlineEndCap<'_>,
 ) -> Result<SnapshotId> {
-    overwrite_with_cap(pool, catalog, table, columns, batches, lineage, &[], Some(consumed)).await
+    overwrite_with_cap(
+        pool,
+        catalog,
+        table,
+        columns,
+        batches,
+        lineage,
+        &[],
+        Some(consumed),
+    )
+    .await
 }
 
 /// Shared body of [`overwrite_parquet_snapshot`] and

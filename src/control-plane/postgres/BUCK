@@ -773,6 +773,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "inline-shadow-read",
+    crate = "inline_shadow_read",
+    srcs = ["tests/inline_shadow_read.rs"],
+    crate_root = "tests/inline_shadow_read.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "inline-delta-cas",
     crate = "inline_delta_cas",
     srcs = ["tests/inline_delta_cas.rs"],

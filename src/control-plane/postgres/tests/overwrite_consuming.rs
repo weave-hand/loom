@@ -64,7 +64,11 @@ async fn inline_end_snapshot(pool: &sqlx::PgPool, tid: i64, row_id: i64) -> Opti
 }
 
 /// Count inline rows live at a given snapshot for the given table id.
-async fn live_inline_count(pool: &sqlx::PgPool, tid: i64, at: control_plane_core::SnapshotId) -> i64 {
+async fn live_inline_count(
+    pool: &sqlx::PgPool,
+    tid: i64,
+    at: control_plane_core::SnapshotId,
+) -> i64 {
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "select count(*) from iceberg_mirror.inline_{tid} \
          where begin_snapshot <= {s} and (end_snapshot is null or end_snapshot > {s})",
@@ -113,19 +117,39 @@ async fn consuming_overwrite_retires_only_named_rows() {
     .expect("seed file row");
 
     // Two live inline rows on top of the seeded file.
-    let _s1 = inline_append(&pool, &t, &columns(), &inline_batch(&[10]), lineage(), None, None)
-        .await
-        .expect("inline append id=10");
-    let s2 = inline_append(&pool, &t, &columns(), &inline_batch(&[20]), lineage(), None, None)
-        .await
-        .expect("inline append id=20");
+    let _s1 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[10]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=10");
+    let s2 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[20]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=20");
 
     let (tid, row_ids, _batch) = ice
         .inline_live_batch(&t, s2)
         .await
         .expect("inline_live_batch at s2")
         .expect("two live inline rows before the consuming overwrite");
-    assert_eq!(row_ids.len(), 2, "two live inline rows before consuming overwrite");
+    assert_eq!(
+        row_ids.len(),
+        2,
+        "two live inline rows before consuming overwrite"
+    );
     let (first_id, second_id) = (row_ids[0], row_ids[1]);
 
     // Fold: a consuming overwrite that consumed only `first_id`, replacing the file
@@ -162,7 +186,11 @@ async fn consuming_overwrite_retires_only_named_rows() {
     // File tier: the seed file was live just before the overwrite, and is end-capped
     // by it; the replacement is the sole live file afterward.
     let files_before_overwrite = ice.files_with_stats(&t, s2).await.expect("files at s2");
-    assert_eq!(files_before_overwrite.len(), 1, "seed file live before the overwrite");
+    assert_eq!(
+        files_before_overwrite.len(),
+        1,
+        "seed file live before the overwrite"
+    );
     let files_now = ice.files_with_stats(&t, s3).await.expect("files at s3");
     assert_eq!(files_now.len(), 1, "replacement file is the sole live file");
     assert_ne!(
@@ -181,7 +209,11 @@ async fn consuming_overwrite_retires_only_named_rows() {
         .expect("inline_live_batch at s3")
         .expect("survivor still live at s3");
     assert_eq!(tid2, tid);
-    assert_eq!(live_ids, vec![second_id], "only the survivor's loom_row_id is live");
+    assert_eq!(
+        live_ids,
+        vec![second_id],
+        "only the survivor's loom_row_id is live"
+    );
     let ids = live_batch
         .column(0)
         .as_any()
@@ -225,12 +257,28 @@ async fn consuming_overwrite_truncate_retires_named_rows() {
     .await
     .expect("seed file row");
 
-    let _s1 = inline_append(&pool, &t, &columns(), &inline_batch(&[10]), lineage(), None, None)
-        .await
-        .expect("inline append id=10");
-    let s2 = inline_append(&pool, &t, &columns(), &inline_batch(&[20]), lineage(), None, None)
-        .await
-        .expect("inline append id=20");
+    let _s1 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[10]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=10");
+    let s2 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[20]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=20");
 
     let (tid, row_ids, _batch) = ice
         .inline_live_batch(&t, s2)
@@ -247,9 +295,10 @@ async fn consuming_overwrite_truncate_retires_named_rows() {
         table_id: tid,
         row_ids: &row_ids,
     };
-    let s3 = overwrite_parquet_snapshot_consuming(&pool, &catalog, &t, &columns(), vec![], None, cap)
-        .await
-        .expect("consuming truncate overwrite");
+    let s3 =
+        overwrite_parquet_snapshot_consuming(&pool, &catalog, &t, &columns(), vec![], None, cap)
+            .await
+            .expect("consuming truncate overwrite");
     assert!(s3.0 > s2.0, "truncate advances the snapshot");
 
     // Both named rows are retired at the truncate snapshot — assert by id, not count.
@@ -287,9 +336,17 @@ async fn plain_overwrite_still_blanket_caps() {
         name: "consuming_plain".into(),
     };
 
-    let s1 = inline_append(&pool, &t, &columns(), &inline_batch(&[1]), lineage(), None, None)
-        .await
-        .expect("inline append id=1");
+    let s1 = inline_append(
+        &pool,
+        &t,
+        &columns(),
+        &inline_batch(&[1]),
+        lineage(),
+        None,
+        None,
+    )
+    .await
+    .expect("inline append id=1");
 
     let tid: i64 = sqlx::query_scalar(
         "select table_id from iceberg_mirror.table \
@@ -299,11 +356,23 @@ async fn plain_overwrite_still_blanket_caps() {
     .await
     .expect("tid");
 
-    assert_eq!(live_inline_count(&pool, tid, s1).await, 1, "one inline row live at s1");
+    assert_eq!(
+        live_inline_count(&pool, tid, s1).await,
+        1,
+        "one inline row live at s1"
+    );
 
-    let s2 = overwrite_parquet_snapshot(&pool, &catalog, &t, &columns(), vec![inline_batch(&[2])], None, &[])
-        .await
-        .expect("plain overwrite");
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![inline_batch(&[2])],
+        None,
+        &[],
+    )
+    .await
+    .expect("plain overwrite");
     assert!(s2.0 > s1.0, "overwrite advances the snapshot");
 
     assert_eq!(

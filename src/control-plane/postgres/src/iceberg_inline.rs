@@ -812,6 +812,59 @@ pub async fn clear_has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result
     Ok(())
 }
 
+/// Clear `tid`'s inline-shadow flag ONLY when no live shadow delta remains — i.e.
+/// no live `inline_<tid>` row is a tombstone or a version/delete change
+/// (`loom_tombstone` or `loom_change_kind in ('+U', '-D')`). Returns `true` when
+/// the flag was actually cleared.
+///
+/// This is deliberately conditional, NOT [`clear_has_shadow`]'s unconditional
+/// delete: consolidation's post-commit clear can race a brand-new mutation that
+/// lands mid-run (spec §3 of the slice-2 design). A survivor delta must keep the
+/// byte-trigger flush suppressed even though the consolidation that raced it
+/// already completed — an unconditional clear here would re-open the corruption
+/// slice-1's suppression closed (a subsequent flush could drain a still-shadowed
+/// table and duplicate/resurrect a file row). If live deltas remain, the flag
+/// stays set and the *next* consolidation run (re-armed by the trigger) drains
+/// them and retries the clear.
+///
+/// The single-statement NOT-EXISTS check still has a benign residual write-skew:
+/// a delta transaction whose `set_has_shadow` no-ops against the still-present
+/// flag row can commit *after* this statement's NOT-EXISTS snapshot, leaving a
+/// live delta with no flag. That skew is NOT closed here — it is closed at the
+/// flush, by the Task 3 read-set guard (`shadow_rows_among`, consulted from
+/// `flush_locked`), which inspects the rows a flush is about to write rather than
+/// trusting the flag; a hit there self-heals by re-setting `has_shadow`.
+///
+/// Idempotent: a second call with nothing to clear returns `Ok(false)`.
+///
+/// AssertSqlSafe: `tid` is bound as `$1`; the `inline_<tid>` relation name is a
+/// dynamic identifier spliced via [`inline_table_name`] (the slice-1 precedent —
+/// see [`quote_ident`]'s doc for why splicing an internally-generated identifier
+/// is safe here). Guarded by [`inline_relation_exists`] so a table with no inline
+/// storage yet (a shadowed table always has one, but stay panic-free) reads as
+/// "trivially quiescent" instead of erroring on `relation ... does not exist`.
+pub async fn clear_has_shadow_if_quiescent(conn: &mut PgConnection, tid: i64) -> Result<bool> {
+    if !inline_relation_exists(&mut *conn, tid).await? {
+        // No inline relation at all: trivially no live shadow delta can exist.
+        // Fall back to the unconditional clear, reporting whether the flag was
+        // actually set beforehand (clear_has_shadow itself is `Result<()>`).
+        let was_set = has_shadow(&mut *conn, tid).await?;
+        clear_has_shadow(conn, tid).await?;
+        return Ok(was_set);
+    }
+    let result = sqlx::query(AssertSqlSafe(format!(
+        "delete from iceberg_mirror.shadow_flag where table_id = $1 \
+         and not exists (select 1 from {} where end_snapshot is null \
+           and (loom_tombstone or loom_change_kind in ('+U', '-D')))",
+        inline_table_name(tid),
+    )))
+    .bind(tid)
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Extract the id column's cell (row 0) from `batch`, typed by its `ColumnSpec`.
 /// The id value never crosses a crate boundary as a `Cell`/`SqlValue`: callers pass
 /// it inside an Arrow batch and name the id column, and this locates it by name.
@@ -1438,6 +1491,119 @@ impl IcebergCatalog {
         at: SnapshotId,
     ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
         self.inline_live_batch_impl(table, at, false).await
+    }
+
+    /// EVERY live inline row of `table` at `at` — plain appends, row-versions
+    /// (`+U`), and tombstones (`-D`); a non-CDC table never carries `-U`
+    /// before-images, so no such exclusion is needed here (contrast
+    /// `inline_live_batch`, which filters them for the current-state view). This
+    /// is the INPUT to the slice-2 consolidation fold (`Precedence::Snapshot`,
+    /// mirroring `build_inline_provider`'s merge-on-read pair): the batch projects
+    /// the user columns in mirror order, then `begin_snapshot` (`Int64`,
+    /// non-null), then `loom_tombstone` (`Boolean`, non-null) — the same physical
+    /// names/order the engine-serving MVCC precedence reads
+    /// (`serving.rs`'s `build_inline_provider`), so the fold and the live-read
+    /// path can never drift apart on framing-column shape.
+    ///
+    /// Returns `None` when there is no inline storage or no live rows at `at`.
+    /// Deliberately a SEPARATE method rather than a third mode on
+    /// `inline_live_batch_impl` — a `-U`-exclusion bool AND a framing-column bool
+    /// would multiply the shared body's branches for two reads with genuinely
+    /// different projections (row count and column count both differ), which is
+    /// worse for both clippy and readers than one clearly-named sibling.
+    pub async fn inline_live_batch_shadow(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+    ) -> Result<Option<(i64, Vec<i64>, RecordBatch)>> {
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+        let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? else {
+            return Ok(None);
+        };
+        if !inline_table_exists(&mut conn, tid).await? {
+            return Ok(None);
+        }
+
+        // User columns from the mirror's logical schema. For a non-CDC table
+        // `physical_columns` returns exactly the user columns (no stream framing
+        // was ever registered), but resolve it via the same call `inline_live_batch`
+        // uses, for symmetry — a future CDC-shadow read would need the same call.
+        let columns = self.physical_columns(tid, at).await?;
+        let col_list = columns
+            .iter()
+            .map(|c| quote_ident(&c.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // loom_row_id(0), begin_snapshot(1), loom_tombstone(2), then user columns
+        // (3..). No `-U` exclusion: every live row is in scope for the fold.
+        let rows = sqlx::query(AssertSqlSafe(format!(
+            "select loom_row_id, begin_snapshot, loom_tombstone, {col_list} from {} \
+             where {} order by loom_row_id",
+            inline_table_name(tid),
+            mvcc_live_pred(at.0),
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+
+        let row_ids: Vec<i64> = rows
+            .iter()
+            .map(|r| r.try_get::<i64, _>("loom_row_id").map_err(backend))
+            .collect::<Result<Vec<_>>>()?;
+
+        // Resolve every user column's logical type ONCE, same failure text as the
+        // sibling reads.
+        let types: Vec<BaseType> = columns
+            .iter()
+            .map(|c| {
+                resolve_logical(&c.ty).ok_or_else(|| {
+                    ControlPlaneError::Backend(
+                        format!("inline shadow read: unsupported type {:?}", c.ty).into(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Fields: user columns in mirror order, then the two framing columns.
+        let mut fields: Vec<Field> = columns
+            .iter()
+            .zip(&types)
+            .map(|(c, ty)| arrow_field(&c.name, *ty, c.nullable))
+            .collect();
+        fields.push(Field::new(
+            "begin_snapshot",
+            BaseType::Long.arrow_data_type(),
+            false,
+        ));
+        fields.push(Field::new(
+            "loom_tombstone",
+            BaseType::Boolean.arrow_data_type(),
+            false,
+        ));
+
+        // User arrays via the shared decode (data columns start at select index 3);
+        // the two framing arrays are built directly since they are non-nullable
+        // scalars pulled straight from `begin_snapshot`/`loom_tombstone`.
+        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(fields.len());
+        for (i, ty) in types.iter().enumerate() {
+            arrays.push(column_array(&rows, i + 3, *ty)?);
+        }
+        let mut begin_snapshot = Int64Builder::with_capacity(rows.len());
+        let mut loom_tombstone = BooleanBuilder::with_capacity(rows.len());
+        for r in &rows {
+            begin_snapshot.append_value(r.try_get::<i64, _>("begin_snapshot").map_err(backend)?);
+            loom_tombstone.append_value(r.try_get::<bool, _>("loom_tombstone").map_err(backend)?);
+        }
+        arrays.push(Arc::new(begin_snapshot.finish()));
+        arrays.push(Arc::new(loom_tombstone.finish()));
+
+        let arrow_schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(arrow_schema, arrays).map_err(backend)?;
+        Ok(Some((tid, row_ids, batch)))
     }
 
     /// Shared body of `inline_live_batch`/`inline_live_batch_full`; the only
