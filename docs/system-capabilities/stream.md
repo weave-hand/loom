@@ -329,6 +329,8 @@ newline-delimited JSON (NDJSON), one change event per line
 
 ## Continuous / standing queries (materialized views)
 
+Shipped as `road-stream-continuous` (#418).
+
 **Materialized views are a fourth `TransformBody` kind, not a new subsystem.**
 `TransformBody::MicroBatch { source: TableRef, output: TableRef, buckets: i32,
 sql: String }` (serde tag `"microbatch"`, `core/src/transforms.rs:62`) rides
