@@ -267,7 +267,7 @@ fn sentinels_parse_and_opaque_dispatches_to_resume() {
 
 - [ ] **Step 3: Wire the test target**
 
-In `src/services/query-api/BUCK`, mirror the `http-smoke` `rust_test` (line 58) with a `subscribe-cursor` target: `srcs = ["tests/subscribe_cursor.rs"]`, deps `[":query-api"]` (add `"//third-party:serde_json"` only if the final test text needs it).
+In `src/services/query-api/BUCK`, mirror the `http-smoke` `rust_test` (its `name` line is `:59`) with a `subscribe-cursor` target: `srcs = ["tests/subscribe_cursor.rs"]`, deps `[":query-api"]` (add `"//third-party:serde_json"` only if the final test text needs it).
 
 - [ ] **Step 4: Run the test to verify it fails**
 
@@ -365,7 +365,7 @@ sentinels. Adds the base64 third-party dep via reindeer."
 - Test: `src/control-plane/postgres/tests/stream_changelog_notify.rs` (new) + `loom_fixture_test` target `stream-changelog-notify` mirroring `stream-cdc-emission` (`postgres/BUCK:1321`)
 
 **Interfaces:**
-- Consumes: `pg_stream_meta`/`pg_peek_offset` (crate-internal, `postgres/src/stream.rs:280`), `live_table_id` (`iceberg_mirror`), the queue's waiter shape (`queue.rs:152`).
+- Consumes: `pg_stream_meta` (crate-internal, `postgres/src/stream.rs:367`) / `pg_peek_offset` (`postgres/src/stream.rs:280`), `live_table_id` (`iceberg_mirror.rs:264`), the queue's waiter shape (`queue.rs:152`).
 - Produces (later tasks rely on these EXACT names/types):
   - Channel name contract: `loom_changelog:{table_id}` where `table_id` is the **base** table's mirror tid, notified on every committed CDC inline write (`+I` appends and `−U/+U/−D` mutations).
   - `pub async fn await_changelog(pool: &sqlx::PgPool, table: &control_plane_core::TableRef, timeout: std::time::Duration) -> Result<()>` in `control_plane_postgres::stream` — resolves on a notify or the timeout, whichever first (never errors on timeout).
@@ -623,7 +623,7 @@ In `src/control-plane/postgres/src/iceberg_inline.rs`:
         }
 ```
 
-**(b) `write_inline_delta`** — immediately after the `if cdc { … }` emit block closes (after line ~1166, before the `else if tombstone` chain's end — i.e., right after the whole if/else-if/else emit chain, guarded on `cdc`):
+**(b) `write_inline_delta`** — the emit logic is a 3-arm `if cdc {…} else if tombstone {…} else {…}` chain: the `if cdc {` arm opens at ~`:1109` and closes at ~`:1166`, and the whole chain closes at ~`:1208`. Insert the notify **after the entire chain closes (~`:1208`), before `tx.commit()` at ~`:1240`** — NOT at `:1166` (that is only the first arm's close; a block there is a syntax error). Variables in scope: `cdc` (`:1099`), `tid` (`:1053`), `tx` (`:1050`). Guard on `cdc` (log tables don't feed):
 
 ```rust
     // Subscribe wakeup: the -U/+U/-D events just written become visible on
@@ -1017,8 +1017,10 @@ pub async fn changelog_feed_scan(
              - fields  = every non-loom_* column, cell -> serde_json::Value via a
                small `cell_to_json(array, row)` match over DataType (Utf8, Int32,
                Int64, Float64, Boolean, Date32 -> ISO date string, Timestamp
-               (Microsecond) -> ISO string, null -> Value::Null) — mirror
-               query-api's serving_datafusion::batches_to_rows value mapping.
+               (Microsecond) -> ISO string, null -> Value::Null). REIMPLEMENT this
+               helper INSIDE `feed.rs` mirroring the value mapping in query-api's
+               `serving_datafusion::batches_to_rows` (`serving_datafusion.rs:18`) —
+               do NOT import it: engine-serving cannot depend on query-api.
            Then: next.insert(bucket, offset + 1); events.push(ChangeEvent { .. });
            All array downcasts via `.as_any().downcast_ref::<..>()` +
            `ok_or_else(EngineServingError::Engine)` — no indexing/unwrap. */
@@ -1062,7 +1064,7 @@ __changelog naming)."
 - Modify: `src/services/query-api/src/http.rs` — route (`:96` block) + `get_changes` handler
 - Modify: `src/services/query-api/src/openapi.rs:195-212` — `paths(...)` registration
 - Modify: `src/services/query-api/tests/openapi.rs` — `expected()` gains `("get", "/objects/{type_name}/changes")`
-- Test: `src/services/query-api/tests/subscribe_http.rs` (new) + `rust_test` target `subscribe-http` mirroring `http-smoke` (`query-api/BUCK:58`)
+- Test: `src/services/query-api/tests/subscribe_http.rs` (new) + `rust_test` target `subscribe-http` mirroring `http-smoke` (`query-api/BUCK:59`)
 
 **Interfaces:**
 - Consumes: `resolve_governed`/`GovernedType`/`OnMissing` (`governed.rs:59`/`:20`/`:43`); `query_error_response` (`http.rs:751`); `Subject` (subject id at `.0`, per `handler.rs:248`); `SubscribeCursor`/`CursorSpec`/`parse_cursor` (T2); `ChangeEvent`/`ChangeFeedPage` (T1).
@@ -1488,7 +1490,7 @@ registered follow-up)."
 
 - [ ] **Step 1: Implement the e2e_support wiring**
 
-In `impl query_api::serving::ServingEngine for InProcessServingEngine` (`e2e_support.rs:139`), add:
+In `impl query_api::serving::ServingEngine for InProcessServingEngine` (the struct is at `e2e_support.rs:107`; its existing trait-method impls are around `:150-158` — add these three methods in that same `impl` block), add:
 
 ```rust
     async fn changelog_latest(
