@@ -185,6 +185,18 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "sql-wire-config",
+    crate = "sql_wire_config",
+    srcs = ["tests/sql_wire_config.rs"],
+    crate_root = "tests/sql_wire_config.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/loom-config:loom-config",
+    ],
+)
+
 loom_fixture_test(
     name = "governed-read",
     crate = "governed_read",
