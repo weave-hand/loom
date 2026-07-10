@@ -41,7 +41,7 @@ pub use iceberg_read::read_files_as_batches;
 mod lineage;
 pub mod ontology;
 mod queue;
-mod stream;
+pub mod stream;
 mod transaction;
 mod transforms;
 

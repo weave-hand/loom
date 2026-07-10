@@ -1336,6 +1336,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-changelog-notify",
+    crate = "stream_changelog_notify",
+    srcs = ["tests/stream_changelog_notify.rs"],
+    crate_root = "tests/stream_changelog_notify.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-overwrite-framing",
     crate = "stream_overwrite_framing",
     srcs = ["tests/stream_overwrite_framing.rs"],
