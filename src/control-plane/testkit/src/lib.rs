@@ -3250,12 +3250,20 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
             schema: "main".into(),
             name: "widget".into(),
         },
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
+        properties: vec![
+            PropertyDef {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+            PropertyDef {
+                name: "sku".into(),
+                ty: "String".into(),
+                required: false,
+                constraints: control_plane_core::PropertyConstraints::default(),
+            },
+        ],
         derived: vec![],
         identity: Some("id".into()),
         version: None,
@@ -3301,7 +3309,9 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
         ),
         "unknown downstream job kind rejected at define time"
     );
-    // @self.<prop> must name a real property of the primary target.
+    // @self.<prop> must name a column the action writes (a param or assignment) — this
+    // empty-params/empty-assignments action writes nothing, so `nope` (not even a real
+    // property) is rejected.
     assert!(
         matches!(
             cp.define_action(
@@ -3322,8 +3332,39 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
         ),
         "payload @self.<unknown prop> rejected at define time"
     );
-    // @self.id requires the target to declare an identity (Blob has none, so `id` is not
-    // a property of Blob).
+    // @self.<real-but-unwritten prop>: `sku` IS a real Widget property, but this action's
+    // params produce only `id` — `sku` is not a produced column, so it's rejected. This is
+    // the discriminating case for produced-columns validation: the old full-ObjectType check
+    // would have accepted it (sku exists on Widget), silently degrading to the literal
+    // string `@self.sku` at runtime since the resolver only sees the written row.
+    assert!(
+        matches!(
+            cp.define_action(
+                ActionDef::single_step(
+                    ActionName("unwrittenProp".into()),
+                    tn("Widget"),
+                    ActionKind::Insert,
+                    vec![ParamDef {
+                        name: "id".into(),
+                        ty: "Long".into(),
+                        required: true,
+                        binds: None,
+                    }],
+                    vec![],
+                )
+                .downstream(vec![JobTemplate {
+                    kind: "transform".into(),
+                    payload: serde_json::json!({ "x": "@self.sku" }),
+                }])
+            )
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "@self.<real-but-unwritten prop> rejected at define time (validated against produced \
+         columns, not the full schema)"
+    );
+    // @self.id must name a produced column too — this empty-params action on Blob (no
+    // identity) writes nothing, so `id` is not a produced column (also not a real property).
     assert!(
         matches!(
             cp.define_action(

@@ -264,6 +264,7 @@ async fn write_steps_fires_per_matched_def() {
         &catalog,
         steps,
         lineage(RunId(uuid::Uuid::new_v4()), &in1),
+        &[],
     )
     .await
     .expect("write_steps");
@@ -362,6 +363,7 @@ async fn overwrite_and_truncate_fire() {
         &columns(),
         vec![ipc_body(2).1.remove(0)],
         Some(&lineage(RunId(uuid::Uuid::new_v4()), &input)),
+        &[],
     )
     .await
     .expect("overwrite");
@@ -377,7 +379,7 @@ async fn overwrite_and_truncate_fire() {
     pg.define_transform(def2).await.expect("define dep-trunc");
 
     // Zero-row overwrite -> the truncate branch.
-    overwrite_parquet_snapshot(&pool, &catalog, &input, &columns(), vec![], None)
+    overwrite_parquet_snapshot(&pool, &catalog, &input, &columns(), vec![], None, &[])
         .await
         .expect("truncate");
     let runs2 = pg

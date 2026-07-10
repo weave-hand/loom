@@ -154,6 +154,7 @@ async fn worker_consolidates_stream_over_the_wire() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("cdc update delta");

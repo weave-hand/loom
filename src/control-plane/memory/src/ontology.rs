@@ -200,20 +200,21 @@ impl Ontology for MemoryControlPlane {
         let step = action.steps.first().ok_or_else(|| {
             ControlPlaneError::Validation(format!("action `{}` has no steps", action.name.0))
         })?;
-        let primary_target = match ont.types.get(&step.target.0) {
-            Some(t) => t,
+        match ont.types.get(&step.target.0) {
+            Some(_) => {}
             None => {
                 return Err(ControlPlaneError::Validation(format!(
                     "action `{}` references unknown target type `{}`",
                     action.name.0, step.target.0
                 )));
             }
-        };
-        // Validate downstream templates against the primary target's full ObjectType
-        // (properties + identity). `primary_target` borrows `ont.types`; the borrow ends
-        // here, before the `ont.actions` mutable insert below.
-        control_plane_core::validate_downstream_scope(&action)?;
-        control_plane_core::validate_action_downstream(&action.downstream, primary_target)?;
+        }
+        // Validate downstream templates against the primary step's produced columns
+        // (params + assignments). `ont.types.get` above only borrowed `ont.types`, and that
+        // borrow already ended (the match returned `()`/an early error) before this call —
+        // `step` borrows `action`, not `ont`, so it's fine ahead of the `ont.actions` mutable
+        // insert below.
+        control_plane_core::validate_action_downstream(&action.downstream, step)?;
         ont.actions.insert(action.name.0.clone(), action);
         Ok(())
     }

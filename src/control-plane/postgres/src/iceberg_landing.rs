@@ -521,6 +521,7 @@ pub async fn write_steps(
     catalog: &SqlCatalog,
     steps: Vec<StepLand>,
     lineage: LineageEvent,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     if steps.is_empty() {
         return Err(ControlPlaneError::Validation(
@@ -581,6 +582,12 @@ pub async fn write_steps(
     crate::lineage::pg_emit(&mut *tx, &lineage).await?;
     let written: Vec<TableRef> = staged.iter().map(|s| s.table.clone()).collect();
     crate::transforms::pg_fire_data_triggers(&mut tx, &written, Some(lineage.run_id.0)).await?;
+    // The action's resolved downstream jobs (multi-step phase 2) ride this same commit
+    // tx — enqueued iff the multi-target write commits (commit-or-neither), mirroring
+    // the single-step insert/update/delete paths' enqueue-before-commit.
+    for job in jobs {
+        crate::queue::pg_insert_if_absent(&mut *tx, job).await?;
+    }
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
@@ -1121,10 +1128,13 @@ pub async fn overwrite_parquet_snapshot(
     columns: &[ColumnSpec],
     batches: Vec<RecordBatch>,
     lineage: Option<&LineageEvent>,
+    jobs: &[NewJob],
 ) -> Result<SnapshotId> {
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
+    let mut all_jobs = rebuild_jobs;
+    all_jobs.extend_from_slice(jobs); // action downstream jobs; pg_insert_if_absent dedups
     if batches.iter().all(|b| b.num_rows() == 0) {
-        return overwrite_truncate(pool, table, lineage, &rebuild_jobs).await;
+        return overwrite_truncate(pool, table, lineage, &all_jobs).await;
     }
     // A declared stream table's physical schema carries framing; an overwrite must
     // preserve it (else the replacement looks like a dropped-columns schema change
@@ -1148,7 +1158,7 @@ pub async fn overwrite_parquet_snapshot(
         CommitExtras {
             lineage,
             overwrite: true,
-            jobs: &rebuild_jobs,
+            jobs: &all_jobs,
             data_trigger_tables: std::slice::from_ref(table),
             ..CommitExtras::default()
         },

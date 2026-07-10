@@ -192,6 +192,7 @@ async fn cdc_update_then_delete_emits_full_change_sequence() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("cdc update delta");
@@ -246,6 +247,7 @@ async fn cdc_update_then_delete_emits_full_change_sequence() {
         lin(),
         v1,
         None,
+        &[],
     )
     .await
     .expect("cdc delete delta");

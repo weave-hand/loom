@@ -178,6 +178,7 @@ async fn cdc_flush_dual_writes_base_and_changelog_on_one_tx() {
         lin(),
         v0,
         None,
+        &[],
     )
     .await
     .expect("cdc update delta");

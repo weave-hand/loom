@@ -202,14 +202,14 @@ async fn write_overwrite_truncate() {
     assert!(s1.0 > 0);
 
     let s2 = writer
-        .overwrite_table(&table, &cols(), &one_row_ipc(2, "b"), event("update"))
+        .overwrite_table(&table, &cols(), &one_row_ipc(2, "b"), event("update"), &[])
         .await
         .expect("overwrite_table");
     assert!(s2.0 > s1.0);
 
     // Empty ipc ⇒ truncate (delete-all).
     let s3 = writer
-        .overwrite_table(&table, &[], &[], event("delete"))
+        .overwrite_table(&table, &[], &[], event("delete"), &[])
         .await
         .expect("truncate");
     assert!(s3.0 > s2.0);
@@ -261,7 +261,7 @@ async fn overwrite_table_enqueues_declared_index_rebuilds() {
     );
 
     writer
-        .overwrite_table(&table, &cols(), &one_row_ipc(2, "b"), event("update"))
+        .overwrite_table(&table, &cols(), &one_row_ipc(2, "b"), event("update"), &[])
         .await
         .expect("overwrite_table");
     assert_eq!(
@@ -343,6 +343,7 @@ async fn write_delta_threads_consolidate_threshold_to_production_path() {
             &serde_json::to_string(&cols()).expect("before_columns_json"),
             event("update"),
             v0,
+            &[],
         )
         .await
         .expect("update delta crossing the threshold");
