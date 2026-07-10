@@ -7,10 +7,14 @@
 //!   the same identity can appear many times. [`consolidate_locked`] reads the
 //!   base's PHYSICAL framed rows (Parquet files + any still-live inline tail),
 //!   folds them so the greatest `loom_offset` per identity wins (dropping a `-D`
-//!   winner — the identity was deleted), and rewrites the base as that folded set
-//!   via [`overwrite_parquet_snapshot`], which preserves framing. The durable
-//!   changelog table (every event, `-U` included) is never touched — it is the
-//!   append-only log; its retention rides `gc_table`.
+//!   winner — the identity was deleted), and rewrites the base as that folded set,
+//!   preserving framing. When inline rows were folded in, the rewrite commits via
+//!   the CONSUMING overwrite ([`overwrite_parquet_snapshot_consuming`]), which
+//!   retires exactly those folded rows (an inline write that lands mid-fold
+//!   survives, instead of being end-capped unfolded); with no live inline rows
+//!   there is nothing to retire, so the plain [`overwrite_parquet_snapshot`]
+//!   commits instead. The durable changelog table (every event, `-U` included) is
+//!   never touched — it is the append-only log; its retention rides `gc_table`.
 //!
 //! - **COW arm** (non-CDC identity table with `has_shadow`, [`Precedence::Snapshot`]):
 //!   a shadow-bearing non-CDC identity table accumulates an inline tier — plain
@@ -296,17 +300,38 @@ async fn consolidate_locked(
     let folded = df.collect().await.map_err(to_serving)?;
 
     let lineage = consolidate_event(table, "consolidate_stream");
-    let snap = overwrite_parquet_snapshot(
-        pool,
-        catalog,
-        table,
-        &user_cols,
-        folded,
-        Some(&lineage),
-        &[],
-    )
-    .await
-    .map_err(to_serving)?;
+    // A CDC inline row committing mid-consolidation was previously blanket-capped
+    // WITHOUT being folded or changelog-flushed — silent loss; the targeted cap
+    // lets it survive to the next flush/consolidate. When `inline` is `None`
+    // there was nothing live to consume, so the blanket cap is vacuous and the
+    // plain overwrite is equivalent.
+    let snap = match inline {
+        Some((_, row_ids, _)) => overwrite_parquet_snapshot_consuming(
+            pool,
+            catalog,
+            table,
+            &user_cols,
+            folded,
+            Some(&lineage),
+            InlineEndCap {
+                table_id: tid,
+                row_ids: &row_ids,
+            },
+        )
+        .await
+        .map_err(to_serving)?,
+        None => overwrite_parquet_snapshot(
+            pool,
+            catalog,
+            table,
+            &user_cols,
+            folded,
+            Some(&lineage),
+            &[],
+        )
+        .await
+        .map_err(to_serving)?,
+    };
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
     clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
