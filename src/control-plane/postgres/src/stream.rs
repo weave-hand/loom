@@ -545,6 +545,92 @@ pub async fn await_changelog(
     Ok(())
 }
 
+/// The recorded watermarks for `(mv, source_table_id)`. Executor-generic so the
+/// delta scan (pool) and any tx caller share it. Buckets with no row are absent.
+/// `AssertSqlSafe`: static query, sqlx regen unavailable in-env (initdb as
+/// root); convert to `query_as!` when regenerating locally.
+pub async fn pg_mv_watermarks<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    mv: &str,
+    source_table_id: i64,
+) -> Result<std::collections::BTreeMap<i32, i64>> {
+    let rows: Vec<(i32, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(
+        "select bucket, next_offset from stream.mv_watermark \
+         where mv = $1 and source_table_id = $2",
+    ))
+    .bind(mv)
+    .bind(source_table_id)
+    .fetch_all(ex)
+    .await
+    .map_err(backend)?;
+    Ok(rows.into_iter().collect())
+}
+
+/// CAS-advance one bucket's watermark. `from == 0` may insert (bootstrap);
+/// `from > 0` only updates an existing row at exactly `from`. Zero rows
+/// affected => `Conflict` — inside a transaction the caller's rollback then
+/// discards the whole output commit (the exactly-once mechanism). `AssertSqlSafe`:
+/// static queries (branched on `adv.from == 0`), sqlx regen unavailable in-env;
+/// convert to `query!` when regenerating locally.
+pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    mv: &str,
+    source_table_id: i64,
+    adv: &control_plane_core::WatermarkAdvance,
+) -> Result<()> {
+    let sql = if adv.from == 0 {
+        "insert into stream.mv_watermark (mv, source_table_id, bucket, next_offset) \
+         values ($1, $2, $3, $4) \
+         on conflict (mv, source_table_id, bucket) do update set next_offset = $4 \
+         where stream.mv_watermark.next_offset = 0"
+    } else {
+        "update stream.mv_watermark set next_offset = $4 \
+         where mv = $1 and source_table_id = $2 and bucket = $3 and next_offset = $5"
+    };
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
+        .bind(mv)
+        .bind(source_table_id)
+        .bind(adv.bucket)
+        .bind(adv.to);
+    if adv.from != 0 {
+        q = q.bind(adv.from);
+    }
+    let done = q.execute(ex).await.map_err(backend)?;
+    if done.rows_affected() == 0 {
+        return Err(ControlPlaneError::Conflict(format!(
+            "mv watermark advanced concurrently: {mv} source {source_table_id} \
+             bucket {} expected {}",
+            adv.bucket, adv.from
+        )));
+    }
+    Ok(())
+}
+
+#[async_trait]
+impl control_plane_core::MvWatermarks for PgControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn mv_watermarks(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+    ) -> Result<std::collections::BTreeMap<i32, i64>> {
+        pg_mv_watermarks(self.pool(), mv, source_table_id).await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn advance_mv_watermark(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+        advances: &[control_plane_core::WatermarkAdvance],
+    ) -> Result<()> {
+        for adv in advances {
+            pg_advance_mv_watermark(self.pool(), mv, source_table_id, adv).await?;
+        }
+        Ok(())
+    }
+}
+
 /// The per-bucket high-water offsets (`BucketOffsets::peek_offset` per bucket)
 /// for a declared CDC table — the `?cursor=latest` join-the-tail positions, and
 /// the feed handler's "is this subscribable + how many buckets" probe. `None`

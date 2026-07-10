@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    BucketOffsets, ControlPlaneError, MergeEngine, Result, StreamKind, StreamMeta, StreamTables,
+    BucketOffsets, ControlPlaneError, MergeEngine, MvWatermarks, Result, StreamKind, StreamMeta,
+    StreamTables, WatermarkAdvance,
 };
 
 use crate::MemoryControlPlane;
@@ -89,6 +90,53 @@ impl StreamTables for MemoryControlPlane {
     async fn set_changelog_table_id(&self, table_id: i64, changelog_table_id: i64) -> Result<()> {
         if let Some(m) = self.stream_tables.lock().get_mut(&table_id) {
             m.changelog_table_id = Some(changelog_table_id);
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MvWatermarks for MemoryControlPlane {
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn mv_watermarks(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+    ) -> Result<std::collections::BTreeMap<i32, i64>> {
+        Ok(self
+            .mv_watermarks
+            .lock()
+            .iter()
+            .filter(|((m, sid, _), _)| m == mv && *sid == source_table_id)
+            .map(|((_, _, bucket), offset)| (*bucket, *offset))
+            .collect())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn advance_mv_watermark(
+        &self,
+        mv: &str,
+        source_table_id: i64,
+        advances: &[WatermarkAdvance],
+    ) -> Result<()> {
+        let mut map = self.mv_watermarks.lock();
+        for adv in advances {
+            let key = (mv.to_string(), source_table_id, adv.bucket);
+            match map.get(&key).copied() {
+                Some(current) if current == adv.from => {
+                    map.insert(key, adv.to);
+                }
+                None if adv.from == 0 => {
+                    map.insert(key, adv.to);
+                }
+                current => {
+                    return Err(ControlPlaneError::Conflict(format!(
+                        "mv watermark advanced concurrently: {mv} source {source_table_id} \
+                         bucket {} expected {} found {:?}",
+                        adv.bucket, adv.from, current
+                    )));
+                }
+            }
         }
         Ok(())
     }
