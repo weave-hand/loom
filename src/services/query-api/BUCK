@@ -814,6 +814,27 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "multi-step-stream-refuse-http",
+    crate = "multi_step_stream_refuse_http",
+    srcs = ["tests/multi_step_stream_refuse_http.rs"],
+    crate_root = "tests/multi_step_stream_refuse_http.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "action-response-http",
     crate = "action_response_http",
     srcs = ["tests/action_response_http.rs"],

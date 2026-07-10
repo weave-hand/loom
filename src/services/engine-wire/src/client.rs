@@ -29,6 +29,7 @@ pub fn cp_status(s: tonic::Status) -> ControlPlaneError {
     match s.code() {
         Code::NotFound => ControlPlaneError::NotFound(s.message().to_string()),
         Code::Aborted => ControlPlaneError::Conflict(s.message().to_string()),
+        Code::InvalidArgument => ControlPlaneError::Validation(s.message().to_string()),
         other => ControlPlaneError::Backend(
             format!("engine governance RPC failed ({other:?}): {}", s.message()).into(),
         ),
@@ -253,7 +254,7 @@ impl GrpcQueueClient {
                 jobs_json: jobs_json.to_string(),
             })
             .await
-            .map_err(be)?
+            .map_err(cp_status)?
             .into_inner();
         Ok(resp.snapshot_id)
     }
@@ -437,7 +438,7 @@ impl GrpcQueueClient {
                 run_id: run_id.map(|u| u.to_string()),
             })
             .await
-            .map_err(be)?
+            .map_err(cp_status)?
             .into_inner();
         Ok(resp.snapshot_id)
     }

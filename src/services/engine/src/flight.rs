@@ -40,6 +40,7 @@ pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
     match e {
         E::NoIndex(m) => Status::not_found(m),
         E::DimMismatch(m) => Status::invalid_argument(m),
+        E::Validation(m) => Status::invalid_argument(m),
         E::Conflict(m) => Status::aborted(m),
         e @ E::Plan(_) => Status::invalid_argument(e.to_string()),
         e @ E::Engine(_) => Status::internal(e.to_string()),

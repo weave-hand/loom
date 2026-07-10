@@ -23,6 +23,7 @@ fn status(e: control_plane_core::ControlPlaneError) -> Status {
     match e {
         NotFound(m) => Status::not_found(m.to_string()),
         Conflict(m) => Status::aborted(m.to_string()),
+        Validation(m) => Status::invalid_argument(m),
         other => Status::internal(other.to_string()),
     }
 }
@@ -419,7 +420,10 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             .writer
             .write_steps(&writes, event, &jobs)
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|e| match e {
+                engine_serving::EngineServingError::Validation(m) => Status::invalid_argument(m),
+                other => Status::internal(other.to_string()),
+            })?;
         Ok(Response::new(pb::WriteStepsResponse {
             snapshot_id: snap.0,
         }))

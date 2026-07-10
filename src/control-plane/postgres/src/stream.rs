@@ -341,6 +341,42 @@ pub(crate) async fn pg_stream_bucket_count<'e, E: sqlx::PgExecutor<'e>>(
     Ok(n)
 }
 
+/// Refuse `table` if it is a declared stream/CDC target that the caller's write
+/// path cannot frame. Source of truth is the `stream.stream_table` registry: the
+/// resolved live `table_id` is refused when it appears as EITHER `table_id` (a
+/// declared log/CDC base) OR `changelog_table_id` (a CDC table's durable changelog,
+/// which has no `stream_table` row of its own). A table with no live mirror row
+/// passes — a brand-new output cannot be stream-declared. Returns
+/// `ControlPlaneError::Validation` with the stable prefix `stream-table target
+/// refused:`. `AssertSqlSafe`: static query, sqlx regen unavailable in-env (initdb
+/// as root); convert to `query!` when regenerating locally.
+pub async fn pg_refuse_stream_target(
+    conn: &mut sqlx::PgConnection,
+    table: &TableRef,
+) -> Result<()> {
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut *conn, &table.schema, &table.name).await?
+    else {
+        return Ok(());
+    };
+    let hit: Option<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(
+        "select table_id from stream.stream_table \
+         where table_id = $1 or changelog_table_id = $1 limit 1",
+    ))
+    .bind(tid)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if hit.is_some() {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream-table target refused: {}.{} is a declared stream/CDC table; \
+             transform and multi-target write paths cannot stamp stream framing",
+            table.schema, table.name
+        )));
+    }
+    Ok(())
+}
+
 /// Declare a PK/CDC table (idempotent, first-wins on all fields).
 pub(crate) async fn pg_declare_cdc<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,

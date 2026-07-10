@@ -73,9 +73,16 @@ decorator) so offsets commit iff the snapshot commits — gapless with no offset
 gap on failure; a lost CAS rolls back (freeing the run), re-allocates, and
 re-writes. This is the one path that holds a PG transaction across the
 object-store write; the common inline/flush and batch commit paths keep their
-short, object-store-free commit transaction. Framing on the overwrite and
-transform-output write paths is not yet wired (`#fut-stream-framing-write-paths`),
-unreachable while log tables are append-only.
+short, object-store-free commit transaction. The two framing-unaware legacy write
+paths — the transform-commit (`IcebergTx::commit`) and multi-step-action
+(`write_steps`) seams — now **refuse** stream/CDC-registered targets outright (a
+`stream-table target refused:` `Validation`, surfaced as a deterministic worker
+*abandon* on the transform path and HTTP `422` on the action path), with a
+define-time UX guard in `define_transform` catching the misconfiguration at admin
+time; the guard also covers a CDC table's durable changelog. This closes the
+silent-corruption window rather than threading framing through accident-only
+paths — `CommitMicroBatch` ([[road-stream-continuous]]) stays the sole sanctioned
+stream-output path (#416).
 
 ## Known gaps
 

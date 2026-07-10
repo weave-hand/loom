@@ -451,7 +451,7 @@ async fn land_additive(
 /// the field-id schema built from `columns` (via [`ice_schema`]); the caller registers
 /// the returned files into a snapshot in its own transaction. This is the pure-IO half
 /// shared by the additive-land and multi-target `write_steps` paths.
-async fn write_object_data_files(
+pub async fn write_object_data_files(
     catalog: &SqlCatalog,
     table: &TableRef,
     columns: &[ColumnSpec],
@@ -571,6 +571,19 @@ pub async fn write_steps(
     // `Overwrite` end-caps both tiers + re-projects the schema with zero files (a truncate).
     let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
+
+    // Refuse any stream/CDC-registered target before registering files: the
+    // multi-target path is framing-unaware, so a stream target would corrupt the
+    // stream (missing/garbage framing). In-tx placement makes the refusal atomic —
+    // if any step targets a stream table, the whole commit rolls back (nothing
+    // lands), honoring the all-or-nothing contract multi-step actions promise.
+    let mut refuse: Vec<&TableRef> = staged.iter().map(|s| &s.table).collect();
+    refuse.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
+    refuse.dedup();
+    for table in refuse {
+        crate::stream::pg_refuse_stream_target(&mut tx, table).await?;
+    }
+
     for s in &staged {
         let mode = if s.overwrite {
             WriteMode::Overwrite

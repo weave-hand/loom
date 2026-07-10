@@ -1358,6 +1358,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "refuse-stream-target",
+    crate = "refuse_stream_target",
+    srcs = ["tests/refuse_stream_target.rs"],
+    crate_root = "tests/refuse_stream_target.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-changelog-notify",
     crate = "stream_changelog_notify",
     srcs = ["tests/stream_changelog_notify.rs"],
@@ -1452,6 +1465,45 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "write-steps-refuse",
+    crate = "write_steps_refuse",
+    srcs = ["tests/write_steps_refuse.rs"],
+    crate_root = "tests/write_steps_refuse.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "iceberg-tx-refuse",
+    crate = "iceberg_tx_refuse",
+    srcs = ["tests/iceberg_tx_refuse.rs"],
+    crate_root = "tests/iceberg_tx_refuse.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-merge-declare",
     crate = "stream_merge_declare",
     srcs = ["tests/stream_merge_declare.rs"],
@@ -1464,6 +1516,19 @@ loom_fixture_test(
         "//third-party:arrow-schema",
         "//third-party:serde_json",
         "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "define-transform-refuse",
+    crate = "define_transform_refuse",
+    srcs = ["tests/define_transform_refuse.rs"],
+    crate_root = "tests/define_transform_refuse.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
         "//third-party:tokio",
     ],
 )

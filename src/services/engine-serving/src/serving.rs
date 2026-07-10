@@ -57,6 +57,12 @@ pub enum EngineServingError {
     /// should surface this as a retryable conflict, never a generic 500.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A control-plane `Validation` refusal reached the write executor (e.g. a
+    /// multi-target write targeting a declared stream table). Wire callers map this
+    /// to `invalid_argument`; query-api renders it as 422. Distinct from `Engine`
+    /// (internal/500) so the class survives.
+    #[error("{0}")]
+    Validation(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
