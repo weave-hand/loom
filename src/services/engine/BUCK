@@ -265,6 +265,7 @@ loom_fixture_test(
     crate_root = "tests/governed_flight.rs",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
