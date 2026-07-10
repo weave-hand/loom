@@ -60,7 +60,8 @@ chokepoint (`IcebergCatalog::schema`) excludes every `loom_`-prefixed column
 from all logical reads (`GET /objects`, `GET /datasets`, link traversal,
 previews), so a stream table's user-facing schema and reads are byte-identical
 to a batch table's — the log framing is never exposed. (Reading the log *by
-offset* is the subscribe/tail feed, [[road-stream-subscribe]], slice 3.)
+offset* is the subscribe/tail feed, `#road-stream-subscribe`, slice 3 — now
+shipped; see the stream capability doc.)
 
 The **direct large-write Parquet path** (writes over the inline byte limit, which
 bypass the inline tier and write Parquet straight to object storage) has full

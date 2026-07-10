@@ -9,7 +9,7 @@ across the whole write→flush→consolidate lifecycle. It is distilled from the
 two shipped slices' design specs and their landed commits; open work is listed
 at the end.
 
-_As of 831adab7._
+_As of 4740865d._
 
 ## Declaration: log vs. CDC, and the shared registry
 
@@ -132,8 +132,8 @@ A declared CDC table is **two** Iceberg tables, one registry row
   (not lazily) with `include_framing=true`, so its physical schema is *user
   columns + `loom_change_kind`/`loom_bucket`/`loom_offset`*. Append-only;
   holds **every** event including `−U`. `is_reserved` keeps its framing out
-  of any logical schema, same as slice 1. There is no user-facing changelog
-  read yet (`#road-stream-subscribe`).
+  of any logical schema, same as slice 1. The user-facing changelog read is
+  the subscribe/tail feed (see **Subscribe / tail feed** below).
 
 **Flush dual-writes both tables in one Postgres transaction.**
 `flush_locked` (`iceberg_flush.rs`), on a `kind='cdc'` table, partitions the
@@ -265,6 +265,52 @@ precedence (fetching kind + `merge_engine` in one lookup); framing columns are
 exposed to the fold internally but
 never leak into the projected output.
 
+## Subscribe / tail feed
+
+A CDC table's durable changelog is readable as a **governed, offset-resumable,
+ordered change-event feed**: `GET /objects/{type}/changes` streams
+newline-delimited JSON (NDJSON), one change event per line
+(`{bucket, offset, change_kind, fields, cursor}`), ordered by
+`(loom_bucket, loom_offset)` and driven to sub-second freshness by a
+`pg_notify` wakeup fired inside the CDC inline-write commit transaction.
+
+- **The feed is a plain disjoint `UNION ALL`** of the changelog Iceberg files
+  ∪ the base table's live inline tail. Because flush appends to the changelog
+  **and** end-caps the same inline rows on one transaction (`flush_locked_cdc`),
+  an event is inline **XOR** in files at any instant — so the union needs **no
+  dedup and no flush watermark** for correctness. The one invented primitive,
+  `changelog_feed_scan` (`src/services/engine-serving/src/feed.rs`), is that
+  ordered, `LIMIT`-bounded union; `−U` before-images are included (the changelog
+  contract is full events).
+- **The cursor is client-held, opaque, and unsigned.** `?cursor=` is a
+  `base64url` blob of the per-bucket resume map plus the type it was minted for
+  (rejected on a type mismatch); `earliest` boots from offset 0, `latest` joins
+  the tail (per-bucket `peek_offset`). Each emitted line carries a `cursor`
+  positioned **after** that event, so a consumer reconnects from its last-seen
+  line. The server holds **no per-consumer state** — N consumers are N
+  independent streams over the shared changelog; a tampered cursor only corrupts
+  the consumer's own position (it carries no authority). `?max_events=N` bounds a
+  catch-up read; unset is an endless tail.
+- **Governance is enforced at connect and per batch.** Every connect re-runs
+  `resolve_governed` (coarse Read deny-before-existence → row/column policy) —
+  identical to `GET /objects/{type}` — and each scanned page is wrapped in
+  `GovernedTableProvider` before the ordered read, so a subject never sees an
+  event, or a column, it may not read, on any batch (`−U/+U/+D/−D` of an
+  ACL-filtered identity are all filtered; a masked column reads as the mask
+  marker on every event). Policy is resolved at connect; a mid-stream policy
+  change takes effect on the next reconnect. `?fields=` intersects the governed
+  columns; `loom_*` framing surfaces only as the envelope `bucket`/`offset`/
+  `change_kind`, never as a `fields` key.
+- **Freshness** rides a `pg_notify('loom_changelog:{base_tid}')` fired inside
+  the CDC inline-write commit (buffered until commit, like the queue's enqueue
+  notify), with a poll-fallback timer bounding a missed notify (`await_changelog`,
+  mirroring `await_jobs`).
+- **Transport-agnostic contract.** The `ChangeEvent` record and cursor live in
+  `control-plane/core`; NDJSON is the HTTP framing. The feed is served today by
+  the **in-process engine only** — the three `ServingEngine` feed methods default
+  to `Unsupported`, so the route answers `501` on the production wire deployment
+  until the engine-wire hop lands (`#fut-stream-subscribe-wire`).
+
 ## Known gaps
 
 - `#fut-stream-merge-aggregate` — only the *replace-class* merge engines
@@ -280,8 +326,20 @@ never leak into the projected output.
   richer/two-level sharding beyond a fixed `hash(identity) % bucket_count`.
 - `#fut-stream-arrow-log` — no Arrow log on object storage; the changelog is
   Iceberg/Parquet only.
-- `#road-stream-subscribe` — the subscribe/tail feed (reading the changelog
-  by offset) is not built; there is no user-facing changelog read yet.
+- `#fut-stream-subscribe-wire` — the subscribe feed (see **Subscribe / tail
+  feed**) is served by the in-process engine only; the production wire client
+  answers `501` until an engine-wire Flight `do_get` + long-poll RPC implement
+  the seam.
+- `#fut-stream-feed-pruning` — the feed's per-bucket resume predicate filters
+  above `GovernedTableProvider`'s full-table inner scan; pushing it into the
+  mirror provider's stat-pruning scan would skip already-consumed changelog
+  files by Parquet stats.
+- `#fut-stream-consumer-offsets` — the subscribe cursor is client-held and the
+  server is stateless; a server-side `__consumer_offsets` checkpoint registry
+  (and the durability-based flush watermark it enables) is deferred.
+- `#fut-stream-log-table-subscribe` — subscribe serves CDC tables; a log
+  (non-CDC) table's tail feed (reading its offset-framed base rows directly, no
+  changelog union) is a small follow-on.
 - `#road-stream-continuous` — continuous/standing queries (slice 4) are not
   built.
 - `#road-stream-joins` — stream joins / the delta-join analog (slice 5) are
