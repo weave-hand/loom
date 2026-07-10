@@ -342,8 +342,10 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
     /// The atomicity heart of the stream-continuous slice: inline-land a
     /// micro-batch result declared a log stream table, CAS-advance the source's
     /// per-bucket watermark, and mark the driving run succeeded — one Postgres
-    /// transaction (`inline_append_mv`). Empty (`ipc` and `advances` both empty)
-    /// just closes `run_id`, writing no output table.
+    /// transaction (`inline_append_mv`). Empty output (`ipc` empty) lands and
+    /// declares nothing: with advances present (a filtering micro-batch) it still
+    /// CAS-advances the watermark + marks the run in one tx; with no advances it
+    /// just closes `run_id`.
     async fn commit_micro_batch(
         &self,
         req: Request<pb::CommitMicroBatchRequest>,
