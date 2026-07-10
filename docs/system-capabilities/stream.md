@@ -4,12 +4,13 @@ This document describes what loom's stream engine can do today: declared
 append-only **log tables** and identity-bound **PK/CDC tables**, the
 framing/bucketing/offset machinery both share, CDC event emission on the
 mutation path, the dual (base + changelog) Iceberg table model, LastRow
-compaction, and the CDC-aware serving reads that keep `GET /objects` correct
-across the whole write→flush→consolidate lifecycle. It is distilled from the
-two shipped slices' design specs and their landed commits; open work is listed
-at the end.
+compaction, the CDC-aware serving reads that keep `GET /objects` correct
+across the whole write→flush→consolidate lifecycle, and materialized views as
+micro-batch **standing queries** over a log source. It is distilled from the
+three shipped slices' design specs and their landed commits; open work is
+listed at the end.
 
-_As of 4740865d._
+_As of 8610d15d._
 
 ## Declaration: log vs. CDC, and the shared registry
 
@@ -326,6 +327,185 @@ newline-delimited JSON (NDJSON), one change event per line
   to `Unsupported`, so the route answers `501` on the production wire deployment
   until the engine-wire hop lands (`#fut-stream-subscribe-wire`).
 
+## Continuous / standing queries (materialized views)
+
+**Materialized views are a fourth `TransformBody` kind, not a new subsystem.**
+`TransformBody::MicroBatch { source: TableRef, output: TableRef, buckets: i32,
+sql: String }` (serde tag `"microbatch"`, `core/src/transforms.rs:62`) rides
+the transforms concern wholesale: registration is `POST /admin/transforms`
+with the new body, `on_input_commit: true` and/or a cron `schedule` picks the
+trigger, and list/get/delete/run-history/manual-run/ad-hoc all work unchanged
+— `TransformDef`'s body enum is the only extension point (no `/admin/views`
+sugar surface yet — see *Deferred from this slice* below). `to_job`
+(`transforms.rs:75`) emits a new queue kind, `STREAM_MV_JOB_KIND = "stream_mv"`
+(`core/src/stream_mv_job.rs`), carrying `StreamMvJob { source, output,
+buckets, sql, run_id }`; `TriggerNode::resolve` gains a `MicroBatch` arm
+(`inputs = [source]`, `output = Some(output)`) so define-time cycle rejection
+and the commit-seam matcher cover MV→MV chains for free — a source commit
+fires a data-triggered MV def exactly like any other transform, debounced the
+same way. `validate_transform_def` rejects `buckets < 1`, an empty `sql`, and
+`source == output` (a self-consuming MV) at define time; whether `source` is a
+**declared log stream table** is validated later, at delta-read time, as a
+deterministic worker abandon — not at define time (the memory adapter has no
+`TableRef → table_id` mirror to resolve against, and loom's registers
+routinely accept defs whose physical tables land later). **v1 sources are
+declared log tables only** — CDC sources are deferred (see below); MV outputs
+are themselves declared log tables, so composition stays closed.
+
+**The watermark and its CAS are the whole exactly-once story.** A new
+`stream.mv_watermark` table (migration `0042_mv_watermark.sql`, PK `(mv,
+source_table_id, bucket)`) tracks, per micro-batch standing query and source
+bucket, the next offset to read. It is keyed by `mv_key(output)` —
+`"{schema}.{name}"` of the **output**, not the def name (`core/src/stream.rs:151`)
+— so the watermark survives a def rename/redefine exactly when the output
+table is kept (which is exactly when resuming is correct), and ad-hoc
+(nameless) micro-batch runs work with no special case. An absent row reads as
+offset `0`: a fresh MV's first micro-batch processes the source's whole
+existing log, so bootstrap and steady state are one code path. The core
+`MvWatermarks` trait (`mv_watermarks`/`advance_mv_watermark`,
+`stream.rs:173`/`:181`) is implemented by the memory fake, a postgres adapter
+(`pg_mv_watermarks`/`pg_advance_mv_watermark`, `postgres/src/stream.rs:552`/
+`:575` — executor-generic over `PgExecutor`, runtime `AssertSqlSafe` like
+`version_for_table`, no `.sqlx` regen needed), and a shared testkit contract.
+The advance is a plain CAS: `update ... set next_offset = $to where ... and
+next_offset = $from` (insert-where-absent when `from = 0`); **zero rows
+affected is a `Conflict`**, and because the advance runs inside the same
+Postgres transaction as the output commit (below), a lost CAS rolls the whole
+commit back — no partial effect ever lands. The gapless per-bucket offset
+substrate (slice 0) is what makes the CAS bounds derivable rather than
+tracked: offsets in a bucket commit in order, so for every bucket with delta
+rows `min(loom_offset) == watermark` and `max(loom_offset) + 1` is the new
+watermark — the worker computes `WatermarkAdvance { bucket, from, to }`
+straight off the fetched delta's framing (`framing_bounds`,
+`worker/src/stream_mv.rs`), no separate bookkeeping RPC.
+
+**The delta read is the framed files∪inline read, offset-filtered.** A new
+internal Flight ticket, `MvDeltaTicket { mv, schema, name }`
+(`engine-wire/src/flight.rs`, `deny_unknown_fields` keeps it disjoint from
+every other ticket shape via its required `mv` field), dispatches to
+`mv_delta_scan` (`engine-serving/src/mv_delta.rs:49`) — the same
+`files_with_stats` + `read_files_as_batches` ∪ `inline_live_batch_full` union
+`consolidate_stream` reads, under the same per-table advisory lock
+(`lock_table`) so a flush racing the read cannot double-read or drop rows.
+It resolves the source table, requires a declared `kind = 'log'` stream table
+(anything else — an unknown table or a CDC/batch source — is a deterministic
+`"mv delta: ..."`-prefixed error the worker maps to an abandon, never a
+retry), reads the watermark map, and runs one DataFusion pass: project user
+columns plus `loom_change_kind`/`loom_bucket`/`loom_offset`, filter
+`OR`-per-bucket `loom_bucket = b AND loom_offset >= from_b` (`from_b = 0` for
+buckets absent from the map), order by `(loom_bucket, loom_offset)`. The
+framing columns ride the wire deliberately — this is an internal data-plane
+read, not a logical one — and the worker strips them (`strip_framing`) before
+registering the delta under the source's table name in a fresh DataFusion
+session; the MV's authored SQL never sees `loom_*` columns.
+
+**The commit is one transaction: land, advance, mark succeeded.** After
+running the standing query's SQL over the stripped delta, the worker calls a
+single `EngineControl::CommitMicroBatch` RPC. On the engine side,
+`inline_append_mv` (`postgres/src/iceberg_inline.rs:820`, a thin wrapper
+widening `inline_append_decl` with an `Option<&MvCommit>` extra) does, on ONE
+Postgres transaction:
+
+1. Inline-lands the result under `StreamDecl::Log(buckets)` — the output is
+   declared a log stream table in the same tx as its first write (existing
+   `reconcile_stream_mode` guards apply: a pre-existing batch table as output
+   is `Validation`, a bucket-count mismatch is `Conflict`); every row is
+   stamped `+I` with a fresh `(bucket, offset)`.
+2. Fires the byte-trigger flush arm and `pg_fire_data_triggers` for the
+   output table — **this is composability**: an MV's output commit is itself
+   a commit-that-writes-new-data, so a second MV (or any other data-triggered
+   transform) reading the first's output fires automatically, with no special
+   MV-to-MV wiring.
+3. `pg_advance_mv_watermark` CAS-advances every touched bucket; a lost CAS
+   aborts the whole transaction.
+4. `pg_mark_run_succeeded` stamps the driving `TransformRun`, exactly as
+   `CommitTransform` does.
+5. Emits a lineage event: inputs `[source]`, outputs `[output]`, payload
+   `{"sql", "mv", "offsets": {bucket: {"from", "to"}}}` — the consumed offset
+   range is durable provenance.
+
+**Superseded runs are a named, benign outcome.** Because the queue is
+at-least-once, a retried or duplicate micro-batch run re-reads the delta from
+the *committed* watermark; if a concurrent run already covered it, the CAS
+returns `Conflict`, the whole commit transaction rolls back (no duplicate
+output, no partial watermark move), and the worker abandons the job with
+`"superseded: watermark advanced concurrently (a newer run covers this
+delta)"` — deterministic, never retried, and correct: the covering run already
+produced the rows, and debounce guarantees any still-unprocessed tail already
+has a queued run.
+
+**Empty output has two distinct, both-atomic shapes.** A truly empty delta
+(a debounced spurious wakeup — no rows at all) commits empty `ipc` and empty
+advances: the engine lands nothing, declares nothing, and just marks the run
+succeeded (`snapshot_id` absent) — a cheap no-op. A **filtering MV** — a
+non-empty delta whose SQL keeps zero rows — is a different case handled
+explicitly, not folded into the no-op: it still carries the (non-empty)
+per-bucket `WatermarkAdvance`s derived from the delta's framing, with empty
+`ipc`. The engine's `commit_micro_batch` branches on `ipc.is_empty()`
+independently of whether advances are present: with advances it still
+CAS-advances the watermark and marks the run atomically (else the consumed
+delta would reprocess forever on every subsequent trigger); with no advances
+it only closes the run. Either way nothing is landed or declared when `ipc` is
+empty.
+
+**Delta-decomposability is the correctness contract, not an implementation
+detail.** v1 micro-batching is honestly framed as **approximate** continuous
+query semantics — re-execution over deltas, not true incremental operators. It
+converges to the batch-equivalent result exactly for queries where
+`Q(Δ₁ ∪ … ∪ Δₙ) = Q(Δ₁) ∪ … ∪ Q(Δₙ)`: row-wise map / filter / projection.
+Whole-history aggregations are **not** batch-equivalent under this contract —
+they would need retract-correct (`−U`/`+U`-emitting) MV output and
+per-operator state, which is exactly what's deferred (see below). The
+worker-fixture convergence test drives an MV through multiple micro-batches
+(including a flush between them) and asserts the result matches the same SQL
+run once over the whole source.
+
+**Because MV outputs are declared log stream tables, they are subscribable for
+free.** This slice imports no subscribe code and depends on none — an MV's
+output is a plain declared log stream table, so it gets subscribability
+structurally: its inline rows carry `loom_change_kind = '+I'`, `loom_bucket`,
+and gapless `loom_offset` from `0`, and flushed Parquet keeps that framing via
+the existing `include_framing` derivation. **Subscribe / tail feed** (above)
+already serves CDC tables' changelogs today; a log-table tail feed (reading an
+MV output's offset-framed rows directly, no changelog union) is the small,
+already-tracked `#fut-stream-log-table-subscribe` follow-on, and would read an
+MV's output with zero additional work in this slice.
+
+**Retention caveat.** `gc_table` stays age-based and watermark-unaware: a
+lagging MV whose unread source tail has already been reclaimed silently
+under-reads on its next micro-batch, rather than erroring. Retention must
+exceed the slowest MV's lag — an operational caveat shared with the subscribe
+feed's own retention story (see `#fut-stream-consumer-offsets` in Known gaps),
+and not yet enforced by a watermark-aware GC guard (named below).
+
+Deferred from this slice, named so the register close-out can track them as
+their own items:
+
+- **True incremental operators / retract-correct aggregate MVs** —
+  whole-history aggregations need `−U`/`+U`-emitting MV output (a
+  CDC-flavored output table) and per-operator state; folds into the broader
+  `#fut-stream-merge-aggregate` replace-vs-aggregate-engine split above.
+- **CDC-table sources** — a CDC source's delta is its changelog (files ∪ full
+  inline including `−U`); exposing event kinds to the MV SQL vocabulary is a
+  follow-on. v1 sources are log tables only.
+- **Multi-source MVs / stream-stream joins** — ride `#road-stream-joins`
+  (slice 5), not this slice.
+- **Backfill/replay control** — no watermark-reset API or `from`-offset
+  registration; v1 always starts at offset `0` and resumes from the committed
+  watermark, so a rebuild means a new output table.
+- **Parquet spill for oversized micro-batch outputs** — v1 output always
+  lands on the inline tier (micro-batches are delta-sized by construction); a
+  framed direct-Parquet output spill path is a follow-on.
+- **Stats-pruned / streaming delta scans** — `mv_delta_scan` reads live files
+  whole, the same posture as `consolidate_stream`; pruning by `loom_offset`
+  file stats and streaming (non-collecting) execution are follow-ons under
+  `#fut-transform-followups`.
+- **Watermark-aware GC** — see the retention caveat above; `gc_table` has no
+  MV-lag-aware horizon.
+- **`/admin/views` sugar surface** — MVs register through the ordinary
+  transforms admin surface in v1; a dedicated, MV-shaped admin surface is
+  deferred.
+
 ## Known gaps
 
 - `#fut-stream-merge-aggregate` — only the *replace-class* merge engines
@@ -351,8 +531,6 @@ newline-delimited JSON (NDJSON), one change event per line
 - `#fut-stream-log-table-subscribe` — subscribe serves CDC tables; a log
   (non-CDC) table's tail feed (reading its offset-framed base rows directly, no
   changelog union) is a small follow-on.
-- `#road-stream-continuous` — continuous/standing queries (slice 4) are not
-  built.
 - `#road-stream-joins` — stream joins / the delta-join analog (slice 5) are
   not built.
 - `#iss-stream-log-vs-cdc-declare` — a `mode=stream` (log) declaration
