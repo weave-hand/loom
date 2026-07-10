@@ -5806,6 +5806,29 @@ pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks 
         matches!(absent, Err(ControlPlaneError::Conflict(_))),
         "absent row + from>0 conflicts"
     );
+    // A from=0 advance on an ALREADY-ADVANCED (non-zero) row is a Conflict, not a
+    // clobber back to `to` — the bootstrap-insert path must never overwrite live
+    // progress (bucket 0 is at 9 here).
+    let reboot = cp
+        .advance_mv_watermark(
+            "s.out",
+            1,
+            &[WatermarkAdvance {
+                bucket: 0,
+                from: 0,
+                to: 3,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(reboot, Err(ControlPlaneError::Conflict(_))),
+        "from=0 on a non-zero row conflicts, never clobbers"
+    );
+    assert_eq!(
+        cp.mv_watermarks("s.out", 1).await.expect("read").get(&0),
+        Some(&9),
+        "value untouched after rejected from=0"
+    );
     // Independence: other mv key / source table / bucket unaffected.
     cp.advance_mv_watermark(
         "s.other",

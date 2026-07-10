@@ -471,12 +471,15 @@ MV output's offset-framed rows directly, no changelog union) is the small,
 already-tracked `#fut-stream-log-table-subscribe` follow-on, and would read an
 MV's output with zero additional work in this slice.
 
-**Retention caveat.** `gc_table` stays age-based and watermark-unaware: a
-lagging MV whose unread source tail has already been reclaimed silently
-under-reads on its next micro-batch, rather than erroring. Retention must
-exceed the slowest MV's lag — an operational caveat shared with the subscribe
-feed's own retention story (see `#fut-stream-consumer-offsets` in Known gaps),
-and not yet enforced by a watermark-aware GC guard (named below).
+**Retention caveat.** `gc_table` stays age-based and watermark-unaware: if a
+lagging MV's unread source tail is reclaimed before it runs, the next
+micro-batch's delta starts at an offset **above** the committed watermark, so
+the derived CAS `from` no longer matches the stored `next_offset` and the
+commit **Conflict-aborts the run (fails loud)** rather than silently
+under-reading — but the MV is then wedged until an operator intervenes.
+Retention must exceed the slowest MV's lag — an operational caveat shared with
+the subscribe feed's own retention story (see `#fut-stream-consumer-offsets` in
+Known gaps), and not yet enforced by a watermark-aware GC guard (named below).
 
 Deferred from this slice, named so the register close-out can track them as
 their own items:
