@@ -1198,10 +1198,11 @@ pub async fn write_inline_delta(
     // (partition by <id>) shadows/hides the file row for that id. A CDC table emits
     // the multi-row change sequence (below); a non-CDC table writes a single tombstone
     // or version row (the `else if`/`else` arms).
-    // Count of CDC changelog rows this call emits (1 for a delete's -D, 2 for an
-    // update's -U/+U pair) — accrued below for the consolidate trigger. Unused
-    // (and left 0) on the non-CDC branches.
-    let mut emitted_rows: i64 = 0;
+    // Count of delta rows this call emits — accrued below for the consolidate
+    // trigger. A CDC call emits 1 for a delete's -D or 2 for an update's -U/+U
+    // pair; a non-CDC call always emits exactly 1 (its single tombstone or
+    // version row). Every branch below assigns it exactly once.
+    let emitted_rows: i64;
     if cdc {
         let m = meta
             .as_ref()
@@ -1273,6 +1274,7 @@ pub async fn write_inline_delta(
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        emitted_rows = 1;
     } else {
         // Version: mirror inline_append's INSERT but prefix
         // loom_tombstone=false, loom_change_kind='+U'. The id column is one of
@@ -1301,17 +1303,22 @@ pub async fn write_inline_delta(
             q = bind_cell(q, cell);
         }
         q.execute(&mut *tx).await.map_err(backend)?;
+        emitted_rows = 1;
     }
 
-    // Consolidate trigger: accrue this call's CDC delta rows, and on crossing the
+    // Consolidate trigger: accrue this call's delta rows, and on crossing the
     // threshold enqueue one `stream_consolidate` job — mirroring the byte-trigger
     // block in `inline_append_decl` above, but counting delta rows in a sibling
     // trigger table (`consolidate_trigger`, not `inline_trigger`) so the two never
-    // clash. Only meaningful for a CDC table (a non-CDC delta has no changelog to
-    // consolidate). `None` => triggering disabled. Debounced by `enqueued`; the
+    // clash. The counter is per-table and kind-agnostic: a CDC call accrues its
+    // emitted changelog rows (1 for a delete's -D, 2 for an update's -U/+U pair)
+    // and a non-CDC call accrues its single tombstone/version row. Either way the
+    // job lands in the same `stream_consolidate` kind — `consolidate_table`
+    // dispatches a non-CDC shadow-bearing table to the COW fold instead of the CDC
+    // changelog fold. `None` => triggering disabled. Debounced by `enqueued`; the
     // engine's `consolidate_stream` handler clears the trigger (alongside
     // `has_shadow`) when consolidation runs, re-arming it for the next run.
-    if cdc && let Some(threshold) = consolidate_threshold {
+    if let Some(threshold) = consolidate_threshold {
         let st = bump_consolidate_trigger(&mut tx, tid, emitted_rows, threshold).await?;
         if st.delta_count >= st.effective && !st.enqueued {
             let job = NewJob {

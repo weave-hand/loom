@@ -1473,6 +1473,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "cow-consolidate-trigger",
+    crate = "cow_consolidate_trigger",
+    srcs = ["tests/cow_consolidate_trigger.rs"],
+    crate_root = "tests/cow_consolidate_trigger.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-inline-full-read",
     crate = "stream_inline_full_read",
     srcs = ["tests/stream_inline_full_read.rs"],
