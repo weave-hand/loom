@@ -734,7 +734,9 @@ pub async fn inline_append_mv(
 In `engine/src/service.rs`, `commit_micro_batch` (template: `commit_transform` for decode + status mapping, `write_object` for IPC decode):
 
 1. Decode `columns_json`, `lineage_json` (`LineageWire`), optional `run_id`.
-2. **Empty case** (`ipc` empty AND `advances` empty): if `run_id` present, `self.cp.transforms().finish_run(rid, RunOutcome::Succeeded { snapshot_id: 0 })`; respond `snapshot_id: None`.
+2. **Empty-output case** (key on `ipc.is_empty()` — NOT `ipc` AND `advances` both empty). No output rows to land, so declare/land NOTHING. Two sub-cases:
+   - **`advances` empty** (an empty source delta / spurious wakeup): if `run_id` present, `finish_run(rid, RunOutcome::Succeeded { snapshot_id: 0 })`; respond `snapshot_id: None`.
+   - **`advances` non-empty** (a FILTERING micro-batch — it consumed a non-empty delta but its SQL produced zero output rows): resolve the source tid (absent → `invalid_argument`) and call the new `advance_mv_watermark_only(&self.pool, &MvCommit { … })` — CAS-advance the per-bucket watermark + `pg_mark_run_succeeded(_, rid, 0)` in ONE tx (a `Conflict` → `aborted`), landing/declaring no output. This is REQUIRED: the watermark MUST advance past the consumed delta or a filtering MV reprocesses it on every trigger forever. Respond `snapshot_id: None`. (Spec-gap resolution, human-flagged 2026-07-10 — see Task 5 which naturally produces this case.)
 3. Resolve the source tid: `live_table_id(&mut conn, &r.source_schema, &r.source_name)` → absent is `invalid_argument` (the delta it claims to consume cannot exist).
 4. Decode the IPC batch(es), concat to one `RecordBatch` (the `write_object` convention).
 5. `inline_append_mv(&self.pool, &out_table, &columns, &batch, lineage, Some(self.tuning.flush_byte_threshold…), r.buckets, &MvCommit { mv: r.mv, source_table_id, advances, run_id })` — thread the flush threshold exactly as the other inline-writing handlers do.
@@ -787,7 +789,8 @@ Legs (one flow):
 4. `flush_table(pool, catalog, &src)` (moves the processed rows to files), then `land` two more rows `(4, 40), (5, 50)`; run micro-batch #2 (fresh run id). Assert convergence #2: output = ALL 5 doubled rows, no duplicates — the delta scan crossed the flush boundary and the watermark excluded batch #1.
 5. **Structural subscribability:** via `IcebergCatalog::inline_live_batch_full` on `s.doubled` (plus its flushed files if any), assert every output row carries `loom_change_kind = "+I"` and `loom_bucket = 0` with offsets exactly `0..5` (gapless from zero); `cp.stream_meta(out_tid)` is `Some(Log)`.
 6. **Idempotent re-run:** micro-batch #3 with no new source rows → `Ok`, output still 5 rows, run `Succeeded` (the empty-delta path).
-7. **Deterministic abandon:** a job whose source is a plain batch table → `Err(JobFailure { policy: Abandon, .. })`.
+7. **Filtering micro-batch (empty output, non-empty delta):** use an MV whose SQL filters (e.g. `select id, val from events where val > 1000`) and `land` new source rows that ALL fail the predicate, then run the micro-batch. Assert: `Ok`; the output table gains NO rows (and the watermark for THIS mv ADVANCED past the consumed delta — `cp.mv_watermarks(mv_key, src_tid)` moved); run `Succeeded`. Re-running with no new source rows stays a no-op (does not reprocess the filtered delta). This exercises Task 4's `ipc.is_empty() && !advances.is_empty()` empty-output branch end-to-end — the worker (steps 4/6/8) naturally sends non-empty advances with empty IPC. (Can be a distinct MV/run within this flow or a sibling test.)
+8. **Deterministic abandon:** a job whose source is a plain batch table → `Err(JobFailure { policy: Abandon, .. })`.
 
 Wire `loom_fixture_test` target `stream-mv-e2e` mirroring `transform-e2e` (`worker/BUCK:185`), deps mirroring it plus nothing new.
 

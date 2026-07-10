@@ -38,6 +38,20 @@ fn parse_run_id(s: &str) -> std::result::Result<uuid::Uuid, Status> {
     uuid::Uuid::parse_str(s).map_err(|e| Status::invalid_argument(format!("bad run_id: {e}")))
 }
 
+/// `pb::MvAdvance` -> `control_plane_core::WatermarkAdvance`, shared by
+/// `commit_micro_batch`'s empty-output-with-advances branch and its normal
+/// landing path below.
+fn convert_advances(advances: &[pb::MvAdvance]) -> Vec<control_plane_core::WatermarkAdvance> {
+    advances
+        .iter()
+        .map(|a| control_plane_core::WatermarkAdvance {
+            bucket: a.bucket,
+            from: a.from,
+            to: a.to,
+        })
+        .collect()
+}
+
 fn de_arg<T: serde::de::DeserializeOwned>(
     json: &str,
     what: &str,
@@ -337,16 +351,59 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         let r = req.into_inner();
         let run_id = r.run_id.as_deref().map(parse_run_id).transpose()?;
 
-        if r.ipc.is_empty() && r.advances.is_empty() {
-            if let Some(rid) = run_id {
-                self.cp
-                    .transforms()
-                    .finish_run(
-                        rid,
-                        control_plane_core::RunOutcome::Succeeded { snapshot_id: 0 },
-                    )
+        if r.ipc.is_empty() {
+            // No output rows to land. Two sub-cases, both land NOTHING and
+            // declare NO output table:
+            //  - advances present  => a filtering micro-batch consumed a delta
+            //    but produced nothing; advance the watermark + mark the run
+            //    ATOMICALLY (else the consumed delta reprocesses forever).
+            //  - advances empty     => an empty source delta / spurious wakeup;
+            //    just mark the run.
+            let advances = convert_advances(&r.advances);
+            if advances.is_empty() {
+                if let Some(rid) = run_id {
+                    self.cp
+                        .transforms()
+                        .finish_run(
+                            rid,
+                            control_plane_core::RunOutcome::Succeeded { snapshot_id: 0 },
+                        )
+                        .await
+                        .map_err(status)?;
+                }
+            } else {
+                // Resolve the source tid for the watermark key (absent =>
+                // invalid_argument, same as the landing path below).
+                let mut conn = self
+                    .pool
+                    .acquire()
                     .await
-                    .map_err(status)?;
+                    .map_err(|e| Status::internal(e.to_string()))?;
+                let source_table_id = control_plane_postgres::iceberg_mirror::live_table_id(
+                    &mut conn,
+                    &r.source_schema,
+                    &r.source_name,
+                )
+                .await
+                .map_err(status)?
+                .ok_or_else(|| {
+                    Status::invalid_argument(format!(
+                        "commit_micro_batch: unknown source table {}.{}",
+                        r.source_schema, r.source_name
+                    ))
+                })?;
+                drop(conn);
+                control_plane_postgres::iceberg_inline::advance_mv_watermark_only(
+                    &self.pool,
+                    &control_plane_postgres::iceberg_inline::MvCommit {
+                        mv: r.mv,
+                        source_table_id,
+                        advances,
+                        run_id,
+                    },
+                )
+                .await
+                .map_err(status)?;
             }
             return Ok(Response::new(pb::CommitMicroBatchResponse {
                 snapshot_id: None,
@@ -385,15 +442,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
         let batch = arrow_select::concat::concat_batches(&ipc_schema, &ipc_batches)
             .map_err(|e| Status::invalid_argument(format!("bad ipc: {e}")))?;
 
-        let advances: Vec<control_plane_core::WatermarkAdvance> = r
-            .advances
-            .iter()
-            .map(|a| control_plane_core::WatermarkAdvance {
-                bucket: a.bucket,
-                from: a.from,
-                to: a.to,
-            })
-            .collect();
+        let advances = convert_advances(&r.advances);
 
         let out_table = TableRef {
             schema: r.schema,

@@ -509,3 +509,140 @@ async fn commit_micro_batch_output_collision_with_batch_table_is_rejected() {
         "the rejected commit's run was never marked succeeded"
     );
 }
+
+/// Leg 5: a FILTERING micro-batch — it consumed a non-empty source delta
+/// (`advances` non-empty) but its SQL dropped every row (`ipc` empty). The
+/// watermark must still advance (else the consumed delta reprocesses
+/// forever) and the run must succeed, but NO output table is declared and
+/// NOTHING is landed. A stale second attempt over the same (now-advanced)
+/// range is rejected via CAS, leaving the watermark untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn commit_micro_batch_filtering_advances_watermark_without_output() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("wh");
+    let wh_str = wh.path().display().to_string();
+
+    let src = tref("s", "events");
+    let out = tref("s", "filtered_out");
+    let cols = vec![id_spec()];
+
+    // Seed the source: a 2-bucket log stream, 4 rows (2 per bucket, offsets 0..2).
+    inline_append(
+        &pool,
+        &src,
+        &cols,
+        &id_batch(&[1, 2, 3, 4]),
+        lin(&[], std::slice::from_ref(&src)),
+        None,
+        Some(2),
+    )
+    .await
+    .expect("seed source");
+    let src_tid = tid_of(&pool, "s", "events").await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let client = GrpcQueueClient::connect(&eng.sock).await.expect("connect");
+
+    // ---- The filtering micro-batch: consumed the delta, produced nothing ----
+    let rid = submit_microbatch_run(&cp, &src, &out, 1).await;
+    let advances = vec![adv(0, 0, 2), adv(1, 0, 2)];
+    let resp = client
+        .commit_micro_batch(
+            "s.filtered_out".into(),
+            "s".into(),
+            "events".into(),
+            "s".into(),
+            "filtered_out".into(),
+            1,
+            &cols,
+            Vec::new(), // empty ipc: the SQL filtered out every row
+            &lin(std::slice::from_ref(&src), std::slice::from_ref(&out)),
+            advances,
+            Some(rid),
+        )
+        .await
+        .expect("filtering commit_micro_batch");
+    assert_eq!(
+        resp, None,
+        "filtering micro-batch with no output reports no snapshot id"
+    );
+
+    // The watermark still advanced to the advances' `to`s.
+    let wm = cp
+        .mv_watermarks("s.filtered_out", src_tid)
+        .await
+        .expect("mv_watermarks");
+    assert_eq!(
+        wm.get(&0),
+        Some(&2),
+        "bucket 0 watermark advanced despite empty output"
+    );
+    assert_eq!(
+        wm.get(&1),
+        Some(&2),
+        "bucket 1 watermark advanced despite empty output"
+    );
+
+    // The run succeeded (closed at snapshot_id 0, same convention as the
+    // both-empty case).
+    let run = cp.transforms().get_run(rid).await.expect("get_run");
+    assert_eq!(run.state, RunState::Succeeded);
+    assert_eq!(
+        run.snapshot_id,
+        Some(0),
+        "filtering micro-batch closes its run at snapshot_id 0"
+    );
+
+    // No output table was declared or created.
+    assert!(
+        !table_exists(&pool, "s", "filtered_out").await,
+        "a filtering micro-batch with no output creates no output table"
+    );
+
+    // ---- Bonus: a stale second attempt over the same range is rejected ----
+    let rid2 = submit_microbatch_run(&cp, &src, &out, 1).await;
+    let stale_advances = vec![adv(0, 0, 2), adv(1, 0, 2)];
+    let err = client
+        .commit_micro_batch(
+            "s.filtered_out".into(),
+            "s".into(),
+            "events".into(),
+            "s".into(),
+            "filtered_out".into(),
+            1,
+            &cols,
+            Vec::new(),
+            &lin(std::slice::from_ref(&src), std::slice::from_ref(&out)),
+            stale_advances,
+            Some(rid2),
+        )
+        .await
+        .expect_err("stale CAS on a filtering commit must fail");
+    assert!(
+        matches!(err, ControlPlaneError::Conflict(_)),
+        "stale CAS maps to Conflict, got: {err:?}"
+    );
+    let wm_after = cp
+        .mv_watermarks("s.filtered_out", src_tid)
+        .await
+        .expect("mv_watermarks");
+    assert_eq!(wm_after.get(&0), Some(&2), "watermark bucket 0 unchanged");
+    assert_eq!(wm_after.get(&1), Some(&2), "watermark bucket 1 unchanged");
+    let run2 = cp.transforms().get_run(rid2).await.expect("get_run");
+    assert_eq!(
+        run2.state,
+        RunState::Queued,
+        "the aborted stale commit's run was never marked succeeded"
+    );
+}

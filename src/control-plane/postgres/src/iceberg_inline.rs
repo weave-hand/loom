@@ -791,6 +791,24 @@ pub struct MvCommit {
     pub run_id: Option<uuid::Uuid>,
 }
 
+/// Advance an MV's per-bucket watermark and mark its run succeeded in ONE
+/// transaction, WITHOUT landing output — the "micro-batch consumed a source
+/// delta but its SQL produced zero output rows" case (a filtering MV). The
+/// watermark MUST still advance or the consumed delta is reprocessed forever.
+/// A CAS `Conflict` aborts the tx (a concurrent run superseded this one). No
+/// output table is declared or touched.
+pub async fn advance_mv_watermark_only(pool: &PgPool, mv: &MvCommit) -> Result<()> {
+    let mut tx = pool.begin().await.map_err(backend)?;
+    for adv in &mv.advances {
+        crate::stream::pg_advance_mv_watermark(&mut *tx, &mv.mv, mv.source_table_id, adv).await?;
+    }
+    if let Some(rid) = mv.run_id {
+        crate::transforms::pg_mark_run_succeeded(&mut *tx, rid, 0).await?;
+    }
+    tx.commit().await.map_err(backend)?;
+    Ok(())
+}
+
 /// Land one micro-batch result: inline-append `batch` to `table` declared (or
 /// confirmed) a log stream table with `buckets` buckets — framing stamped,
 /// flush byte-trigger armed, data triggers fired (composability) — plus the
