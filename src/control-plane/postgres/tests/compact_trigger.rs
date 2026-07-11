@@ -212,8 +212,19 @@ async fn compact_commit_does_not_retrigger() {
         "job present before compaction"
     );
 
-    // Expire the smalls via a real compaction commit, registering one coalesced
-    // (large) replacement file — mirrors compact_e2e's DataFile construction.
+    // Make the test genuinely DISCRIMINATING. Two masking effects would let a
+    // wrongly-wired trigger (one that reached the compact commit path) pass
+    // undetected, so neutralize both:
+    //   1. Delete the pre-existing `available` job (as the worker would on
+    //      dequeue) — otherwise pg_insert_if_absent's (kind, payload) dedup
+    //      would silently absorb any spurious re-enqueue and the count would
+    //      still read 1.
+    //   2. Have the compaction leave >= min_small_files (3) LIVE small files —
+    //      expire the 3 smalls and register 3 small replacements (each < the
+    //      1 MiB cutoff). Artificial for a real compaction, but it constructs
+    //      the exact count condition under which a wrongly-wired trigger WOULD
+    //      fire. Correct behavior: the compact path bypasses write_mirror
+    //      structurally, so it enqueues nothing regardless of count → 0.
     let small_paths: Vec<String> = sqlx::query_scalar(
         "select path from iceberg_mirror.data_file d \
          join iceberg_mirror.\"table\" t on t.table_id = d.table_id \
@@ -231,23 +242,45 @@ async fn compact_commit_does_not_retrigger() {
         "three live small files before compaction"
     );
 
-    let coalesced = vec![DataFile {
-        path: format!("{}/wh/t/compact-1/part-0.parquet", wh.path().display()),
-        path_is_relative: false,
-        file_format: FileFormat::Parquet,
-        record_count: 3,
-        file_size_bytes: 3, // deliberately small — proves it's the CODE PATH, not size, that guards
-        column_stats: vec![],
-        parquet_footer_size: None,
-    }];
-    compact_table(&pool, &table, &small_paths, &coalesced)
+    // (1) Remove the land's job, mirroring the worker having dequeued it — so
+    // dedup can no longer mask a spurious re-enqueue from the compact commit.
+    sqlx::query("delete from queue.jobs where kind = $1 and state = 'available'")
+        .bind(COMPACT_JOB_KIND)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        available_jobs(&pool).await,
+        0,
+        "job cleared before compaction"
+    );
+
+    // (2) Register 3 small replacements (each 3 bytes < the 1 MiB cutoff), so
+    // the post-commit live small-file count (3) is >= min_small_files — the
+    // count condition a wrongly-wired trigger would fire on.
+    let replacements: Vec<DataFile> = (0..3)
+        .map(|i| DataFile {
+            path: format!("{}/wh/t/compact-1/part-{i}.parquet", wh.path().display()),
+            path_is_relative: false,
+            file_format: FileFormat::Parquet,
+            record_count: 1,
+            file_size_bytes: 3, // < 1 MiB cutoff — still "small"
+            column_stats: vec![],
+            parquet_footer_size: None,
+        })
+        .collect();
+    compact_table(&pool, &table, &small_paths, &replacements)
         .await
         .expect("compact")
         .expect("snapshot");
 
+    // Correct: compact_table commits through register_files(WriteMode::Compact),
+    // never write_mirror, so the trigger cannot fire from its own commit — even
+    // with dedup neutralized AND the live small count back at/above threshold.
+    // A regression wiring the trigger into the compact path would read 1 here.
     assert_eq!(
         available_jobs(&pool).await,
-        1,
+        0,
         "compaction's own commit does not re-trigger"
     );
 }
