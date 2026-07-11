@@ -46,6 +46,16 @@ pub struct RoutingTuning {
     /// Accumulated CDC delta-row count (per declared stream table) at/above which
     /// a `stream_consolidate` job is enqueued.
     pub consolidate_delta_threshold: i64,
+    /// Small-file cutoff for the compaction auto-trigger — the same env the
+    /// worker's `small_files` selection reads, so one deploy value governs both
+    /// (`LOOM_COMPACT_THRESHOLD_BYTES`, default 128 MiB).
+    pub compact_small_file_bytes: i64,
+    /// Number of small files (at/above `compact_small_file_bytes`) that must
+    /// accumulate before a compaction job is auto-enqueued
+    /// (`LOOM_COMPACT_TRIGGER_FILES`, default 8). `0` disables the trigger;
+    /// `1` is rejected at startup (would re-enqueue immediately after every
+    /// compaction whose output stays under the cutoff); `>= 2` enables.
+    pub compact_trigger_files: i64,
 }
 
 impl Default for RoutingTuning {
@@ -55,13 +65,16 @@ impl Default for RoutingTuning {
             flush_byte_threshold: 64 * 1024 * 1024,
             http_max_body_bytes: 64 * 1024 * 1024,
             consolidate_delta_threshold: 128,
+            compact_small_file_bytes: 128 * 1024 * 1024,
+            compact_trigger_files: 8,
         }
     }
 }
 
 impl RoutingTuning {
     /// Apply `LOOM_INLINE_BYTE_LIMIT` / `LOOM_FLUSH_BYTE_THRESHOLD` /
-    /// `LOOM_HTTP_MAX_BODY_BYTES` / `LOOM_CONSOLIDATE_DELTA_THRESHOLD` over the
+    /// `LOOM_HTTP_MAX_BODY_BYTES` / `LOOM_CONSOLIDATE_DELTA_THRESHOLD` /
+    /// `LOOM_COMPACT_THRESHOLD_BYTES` / `LOOM_COMPACT_TRIGGER_FILES` over the
     /// current values.
     pub fn overlay_env(&mut self, vars: &HashMap<String, String>) -> Result<(), ConfigError> {
         overlay_opt(vars, "LOOM_INLINE_BYTE_LIMIT", &mut self.inline_byte_limit)?;
@@ -79,6 +92,16 @@ impl RoutingTuning {
             vars,
             "LOOM_CONSOLIDATE_DELTA_THRESHOLD",
             &mut self.consolidate_delta_threshold,
+        )?;
+        overlay_opt(
+            vars,
+            "LOOM_COMPACT_THRESHOLD_BYTES",
+            &mut self.compact_small_file_bytes,
+        )?;
+        overlay_opt(
+            vars,
+            "LOOM_COMPACT_TRIGGER_FILES",
+            &mut self.compact_trigger_files,
         )?;
         Ok(())
     }
@@ -100,6 +123,12 @@ impl RoutingTuning {
         }
         if self.consolidate_delta_threshold < 1 {
             return Err(invalid("LOOM_CONSOLIDATE_DELTA_THRESHOLD", "must be >= 1"));
+        }
+        if self.compact_small_file_bytes <= 0 {
+            return Err(invalid("LOOM_COMPACT_THRESHOLD_BYTES", "must be >= 1"));
+        }
+        if self.compact_trigger_files == 1 || self.compact_trigger_files < 0 {
+            return Err(invalid("LOOM_COMPACT_TRIGGER_FILES", "must be 0 or >= 2"));
         }
         Ok(())
     }
