@@ -199,6 +199,17 @@ impl Tx for IcebergTx {
         written.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
         written.dedup();
         crate::transforms::pg_fire_data_triggers(&mut tx, &written, staged_run_success).await?;
+        // Event-driven compaction auto-trigger (mirrors the tail of
+        // `SqlCatalog::write_mirror`): evaluated per written table, once its new
+        // files are already registered above. `staged_compacts` tables are
+        // deliberately excluded from `written` — the WriteMode::Compact path
+        // structurally cannot re-trigger its own commit. `None` (default) is a
+        // no-op, preserving every existing path byte-identically.
+        if let Some(cfg) = &catalog.compact_trigger {
+            for table in &written {
+                crate::iceberg_compact::maybe_enqueue_compact(&mut tx, table, cfg).await?;
+            }
+        }
         tx.commit().await.map_err(backend)?;
         Ok(Some(at))
     }

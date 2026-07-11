@@ -11,10 +11,11 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     COMPACT_JOB_KIND, CompactJob, DataFile, DatasetId, EventType, FileFormat, LineageEvent, RunId,
-    StreamTables, TableRef,
+    StreamTables, TableControlPlane, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_compact::{CompactTriggerCfg, compact_table};
+use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_inline::set_has_shadow;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_mirror::live_table_id;
@@ -89,6 +90,20 @@ async fn land_n_small(
         )
         .await
         .expect("land");
+    }
+}
+
+/// A hand-built loom `DataFile` well under the trigger cfg's 1 MiB cutoff —
+/// the register path is mirror-only, so the file need not physically exist.
+fn small_data_file(path: &str) -> DataFile {
+    DataFile {
+        path: path.into(),
+        path_is_relative: true,
+        file_format: FileFormat::Parquet,
+        record_count: 1,
+        file_size_bytes: 10,
+        column_stats: vec![],
+        parquet_footer_size: None,
     }
 }
 
@@ -411,5 +426,121 @@ async fn changelog_table_skips() {
         available_jobs(&pool).await,
         0,
         "a changelog_table_id target skips"
+    );
+}
+
+/// `IcebergTx::commit` (the transform-worker commit seam) evaluates the same
+/// trigger for every table in its `written` set: a single `append_files` call
+/// registering 3 sub-cutoff files at one snapshot crosses the threshold and
+/// enqueues exactly one job.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transform_commit_triggers() {
+    let fx = PgFixture::shared();
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string())
+        .await
+        .with_compact_trigger(trigger_cfg());
+    let pool = fx.pool_for(&db).await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let cp = IcebergControlPlane::new(pg, catalog);
+    let mut tx = cp.begin_table().await.expect("begin_table");
+    tx.create_table(&table, &columns())
+        .await
+        .expect("create_table");
+    tx.append_files(
+        &table,
+        &[
+            small_data_file("a.parquet"),
+            small_data_file("b.parquet"),
+            small_data_file("c.parquet"),
+        ],
+    )
+    .await
+    .expect("append_files");
+    tx.commit().await.expect("commit").expect("snapshot");
+
+    assert_eq!(
+        available_jobs(&pool).await,
+        1,
+        "transform commit crossing the threshold triggers"
+    );
+}
+
+/// `IcebergTx::compact_files` stages into `staged_compacts`, which is
+/// structurally excluded from `written` — so its own commit must never
+/// re-trigger, even when the coalesced replacements themselves are small and
+/// at/above `min_small_files` (the exact count condition a wrongly-wired
+/// trigger would fire on).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn transform_compact_files_does_not_trigger() {
+    let fx = PgFixture::shared();
+    let (pg, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string())
+        .await
+        .with_compact_trigger(trigger_cfg());
+    let pool = fx.pool_for(&db).await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    // Seed 2 live small files below N=3 via the additive land path (does not
+    // itself trigger).
+    land_n_small(&pool, &catalog, &table, 2).await;
+    assert_eq!(
+        available_jobs(&pool).await,
+        0,
+        "below threshold before compaction"
+    );
+
+    let small_paths: Vec<String> = sqlx::query_scalar(
+        "select path from iceberg_mirror.data_file d \
+         join iceberg_mirror.\"table\" t on t.table_id = d.table_id \
+         where t.table_namespace = $1 and t.table_name = $2 \
+           and d.end_snapshot is null",
+    )
+    .bind(&table.schema)
+    .bind(&table.name)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        small_paths.len(),
+        2,
+        "two live small files before compaction"
+    );
+
+    // Discriminating: 3 coalesced replacement files (each below the cutoff),
+    // so the post-commit live small-file count (3) is >= min_small_files —
+    // the count condition a wrongly-wired trigger would fire on.
+    let replacements: Vec<DataFile> = (0..3)
+        .map(|i| DataFile {
+            path: format!("{}/wh/t/compact-1/part-{i}.parquet", wh.path().display()),
+            path_is_relative: false,
+            file_format: FileFormat::Parquet,
+            record_count: 1,
+            file_size_bytes: 3,
+            column_stats: vec![],
+            parquet_footer_size: None,
+        })
+        .collect();
+
+    let cp = IcebergControlPlane::new(pg, catalog);
+    let mut tx = cp.begin_table().await.expect("begin_table");
+    tx.compact_files(&table, &small_paths, &replacements)
+        .await
+        .expect("compact_files");
+    tx.commit().await.expect("commit").expect("snapshot");
+
+    assert_eq!(
+        available_jobs(&pool).await,
+        0,
+        "IcebergTx::compact_files commit does not re-trigger"
     );
 }
