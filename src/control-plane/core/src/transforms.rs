@@ -65,6 +65,22 @@ pub enum TransformBody {
         buckets: i32,
         sql: String,
     },
+    /// A standing join micro-batch query (slice 5): `sql` re-runs over
+    /// `source`'s per-bucket offset delta joined against `enrich`'s current
+    /// state on each trigger; the result appends to `output`, itself declared
+    /// a log stream table with `buckets` buckets. `on`, when set, names the
+    /// lookup-join key contract used to bound the enrich-side fetch; `None`
+    /// falls back to a full-state fetch (always correct, unbounded cost).
+    #[serde(rename = "microbatch_join")]
+    MicroBatchJoin {
+        source: TableRef,
+        enrich: TableRef,
+        #[serde(default)]
+        on: Option<crate::LookupOn>,
+        output: TableRef,
+        buckets: i32,
+        sql: String,
+    },
 }
 
 impl TransformBody {
@@ -117,6 +133,27 @@ impl TransformBody {
                     buckets: *buckets,
                     sql: sql.clone(),
                     run_id: Some(run_id),
+                    enrich: None,
+                    on: None,
+                }),
+            ),
+            Self::MicroBatchJoin {
+                source,
+                enrich,
+                on,
+                output,
+                buckets,
+                sql,
+            } => (
+                crate::STREAM_MV_JOB_KIND,
+                serde_json::to_value(crate::StreamMvJob {
+                    source: source.clone(),
+                    output: output.clone(),
+                    buckets: *buckets,
+                    sql: sql.clone(),
+                    run_id: Some(run_id),
+                    enrich: Some(enrich.clone()),
+                    on: on.clone(),
                 }),
             ),
         };
@@ -321,6 +358,59 @@ pub fn validate_transform_def(def: &TransformDef) -> Result<()> {
             ));
         }
     }
+    if let TransformBody::MicroBatchJoin {
+        source,
+        enrich,
+        on,
+        output,
+        buckets,
+        sql,
+    } = &def.body
+    {
+        if *buckets < 1 {
+            return Err(ControlPlaneError::Validation(format!(
+                "microbatch_join output bucket count must be >= 1, got {buckets}"
+            )));
+        }
+        if sql.trim().is_empty() {
+            return Err(ControlPlaneError::Validation(
+                "microbatch_join sql must not be empty".into(),
+            ));
+        }
+        if source == output {
+            return Err(ControlPlaneError::Validation(
+                "microbatch_join source and output must differ".into(),
+            ));
+        }
+        if enrich == output {
+            return Err(ControlPlaneError::Validation(
+                "microbatch_join enrich and output must differ".into(),
+            ));
+        }
+        if source == enrich {
+            return Err(ControlPlaneError::Validation(
+                "microbatch_join source and enrich must differ".into(),
+            ));
+        }
+        if source.name == enrich.name {
+            return Err(ControlPlaneError::Validation(format!(
+                "ambiguous input table name {}: source and enrich would register under it",
+                source.name
+            )));
+        }
+        if let Some(on) = on {
+            if on.source_col.trim().is_empty() {
+                return Err(ControlPlaneError::Validation(
+                    "microbatch_join lookup key source_col must not be empty".into(),
+                ));
+            }
+            if on.enrich_col.trim().is_empty() {
+                return Err(ControlPlaneError::Validation(
+                    "microbatch_join lookup key enrich_col must not be empty".into(),
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -360,6 +450,12 @@ impl TriggerNode {
             TransformBody::MicroBatch { source, output, .. } => {
                 (vec![source.clone()], Some(output.clone()))
             }
+            TransformBody::MicroBatchJoin {
+                source,
+                enrich,
+                output,
+                ..
+            } => (vec![source.clone(), enrich.clone()], Some(output.clone())),
         };
         Self {
             name: name.0.clone(),

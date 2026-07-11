@@ -20,4 +20,26 @@ pub struct StreamMvJob {
     /// tracked. Absent on direct enqueues.
     #[serde(default)]
     pub run_id: Option<uuid::Uuid>,
+    /// Slice-5 join MVs: the state-side table. `None` => a plain slice-4 MV.
+    #[serde(default)]
+    pub enrich: Option<TableRef>,
+    /// Slice-5 lookup-join key contract. `None` with `enrich: Some` => state-join.
+    #[serde(default)]
+    pub on: Option<LookupOn>,
 }
+
+/// The lookup-join key contract: the delta column whose distinct values probe
+/// the enrich table's `enrich_col`. MUST name the SQL's equijoin columns —
+/// v1 does not parse the SQL to verify (a mismatch silently drops join
+/// partners; `on: None` is the always-correct full-state default). See the
+/// slice-5 spec's correctness contract.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LookupOn {
+    pub source_col: String,
+    pub enrich_col: String,
+}
+
+/// Above this many distinct lookup keys the worker falls back to the
+/// full-state fetch (a superset — always correct); keeps the enrich ticket
+/// bounded.
+pub const MAX_LOOKUP_KEYS: usize = 10_000;

@@ -44,7 +44,9 @@ fn body_serde_is_internally_tagged() {
     .unwrap();
     match typed {
         TransformBody::Typed { output_mode, .. } => assert_eq!(output_mode, OutputMode::Append),
-        TransformBody::Physical { .. } | TransformBody::MicroBatch { .. } => {
+        TransformBody::Physical { .. }
+        | TransformBody::MicroBatch { .. }
+        | TransformBody::MicroBatchJoin { .. } => {
             panic!("wrong variant")
         }
     }
