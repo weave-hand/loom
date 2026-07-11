@@ -6,11 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::ControlPlane;
+use control_plane_postgres::iceberg_compact::CompactTriggerCfg;
 use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalog, SqlCatalogBuilder,
 };
 use iceberg::CatalogBuilder;
 
+use crate::config::RoutingTuning;
 use crate::http::{AppState, router};
 use crate::landing::{IcebergMaterializer, LandingMaterializer};
 
@@ -29,7 +31,7 @@ pub async fn serve(
     let app_cfg: crate::config::IngestConfig = service_runtime::load(&env)?;
 
     let materializer: Arc<dyn LandingMaterializer> = {
-        let catalog = Arc::new(build_iceberg_catalog(cfg).await?);
+        let catalog = Arc::new(build_iceberg_catalog(cfg, &app_cfg.routing).await?);
         Arc::new(IcebergMaterializer {
             catalog,
             pool,
@@ -55,7 +57,10 @@ pub async fn serve(
     Ok(())
 }
 
-async fn build_iceberg_catalog(cfg: &service_runtime::Config) -> Result<SqlCatalog, BoxErr> {
+async fn build_iceberg_catalog(
+    cfg: &service_runtime::Config,
+    routing: &RoutingTuning,
+) -> Result<SqlCatalog, BoxErr> {
     let mut props = HashMap::new();
     props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
     props.insert(
@@ -66,5 +71,13 @@ async fn build_iceberg_catalog(cfg: &service_runtime::Config) -> Result<SqlCatal
         .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)
         .await?;
+    let catalog = if routing.compact_trigger_files >= 2 {
+        catalog.with_compact_trigger(CompactTriggerCfg {
+            small_file_bytes: routing.compact_small_file_bytes,
+            min_small_files: routing.compact_trigger_files,
+        })
+    } else {
+        catalog
+    };
     Ok(catalog)
 }

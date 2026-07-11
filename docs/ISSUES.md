@@ -20,8 +20,8 @@ only (resolved defects are recorded in git history, and the shipped behaviour in
 
 ## catalog
 
-- [ ] **Operator `POST …/compact` enqueue is non-deduped and unguarded** `{#iss-compact-endpoint-unguarded area:catalog status:open from:2026-07-09-compaction-auto-trigger-design pr:- spec:2026-07-09-compaction-auto-trigger-design}`
-  The operator compaction endpoint (`src/services/ingest/http.rs:142-163`) enqueues `compact_table` via plain non-deduped `Queue::enqueue` — repeated POSTs pile up duplicate jobs — and carries none of the eligibility guards the auto-trigger spec derives: it accepts declared stream/CDC tables, changelog tables, and **shadow-flagged** tables, where compaction re-projects files at a higher `begin_snapshot` and COW merge-on-read (highest `begin_snapshot` wins, `iceberg_inline.rs:757-762`) could resurrect tombstoned rows. Surfaced by the [[road-compaction-auto-trigger]] spec pass; fix shape: route the endpoint through the same shared guard helper + `pg_insert_if_absent` dedup that spec introduces.
+- [ ] **Operator `POST …/compact` enqueue is non-deduped and unguarded** `{#iss-compact-endpoint-unguarded area:catalog status:open from:2026-07-09-compaction-auto-trigger-design pr:- spec:-}`
+  The operator compaction endpoint (`src/services/ingest/http.rs:142-163`) enqueues `compact_table` via plain non-deduped `Queue::enqueue` — repeated POSTs pile up duplicate jobs — and carries none of the eligibility guards the auto-trigger spec derives: it accepts declared stream/CDC tables, changelog tables, and **shadow-flagged** tables, where compaction re-projects files at a higher `begin_snapshot` and COW merge-on-read (highest `begin_snapshot` wins, `iceberg_inline.rs:757-762`) could resurrect tombstoned rows. Surfaced by the `#road-compaction-auto-trigger` spec pass (shipped, PR #419); fix shape: route the endpoint through the same shared guard helper + `pg_insert_if_absent` dedup that trigger introduces (`maybe_enqueue_compact`, `iceberg_compact.rs`). Cross-refs `#road-cow-compaction-consolidation` (shipped, owns the shadow fold).
 
 ## query
 

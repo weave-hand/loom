@@ -31,6 +31,12 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **Incremental (append-delta) compaction output** `{#fut-compaction-incremental area:catalog status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
   The remaining half of `#fut-compaction-job`. `#road-compaction-job` shipped full-rewrite of the small-file set (every small file re-read and coalesced each run). Watermark-tracked incremental output would compact only files added since the last compaction watermark, avoiding O(table) rework on each run. Needs a per-table compaction watermark in the catalog and append-delta selection in the worker. Compacted files get fresh row-ids — revisit if/when row-level deletes land.
 
+- [ ] **Per-table compaction-trigger override** `{#fut-compact-trigger-pertable-override area:catalog status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
+  Deferred out of `#road-compaction-auto-trigger` (shipped, PR #419): the event-driven trigger's file-count threshold N is a single global env knob (`LOOM_COMPACT_TRIGGER_FILES`), unlike the byte-flush trigger which carries a per-table `iceberg_mirror.inline_trigger.threshold` override column. The compact trigger is stateless (its input — live small-file count — is already materialized in `iceberg_mirror.data_file`), so an override needs no migration coupling and was deliberately left to v2. Add a per-table override column/knob only if a real workload needs table-specific tuning.
+
+- [ ] **Small-file compaction for stream / CDC / changelog tables** `{#fut-stream-smallfile-compaction area:catalog status:deferred from:2026-06-22-engine-wire-compaction-flight-design pr:- spec:-}`
+  Deferred out of `#road-compaction-auto-trigger` (shipped, PR #419): the auto-trigger's eligibility guards skip declared stream tables, changelog tables, and shadow-flagged tables, because CDC/log files carry offset framing whose physical rewrite under `compact_table` is unproven and compacting under live inline deltas could resurrect tombstoned rows. A stream small-file story (offset-framing-aware coalescing) is a follow-on; CDC current-state folding is `consolidate_stream`'s job with its own trigger, and the COW-delta fold is `#road-cow-compaction-consolidation` (shipped). Related: [[iss-compact-endpoint-unguarded]].
+
 ## ontology
 
 - [ ] **Fine-grained (subject-attribute) access control — A7** `{#fut-fgac-subject-attribute area:acl status:deferred from:grimoire-kg-agenda pr:- spec:-}`

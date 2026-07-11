@@ -440,6 +440,13 @@ async fn land_additive(
     let mut tx = pool.begin().await.map_err(backend)?;
     let at = next_snapshot(&mut tx, None).await?;
     register_files(&mut tx, table, columns, &loom_files, WriteMode::Append, at).await?;
+    // Event-driven compaction auto-trigger (mirrors the tail of
+    // `SqlCatalog::write_mirror`): evaluated once the new files are already
+    // registered above. `None` (default) is a no-op, preserving every existing
+    // path byte-identically.
+    if let Some(cfg) = &catalog.compact_trigger {
+        crate::iceberg_compact::maybe_enqueue_compact(&mut tx, table, cfg).await?;
+    }
     crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
