@@ -55,6 +55,23 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "mv-enrich-scan",
+    crate = "mv_enrich_scan",
+    srcs = ["tests/mv_enrich_scan.rs"],
+    crate_root = "tests/mv_enrich_scan.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "merge-on-read",
     crate = "merge_on_read",
     srcs = ["tests/merge_on_read.rs"],

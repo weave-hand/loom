@@ -9,6 +9,7 @@ pub mod consolidate;
 pub mod feed;
 pub mod governed;
 pub mod mv_delta;
+pub mod mv_enrich;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;
@@ -20,6 +21,7 @@ pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };
 pub use mv_delta::mv_delta_scan;
+pub use mv_enrich::mv_enrich_scan;
 pub use provider::PgTableProvider;
 pub use serving::{
     EngineServingError, IcebergMirrorTableProvider, build_serving_provider, execute_query,
