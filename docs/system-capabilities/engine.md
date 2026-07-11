@@ -215,6 +215,37 @@ durably removed by consolidation rather than only masked at query time (see
 query-api's vector-search post-filter, #400). Slice 3 (identity-change /
 upsert) stays deferred as `#fut-cow-identity-change`.
 
+**Small-file compaction auto-triggers at commit** (#419), the file-count analog
+of the byte-trigger flush. `#road-compaction-job` shipped compaction as
+operator-triggered only (`POST …/compact`); now every **file-adding** commit
+counts the table's live sub-cutoff files **in its own commit transaction** and
+enqueues a deduped `compact_table` job when the count crosses N. A single
+stateless helper `maybe_enqueue_compact` (`iceberg_compact.rs` — one combined
+eligibility+count query, then `pg_insert_if_absent`) is called from the three
+file-adding tails: `write_mirror` (the CAS path — ingest land, flush, COW
+overwrite, stream direct write), `land_additive`, and `IcebergTx::commit` (per
+written table). The **loop guard is structural**: compaction's own commit goes
+through `register_files(WriteMode::Compact)` / `staged_compacts`, a distinct
+path that never reaches the helper, so even a compaction emitting small outputs
+cannot re-enqueue from its own commit. Declared stream, changelog, and
+shadow-flagged tables are skipped (compacting under live inline deltas could
+resurrect tombstoned rows). The enqueue is atomic with the write — the
+`pg_notify` is buffered inside `pg_insert_if_absent`'s CTE, so a rolled-back
+commit leaks no job — and builds the identical `CompactJob { schema, name }`
+payload the operator endpoint uses, so at most one `available` job per table
+exists across both producers. Two knobs on both `EngineTuning` and
+`RoutingTuning`: `LOOM_COMPACT_THRESHOLD_BYTES` (the small-file cutoff, **shared
+with the worker's `small_files` selection** so one deploy value governs counting
+and selection) and `LOOM_COMPACT_TRIGGER_FILES` (N — default 8; `0` disables,
+`1`/negative rejected at startup, `>= 2` enables). The trigger rides an
+`Option<CompactTriggerCfg>` on the `SqlCatalog`, `None` by default, so every
+existing caller and fixture is byte-identical unless a service main opts in. The
+trigger is stateless — no trigger-state row, no arm/reset protocol; the queue
+itself is the debounce. The operator endpoint remains non-deduped and unguarded
+(`#iss-compact-endpoint-unguarded`); a stream small-file story
+(`#fut-stream-smallfile-compaction`) and a per-table override
+(`#fut-compact-trigger-pertable-override`) are deferred.
+
 ## Engine-wire control plane and the Arrow Flight data plane
 
 The engine exposes a typed gRPC `EngineControl` surface on its UDS —
