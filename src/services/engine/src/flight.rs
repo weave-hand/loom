@@ -204,6 +204,45 @@ impl FlightDataService {
         )))
     }
 
+    /// Enrich-table current-state read plane: stream `t.enrich_schema.t.enrich_name`'s
+    /// folded current state (see [`engine_serving::mv_enrich::mv_enrich_scan`]),
+    /// optionally narrowed to `t.key`'s JSON key set. Mirrors `do_get_governed_sql`'s
+    /// shape: reads through `self.serving_catalog` (the `IcebergCatalog`), not
+    /// `self.catalog` (the `SqlCatalog` `do_get_mv_delta` uses). `mv_enrich_scan`'s
+    /// deterministic refusals (unknown table, bad key) carry the `"mv enrich:"`
+    /// message prefix and map to `failed_precondition`, mirroring `do_get_mv_delta`
+    /// (`:193-198`) — the worker (Task 5) branches on that prefix, not a gRPC code.
+    /// Every other `EngineServingError` maps through [`serving_status`] unchanged.
+    async fn do_get_mv_enrich(
+        &self,
+        t: engine_wire::flight::MvEnrichTicket,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let table = TableRef {
+            schema: t.enrich_schema,
+            name: t.enrich_name,
+        };
+        let key = t.key.as_deref().map(|c| (c, t.keys.as_slice()));
+        let (_schema, batches) = engine_serving::mv_enrich::mv_enrich_scan(
+            &self.serving_catalog,
+            &table,
+            key,
+            self.serving_store.as_ref(),
+        )
+        .await
+        .map_err(|e| match &e {
+            engine_serving::EngineServingError::Engine(msg) if msg.starts_with("mv enrich:") => {
+                Status::failed_precondition(msg.clone())
+            }
+            _ => serving_status(e),
+        })?;
+
+        // The schema is discarded here on purpose, same as `do_get_mv_delta`:
+        // `FlightDataEncoderBuilder` derives it from the batches.
+        Ok(Self::encode_response(futures::stream::iter(
+            batches.into_iter().map(Ok::<_, FlightError>),
+        )))
+    }
+
     /// File-ticket data plane: stream an explicit live-file set. Every
     /// ticket-named path must belong to the table's live snapshot (see the
     /// defense-in-depth comment inline).
@@ -292,12 +331,7 @@ impl FlightService for FlightDataService {
             EngineTicket::GovernedSql(q) => self.do_get_governed_sql(q).await,
             EngineTicket::AsOfSql(q) => self.do_get_as_of_sql(q).await,
             EngineTicket::MvDelta(t) => self.do_get_mv_delta(t).await,
-            // The enrich-table current-state read plane is wired end-to-end in a
-            // later slice-5 task; the ticket type and its decode routing land here
-            // first, so the serving handler is a placeholder for now.
-            EngineTicket::MvEnrich(_) => Err(Status::unimplemented(
-                "mv-enrich do_get not yet implemented",
-            )),
+            EngineTicket::MvEnrich(t) => self.do_get_mv_enrich(t).await,
             EngineTicket::VectorSearch(vs) => self.do_get_vector_search(vs).await,
             EngineTicket::Files(ft) => self.do_get_files(ft).await,
         }
