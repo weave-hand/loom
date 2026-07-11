@@ -32,7 +32,7 @@ async fn mv_enrich_round_trips_over_flight() {
         .await
         .expect("connect");
 
-    let unkeyed = client
+    let (_schema, unkeyed) = client
         .fetch_mv_enrich(MvEnrichTicket {
             enrich_schema: "s".into(),
             enrich_name: "customers".into(),
@@ -43,7 +43,7 @@ async fn mv_enrich_round_trips_over_flight() {
         .expect("unkeyed fetch");
     assert_eq!(row_count(&unkeyed), 2, "full folded state");
 
-    let keyed = client
+    let (_schema, keyed) = client
         .fetch_mv_enrich(MvEnrichTicket {
             enrich_schema: "s".into(),
             enrich_name: "customers".into(),

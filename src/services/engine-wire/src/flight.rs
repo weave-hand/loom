@@ -9,7 +9,7 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
 use arrow_flight::{FlightData, FlightDescriptor, Ticket};
-use arrow_schema::ArrowError;
+use arrow_schema::{ArrowError, SchemaRef};
 use control_plane_core::{GovernedCatalog, Result};
 use futures::{Stream, TryStreamExt};
 use prost::Message;
@@ -377,6 +377,37 @@ impl FlightTableClient {
             .map_err(crate::client::be)
     }
 
+    /// Like [`do_get_batches`](Self::do_get_batches) but ALSO returns the wire
+    /// schema. Collects the `FlightRecordBatchStream` while keeping it alive
+    /// (`&mut stream` borrow) so its schema — decoded from the leading Schema
+    /// message the engine always sends — can be read afterwards. Used by
+    /// `fetch_mv_enrich`, whose response can legitimately be zero batches (a
+    /// live-but-empty enrich table): the schema is what lets the worker register
+    /// an empty enrich table instead of abandoning the run.
+    async fn do_get_batches_with_schema(
+        &self,
+        ticket: Vec<u8>,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        let resp = self
+            .inner
+            .clone()
+            .do_get(Ticket {
+                ticket: ticket.into(),
+            })
+            .await
+            .map_err(crate::client::be)?;
+        let mut stream = decode_batches(resp);
+        let mut batches = Vec::new();
+        while let Some(b) = stream.try_next().await.map_err(crate::client::be)? {
+            batches.push(b);
+        }
+        let schema = stream
+            .schema()
+            .cloned()
+            .ok_or_else(|| crate::client::be("mv enrich: no schema on wire"))?;
+        Ok((schema, batches))
+    }
+
     /// Send a [`FlightTicket`] via `do_get` and collect all returned
     /// [`RecordBatch`]es. The engine streams schema-first Arrow IPC; this
     /// method reconstructs the batches and returns them as a `Vec`.
@@ -396,9 +427,16 @@ impl FlightTableClient {
     }
 
     /// Fetch an enrich table's current state, optionally restricted to a key
-    /// set (see [`MvEnrichTicket`]).
-    pub async fn fetch_mv_enrich(&self, ticket: MvEnrichTicket) -> Result<Vec<RecordBatch>> {
-        self.do_get_batches(ticket.encode()).await
+    /// set (see [`MvEnrichTicket`]), returning the wire schema alongside the
+    /// batches. The schema is surfaced (not derived from the first batch)
+    /// because a live-but-empty enrich table yields zero batches yet a schema
+    /// the engine always sends — the worker registers an empty enrich table
+    /// from it rather than abandoning the join run.
+    pub async fn fetch_mv_enrich(
+        &self,
+        ticket: MvEnrichTicket,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        self.do_get_batches_with_schema(ticket.encode()).await
     }
 
     /// Send a [`VectorSearchTicket`] via `do_get` and collect the kNN result rows.

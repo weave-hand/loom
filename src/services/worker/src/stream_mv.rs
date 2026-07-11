@@ -15,7 +15,7 @@ use control_plane_core::{
     RunId, StreamMvJob, WatermarkAdvance, mv_key,
 };
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{infer_columns, register_batches};
+use datafusion_io::{infer_columns, register_batches, register_empty_table};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightTableClient, MvEnrichTicket};
 use engine_wire::pb;
@@ -130,7 +130,13 @@ async fn run_stream_mv(
         // Keyed (lookup-join) when `key_payload` is set, full state
         // (state-join) otherwise.
         if let Some(enrich) = &job.enrich {
-            let enrich_batches = ctx
+            // The engine always sends the enrich schema (via `with_schema`,
+            // even for a live-but-empty table that yields zero batches), so the
+            // client surfaces it alongside the batches. A zero-batch enrich is
+            // registered as an EMPTY table from that schema — the join SQL then
+            // resolves it and an INNER JOIN yields zero rows (the run succeeds
+            // and the watermark advances), instead of abandoning.
+            let (enrich_schema, enrich_batches) = ctx
                 .table
                 .fetch_mv_enrich(MvEnrichTicket {
                     enrich_schema: enrich.schema.clone(),
@@ -140,25 +146,12 @@ async fn run_stream_mv(
                 })
                 .await
                 .map_err(|e| classify_enrich_error(&e, ctx.worker_tuning, attempts))?;
-            match enrich_batches.first().map(RecordBatch::schema) {
-                // The engine streams schema-first; a genuinely empty response
-                // (the enrich table is live but has never had any data landed
-                // — see `mv_enrich_scan`'s live-but-empty case) carries no
-                // batch, and therefore no schema, over the wire (the Flight
-                // encoder only emits a schema message when it sees a first
-                // batch). Without a schema there is nothing safe to register
-                // under `enrich.name`; the join SQL below then fails to
-                // resolve that table, a deterministic abandon.
-                None => {
-                    return Err(JobFailure::abandon(format!(
-                        "enrich: no schema available for empty enrich table {}.{}",
-                        enrich.schema, enrich.name
-                    )));
-                }
-                Some(enrich_schema) => {
-                    register_batches(&df_ctx, &enrich.name, enrich_schema, enrich_batches)
-                        .map_err(|e| JobFailure::abandon(format!("register enrich: {e}")))?;
-                }
+            if enrich_batches.is_empty() {
+                register_empty_table(&df_ctx, &enrich.name, enrich_schema)
+                    .map_err(|e| JobFailure::abandon(format!("register enrich: {e}")))?;
+            } else {
+                register_batches(&df_ctx, &enrich.name, enrich_schema, enrich_batches)
+                    .map_err(|e| JobFailure::abandon(format!("register enrich: {e}")))?;
             }
         }
 

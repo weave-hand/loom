@@ -9,9 +9,9 @@ use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, EventType, Job, JobId, LineageEvent, LookupOn, MergeEngine,
-    ObjectType, Ontology, PropertyConstraints, PropertyDef, Queue, RetryPolicy, RunId, RunState,
-    RunTrigger, STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody,
-    TransformRun, TypeName,
+    MvWatermarks, ObjectType, Ontology, PropertyConstraints, PropertyDef, Queue, RetryPolicy,
+    RunId, RunState, RunTrigger, STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef,
+    TransformBody, TransformRun, TypeName, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -21,7 +21,7 @@ use control_plane_postgres::iceberg_inline::{
     current_inline_version, inline_append, write_inline_delta,
 };
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
+use control_plane_postgres::iceberg_mirror::{ensure_table, live_table_id, next_snapshot};
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient};
 use loom_test_flight::{EngineOpts, spawn_engine_uds};
@@ -108,6 +108,17 @@ fn customer_row(id: i64, name: &str) -> RecordBatch {
         ],
     )
     .expect("customer row")
+}
+
+/// A zero-row batch matching the customers schema — appended so `s.customers`
+/// is LIVE in the mirror with a known schema but no rows (the live-but-empty
+/// enrich case).
+fn empty_customers_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]));
+    RecordBatch::new_empty(schema)
 }
 
 fn id_only_batch(id: i64) -> RecordBatch {
@@ -817,4 +828,126 @@ async fn deterministic_abandons() {
         "error names the lookup-key refusal, got: {}",
         err2.error
     );
+}
+
+/// Case 7: a join against a LIVE-BUT-EMPTY enrich table succeeds by joining
+/// against an empty table. `s.customers` is declared (live in the mirror, known
+/// schema) but carries ZERO rows; two `orders` rows are landed and the join MV
+/// runs. The engine sends the enrich schema unconditionally (`with_schema`) even
+/// though the enrich response is zero batches, so the worker registers an EMPTY
+/// enrich table from that schema: the INNER JOIN yields zero rows, the run
+/// SUCCEEDS (not Abandon), and the SOURCE watermark ADVANCES past the consumed
+/// delta — regression coverage for the slice-5 Task 5 review gap.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_but_empty_enrich_joins_as_empty_table_and_succeeds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let ctx = build_ctx(&eng.sock).await;
+
+    let src = tref("s", "orders");
+    let enrich = tref("s", "customers");
+    let dst = tref("s", "enriched_empty");
+    let on = LookupOn {
+        source_col: "customer_id".to_string(),
+        enrich_col: "id".to_string(),
+    };
+    let sql = "select o.id, o.customer_id, c.name, o.amount from orders o join customers c on o.customer_id = c.id";
+
+    // Declare customers LIVE (CDC, identity id) but append ZERO rows, so it is
+    // live-but-empty: a known schema in the mirror, no data.
+    declare_customers(&cp, &pool, &enrich).await;
+    inline_append(
+        &pool,
+        &enrich,
+        &customer_columns(),
+        &empty_customers_batch(),
+        lin(),
+        None,
+        None,
+    )
+    .await
+    .expect("seed empty customers");
+
+    // Land two orders rows, a 2-bucket log stream.
+    let (schema, batches) = orders_batch(&[1, 2], &[1, 2], &[100, 200]);
+    land(
+        &pool,
+        &catalog,
+        &src,
+        &orders_columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lin(),
+        Some(2),
+    )
+    .await
+    .expect("land orders");
+
+    let mut conn = pool.acquire().await.expect("conn");
+    let src_tid = live_table_id(&mut conn, &src.schema, &src.name)
+        .await
+        .expect("live_table_id")
+        .expect("source is declared");
+    drop(conn);
+    let mv = mv_key(&dst);
+
+    let before = cp
+        .mv_watermarks(&mv, src_tid)
+        .await
+        .expect("watermarks before");
+    assert!(before.is_empty(), "no watermark recorded before any run");
+
+    let (rid, result) =
+        run_micro_batch_join(&cp, &ctx, &src, &enrich, Some(on), &dst, 1, sql).await;
+    result.expect("join against a live-but-empty enrich succeeds");
+    let run = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(
+        run.state,
+        RunState::Succeeded,
+        "the run succeeds joining against an empty enrich table (not Abandon)"
+    );
+
+    // The INNER JOIN against an empty enrich yields zero rows: the empty-ipc
+    // commit branch never declares the output table.
+    let listed = ctx
+        .control
+        .list_files(dst.schema.clone(), dst.name.clone())
+        .await
+        .expect("list output");
+    assert!(
+        listed.columns.is_none(),
+        "the empty-join output never declared the output table"
+    );
+
+    // The source watermark advances past the consumed delta.
+    let after = cp
+        .mv_watermarks(&mv, src_tid)
+        .await
+        .expect("watermarks after");
+    assert_ne!(
+        after, before,
+        "the source watermark advanced past the consumed delta"
+    );
+    assert!(!after.is_empty(), "at least one bucket's watermark moved");
 }

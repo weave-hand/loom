@@ -222,7 +222,7 @@ impl FlightDataService {
             name: t.enrich_name,
         };
         let key = t.key.as_deref().map(|c| (c, t.keys.as_slice()));
-        let (_schema, batches) = engine_serving::mv_enrich::mv_enrich_scan(
+        let (schema, batches) = engine_serving::mv_enrich::mv_enrich_scan(
             &self.serving_catalog,
             &table,
             key,
@@ -236,11 +236,21 @@ impl FlightDataService {
             _ => serving_status(e),
         })?;
 
-        // The schema is discarded here on purpose, same as `do_get_mv_delta`:
-        // `FlightDataEncoderBuilder` derives it from the batches.
-        Ok(Self::encode_response(futures::stream::iter(
-            batches.into_iter().map(Ok::<_, FlightError>),
-        )))
+        // Unlike the other planes, the schema is NOT discarded here: an enrich
+        // table that is live-but-empty yields ZERO batches, and the shared
+        // `encode_response` derives the schema from the first batch — so an
+        // empty stream would carry only… nothing, leaving the worker no schema
+        // to register an empty enrich table from (it would abandon the run).
+        // `with_schema` queues the Schema message unconditionally (arrow-flight
+        // `encode.rs`), independent of any batch, so the worker always receives
+        // it. Mirrors `encode_response`'s `.map_err`/`DoGetStream` wrapping.
+        let out = FlightDataEncoderBuilder::new()
+            .with_schema(schema)
+            .build(futures::stream::iter(
+                batches.into_iter().map(Ok::<_, FlightError>),
+            ))
+            .map_err(|e| Status::internal(e.to_string()));
+        Ok(Response::new(Box::pin(out)))
     }
 
     /// File-ticket data plane: stream an explicit live-file set. Every
