@@ -69,6 +69,7 @@ pub struct SqlCatalogBuilder {
     config: SqlCatalogConfig,
     storage_factory: Option<Arc<dyn StorageFactory>>,
     runtime: Option<iceberg::Runtime>,
+    compact_trigger: Option<crate::iceberg_compact::CompactTriggerCfg>,
 }
 
 impl Default for SqlCatalogBuilder {
@@ -82,6 +83,7 @@ impl Default for SqlCatalogBuilder {
             },
             storage_factory: None,
             runtime: None,
+            compact_trigger: None,
         }
     }
 }
@@ -124,6 +126,15 @@ impl SqlCatalogBuilder {
     /// those values will take precedence.
     pub fn prop(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.config.props.insert(key.into(), value.into());
+        self
+    }
+
+    /// Enable the event-driven compaction auto-trigger (see
+    /// [`crate::iceberg_compact::maybe_enqueue_compact`]) on the catalog this
+    /// builder produces. Not set (the default) leaves the trigger disabled —
+    /// every existing commit path stays byte-identical.
+    pub fn with_compact_trigger(mut self, cfg: crate::iceberg_compact::CompactTriggerCfg) -> Self {
+        self.compact_trigger = Some(cfg);
         self
     }
 }
@@ -178,7 +189,13 @@ impl CatalogBuilder for SqlCatalogBuilder {
             } else {
                 self.config.name = name;
                 let runtime = self.runtime.unwrap_or_else(iceberg::Runtime::current);
-                SqlCatalog::new(self.config, self.storage_factory, runtime).await
+                SqlCatalog::new(
+                    self.config,
+                    self.storage_factory,
+                    runtime,
+                    self.compact_trigger,
+                )
+                .await
             }
         }
     }
@@ -209,6 +226,12 @@ pub struct SqlCatalog {
     /// iceberg main requires a `Runtime` on every `Table::builder()`; threaded in here
     /// from the builder (defaulting to `Runtime::current()`).
     runtime: iceberg::Runtime,
+    /// Event-driven compaction auto-trigger config (see
+    /// [`crate::iceberg_compact::maybe_enqueue_compact`]), evaluated at the tail
+    /// of [`super::commit_mirror::SqlCatalog::write_mirror`]. `None` (the
+    /// default) disables the trigger, leaving every existing commit path
+    /// byte-identical.
+    pub(crate) compact_trigger: Option<crate::iceberg_compact::CompactTriggerCfg>,
 }
 
 impl SqlCatalog {
@@ -217,6 +240,7 @@ impl SqlCatalog {
         config: SqlCatalogConfig,
         storage_factory: Option<Arc<dyn StorageFactory>>,
         runtime: iceberg::Runtime,
+        compact_trigger: Option<crate::iceberg_compact::CompactTriggerCfg>,
     ) -> Result<Self> {
         let factory = storage_factory.ok_or_else(|| {
             Error::new(
@@ -306,7 +330,18 @@ impl SqlCatalog {
             warehouse_location: config.warehouse_location,
             fileio,
             runtime,
+            compact_trigger,
         })
+    }
+
+    /// Consuming setter enabling the compaction auto-trigger on an already-built
+    /// catalog — the entry point tests and the ingest/engine mains use (the
+    /// builder's [`SqlCatalogBuilder::with_compact_trigger`] threads the same
+    /// config through construction). Not calling this leaves the trigger
+    /// disabled (`None`), preserving every existing path byte-identically.
+    pub fn with_compact_trigger(mut self, cfg: crate::iceberg_compact::CompactTriggerCfg) -> Self {
+        self.compact_trigger = Some(cfg);
+        self
     }
 
     /// Rewrite the `?` placeholders used by the upstream SQL into the Postgres

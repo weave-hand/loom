@@ -200,6 +200,18 @@ impl SqlCatalog {
         reconcile_and_project(conn, tid, at, columns).await?;
         project_files(conn, tid, at, files).await?;
         stamp_schema_version(conn, tid, at).await?;
+        // Event-driven compaction auto-trigger: evaluated last, once the new
+        // files are already projected, so the live small-file count reflects
+        // this commit. Covers every CAS commit — ingest multi-file land, flush,
+        // COW overwrite, and the stream direct write. `None` (default) is a
+        // no-op, preserving today's behavior byte-identically.
+        if let Some(cfg) = &self.compact_trigger {
+            let table = TableRef {
+                schema: ns.clone(),
+                name: name.to_string(),
+            };
+            crate::iceberg_compact::maybe_enqueue_compact(conn, &table, cfg).await?;
+        }
         Ok(at)
     }
 

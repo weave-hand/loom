@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from stream.stream_table s where s.table_id = $1 or s.changelog_table_id = $1) as \"is_stream!\", exists(select 1 from iceberg_mirror.shadow_flag f where f.table_id = $1) as \"has_shadow!\", (select count(*) from iceberg_mirror.data_file d where d.table_id = $1 and d.end_snapshot is null and d.file_size_bytes < $2) as \"small_count!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "is_stream!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "has_shadow!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "small_count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "065612427774e533b46d428bdcdf2891c9cdeb7968f7e4a369f6c11d5426fb9b"
+}
