@@ -78,3 +78,30 @@ fn compact_trigger_files_one_is_rejected() {
         if var == "LOOM_COMPACT_TRIGGER_FILES")
     );
 }
+
+#[test]
+fn compact_trigger_files_negative_is_rejected() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_COMPACT_TRIGGER_FILES", "-1")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_COMPACT_TRIGGER_FILES")
+    );
+}
+
+#[test]
+fn compact_small_file_bytes_zero_is_rejected() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_COMPACT_THRESHOLD_BYTES", "0")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_COMPACT_THRESHOLD_BYTES")
+    );
+}
+
+#[test]
+fn compact_small_file_bytes_negative_is_rejected() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_COMPACT_THRESHOLD_BYTES", "-1")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_COMPACT_THRESHOLD_BYTES")
+    );
+}

@@ -110,6 +110,12 @@ impl EngineTuning {
             )?,
         };
         validate_compact_trigger_files(tuning.compact_trigger_files)?;
+        if tuning.compact_small_file_bytes <= 0 {
+            return Err(service_runtime::invalid(
+                "LOOM_COMPACT_THRESHOLD_BYTES",
+                "must be >= 1",
+            ));
+        }
         Ok(tuning)
     }
 }
