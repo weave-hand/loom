@@ -493,8 +493,8 @@ their own items:
 - **CDC-table sources** — a CDC source's delta is its changelog (files ∪ full
   inline including `−U`); exposing event kinds to the MV SQL vocabulary is a
   follow-on. v1 sources are log tables only.
-- **Multi-source MVs / stream-stream joins** — ride `#road-stream-joins`
-  (slice 5), not this slice.
+- **Multi-source MVs / stream-stream joins** — shipped as slice 5; see
+  **Stream joins / delta-join analog** below.
 - **Backfill/replay control** — no watermark-reset API or `from`-offset
   registration; v1 always starts at offset `0` and resumes from the committed
   watermark, so a rebuild means a new output table.
@@ -510,6 +510,62 @@ their own items:
 - **`/admin/views` sugar surface** — MVs register through the ordinary
   transforms admin surface in v1; a dedicated, MV-shaped admin surface is
   deferred.
+
+## Stream joins / delta-join analog (slice 5)
+
+A `TransformBody::MicroBatchJoin` (#420) is a micro-batch MV whose SQL joins a
+source stream's watermarked **delta** against a second table's **folded current
+state** — Fluss's delta-join shape on loom's grain — emitted as an enriched `+I`
+log through slice-4's `CommitMicroBatch`, unchanged. It is *one new fetch* on the
+slice-4 loop: no new RPC, proto, migration, job kind, or `.sqlx` change. The
+watermark advances on the **source** only (the enrich state is read, never
+consumed), so exactly-once effect, composability, and convergence are inherited
+from the continuous-query slice.
+
+- **Two flavors.** `MicroBatchJoin { source, enrich, on: Option<LookupOn>,
+  output, buckets, sql }`. `on: None` is a **state-join** — the worker fetches
+  B's full folded current state and registers it beside A's delta. `on: Some` is
+  a **lookup-join** (the delta-join analog) — the worker extracts A-delta's
+  distinct `source_col` values and fetches only B's rows whose `enrich_col` is in
+  that set. Over `MAX_LOOKUP_KEYS` (10 000) distinct keys it falls back to the
+  full-state fetch (a superset is always correct). Join state lives in storage,
+  not the worker.
+- **The enrich read.** `mv_enrich_scan` (engine-serving) serves a table's folded
+  current state through `build_serving_provider` (CDC merge applied per the
+  declared engine; files ∪ inline for log/plain tables) — a **logical** read, so
+  `loom_*` framing is hidden. A `Some(col, keys)` key predicate becomes a typed
+  `col IN (…)` filter above the merge view, coercing each JSON scalar to the
+  column's Arrow type (Int32/Int64/Utf8 in v1). Carried by an `MvEnrichTicket`
+  (`enrich_schema`/`enrich_name`/`key`/`keys`) on the extensible `EngineTicket`
+  decode chain and `FlightTableClient::fetch_mv_enrich`; the worker registers the
+  result beside the delta and runs the SQL. The ticket **is** the future seam a
+  dedicated PK index (`#fut-stream-pk-index`) re-backs without touching the
+  worker or SQL contract.
+- **Live-but-empty enrich.** A join against a live-but-empty enrich table serves
+  its declared schema with zero rows: `do_get_mv_enrich` sends the schema
+  unconditionally (`FlightDataEncoderBuilder::with_schema`, since arrow-flight's
+  encoder drops zero-row batches), `fetch_mv_enrich` surfaces it as
+  `(SchemaRef, batches)`, and the worker registers an empty table — the INNER
+  join yields zero rows, the run **succeeds**, and the watermark advances
+  (instead of a terminal abandon).
+- **Triggers & cycles.** `TriggerNode::resolve` lists both `source` and `enrich`
+  as inputs, so an enrich commit debounce-wakes the MV (no-op through the
+  empty-delta path if the source has nothing new) and an enrich-edge cycle is
+  rejected at define time by the existing cycle check. Join-MV outputs compose
+  into downstream plain MVs.
+- **Error taxonomy.** Deterministic refusals (unknown enrich table, missing/
+  non-coercible key) carry a stable `"mv enrich:"` message prefix → engine
+  `failed_precondition` → worker **abandon**; transient wire/serving faults stay
+  unprefixed → **retry** with backoff. Mirrors slice-4's `"mv delta:"` mechanism.
+- **Correctness contract.** Processing-time enrichment: each source event joins
+  B's state *as of that micro-batch's execution* (Flink lookup-join / Fluss
+  delta-join semantics), not an event-time temporal join — a B update enriches
+  **subsequent** batches only; already-emitted rows are never retracted.
+  Keyed ≡ full-fetch for the supported equijoin pattern (`on` is a documented
+  contract, not parsed against the SQL). Retract-correct bilateral joins
+  (`#fut-stream-incremental-join`), a dedicated PK index (`#fut-stream-pk-index`),
+  event-time/temporal joins, delta×delta windowed joins, N-way enrichment, and
+  self-enrichment (`source == enrich`) stay deferred.
 
 ## Known gaps
 
@@ -536,8 +592,13 @@ their own items:
 - `#fut-stream-log-table-subscribe` — subscribe serves CDC tables; a log
   (non-CDC) table's tail feed (reading its offset-framed base rows directly, no
   changelog union) is a small follow-on.
-- `#road-stream-joins` — stream joins / the delta-join analog (slice 5) are
-  not built.
+- `#iss-mv-delta-inline-source-unflushed` — `mv_delta_scan` /
+  `read_files_as_batches` unconditionally calls `catalog.load_table`, which only
+  succeeds for a table that has been flushed to Iceberg at least once; an
+  inline-only table (every MV output, before the byte-threshold auto-flush fires)
+  cannot be read as a delta **source** until then. A downstream MV chained onto a
+  fresh MV output wedges until the upstream flushes — see **Stream joins** /
+  **Continuous queries**.
 - `#iss-stream-log-vs-cdc-declare` — a `mode=stream` (log) declaration
   against an already-CDC table is silently accepted (only the converse,
   `mode=cdc` against an existing non-CDC kind, is rejected).

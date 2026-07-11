@@ -23,11 +23,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 - [ ] **Time-travel selector guards (retention horizon + snapshot-id validation)** `{#road-timetravel-selector-guards area:query status:planned from:2026-07-06-timetravel-reads-design pr:- spec:2026-07-06-timetravel-reads-design}`
   Merges the promoted `#fut-timetravel-retention-guard` + `#fut-timetravel-snapshot-id-validation` (entries removed 2026-07-09; one small work item, both guards, spec of record is the landed time-travel design). (1) An `?as_of`/`?as_of_snapshot` selector resolving to a snapshot whose files GC already reclaimed currently **under-reads** (partial/empty result) — add a retention-horizon guard returning 410 (contract-based: reclamation is not recorded post-hoc, so *any* out-of-window selector rejects deterministically via the same shared horizon predicate `gc_table` reclaims under, with a quiet-table exemption for live-equivalent reads). (2) The object-read path gates `as_of_snapshot` on the mirror's open-ended liveness predicate, so an id **above** the current snapshot silently reads live data — validate via a unified exact-history `Catalog::snapshot(table, id)` lookup, 404ing like the dataset path. Relates to [[fut-iceberg-time-travel-schema]]. **Plan:** `docs/superpowers/plans/2026-07-09-timetravel-selector-guards.md` (pre-written at spec time — the implementer starts from it).
 
-## transform
-
-- [ ] **Stream engine — Stream joins / delta-join analog (slice 5)** `{#road-stream-joins area:transform status:planned from:2026-07-06-stream-engine-design pr:- spec:2026-07-09-stream-joins-design}`
-  Lookup-join (point-lookup against a PK index, [[fut-stream-pk-index]]) + micro-batch stream-stream join. True stateful incremental join deferred ([[fut-stream-incremental-join]]). **Plan:** `docs/superpowers/plans/2026-07-09-stream-joins.md` (pre-written at spec time — the implementer starts from it).
-
 ## cross-cutting
 
 - [ ] **Scheduled maintenance jobs (generalized schedule mechanism)** `{#road-scheduled-maintenance-jobs area:cross-cutting status:planned from:to-be-planned pr:- spec:2026-07-09-scheduled-maintenance-jobs-design}`
