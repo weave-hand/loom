@@ -292,6 +292,12 @@ impl FlightService for FlightDataService {
             EngineTicket::GovernedSql(q) => self.do_get_governed_sql(q).await,
             EngineTicket::AsOfSql(q) => self.do_get_as_of_sql(q).await,
             EngineTicket::MvDelta(t) => self.do_get_mv_delta(t).await,
+            // The enrich-table current-state read plane is wired end-to-end in a
+            // later slice-5 task; the ticket type and its decode routing land here
+            // first, so the serving handler is a placeholder for now.
+            EngineTicket::MvEnrich(_) => Err(Status::unimplemented(
+                "mv-enrich do_get not yet implemented",
+            )),
             EngineTicket::VectorSearch(vs) => self.do_get_vector_search(vs).await,
             EngineTicket::Files(ft) => self.do_get_files(ft).await,
         }

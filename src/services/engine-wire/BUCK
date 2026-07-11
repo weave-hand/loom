@@ -129,6 +129,15 @@ rust_test(
 )
 
 rust_test(
+    name = "mv-enrich-ticket",
+    crate = "mv_enrich_ticket",
+    srcs = ["tests/mv_enrich_ticket.rs"],
+    crate_root = "tests/mv_enrich_ticket.rs",
+    edition = "2024",
+    deps = [":engine-wire", "//third-party:serde_json"],
+)
+
+rust_test(
     name = "build-vector-index-request",
     crate = "build_vector_index_request",
     srcs = ["tests/build_vector_index_request.rs"],
