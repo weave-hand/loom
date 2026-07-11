@@ -45,3 +45,36 @@ fn malformed_value_is_startup_error_naming_key() {
         if var == "LOOM_INLINE_BYTE_LIMIT")
     );
 }
+
+#[test]
+fn compact_defaults_are_128_mib_and_8_files() {
+    let t = EngineTuning::from_map(&map(&[])).unwrap();
+    assert_eq!(t.compact_small_file_bytes, 128 * 1024 * 1024);
+    assert_eq!(t.compact_trigger_files, 8);
+}
+
+#[test]
+fn compact_overrides_parse() {
+    let t = EngineTuning::from_map(&map(&[
+        ("LOOM_COMPACT_THRESHOLD_BYTES", "4096"),
+        ("LOOM_COMPACT_TRIGGER_FILES", "16"),
+    ]))
+    .unwrap();
+    assert_eq!(t.compact_small_file_bytes, 4096);
+    assert_eq!(t.compact_trigger_files, 16);
+}
+
+#[test]
+fn compact_trigger_files_zero_disables_and_parses_ok() {
+    let t = EngineTuning::from_map(&map(&[("LOOM_COMPACT_TRIGGER_FILES", "0")])).unwrap();
+    assert_eq!(t.compact_trigger_files, 0);
+}
+
+#[test]
+fn compact_trigger_files_one_is_rejected() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_COMPACT_TRIGGER_FILES", "1")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_COMPACT_TRIGGER_FILES")
+    );
+}
