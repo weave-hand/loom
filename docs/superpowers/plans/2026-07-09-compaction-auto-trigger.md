@@ -252,17 +252,17 @@ re-trigger."
 
 **Files:**
 - Modify: `src/services/engine/src/run.rs:33-118` (`EngineTuning` + `run`'s catalog build)
-- Test: `src/services/engine/tests/engine_tuning.rs` (existing `rust_test` target `engine_tuning`, `engine/BUCK:165`)
+- Test: `src/services/engine/tests/engine_tuning.rs` (existing `rust_test` target `engine-tuning`, `engine/BUCK:168`)
 
 - [ ] **Step 1: Write the failing tests**
 
 Extend `engine_tuning.rs`: defaults (`compact_small_file_bytes == 128 * 1024 * 1024`, `compact_trigger_files == 8`); overrides parse (`LOOM_COMPACT_THRESHOLD_BYTES`, `LOOM_COMPACT_TRIGGER_FILES`); `"0"` parses (disable sentinel); `"1"` is an `Err` naming `LOOM_COMPACT_TRIGGER_FILES` (must be 0 or >= 2 — a min of 1 would re-enqueue immediately after every compaction whose output stays under the cutoff).
 
-Run: `buck2 test --console none //src/services/engine:engine_tuning` — FAIL (fields missing).
+Run: `buck2 test --console none //src/services/engine:engine-tuning` — FAIL (fields missing).
 
 - [ ] **Step 2: Implement**
 
-`EngineTuning` gains `compact_small_file_bytes: i64` and `compact_trigger_files: i64`; `from_map` parses both (`parse_var` defaults `128 * 1024 * 1024` / `8_i64`) and rejects `compact_trigger_files == 1` (and negatives) with a `ConfigError` naming the key. In `run` (`run.rs:113-118`), after the builder `.load(...)`, apply:
+`EngineTuning` gains `compact_small_file_bytes: i64` and `compact_trigger_files: i64`; `from_map` parses both (`parse_var` defaults `128 * 1024 * 1024` / `8_i64`) and, since `from_map` does no range validation today, adds an explicit post-parse check rejecting `compact_trigger_files == 1` (and negatives) via `service_runtime::invalid("LOOM_COMPACT_TRIGGER_FILES", "must be 0 or >= 2")` (yields `ConfigError::Invalid { var, .. }`, the shape the existing `engine_tuning.rs` tests match on). Add `use control_plane_postgres::iceberg_compact::CompactTriggerCfg;` to `run.rs` (used unqualified below). In `run` (`run.rs:113-118`), after the builder `.load(...)`, apply:
 
 ```rust
 let catalog = if tuning.compact_trigger_files >= 2 {
@@ -279,7 +279,7 @@ before the `Arc::new` (adjust to the actual construction order; `0` ⇒ no cfg �
 
 - [ ] **Step 3: Run + prek + commit**
 
-Run: `buck2 test --console none //src/services/engine:engine_tuning` and `buck2 build -v0 --console none //src/services/engine:engine`.
+Run: `buck2 test --console none //src/services/engine:engine-tuning` and `buck2 build -v0 --console none //src/services/engine:engine`.
 Expected: PASS / silent success.
 
 ```bash
@@ -305,7 +305,7 @@ with the worker's selection knob so one deploy value governs both."
 
 Extend `routing_tuning.rs` with the same four cases as Task 3 (defaults / overrides / `0` valid / `1` invalid via `validate()` naming `LOOM_COMPACT_TRIGGER_FILES`).
 
-Run: `buck2 test --console none //src/services/ingest:routing_tuning` (confirm the target name in `ingest/BUCK`) — FAIL.
+Run: `buck2 test --console none //src/services/ingest:routing-tuning` (target name `routing-tuning`, `ingest/BUCK:263`) — FAIL.
 
 - [ ] **Step 2: Implement**
 
@@ -313,7 +313,7 @@ Run: `buck2 test --console none //src/services/ingest:routing_tuning` (confirm t
 
 - [ ] **Step 3: Run + prek + commit**
 
-Run: `buck2 test --console none //src/services/ingest:routing_tuning` plus `buck2 build -v0 --console none //src/services/ingest:ingest`; then the ingest landing suite: `buck2 test --console none //src/services/ingest:iceberg-land //src/services/ingest:compact-endpoint` (actual target names from `ingest/BUCK`).
+Run: `buck2 test --console none //src/services/ingest:routing-tuning` plus `buck2 build -v0 --console none //src/services/ingest:ingest`; then the ingest landing suite: `buck2 test --console none //src/services/ingest:iceberg-land //src/services/ingest:compact-endpoint` (actual target names from `ingest/BUCK`).
 Expected: PASS.
 
 ```bash
