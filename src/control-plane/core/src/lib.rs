@@ -13,6 +13,7 @@ mod flush;
 mod gc;
 pub mod governed;
 mod identity;
+mod job_schedule;
 mod lineage;
 mod logical_type;
 mod ontology;
@@ -55,6 +56,7 @@ pub use identity::{
     DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TYPE_TABLE_BINDING_KIND, TypeId,
     type_table_binding_event,
 };
+pub use job_schedule::{JobSchedule, SCHEDULABLE_JOB_KINDS, validate_job_schedule};
 pub use lineage::{
     DatasetRef, EventType, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, RunId, check_depth,
     decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,

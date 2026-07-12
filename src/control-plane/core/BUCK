@@ -447,6 +447,19 @@ rust_test(
 )
 
 rust_test(
+    name = "job-schedule",
+    crate = "job_schedule",
+    srcs = ["tests/job_schedule.rs"],
+    crate_root = "tests/job_schedule.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "derived-columns",
     crate = "derived_columns",
     srcs = ["tests/derived_columns.rs"],
