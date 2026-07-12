@@ -8,6 +8,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::error::Result;
+use crate::job_schedule::JobSchedule;
 
 /// Identifier for an enqueued job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,6 +69,23 @@ pub struct JobFailure {
     pub policy: RetryPolicy,
 }
 
+/// A defined [`JobSchedule`] plus its derived next-fire time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobScheduleStatus {
+    pub schedule: JobSchedule,
+    pub next_run_at: OffsetDateTime,
+}
+
+/// The outcome of one schedule considered by [`Queue::fire_due_job_schedules`]:
+/// `job` is `Some` when a new job was enqueued, `None` when an available job
+/// with the same `(kind, payload)` already existed and the firing was
+/// suppressed (dedup) — the schedule's `next_run_at` still advances either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleFired {
+    pub name: String,
+    pub job: Option<JobId>,
+}
+
 impl JobFailure {
     /// A terminal failure: move the job to `failed`, retained for inspection.
     pub fn abandon(error: impl Into<String>) -> Self {
@@ -106,4 +124,26 @@ pub trait Queue {
     /// `dequeue`), and the `timeout` is the polling fallback that bounds latency
     /// when a notification is missed.
     async fn await_jobs(&self, kinds: &[String], timeout: Duration) -> Result<()>;
+
+    /// Define or redefine (upsert) a named [`JobSchedule`]. Validated via
+    /// [`crate::validate_job_schedule`] (`Validation` on a bad cron, an
+    /// unschedulable kind, or a payload that fails to decode as that kind's
+    /// typed job body). A redefine resets the clock: `next_run_at` is
+    /// recomputed from now, discarding any prior schedule's progress.
+    async fn define_job_schedule(&self, s: JobSchedule) -> Result<()>;
+    /// All defined schedules, name-ordered, with their derived `next_run_at`.
+    async fn list_job_schedules(&self) -> Result<Vec<JobScheduleStatus>>;
+    /// Remove a named schedule. `NotFound` if unknown.
+    async fn delete_job_schedule(&self, name: &str) -> Result<()>;
+    /// Fire every schedule whose `next_run_at <= now`, at most `limit`
+    /// (deterministic order), advancing each fired schedule's `next_run_at` to
+    /// its next occurrence after `now` regardless of outcome. A firing that
+    /// would duplicate an already-`available` job of the same `(kind,
+    /// payload)` is suppressed (dedup) — the schedule still advances, but the
+    /// returned [`ScheduleFired::job`] is `None`.
+    async fn fire_due_job_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<ScheduleFired>>;
 }

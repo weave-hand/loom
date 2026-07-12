@@ -19,11 +19,11 @@ use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Aggregation, Assignment, Auth, Cardinality,
     Catalog, CompareOp, ControlPlane, ControlPlaneError, DatasetRef, Decision, DerivedPropertyDef,
-    Effect, EventType, IndexSpec, JobTemplate, LINEAGE_MAX_DEPTH, Lineage, LineageEvent,
-    LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount, NewUser, ObjectType,
-    Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef, Queue, RetryPolicy,
-    RoleId, RolePolicy, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId, TableControlPlane,
-    TableRef, Transforms, TypeName, VectorIndexDef,
+    Effect, EventType, GC_JOB_KIND, GcJob, IndexSpec, JobSchedule, JobTemplate, LINEAGE_MAX_DEPTH,
+    Lineage, LineageEvent, LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount,
+    NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef,
+    Queue, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId,
+    TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef,
 };
 use time::OffsetDateTime;
 
@@ -195,6 +195,257 @@ pub async fn queue_contract<CP: ControlPlane + Queue>(cp: &CP, lock_timeout: Dur
         "dequeued job has the id returned by Tx::enqueue"
     );
     cp.complete(committed.id).await.unwrap();
+}
+
+/// Contract for the job-schedule surface
+/// (`Queue::{define,list,delete,fire_due}_job_schedule[s]`). `cp` must be
+/// freshly empty (no rows, no schedules) and `Clone + Send + Sync + 'static`
+/// for the concurrent-fire leg.
+pub async fn job_schedules_contract<CP>(cp: CP)
+where
+    CP: ControlPlane + Queue + Clone + Send + Sync + 'static,
+{
+    let gc_payload = serde_json::to_value(GcJob {
+        schema: "main".into(),
+        name: "events".into(),
+    })
+    .expect("serialize GcJob payload");
+
+    // --- validation rejections: bad cron / unknown kind / bad payload ---
+    assert!(
+        matches!(
+            cp.define_job_schedule(JobSchedule {
+                name: "bad-cron".into(),
+                kind: GC_JOB_KIND.into(),
+                payload: gc_payload.clone(),
+                cron: "not a cron expression".into(),
+            })
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "an invalid cron expression is rejected as Validation"
+    );
+    assert!(
+        matches!(
+            cp.define_job_schedule(JobSchedule {
+                name: "unknown-kind".into(),
+                kind: "not_schedulable".into(),
+                payload: gc_payload.clone(),
+                cron: "0 3 * * *".into(),
+            })
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "a non-schedulable kind is rejected as Validation"
+    );
+    assert!(
+        matches!(
+            cp.define_job_schedule(JobSchedule {
+                name: "bad-payload".into(),
+                kind: GC_JOB_KIND.into(),
+                payload: serde_json::json!({"nope": true}),
+                cron: "0 3 * * *".into(),
+            })
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "a payload that fails to decode as the kind's job body is rejected as Validation"
+    );
+
+    // --- define + list: next_run_at strictly after the pre-define timestamp ---
+    let before = OffsetDateTime::now_utc();
+    cp.define_job_schedule(JobSchedule {
+        name: "nightly-gc".into(),
+        kind: GC_JOB_KIND.into(),
+        payload: gc_payload.clone(),
+        cron: "0 3 * * *".into(),
+    })
+    .await
+    .expect("define nightly-gc");
+
+    let listed = cp.list_job_schedules().await.expect("list_job_schedules");
+    let status = listed
+        .iter()
+        .find(|s| s.schedule.name == "nightly-gc")
+        .expect("nightly-gc is listed");
+    assert!(
+        status.next_run_at > before,
+        "next_run_at is strictly after the pre-define timestamp: {} vs before {before}",
+        status.next_run_at
+    );
+
+    // --- redefine resets the clock: recomputed from a fresh `now`, not cached ---
+    let before_redefine = OffsetDateTime::now_utc();
+    cp.define_job_schedule(JobSchedule {
+        name: "nightly-gc".into(),
+        kind: GC_JOB_KIND.into(),
+        payload: gc_payload.clone(),
+        cron: "0 3 * * *".into(),
+    })
+    .await
+    .expect("redefine nightly-gc");
+    let redefined = cp
+        .list_job_schedules()
+        .await
+        .expect("list after redefine")
+        .into_iter()
+        .find(|s| s.schedule.name == "nightly-gc")
+        .expect("nightly-gc still listed after redefine");
+    assert!(
+        redefined.next_run_at > before_redefine,
+        "redefine resets the clock: next_run_at is strictly after the pre-redefine timestamp"
+    );
+
+    // --- not-due fire: `before` predates any due occurrence ---
+    assert!(
+        cp.fire_due_job_schedules(before, 32)
+            .await
+            .expect("fire_due_job_schedules (not due)")
+            .is_empty(),
+        "a schedule not yet due fires nothing"
+    );
+
+    // --- due fire: two days out is past the daily cron's next occurrence ---
+    let probe = before + time::Duration::days(2);
+    let fired = cp
+        .fire_due_job_schedules(probe, 32)
+        .await
+        .expect("fire_due_job_schedules (due)");
+    assert_eq!(fired.len(), 1, "exactly one schedule fires at the probe");
+    let job_id = fired[0].job.expect("due fire enqueues a job");
+    assert_eq!(fired[0].name, "nightly-gc");
+
+    let dequeued = cp
+        .dequeue(&[GC_JOB_KIND.to_string()], "w")
+        .await
+        .expect("dequeue")
+        .expect("the fired job is dequeueable");
+    assert_eq!(dequeued.id, job_id, "dequeued job matches the fired id");
+    assert_eq!(
+        dequeued.payload, gc_payload,
+        "dequeued job carries the schedule's payload"
+    );
+
+    // --- re-fire at the same probe: the earlier advance was atomic ---
+    assert!(
+        cp.fire_due_job_schedules(probe, 32)
+            .await
+            .expect("re-fire at same probe")
+            .is_empty(),
+        "re-firing at the same probe fires nothing (next_run_at already advanced)"
+    );
+
+    // --- dedup leg: a fresh due fire leaves an available job, then a second
+    // schedule with the same (kind, payload) is suppressed at the same probe ---
+    let probe2 = probe + time::Duration::days(1);
+    let fired2 = cp
+        .fire_due_job_schedules(probe2, 32)
+        .await
+        .expect("fire nightly-gc again");
+    assert_eq!(fired2.len(), 1);
+    assert!(
+        fired2[0].job.is_some(),
+        "nightly-gc fires again at a fresh due probe"
+    );
+    // Deliberately NOT dequeued: the job stays `available` for the dedup check below.
+
+    cp.define_job_schedule(JobSchedule {
+        name: "nightly-gc-dup".into(),
+        kind: GC_JOB_KIND.into(),
+        payload: gc_payload.clone(),
+        cron: "0 3 * * *".into(),
+    })
+    .await
+    .expect("define dup schedule");
+    // Advance the dup to the same due probe as nightly-gc's already-advanced state.
+    let probe3 = probe2 + time::Duration::days(1);
+    let before_dup_fire = cp
+        .list_job_schedules()
+        .await
+        .expect("list before dup fire")
+        .into_iter()
+        .find(|s| s.schedule.name == "nightly-gc-dup")
+        .expect("dup listed")
+        .next_run_at;
+    let dup_fired = cp
+        .fire_due_job_schedules(probe3, 32)
+        .await
+        .expect("fire at probe3");
+    let dup = dup_fired
+        .iter()
+        .find(|f| f.name == "nightly-gc-dup")
+        .expect("dup schedule considered");
+    assert!(
+        dup.job.is_none(),
+        "dup schedule is suppressed: an available job with the same (kind, payload) exists"
+    );
+    let dup_after = cp
+        .list_job_schedules()
+        .await
+        .expect("list after dup fire")
+        .into_iter()
+        .find(|s| s.schedule.name == "nightly-gc-dup")
+        .expect("dup still listed")
+        .next_run_at;
+    assert!(
+        dup_after > before_dup_fire,
+        "the dup's next_run_at advances even though its firing was suppressed"
+    );
+
+    // Drain any available gc_table job left over from the dedup leg (never
+    // dequeued above, by design) so the concurrent leg starts from an empty
+    // queue — otherwise a stale available row would suppress every fire below.
+    while let Some(j) = cp
+        .dequeue(&[GC_JOB_KIND.to_string()], "cleanup")
+        .await
+        .expect("drain dequeue")
+    {
+        cp.complete(j.id).await.expect("drain complete");
+    }
+
+    // --- concurrent leg: two concurrent fires at a fresh probe enqueue exactly
+    // one job in total for that firing (the mutex serializes advance + insert).
+    // A generous +3 day margin guarantees at least one of the two now-defined
+    // schedules is due regardless of exact cron-boundary arithmetic above; since
+    // both share (kind, payload), same-call dedup caps the total at one even if
+    // both are due in the same winning call.
+    let probe4 = probe3 + time::Duration::days(3);
+    let cp_a = cp.clone();
+    let cp_b = cp.clone();
+    let (fired_a, fired_b) = tokio::join!(
+        async move { cp_a.fire_due_job_schedules(probe4, 32).await },
+        async move { cp_b.fire_due_job_schedules(probe4, 32).await },
+    );
+    let total_jobs = fired_a
+        .expect("concurrent fire a")
+        .into_iter()
+        .chain(fired_b.expect("concurrent fire b"))
+        .filter(|f| f.job.is_some())
+        .count();
+    assert_eq!(
+        total_jobs, 1,
+        "concurrent fires at the same probe enqueue exactly one job in total"
+    );
+
+    // --- delete: gone from list; deleting again is NotFound ---
+    cp.delete_job_schedule("nightly-gc")
+        .await
+        .expect("delete nightly-gc");
+    assert!(
+        !cp.list_job_schedules()
+            .await
+            .expect("list after delete")
+            .iter()
+            .any(|s| s.schedule.name == "nightly-gc"),
+        "deleted schedule no longer listed"
+    );
+    assert!(
+        matches!(
+            cp.delete_job_schedule("nightly-gc").await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "deleting an already-deleted schedule is NotFound"
+    );
 }
 
 /// Contract for `Queue::await_jobs`. Takes `cp` by value (must be `Clone + Send +

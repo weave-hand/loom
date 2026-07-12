@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use control_plane_core::{Job, JobId, NewJob, Queue, Result, RetryPolicy};
+use control_plane_core::{
+    ControlPlaneError, Job, JobId, JobSchedule, JobScheduleStatus, NewJob, Queue, Result,
+    RetryPolicy, ScheduleFired,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -161,5 +164,35 @@ impl Queue for PgControlPlane {
         // A notification, or the polling-fallback timeout — whichever first.
         drop(tokio::time::timeout(timeout, listener.recv()).await);
         Ok(())
+    }
+
+    // Compiling stubs: postgres storage for job schedules lands in migration
+    // 0043 (Task 3), which replaces these with real queries.
+    async fn define_job_schedule(&self, _s: JobSchedule) -> Result<()> {
+        Err(ControlPlaneError::Backend(
+            "job schedules: postgres storage lands in the next commit (migration 0043)".into(),
+        ))
+    }
+
+    async fn list_job_schedules(&self) -> Result<Vec<JobScheduleStatus>> {
+        Err(ControlPlaneError::Backend(
+            "job schedules: postgres storage lands in the next commit (migration 0043)".into(),
+        ))
+    }
+
+    async fn delete_job_schedule(&self, _name: &str) -> Result<()> {
+        Err(ControlPlaneError::Backend(
+            "job schedules: postgres storage lands in the next commit (migration 0043)".into(),
+        ))
+    }
+
+    async fn fire_due_job_schedules(
+        &self,
+        _now: OffsetDateTime,
+        _limit: u32,
+    ) -> Result<Vec<ScheduleFired>> {
+        Err(ControlPlaneError::Backend(
+            "job schedules: postgres storage lands in the next commit (migration 0043)".into(),
+        ))
     }
 }

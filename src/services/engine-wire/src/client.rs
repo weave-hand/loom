@@ -2,9 +2,9 @@
 //! `flush_table`) over the `EngineControl` tonic service via a unix-domain socket.
 
 use control_plane_core::{
-    Action, ActionDef, ActionName, ControlPlaneError, Decision, Job, JobId, LinkDef, NewJob,
-    ObjectType, Page, PageReq, Policy, PolicyTarget, Queue, Result, RetryPolicy, SubjectId,
-    TableRef, TypeName, VectorIndexDef,
+    Action, ActionDef, ActionName, ControlPlaneError, Decision, Job, JobId, JobSchedule,
+    JobScheduleStatus, LinkDef, NewJob, ObjectType, Page, PageReq, Policy, PolicyTarget, Queue,
+    Result, RetryPolicy, ScheduleFired, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use tonic::transport::Channel;
 
@@ -695,5 +695,35 @@ impl Queue for GrpcQueueClient {
         req.set_timeout(timeout + std::time::Duration::from_secs(2));
         self.inner.clone().await_jobs(req).await.map_err(be)?;
         Ok(())
+    }
+
+    // Compiling stubs: job schedules are not (yet) exposed over the engine-wire
+    // RPC surface. Mirrors the `enqueue` stub's error form above.
+    async fn define_job_schedule(&self, _s: JobSchedule) -> Result<()> {
+        Err(ControlPlaneError::Backend(
+            "job schedules are not available over the engine-wire".into(),
+        ))
+    }
+
+    async fn list_job_schedules(&self) -> Result<Vec<JobScheduleStatus>> {
+        Err(ControlPlaneError::Backend(
+            "job schedules are not available over the engine-wire".into(),
+        ))
+    }
+
+    async fn delete_job_schedule(&self, _name: &str) -> Result<()> {
+        Err(ControlPlaneError::Backend(
+            "job schedules are not available over the engine-wire".into(),
+        ))
+    }
+
+    async fn fire_due_job_schedules(
+        &self,
+        _now: time::OffsetDateTime,
+        _limit: u32,
+    ) -> Result<Vec<ScheduleFired>> {
+        Err(ControlPlaneError::Backend(
+            "job schedules are not available over the engine-wire".into(),
+        ))
     }
 }

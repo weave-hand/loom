@@ -72,7 +72,10 @@ pub use ontology::{
     VectorIndexDef, validate_derived_columns,
 };
 pub use page::{Cursor, Page, PageReq};
-pub use queue::{Job, JobFailure, JobId, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy};
+pub use queue::{
+    Job, JobFailure, JobId, JobScheduleStatus, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy,
+    ScheduleFired,
+};
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use stream::{
     BucketOffsets, ChangeEvent, ChangeFeedPage, MergeEngine, MvWatermarks, StreamKind, StreamMeta,

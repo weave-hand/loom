@@ -28,6 +28,15 @@ rust_test(
 )
 
 rust_test(
+    name = "job-schedules",
+    crate = "job_schedules",
+    srcs = ["tests/job_schedules.rs"],
+    crate_root = "tests/job_schedules.rs",
+    edition = "2024",
+    deps = [":memory", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+rust_test(
     name = "catalog",
     crate = "catalog",
     srcs = ["tests/catalog.rs"],
