@@ -297,9 +297,10 @@ async fn overwrite_table_empty_rows_truncates() {
         .expect("overwrite_table(empty) truncates");
     assert!(snap.0 > 0, "truncate advances the snapshot id");
 
-    // Verify via the mirror catalog: no live data files at the new snapshot.
-    // (An empty table is not registered in the DataFusion serving engine, so
-    // we check the mirror state directly rather than going through read_object.)
+    // Verify via the mirror catalog: no live data files at the new snapshot. (A live-but-empty
+    // table now registers as a zero-row relation and reads back fine via read_object too —
+    // `iss-serving-empty-table-not-found` — this test just checks the mirror state directly
+    // since that's what `overwrite_table` itself commits.)
     let ice = IcebergCatalog::new(pool.clone());
     let live_files = ice
         .files_with_stats(&table, snap)

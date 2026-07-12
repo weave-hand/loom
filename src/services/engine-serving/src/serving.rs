@@ -74,9 +74,13 @@ pub(crate) fn to_serving<E: std::fmt::Display>(e: E) -> EngineServingError {
 
 /// Build the combined serving `TableProvider` for `table` at its live snapshot:
 /// the pruning-aware file provider UNION-ALL the inline PG provider (either alone,
-/// or `None` when the table has no live data). Registers the needed object store(s)
-/// on `ctx` (idempotent). Factored out of `register_iceberg_table` so the governed
-/// path (`execute_governed_sql_stream`) can wrap the same relation.
+/// or a zero-row [`empty_provider`] over the mirror schema when the table has no
+/// data in either tier). Registers the needed object store(s) on `ctx`
+/// (idempotent). Factored out of `register_iceberg_table` so the governed path
+/// (`execute_governed_sql_stream`) can wrap the same relation.
+///
+/// `Ok(None)` means exactly "not live at the requested snapshot" (the as-of skip
+/// below) — a live-but-empty table always yields `Ok(Some(_))`.
 pub async fn build_serving_provider(
     ctx: &SessionContext,
     catalog: &IcebergCatalog,
@@ -204,7 +208,7 @@ pub async fn build_serving_provider(
             }
             (Some(f), None) => Arc::new(f),
             (None, Some(i)) => Arc::new(i),
-            (None, None) => return Ok(None), // a live table with no data; nothing to register
+            (None, None) => empty_provider(&schema)?, // live but empty: zero rows, mirror schema
         },
         Some(id) => match (file_provider, inline_provider) {
             // Identity but no live inline rows: for a non-CDC table file rows are
@@ -221,7 +225,7 @@ pub async fn build_serving_provider(
                 None,
                 offset_precedence(&catalog.pool, cdc_meta.as_ref(), table).await?,
             )?,
-            (None, None) => return Ok(None),
+            (None, None) => empty_provider(&schema)?,
             // Identity + inline present (with or without a file tier): dedup by
             // identity, using CDC's `loom_offset` precedence when the table is a
             // declared CDC stream, else the MVCC precedence merge.
@@ -237,6 +241,22 @@ pub async fn build_serving_provider(
     };
 
     Ok(Some(provider))
+}
+
+/// A zero-row provider presenting the mirror's authoritative `schema`. Used by
+/// [`build_serving_provider`] for a table that is live at the requested
+/// snapshot but holds no data in either tier (no cold Parquet files, no live
+/// inline rows), so the table still REGISTERS in the serving context — and a
+/// `SELECT *`/preview of a legitimately-empty table reads as zero rows with a
+/// schema instead of `table not found`. Data columns only: no `loom_*` framing
+/// (with zero rows there is nothing to fold or tombstone).
+fn empty_provider(schema: &SchemaRef) -> Result<Arc<dyn TableProvider>, EngineServingError> {
+    // One EMPTY partition, not zero partitions — `MemTable::try_new` rejects an
+    // empty partition list ("No partitions provided"); same note as
+    // `datafusion_io::scan::register_batches`.
+    let mem = datafusion::datasource::MemTable::try_new(schema.clone(), vec![Vec::new()])
+        .map_err(to_serving)?;
+    Ok(Arc::new(mem))
 }
 
 /// Extend `schema` with a CDC base's reserved physical framing columns

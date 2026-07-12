@@ -731,8 +731,9 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
     assert_eq!(lines[0]["id"], json!("9"));
 
     // (b) The Delete emptied the Order table — the empty-rows Overwrite end-capped both tiers.
-    //     A fully-emptied table is unregistered in the serving engine (see `update_delete_e2e`),
-    //     so the governed read-back ERRORS rather than reporting zero rows — that error IS the
+    //     A fully-emptied-but-live table still registers in the serving engine as a zero-row
+    //     relation over the mirror schema (`iss-serving-empty-table-not-found`), so the governed
+    //     read-back SUCCEEDS with zero rows rather than erroring — that empty result IS the
     //     "no live Order remains" signal (and proves the truncate committed, not a 500).
     let serving2 = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
     let qdeps = QueryDeps {
@@ -753,10 +754,11 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
         &Subject(subj.clone()),
         &qdeps,
     )
-    .await;
+    .await
+    .expect("emptied-but-live Order table still registers; read succeeds with zero rows");
     assert!(
-        order_read.is_err(),
-        "the only Order was deleted, so its emptied table is unregistered and the read errors, got {order_read:?}"
+        order_read.rows.is_empty(),
+        "the only Order was deleted, so the read returns zero rows, got {order_read:?}"
     );
 
     // (c) One RunId whose lineage lists both step targets — the whole action is one snapshot.
