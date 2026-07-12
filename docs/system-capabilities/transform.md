@@ -165,13 +165,15 @@ inline-shadow mutations. `ListFiles` is still consulted, but only as the
 input's existence + declared-schema oracle. Reading a transform input from the
 cold files alone silently dropped any rows still in the inline tier — a
 correctness bug (`iss-transform-inline-blind`) fixed by moving the input read to
-the merged serving path; a live-but-empty input (no inline, no files) is not
-registered in the serving catalog, so the worker treats a planning error on an
-existing input as an empty relation (see `#iss-serving-empty-table-not-found`).
-The `stream_mv` micro-batch body reads neither the raw cold files nor the full
-merged table: it fetches only the **offset delta since the standing query's
-committed watermark** — files∪inline, framed, per-bucket-ordered — via a
-dedicated internal Flight ticket (`MvDeltaTicket`/`mv_delta_scan`; see
+the merged serving path; the serving catalog registers every live table, so a
+live-but-empty input (no inline, no files) reads as an empty result over that
+same merged path rather than an error, and the worker registers the declared
+schema (from `ListFiles`) under the input's name when the read comes back with
+no batches. The `stream_mv` micro-batch body reads neither the raw cold files
+nor the full merged table: it fetches only the **offset delta since the
+standing query's committed watermark** — files∪inline, framed,
+per-bucket-ordered — via a dedicated internal Flight ticket
+(`MvDeltaTicket`/`mv_delta_scan`; see
 [stream.md](stream.md)). Worker config parsing is strict: a malformed tuning knob fails startup instead
 of silently falling back to the default (#202). Job payloads and kind strings
 were wire-frozen across the migration, so jobs queued against the old binary

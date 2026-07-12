@@ -41,7 +41,13 @@ logged server-side with full detail via the shared tracing subscriber
 (`service_runtime::init_tracing`) while the client body stays opaque (#140);
 and query-api's library is guarded postgres-free — a regression that re-added
 a direct `control-plane/postgres` dependency was caught and reverted, with a
-`buck2 cquery` boundary check enforcing the slice-1 invariant (#278).
+`buck2 cquery` boundary check enforcing the slice-1 invariant (#278). Every
+table live in the mirror registers in the serving context: a live-but-empty
+table (no inline rows, no data files) serves zero rows under its authoritative
+mirror schema (`empty_provider` in `serving.rs`) on every path — `SELECT *`,
+previews, governed SQL, and transform inputs alike — while an undeclared or
+dropped table, and, for as-of reads, a table not live at the pinned snapshot,
+still answers a not-found planning error.
 
 ## Iceberg catalog: pointer + mirror
 
@@ -258,8 +264,13 @@ transaction (#342)) — consumed by zero-pool workers via `GrpcQueueClient`
 (#108). `ListFiles` responses carry the table's declared schema as
 `columns_json` (absent ⟺ the table does not exist), so a wire consumer can
 register a zero-file table as an empty relation and distinguish it from an
-unknown table (#342). Bulk file data moves over an
-**Arrow Flight data plane** on the same socket: a `FlightTicket
+unknown table (#342) — a convenience a caller may still use locally (the
+transform worker does, registering the declared schema when its own
+serving-path read comes back with zero batches), not a workaround it needs:
+internal SQL/wire readers no longer have to self-register empty relations just
+to dodge a not-found, since the serving path itself now registers a
+live-but-empty table as a zero-row relation (see above). Bulk file data moves
+over an **Arrow Flight data plane** on the same socket: a `FlightTicket
 {schema, name, files}` streams a named file set as schema-first Arrow IPC, so
 a compaction worker streams exactly the small files it will coalesce, rewrites
 them, and commits the swap back over the wire — the engine mediates all table
