@@ -264,6 +264,14 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "job-schedules",
+    crate = "job_schedules",
+    srcs = ["tests/job_schedules.rs"],
+    crate_root = "tests/job_schedules.rs",
+    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+)
+
+loom_fixture_test(
     name = "stream",
     crate = "stream",
     srcs = ["tests/stream.rs"],

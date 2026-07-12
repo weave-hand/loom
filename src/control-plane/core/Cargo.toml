@@ -14,7 +14,13 @@ uuid = { version = "1", features = ["v4"] }
 # Pinned: time 0.3.48+ adds a trait impl that conflicts with sqlx-core 0.9's
 # blanket From<T> for Json<T> under Rust 2024 orphan rules, breaking the build.
 # Keep exact-pinned until sqlx-core ships a fix. See the ingest materializer PR.
-time = "=0.3.47"
+# `serde` feature: NewJob derives Serialize/Deserialize over an
+# Option<OffsetDateTime> field, which needs time's own serde impls. Under buck2
+# this was always satisfied by reindeer's whole-graph feature unification (some
+# other crate elsewhere in the monorepo also needs time/serde), which masked the
+# fact that this crate's own Cargo.toml never requested what its own code needs
+# — surfaced by `cargo sqlx prepare`'s narrower per-package feature resolution.
+time = { version = "=0.3.47", features = ["serde"] }
 serde_json = "1"
 regex = "1"
 croner = "2"
