@@ -77,7 +77,7 @@ pub use stream::{
     StreamTables, WatermarkAdvance, mv_key,
 };
 pub use stream_consolidate_job::{STREAM_CONSOLIDATE_JOB_KIND, StreamConsolidateJob};
-pub use stream_mv_job::{STREAM_MV_JOB_KIND, StreamMvJob};
+pub use stream_mv_job::{LookupOn, MAX_LOOKUP_KEYS, STREAM_MV_JOB_KIND, StreamMvJob};
 pub use transaction::{ControlPlane, TableControlPlane, TableTx, Tx};
 pub use transform_job::{
     OutputMode, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND, TransformJob, TypedTransformJob,

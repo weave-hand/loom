@@ -78,13 +78,13 @@ Carried verbatim from the spec; every task implicitly includes these:
 ## Task 1: Core — `LookupOn`, `TransformBody::MicroBatchJoin`, `StreamMvJob` widening, validation + trigger arms
 
 **Files:**
-- Modify: `src/control-plane/core/src/transforms.rs` (`TransformBody` at `:40`, `to_job` at `:64`, `validate_transform_def` at `:261`, `TriggerNode::resolve` at `:295`)
-- Modify: `src/control-plane/core/src/stream_mv_job.rs` (slice-4-produced — symbolic)
-- Modify: `src/control-plane/core/src/lib.rs` (re-exports)
-- Test: `src/control-plane/core/tests/microbatch_join.rs` (new) + `src/control-plane/core/BUCK` (new `rust_test`)
+- Modify: `src/control-plane/core/src/transforms.rs` (`TransformBody` at `:62`, `to_job` — a method on `TransformBody` — at `:75`, `validate_transform_def` at `:261`, `TriggerNode::resolve` at `:344`)
+- Modify: `src/control-plane/core/src/stream_mv_job.rs` (slice-4-produced: `StreamMvJob` at `:14`, `STREAM_MV_JOB_KIND` at `:8`)
+- Modify: `src/control-plane/core/src/lib.rs` (re-exports — `LookupOn`/`MAX_LOOKUP_KEYS` beside the existing `StreamMvJob`/`STREAM_MV_JOB_KIND` re-exports at `:80`,`:85-89`)
+- Test: `src/control-plane/core/tests/microbatch_join.rs` (new) + `src/control-plane/core/BUCK` (new `rust_test`, mirror `transform-job` at `:253`)
 
 **Interfaces:**
-- Consumes: `TransformBody`/`to_job`/`validate_transform_def`/`TriggerNode::resolve` (`core/src/transforms.rs:40`/`:64`/`:261`/`:295` — shipped); `STREAM_MV_JOB_KIND`/`StreamMvJob` (slice-4, by name).
+- Consumes: `TransformBody`/`to_job`/`validate_transform_def`/`TriggerNode::resolve` (`core/src/transforms.rs:62`/`:75`/`:261`/`:344` — shipped); `STREAM_MV_JOB_KIND`/`StreamMvJob { source, output, buckets, sql, run_id }` (`stream_mv_job.rs:8`/`:14` — slice-4).
 - Produces (later tasks rely on these EXACT names/types):
   - `pub struct LookupOn { pub source_col: String, pub enrich_col: String }` (serde derive, `deny_unknown_fields` not required) in `core/src/stream_mv_job.rs`, re-exported as `control_plane_core::LookupOn`.
   - `TransformBody::MicroBatchJoin { source: TableRef, enrich: TableRef, on: Option<LookupOn>, output: TableRef, buckets: i32, sql: String }` (serde tag `"microbatch_join"`).
@@ -144,7 +144,8 @@ fn to_job_emits_stream_mv_kind_with_enrich_and_on() {
         enrich_col: "id".into(),
     }));
     let run_id = uuid::Uuid::new_v4();
-    let job = def.to_job(run_id);
+    // `to_job` is a method on `TransformBody`, not `TransformDef` (transforms.rs:75).
+    let job = def.body.to_job(run_id);
     assert_eq!(job.kind, STREAM_MV_JOB_KIND, "same kind as slice-4 MVs");
     let payload: StreamMvJob = serde_json::from_value(job.payload).unwrap();
     assert_eq!(payload.enrich, Some(tref("s", "customers")));
@@ -169,7 +170,9 @@ fn stream_mv_job_without_enrich_keys_decodes_back_compat() {
 #[test]
 fn trigger_node_resolves_source_and_enrich_as_inputs() {
     let def = join_def(None);
-    let node = TriggerNode::resolve(&def).unwrap();
+    // Real signature (transforms.rs:344): resolve(&TransformName, &TransformBody,
+    // &HashMap<String, TableRef>) -> Self (no Result — no `.unwrap()`).
+    let node = TriggerNode::resolve(&def.name, &def.body, &std::collections::HashMap::new());
     assert_eq!(node.inputs, vec![tref("s", "orders"), tref("s", "customers")]);
     assert_eq!(node.output, Some(tref("s", "enriched_orders")));
 }
@@ -197,6 +200,8 @@ fn validate_rejects_degenerate_join_defs() {
     cases.push((d, "registration-name collision (source.name == enrich.name)"));
     let d = join_def(Some(LookupOn { source_col: String::new(), enrich_col: "id".into() }));
     cases.push((d, "empty LookupOn.source_col"));
+    let d = join_def(Some(LookupOn { source_col: "customer_id".into(), enrich_col: String::new() }));
+    cases.push((d, "empty LookupOn.enrich_col"));
     for (def, why) in cases {
         assert!(validate_transform_def(&def).is_err(), "must reject: {why}");
     }
@@ -256,12 +261,18 @@ and widen `StreamMvJob` (additive, back-compatible):
 
 In `src/control-plane/core/src/transforms.rs`:
 
-- `TransformBody` (`:40`) gains the variant (serde tag `"microbatch_join"`),
-  mirroring slice-4's `MicroBatch` arm shape.
-- `to_job` (`:64`) gains a `MicroBatchJoin` arm emitting `STREAM_MV_JOB_KIND`
-  with the widened `StreamMvJob` (`enrich: Some(..)`, `on` threaded through);
-  the existing `MicroBatch` arm now fills `enrich: None, on: None`.
-- `TriggerNode::resolve` (`:295`): `inputs = vec![source.clone(), enrich.clone()]`,
+- `TransformBody` (`:62`) gains the variant, mirroring slice-4's `MicroBatch`
+  arm shape. **The enum is `#[serde(tag = "kind", rename_all = "lowercase")]`
+  and `MicroBatch` carries an explicit `#[serde(rename = "microbatch")]`
+  (`:61`); `MicroBatchJoin` MUST likewise get an explicit
+  `#[serde(rename = "microbatch_join")]`, else `rename_all = "lowercase"`
+  yields `"microbatchjoin"` and the Task-1 tag assertion fails.**
+- `to_job` (a method on `TransformBody`, `:75`) gains a `MicroBatchJoin` arm
+  emitting `STREAM_MV_JOB_KIND` with the widened `StreamMvJob`
+  (`enrich: Some(..)`, `on` threaded through). **The existing `MicroBatch` arm
+  constructs `StreamMvJob { .. }` as a struct literal (`:114`); widening the
+  struct breaks it — add `enrich: None, on: None` there.**
+- `TriggerNode::resolve` (`:344`): `inputs = vec![source.clone(), enrich.clone()]`,
   `output = Some(output.clone())` — both edges trigger AND cycle-check.
 - `validate_transform_def` (`:261`): reject `buckets < 1`, empty `sql`,
   `source == output`, `enrich == output`, `source == enrich`,
@@ -304,11 +315,11 @@ the worker yet."
 ## Task 2: engine-wire — `MvEnrichTicket`, decode arm, `fetch_mv_enrich`
 
 **Files:**
-- Modify: `src/services/engine-wire/src/flight.rs` (`EngineTicket` at `:149`, `decode` at `:206`, `FlightTableClient` at `:258`)
+- Modify: `src/services/engine-wire/src/flight.rs` (`EngineTicket` at `:180`, `decode` at `:239`, terminal `Files(FlightTicket)` at `:277`, `FlightTableClient` at `:300`, `fetch`/`fetch_mv_delta` at `:337`/`:342`, `do_get_batches` helper at `:349`)
 - Test: `src/services/engine-wire/tests/mv_enrich_ticket.rs` (new) + `src/services/engine-wire/BUCK`
 
 **Interfaces:**
-- Consumes: `EngineTicket`/`decode` chain (`engine-wire/src/flight.rs:149`/`:206` — shipped); `MvDeltaTicket` decode arm (slice-4, by name — this arm slots beside it); `decode_batches`/`fetch` shape (`:247`/`:274`).
+- Consumes: `EngineTicket`/`decode` chain (`engine-wire/src/flight.rs:180`/`:239` — shipped, lines drifted ~+30 from slice-4 landing); `MvDeltaTicket` (`:123`) + its `EngineTicket::MvDelta` decode arm (`:188`, slice-4 — this arm slots beside it); `FlightTicket { schema, name, files }` (`:25`, `encode()` at `:33`); `do_get_batches` (`:349`).
 - Produces: `pub struct MvEnrichTicket { pub enrich_schema: String, pub enrich_name: String, pub key: Option<String>, pub keys: Vec<serde_json::Value> }` (serde `deny_unknown_fields`, `keys` `#[serde(default)]`) with `encode()`/`decode()`; `EngineTicket::MvEnrich(MvEnrichTicket)`; `FlightTableClient::fetch_mv_enrich(&self, ticket: MvEnrichTicket) -> Result<Vec<RecordBatch>>`.
 
 - [ ] **Step 1: Write the failing test**
@@ -384,18 +395,22 @@ Expected: FAIL — `MvEnrichTicket` not found.
 
 In `src/services/engine-wire/src/flight.rs`:
 
-- Add `MvEnrichTicket` beside slice-4's `MvDeltaTicket`, mirroring the
+- Add `MvEnrichTicket` beside slice-4's `MvDeltaTicket` (`:123`), mirroring the
   existing JSON-ticket idiom (`#[derive(Debug, Clone, PartialEq,
   serde::Serialize, serde::Deserialize)] #[serde(deny_unknown_fields)]`, with
   `#[serde(default)] pub keys: Vec<serde_json::Value>`, plus the standard
-  `encode`/`decode` inherent methods, e.g. `GovernedStatementQuery` at `:93`).
+  `encode`/`decode` inherent methods — `encode` may mirror `MvDeltaTicket`'s
+  `serde_json::to_vec(self).expect(...)` infallible-serialization idiom
+  (`:137`)).
 - Add `EngineTicket::MvEnrich(MvEnrichTicket)` and a decode arm in the JSON
-  fall-through chain (`decode`, `:206`) beside slice-4's `MvDelta` arm, before
-  the terminal `FlightTicket` — required `enrich_schema`/`enrich_name` fields
-  keep it disjoint. Document the disjointness in the arm comment, matching the
-  chain's existing comment style.
-- Add `FlightTableClient::fetch_mv_enrich` mirroring `fetch` (`:274`):
-  `do_get` with `ticket.encode()`, `decode_batches(...).try_collect()`.
+  fall-through chain (`decode`, `:239`) beside slice-4's `MvDelta` arm (`:188`),
+  before the terminal `Files(FlightTicket)` arm (`:277`) — required
+  `enrich_schema`/`enrich_name` fields keep it disjoint. Document the
+  disjointness in the arm comment, matching the chain's existing comment style.
+- Add `FlightTableClient::fetch_mv_enrich` mirroring `fetch`/`fetch_mv_delta`
+  (`:337`/`:342`), which route through the private helper
+  `do_get_batches(ticket.encode())` (`:349`) — call that, don't hand-roll the
+  `do_get` + decode.
 
 - [ ] **Step 5: Run the tests**
 
@@ -424,15 +439,18 @@ chain beside MvDelta; existing ticket routing byte-identical."
 - Test: `src/services/engine-serving/tests/mv_enrich_scan.rs` (new) + `src/services/engine-serving/BUCK`
 
 **Interfaces:**
-- Consumes: `build_serving_provider` (`engine-serving/src/serving.rs:74` — the CDC fold via `Precedence::Offset`/`build_merge_view`, `:256`/`:325`); `EngineServingError` (`:36`); the `Catalog` trait's declared-columns lookup + `datafusion_io::logical_arrow_schema` (`datafusion-io/src/infer.rs:52`) for the empty-table fallback; `land_cdc`/`CdcDecl` + `PgFixture`/`local_sql_catalog` harness (as in `engine-serving/tests/merge_on_read.rs`).
-- Produces: `pub async fn mv_enrich_scan(catalog: &IcebergCatalog, table: &TableRef, key: Option<(&str, &[serde_json::Value])>, serving_store: Option<&ServingStore>) -> Result<(SchemaRef, Vec<RecordBatch>), EngineServingError>` in `engine_serving::mv_enrich`.
+- Consumes: `build_serving_provider` (`engine-serving/src/serving.rs:80` — signature `(ctx, catalog: &IcebergCatalog, table, serving_store: Option<&ServingStore>, at: Option<SnapshotId>)`; the CDC fold via `Precedence::Offset`/`build_merge_view`); `EngineServingError` (`:36`); the `Catalog` trait's declared-columns lookup + `datafusion_io::logical_arrow_schema` (`datafusion-io/src/infer.rs:52`) for the empty-table fallback. `ServingStore` is `store_config::ServingStore` (re-imported at `serving.rs:30`) — `mv_enrich.rs` must `use store_config::ServingStore;`. `IcebergCatalog` is `control_plane_postgres::iceberg_catalog::IcebergCatalog`.
+- **Test harness — mirror `engine-serving/tests/merge_on_read.rs`'s ACTUAL seeding, not `land_cdc`/`flush_table`/`local_sql_catalog` (those are prod-only or worker-test helpers):** `PgFixture::shared()` for the DB; `IcebergWriter::{seed_arrays (file rows), inline (update/tombstone rows)}`; `define_type(cp, "s", "t", Some("id"))` to declare the CDC identity; `IcebergCatalog::new(pool)` for the serving catalog (`merge_on_read.rs:14-15,129-151`).
+- Produces: `pub async fn mv_enrich_scan(catalog: &IcebergCatalog, table: &TableRef, key: Option<(&str, &[serde_json::Value])>, serving_store: Option<&ServingStore>) -> Result<(SchemaRef, Vec<RecordBatch>), EngineServingError>` in `engine_serving::mv_enrich`. **Deterministic refusals (unknown table, non-coercible/wrong-type key) return `EngineServingError::Engine(format!("mv enrich: …"))` — a stable `"mv enrich:"` message prefix the wire status mapping and the worker key off (the message survives the gRPC-status flattening; a code does not).**
 
 - [ ] **Step 1: Write the failing test**
 
 Create `src/services/engine-serving/tests/mv_enrich_scan.rs`, mirroring
-`merge_on_read.rs`'s harness (PgFixture + `local_sql_catalog` + `land_cdc`
+`merge_on_read.rs`'s ACTUAL harness (`PgFixture::shared()` +
+`IcebergCatalog::new(pool)` + `define_type(cp, "s", "customers", Some("id"))`
++ `IcebergWriter::{seed_arrays, inline}` — NOT `land_cdc`/`local_sql_catalog`)
 seeding a CDC table `("s","customers")` with identity `id`, columns
-`id: Long, name: String`):
+`id: Long, name: String`:
 
 ```rust
 //! mv_enrich_scan: the slice-5 enrich read — folded current state (merge
@@ -521,7 +539,7 @@ pub async fn mv_enrich_scan(
         Some((col, keys)) => {
             let field = df.schema().field_with_unqualified_name(col).map_err(|_| {
                 EngineServingError::Engine(format!(
-                    "enrich key column '{col}' not in {}.{}", table.schema, table.name
+                    "mv enrich: key column '{col}' not in {}.{}", table.schema, table.name
                 ))
             })?;
             let literals = coerce_keys(field.data_type(), keys)?; // typed, loud on mismatch
@@ -536,8 +554,10 @@ pub async fn mv_enrich_scan(
 
 `coerce_keys` maps JSON scalars to typed `Expr` literals for `Int32`/`Int64`/
 `Utf8` key columns (a JSON number that doesn't fit, a non-scalar, or any other
-column type is a loud `EngineServingError::Engine` — deterministic worker
-abandon, never a silent empty result). Filtering above the merge view is
+column type is a loud `EngineServingError::Engine(format!("mv enrich: …"))` with
+the stable prefix — deterministic worker abandon, never a silent empty result).
+The empty-table fallback's unknown-table error likewise carries the `"mv enrich:"`
+prefix. Filtering above the merge view is
 correct for any column; when `col` is the CDC identity DataFusion may push the
 predicate below the fold (its partition key) toward Parquet pruning — the
 optimization, never the correctness. Resolve the exact declared-columns lookup
@@ -571,7 +591,7 @@ tables and bad keys error loudly. Framing stays hidden (logical read)."
 - Test: `src/services/engine/tests/mv_enrich_flight.rs` (new) + `src/services/engine/BUCK`
 
 **Interfaces:**
-- Consumes: `EngineTicket::MvEnrich` (T2); `mv_enrich_scan` (T3); the engine's `serving_store` field (`engine/src/flight.rs:56`); slice-4's `MvDelta` dispatch arm as the placement template (by name).
+- Consumes: `EngineTicket::MvEnrich` (T2); `mv_enrich_scan` (T3); the engine struct `FlightDataService`'s `serving_catalog: IcebergCatalog` field (`engine/src/flight.rs:56`) and `serving_store` field (`:58`); **`do_get_governed_sql` (`:122`) as the placement/delegation template — NOT `do_get_mv_delta` (`:177`), which passes the raw `SqlCatalog` (`self.catalog`, `:53`) because `mv_delta_scan` needs it. `mv_enrich_scan` wants the `IcebergCatalog`, so mirror the governed-sql arm.**
 - Produces: the engine serves `MvEnrichTicket` end-to-end; `fetch_mv_enrich` works against a live engine.
 
 - [ ] **Step 1: Write the failing test**
@@ -644,13 +664,16 @@ Expected: FAIL — the decode succeeds (T2) but `do_get` has no `MvEnrich` arm
 
 In `src/services/engine/src/flight.rs`, add `EngineTicket::MvEnrich(t)` to the
 `do_get` match (`:240`) beside slice-4's `MvDelta` arm, delegating to a new
-`do_get_mv_enrich` that mirrors `do_get_governed_sql`'s shape (`:117`): call
-`engine_serving::mv_enrich::mv_enrich_scan(&self.catalog, &table,
-key_as_option_tuple, self.serving_store.as_ref())`, map
-`EngineServingError` onto the module's existing status mapping (unknown table
-→ `not_found`/`invalid_argument` per the file's convention), and stream the
-`(schema, batches)` schema-first — the same encode path the other unary
-`do_get_*` handlers use.
+`do_get_mv_enrich` that mirrors `do_get_governed_sql`'s shape (`:122`): call
+`engine_serving::mv_enrich::mv_enrich_scan(&self.serving_catalog, &table,
+key_as_option_tuple, self.serving_store.as_ref())` — **note `&self.serving_catalog`
+(the `IcebergCatalog`, `:56`), NOT `&self.catalog` (the `SqlCatalog`, `:53`, which
+`do_get_mv_delta` uses)**. Map `EngineServingError` onto the module's existing
+status mapping. **Deterministic refusals from `mv_enrich_scan` (unknown table,
+bad key) carry the `"mv enrich:"` message prefix and map to `failed_precondition`,
+mirroring `do_get_mv_delta` (`:193-198`) — the worker branches on that prefix, not
+a gRPC code (see Task 5).** Stream the `(schema, batches)` schema-first — the same
+encode path the other unary `do_get_*` handlers use.
 
 - [ ] **Step 5: Run the tests**
 
@@ -738,8 +761,11 @@ an unregistered `customers` table → SQL-planning abandon).
 - [ ] **Step 4: Implement the enrich branch**
 
 In `src/services/worker/src/stream_mv.rs`, between slice-4's
-"strip framing / register the delta under `source.name`" step and "run the
-SQL" step, add (only when `job.enrich` is `Some(enrich)`):
+"strip framing / register the delta under `source.name`" step (the real vars
+are `stripped` for the user-column delta batches and `df_ctx` for the
+DataFusion context — the enrich branch goes in the non-empty `else` between
+`register_batches` (`:108`) and `df_ctx.sql` (`:111`)) and "run the SQL" step,
+add (only when `job.enrich` is `Some(enrich)`):
 
 ```rust
     // Slice 5: register the enrich table's folded current state beside the
@@ -749,7 +775,7 @@ SQL" step, add (only when `job.enrich` is `Some(enrich)`):
     let key_payload = match &job.on {
         None => None,
         Some(on) => {
-            let keys = distinct_lookup_keys(&user_delta_batches, &on.source_col)?;
+            let keys = distinct_lookup_keys(&stripped, &on.source_col)?;
             (keys.len() <= MAX_LOOKUP_KEYS).then(|| (on.enrich_col.clone(), keys))
         }
     };
@@ -762,7 +788,7 @@ SQL" step, add (only when `job.enrich` is `Some(enrich)`):
             keys: key_payload.map(|(_, k)| k).unwrap_or_default(),
         })
         .await
-        .map_err(classify_wire_error)?; // NotFound/InvalidArgument => abandon; else retry+backoff
+        .map_err(classify_enrich_error)?; // msg.contains("mv enrich:") => abandon; else retry+backoff
     match enrich_batches.first().map(|b| b.schema()) {
         None => { /* empty state: register_empty_table under enrich.name is not
                      possible without a schema — the engine always streams
@@ -777,9 +803,15 @@ SQL" step, add (only when `job.enrich` is `Some(enrich)`):
 column per batch to `Int64Array`/`Int32Array`/`StringArray`, collect distinct
 non-null values into a `BTreeSet`, emit as `serde_json::Value`s; a missing
 column or any other array type is `JobFailure::abandon` (deterministic — the
-def's `on` doesn't match the delta schema). Error taxonomy stays slice-4's:
-decode/SQL/register → abandon; wire/store → retry with
-`WorkerTuning::backoff`; the CAS "superseded" path is untouched. Lineage:
+def's `on` doesn't match the delta schema). **`classify_enrich_error`
+(worker-private) mirrors slice-4's `fetch_mv_delta` error handling
+(`stream_mv.rs:63-84`): the `FlightTableClient` flattens gRPC status so only the
+error *message* survives — abandon when `msg.contains("mv enrich:")` (the
+engine-side deterministic-refusal prefix), else retry with
+`worker_tuning.backoff`. Do NOT branch on `tonic::Code` — it does not survive
+the flattening.** Error taxonomy otherwise stays slice-4's:
+decode/SQL/register → abandon; wire/store → retry; the CAS "superseded" path is
+untouched. Lineage:
 extend the run's `lineage_json` inputs to `[source, enrich]` and the payload
 with `"enrich"` (+ `"on"` when keyed) beside slice-4's
 `{"sql", "mv", "offsets"}`.

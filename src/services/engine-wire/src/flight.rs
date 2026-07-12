@@ -9,7 +9,7 @@ use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt, TicketStatementQuery};
 use arrow_flight::{FlightData, FlightDescriptor, Ticket};
-use arrow_schema::ArrowError;
+use arrow_schema::{ArrowError, SchemaRef};
 use control_plane_core::{GovernedCatalog, Result};
 use futures::{Stream, TryStreamExt};
 use prost::Message;
@@ -143,6 +143,40 @@ impl MvDeltaTicket {
     }
 }
 
+/// A loom-native `do_get` ticket requesting an enrich table's current state,
+/// optionally filtered to a JSON key set: `(schema, name)` names the enrich
+/// side of a stream-join, `key` names the equality column (when the join is
+/// keyed), and `keys` — when non-empty — restricts the fetch to rows whose
+/// `key` column value is one of the given JSON values. The required
+/// `enrich_schema`/`enrich_name` fields keep it disjoint (`deny_unknown_fields`)
+/// from every other JSON ticket shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MvEnrichTicket {
+    pub enrich_schema: String,
+    pub enrich_name: String,
+    pub key: Option<String>,
+    #[serde(default)]
+    pub keys: Vec<serde_json::Value>,
+}
+
+impl MvEnrichTicket {
+    /// JSON-encode for the `Ticket.ticket` bytes.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json of an owned serializable type is infallible; matches MvDeltaTicket::encode"
+    )]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("MvEnrichTicket is always serializable")
+    }
+
+    /// Decode from `Ticket.ticket` bytes.
+    pub fn decode(bytes: &[u8]) -> std::result::Result<Self, serde_json::Error> {
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// A loom-native as-of read ticket: run `sql` with every referenced table read at
 /// snapshot `as_of_snapshot` instead of its current snapshot. Bypasses the standard
 /// `CommandStatementQuery` (loom's external Flight SQL interop surface) so that
@@ -174,7 +208,7 @@ impl AsOfStatementQuery {
 /// ORDER is load-bearing and lives here, next to the ticket types whose
 /// `deny_unknown_fields` disjointness it depends on: the protobuf Flight SQL
 /// ticket is tried first (a legacy JSON ticket always starts with `{`, an invalid
-/// protobuf `Any`, so the file path is never misrouted), then the five JSON
+/// protobuf `Any`, so the file path is never misrouted), then the six JSON
 /// shapes fall through in order, the file ticket terminal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineTicket {
@@ -186,6 +220,9 @@ pub enum EngineTicket {
     AsOfSql(AsOfStatementQuery),
     /// Standing-query framed source delta plane (internal data plane).
     MvDelta(MvDeltaTicket),
+    /// Enrich-table current-state read plane (internal data plane): a stream
+    /// join's enrich side, optionally filtered to a JSON key set.
+    MvEnrich(MvEnrichTicket),
     /// k-NN vector-search plane.
     VectorSearch(VectorSearchTicket),
     /// File-ticket data plane: an explicit live-file set to stream.
@@ -234,7 +271,7 @@ impl EngineTicket {
     /// the SQL. Try the protobuf decode first; a legacy JSON ticket always starts
     /// with `{` (an invalid protobuf `Any`), so this never misroutes the file path.
     /// (The decode-then-`is::<>()` ordering is load-bearing.) The JSON planes then
-    /// fall through in order — `deny_unknown_fields` on all five JSON shapes makes
+    /// fall through in order — `deny_unknown_fields` on all six JSON shapes makes
     /// each stage unambiguous — with the file ticket terminal.
     pub fn decode(bytes: &[u8]) -> std::result::Result<Self, TicketError> {
         if let Ok(any) = Any::decode(bytes)
@@ -268,6 +305,15 @@ impl EngineTicket {
         // `VectorSearch` (also arbitrary — kept ticket-type declaration order).
         if let Ok(mv) = MvDeltaTicket::decode(bytes) {
             return Ok(EngineTicket::MvDelta(mv));
+        }
+        // loom-native mv-enrich ticket (JSON): disjoint fields (deny_unknown_fields)
+        // from the other JSON tickets — the required `enrich_schema`/`enrich_name`
+        // fields are unique to this shape, so it can never alias
+        // `GovernedStatementQuery`/`AsOfStatementQuery`/`MvDeltaTicket`/
+        // `VectorSearchTicket`/`FlightTicket`. Tried after `MvDelta` (both are
+        // internal data-plane shapes) and before `VectorSearch`/`Files`.
+        if let Ok(me) = MvEnrichTicket::decode(bytes) {
+            return Ok(EngineTicket::MvEnrich(me));
         }
         // loom-native k-NN ticket (JSON). Disjoint fields from FlightTicket
         // (deny_unknown_fields on both) make this unambiguous.
@@ -331,6 +377,37 @@ impl FlightTableClient {
             .map_err(crate::client::be)
     }
 
+    /// Like [`do_get_batches`](Self::do_get_batches) but ALSO returns the wire
+    /// schema. Collects the `FlightRecordBatchStream` while keeping it alive
+    /// (`&mut stream` borrow) so its schema — decoded from the leading Schema
+    /// message the engine always sends — can be read afterwards. Used by
+    /// `fetch_mv_enrich`, whose response can legitimately be zero batches (a
+    /// live-but-empty enrich table): the schema is what lets the worker register
+    /// an empty enrich table instead of abandoning the run.
+    async fn do_get_batches_with_schema(
+        &self,
+        ticket: Vec<u8>,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        let resp = self
+            .inner
+            .clone()
+            .do_get(Ticket {
+                ticket: ticket.into(),
+            })
+            .await
+            .map_err(crate::client::be)?;
+        let mut stream = decode_batches(resp);
+        let mut batches = Vec::new();
+        while let Some(b) = stream.try_next().await.map_err(crate::client::be)? {
+            batches.push(b);
+        }
+        let schema = stream
+            .schema()
+            .cloned()
+            .ok_or_else(|| crate::client::be("mv enrich: no schema on wire"))?;
+        Ok((schema, batches))
+    }
+
     /// Send a [`FlightTicket`] via `do_get` and collect all returned
     /// [`RecordBatch`]es. The engine streams schema-first Arrow IPC; this
     /// method reconstructs the batches and returns them as a `Vec`.
@@ -347,6 +424,19 @@ impl FlightTableClient {
     ) -> Result<Vec<RecordBatch>> {
         let ticket = MvDeltaTicket { mv, schema, name };
         self.do_get_batches(ticket.encode()).await
+    }
+
+    /// Fetch an enrich table's current state, optionally restricted to a key
+    /// set (see [`MvEnrichTicket`]), returning the wire schema alongside the
+    /// batches. The schema is surfaced (not derived from the first batch)
+    /// because a live-but-empty enrich table yields zero batches yet a schema
+    /// the engine always sends — the worker registers an empty enrich table
+    /// from it rather than abandoning the join run.
+    pub async fn fetch_mv_enrich(
+        &self,
+        ticket: MvEnrichTicket,
+    ) -> Result<(SchemaRef, Vec<RecordBatch>)> {
+        self.do_get_batches_with_schema(ticket.encode()).await
     }
 
     /// Send a [`VectorSearchTicket`] via `do_get` and collect the kNN result rows.

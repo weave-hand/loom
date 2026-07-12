@@ -400,3 +400,27 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "mv-enrich-flight",
+    crate = "mv_enrich_flight",
+    srcs = ["tests/mv_enrich_flight.rs"],
+    crate_root = "tests/mv_enrich_flight.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:futures",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:tonic",
+    ],
+)

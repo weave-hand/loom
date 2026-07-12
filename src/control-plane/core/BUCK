@@ -489,3 +489,17 @@ rust_test(
         "//third-party:uuid",
     ],
 )
+
+rust_test(
+    name = "microbatch-join",
+    crate = "microbatch_join",
+    srcs = ["tests/microbatch_join.rs"],
+    crate_root = "tests/microbatch_join.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+        "//third-party:uuid",
+    ],
+)

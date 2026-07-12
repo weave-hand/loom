@@ -41,7 +41,9 @@ pub(crate) async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
                 .chain(std::iter::once(output))
                 .cloned()
                 .collect::<Vec<_>>(),
-            TransformBody::Physical { .. } | TransformBody::MicroBatch { .. } => Vec::new(),
+            TransformBody::Physical { .. }
+            | TransformBody::MicroBatch { .. }
+            | TransformBody::MicroBatchJoin { .. } => Vec::new(),
         })
         .collect();
     names.sort_unstable();
@@ -363,13 +365,14 @@ impl Transforms for PgControlPlane {
         // resolves via its bound backing table. An output that does not exist yet passes.
         let output_table: Option<TableRef> = match &def.body {
             TransformBody::Physical { output, .. } => Some(output.clone()),
-            // A MicroBatch MV legitimately owns its declared log-stream output and
-            // writes to it via the sanctioned `CommitMicroBatch` path — so it is
-            // EXEMPT from the legacy-write refuse guard (which exists to stop
-            // physical/typed transforms from targeting streams via the legacy write
-            // paths). Without this exemption, re-defining a running MV (its output
-            // is a declared stream after the first commit) would be refused.
-            TransformBody::MicroBatch { .. } => None,
+            // A MicroBatch (or MicroBatchJoin) MV legitimately owns its declared
+            // log-stream output and writes to it via the sanctioned
+            // `CommitMicroBatch` path — so both are EXEMPT from the legacy-write
+            // refuse guard (which exists to stop physical/typed transforms from
+            // targeting streams via the legacy write paths). Without this
+            // exemption, re-defining a running MV (its output is a declared
+            // stream after the first commit) would be refused.
+            TransformBody::MicroBatch { .. } | TransformBody::MicroBatchJoin { .. } => None,
             TransformBody::Typed { output, .. } => {
                 let bodies = [(def.name.clone(), def.body.clone())];
                 pg_type_tables(&mut *tx, &bodies)

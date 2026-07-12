@@ -4,20 +4,20 @@
 //! DataFusion session, and commit the result + watermark advance + run success
 //! as ONE CommitMicroBatch RPC. Zero Postgres — the engine owns it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use arrow::array::{Array, Int32Array, Int64Array, RecordBatch};
+use arrow::array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow::compute::concat_batches;
 use arrow::datatypes::Schema;
 use control_plane_core::{
-    ControlPlaneError, DatasetRef, EventType, Job, JobFailure, LineageEvent, RunId, StreamMvJob,
-    WatermarkAdvance, mv_key,
+    ControlPlaneError, DatasetRef, EventType, Job, JobFailure, LineageEvent, MAX_LOOKUP_KEYS,
+    RunId, StreamMvJob, WatermarkAdvance, mv_key,
 };
 use datafusion::execution::context::SessionContext;
-use datafusion_io::{infer_columns, register_batches};
+use datafusion_io::{infer_columns, register_batches, register_empty_table};
 use engine_wire::client::GrpcQueueClient;
-use engine_wire::flight::FlightTableClient;
+use engine_wire::flight::{FlightTableClient, MvEnrichTicket};
 use engine_wire::pb;
 use loom_config::WorkerTuning;
 
@@ -103,10 +103,57 @@ async fn run_stream_mv(
             .map(RecordBatch::schema)
             .ok_or_else(|| JobFailure::abandon("empty registration after strip"))?;
 
+        // Slice 5: derive the lookup-join key set from the delta BEFORE
+        // `stripped` is moved into `register_batches` below. `None` when this
+        // is a plain slice-4 MV (`job.enrich` unset) or a state-join
+        // (`job.on` unset) or the delta's distinct key count exceeds
+        // `MAX_LOOKUP_KEYS` (a superset full-state fetch is always correct).
+        let key_payload: Option<(String, Vec<serde_json::Value>)> = if job.enrich.is_some() {
+            match &job.on {
+                None => None,
+                Some(on) => {
+                    let keys = distinct_lookup_keys(&stripped, &on.source_col)?;
+                    (keys.len() <= MAX_LOOKUP_KEYS).then(|| (on.enrich_col.clone(), keys))
+                }
+            }
+        } else {
+            None
+        };
+
         // Fresh session per job — no state leaks between micro-batches.
         let df_ctx = SessionContext::new();
         register_batches(&df_ctx, &job.source.name, schema, stripped)
             .map_err(|e| JobFailure::abandon(format!("register: {e}")))?;
+
+        // Slice 5: register the enrich table's folded current state beside the
+        // delta, under its own name — the join SQL references both tables.
+        // Keyed (lookup-join) when `key_payload` is set, full state
+        // (state-join) otherwise.
+        if let Some(enrich) = &job.enrich {
+            // The engine always sends the enrich schema (via `with_schema`,
+            // even for a live-but-empty table that yields zero batches), so the
+            // client surfaces it alongside the batches. A zero-batch enrich is
+            // registered as an EMPTY table from that schema — the join SQL then
+            // resolves it and an INNER JOIN yields zero rows (the run succeeds
+            // and the watermark advances), instead of abandoning.
+            let (enrich_schema, enrich_batches) = ctx
+                .table
+                .fetch_mv_enrich(MvEnrichTicket {
+                    enrich_schema: enrich.schema.clone(),
+                    enrich_name: enrich.name.clone(),
+                    key: key_payload.as_ref().map(|(c, _)| c.clone()),
+                    keys: key_payload.map(|(_, k)| k).unwrap_or_default(),
+                })
+                .await
+                .map_err(|e| classify_enrich_error(&e, ctx.worker_tuning, attempts))?;
+            if enrich_batches.is_empty() {
+                register_empty_table(&df_ctx, &enrich.name, enrich_schema)
+                    .map_err(|e| JobFailure::abandon(format!("register enrich: {e}")))?;
+            } else {
+                register_batches(&df_ctx, &enrich.name, enrich_schema, enrich_batches)
+                    .map_err(|e| JobFailure::abandon(format!("register enrich: {e}")))?;
+            }
+        }
 
         let df = df_ctx
             .sql(&job.sql)
@@ -137,7 +184,9 @@ async fn run_stream_mv(
 
     // 7. Lineage event: inputs/outputs name the physical tables; the payload
     // records the compiled SQL, the watermark key, and the per-bucket offset
-    // range this run consumed.
+    // range this run consumed. Slice 5: a join MV's input set grows to
+    // `[source, enrich]` and the payload gains an `"enrich"` (and `"on"` when
+    // keyed) entry.
     let offsets: serde_json::Map<String, serde_json::Value> = advances
         .iter()
         .map(|a| {
@@ -147,17 +196,31 @@ async fn run_stream_mv(
             )
         })
         .collect();
+    let mut inputs = vec![DatasetRef::from(&job.source)];
+    let mut payload = serde_json::Map::new();
+    payload.insert("sql".to_string(), serde_json::json!(job.sql));
+    payload.insert("mv".to_string(), serde_json::json!(mv.clone()));
+    payload.insert("offsets".to_string(), serde_json::Value::Object(offsets));
+    if let Some(enrich) = &job.enrich {
+        inputs.push(DatasetRef::from(enrich));
+        payload.insert(
+            "enrich".to_string(),
+            serde_json::json!({ "schema": enrich.schema, "name": enrich.name }),
+        );
+        if let Some(on) = &job.on {
+            payload.insert(
+                "on".to_string(),
+                serde_json::json!({ "source_col": on.source_col, "enrich_col": on.enrich_col }),
+            );
+        }
+    }
     let lineage = LineageEvent {
         run_id: RunId(run_id.unwrap_or_else(uuid::Uuid::new_v4)),
         event_type: EventType::Complete,
         event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![DatasetRef::from(&job.source)],
+        inputs,
         outputs: vec![DatasetRef::from(&job.output)],
-        payload: serde_json::json!({
-            "sql": job.sql,
-            "mv": mv.clone(),
-            "offsets": offsets,
-        }),
+        payload: serde_json::Value::Object(payload),
     };
 
     let pb_advances: Vec<pb::MvAdvance> = advances
@@ -290,4 +353,84 @@ fn encode_ipc_stream(
         w.finish()?;
     }
     Ok(buf)
+}
+
+/// Slice 5: the distinct, non-null values of `col` across `batches`, as JSON
+/// scalars — the lookup-join's probe key set for `MvEnrichTicket.keys`. `col`
+/// must downcast to `Int64Array`/`Int32Array`/`StringArray`; a missing column
+/// or any other array type means the def's `LookupOn.source_col` doesn't match
+/// the delta schema — malformed, deterministic, so Abandon.
+fn distinct_lookup_keys(
+    batches: &[RecordBatch],
+    col: &str,
+) -> std::result::Result<Vec<serde_json::Value>, JobFailure> {
+    // A single small sum type so Int32/Int64/Utf8 keys share one `BTreeSet`
+    // (distinctness/ordering, not cross-type comparison — a column is
+    // homogeneously typed across every batch of one delta).
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum Key {
+        Int(i64),
+        Str(String),
+    }
+
+    let mut seen: BTreeSet<Key> = BTreeSet::new();
+    for batch in batches {
+        let idx = batch.schema().index_of(col).map_err(|e| {
+            JobFailure::abandon(format!("lookup key: missing column '{col}' in delta: {e}"))
+        })?;
+        let array = batch.column(idx);
+        if let Some(a) = array.as_any().downcast_ref::<Int64Array>() {
+            for i in 0..a.len() {
+                if !a.is_null(i) {
+                    seen.insert(Key::Int(a.value(i)));
+                }
+            }
+        } else if let Some(a) = array.as_any().downcast_ref::<Int32Array>() {
+            for i in 0..a.len() {
+                if !a.is_null(i) {
+                    seen.insert(Key::Int(i64::from(a.value(i))));
+                }
+            }
+        } else if let Some(a) = array.as_any().downcast_ref::<StringArray>() {
+            for i in 0..a.len() {
+                if !a.is_null(i) {
+                    seen.insert(Key::Str(a.value(i).to_string()));
+                }
+            }
+        } else {
+            return Err(JobFailure::abandon(format!(
+                "lookup key: column '{col}' is not Int64/Int32/Utf8 (got {:?})",
+                array.data_type()
+            )));
+        }
+    }
+    Ok(seen
+        .into_iter()
+        .map(|k| match k {
+            Key::Int(n) => serde_json::json!(n),
+            Key::Str(s) => serde_json::json!(s),
+        })
+        .collect())
+}
+
+/// Slice 5: classify a `fetch_mv_enrich` wire error exactly like
+/// `fetch_mv_delta`'s (`:74-84`): the client flattens gRPC status into an
+/// opaque message, so only the message prefix survives — `"mv enrich:"` (the
+/// engine's deterministic refusal, see `mv_enrich_scan`) is Abandon, every
+/// other fault (wire/store) is Retry with the worker's backoff. Do NOT branch
+/// on `tonic::Code` — it does not survive `FlightTableClient`'s flattening.
+fn classify_enrich_error(
+    e: &ControlPlaneError,
+    worker_tuning: WorkerTuning,
+    attempts: i32,
+) -> JobFailure {
+    let msg = e.to_string();
+    if msg.contains("mv enrich:") {
+        JobFailure::abandon(format!("fetch_mv_enrich: {msg}"))
+    } else {
+        JobFailure::retry(
+            worker_tuning.backoff(attempts),
+            format!("fetch_mv_enrich: {msg}"),
+        )
+    }
 }

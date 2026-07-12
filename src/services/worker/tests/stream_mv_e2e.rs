@@ -108,6 +108,8 @@ fn make_stream_mv_job(
             buckets,
             sql: sql.to_string(),
             run_id,
+            enrich: None,
+            on: None,
         })
         .expect("payload"),
         attempts: 0,
