@@ -2206,6 +2206,23 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-feed-torn-read",
+    crate = "stream_feed_torn_read",
+    srcs = ["tests/stream_feed_torn_read.rs"],
+    crate_root = "tests/stream_feed_torn_read.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-cdc-consolidate",
     crate = "stream_cdc_consolidate",
     srcs = ["tests/stream_cdc_consolidate.rs"],

@@ -32,7 +32,8 @@ use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, Auth, Cardinality,
     ControlPlane, ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent,
     LinkBacking, LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget,
-    PropertyDef, RoleId, RowFilter, RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
+    PropertyDef, RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -998,6 +999,33 @@ pub async fn define_create_order_with_lines_action(cp: &PgControlPlane) {
         })
         .await
         .unwrap();
+}
+
+/// Create the mirror table `schema.name` and declare it a CDC stream table with
+/// `buckets` buckets, keyed by `id`, `LastRow` merge. Returns its `TableRef`.
+/// With `buckets = 1` every identity lands in bucket 0, so a test's event offsets are
+/// a plain 0,1,2,… sequence in write order.
+pub async fn declare_cdc_table(
+    cp: &PgControlPlane,
+    pool: &sqlx::PgPool,
+    schema: &str,
+    name: &str,
+    buckets: i32,
+) -> TableRef {
+    use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let tid = ensure_table(&mut tx, schema, name, at0)
+        .await
+        .expect("ensure_table");
+    tx.commit().await.expect("commit");
+    cp.declare_cdc(tid, buckets, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
+    TableRef {
+        schema: schema.to_string(),
+        name: name.to_string(),
+    }
 }
 
 /// Define `Widget(id Long required identity, name String, qty Long)` + the

@@ -16,7 +16,9 @@ use arrow::array::{
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
-use control_plane_core::{Catalog, ChangeEvent, ChangeFeedPage, ControlPlaneError, TableRef};
+use control_plane_core::{
+    Catalog, ChangeEvent, ChangeFeedPage, ControlPlaneError, Snapshot, TableRef,
+};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::changelog_table_ref;
 use datafusion::common::Column;
@@ -105,39 +107,47 @@ fn cell_to_json(array: &dyn Array, row: usize) -> Value {
     }
 }
 
-/// Tier 1 of the feed union: the changelog Iceberg files (absent until the
-/// first flush). Resolves the changelog table ref for `base`, reads its
-/// current snapshot/schema/files, and builds the framed
-/// `IcebergMirrorTableProvider`. Returns `None` when nothing has flushed yet
-/// (no changelog mirror row, or a mirror row with zero files).
+/// The pinned pair of snapshots ONE feed page is read at: the base table's, and the
+/// changelog table's (`None` until the first flush creates it). Both come from a single
+/// `current_snapshots_pair` statement, so they are mutually consistent — and THAT is
+/// what keeps the two-tier union disjoint. The slice-2b XOR invariant (an event is
+/// inline xor in the changelog files) holds on any single DB state, and a pinned pair
+/// IS a single DB state.
+#[derive(Debug, Clone)]
+pub struct FeedPins {
+    pub base: Snapshot,
+    pub clog: Option<Snapshot>,
+}
+
+/// Tier 1 of the feed union: the changelog Iceberg files, read AT the pinned changelog
+/// snapshot. `clog_pin` is `None` when nothing has flushed yet (no changelog mirror row
+/// at the pin), which — like a mirror row carrying zero files — means the file tier is
+/// simply absent.
 async fn build_file_tier(
     catalog: &IcebergCatalog,
     base: &TableRef,
+    clog_pin: Option<&Snapshot>,
 ) -> Result<Option<IcebergMirrorTableProvider>, EngineServingError> {
+    let Some(pin) = clog_pin else {
+        return Ok(None);
+    };
     let clog = changelog_table_ref(base);
-    match catalog.current_snapshot(&clog).await {
-        Ok(snap) => {
-            let cols = catalog
-                .schema(&clog, snap.id)
-                .await
-                .map_err(to_serving)?
-                .columns;
-            let framed = with_feed_framing_fields(&arrow_schema_from_mirror(&cols)?);
-            let files = catalog
-                .files_with_stats(&clog, snap.id)
-                .await
-                .map_err(to_serving)?;
-            if files.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(IcebergMirrorTableProvider::try_new_with_schema(
-                    files, framed,
-                )))
-            }
-        }
-        // No changelog mirror row yet (nothing flushed): file tier absent.
-        Err(ControlPlaneError::NotFound(_)) => Ok(None),
-        Err(e) => Err(to_serving(e)),
+    let cols = catalog
+        .schema(&clog, pin.id)
+        .await
+        .map_err(to_serving)?
+        .columns;
+    let framed = with_feed_framing_fields(&arrow_schema_from_mirror(&cols)?);
+    let files = catalog
+        .files_with_stats(&clog, pin.id)
+        .await
+        .map_err(to_serving)?;
+    if files.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(IcebergMirrorTableProvider::try_new_with_schema(
+            files, framed,
+        )))
     }
 }
 
@@ -327,6 +337,10 @@ fn build_resume_predicate(positions: &BTreeMap<i32, i64>) -> Option<Expr> {
 /// event is inline XOR a changelog file — no dedup, no watermark. Governance wraps
 /// the union view BEFORE the ordered read; the reserved framing columns are never
 /// denied/masked, so ordering/resume survive while user columns are filtered/masked.
+///
+/// Pins both tiers to ONE snapshot pair before reading either (`current_snapshots_pair`,
+/// a single Postgres statement) and delegates to [`changelog_feed_scan_at`] — see that
+/// function's body for why an independent two-read version tears (`iss-stream-feed-torn-read`).
 pub async fn changelog_feed_scan(
     catalog: &IcebergCatalog,
     base: &TableRef,
@@ -343,21 +357,78 @@ pub async fn changelog_feed_scan(
         return Ok(empty());
     }
 
+    // ONE statement, ONE Postgres MVCC snapshot: the base and changelog snapshots are
+    // pinned together or not at all. Reading them independently is the torn read
+    // (`iss-stream-feed-torn-read`) — the changelog is read first, so it can only skew
+    // OLDER, and a flush plus a follow-on write between the two reads leaves the
+    // flushed events in NEITHER tier. The `next` fold then advances past that hole and
+    // the events are lost for that consumer.
+    let clog = changelog_table_ref(base);
+    let (base_pin, clog_pin) = catalog
+        .current_snapshots_pair(base, &clog)
+        .await
+        .map_err(to_serving)?;
+    // An unknown base table stays an error, as before. (`to_serving` erases the error
+    // class to `Engine` — as it already did for the previous `current_snapshot(base)`
+    // call — so this is not a `NotFound`-classed error and no caller may match on one.)
+    let Some(base_snap) = base_pin else {
+        return Err(to_serving(ControlPlaneError::NotFound(format!(
+            "{}.{}",
+            base.schema, base.name
+        ))));
+    };
+    let pins = FeedPins {
+        base: base_snap,
+        clog: clog_pin,
+    };
+    changelog_feed_scan_at(
+        catalog,
+        base,
+        serving_store,
+        positions,
+        limit,
+        policy,
+        &pins,
+    )
+    .await
+}
+
+/// [`changelog_feed_scan`]'s body at an explicit pinned pair. Public so a test can drive
+/// the pin/flush/read interleave deterministically instead of racing threads.
+pub async fn changelog_feed_scan_at(
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    serving_store: Option<&ServingStore>,
+    positions: &BTreeMap<i32, i64>,
+    limit: usize,
+    policy: &TablePolicy,
+    pins: &FeedPins,
+) -> Result<ChangeFeedPage, EngineServingError> {
+    let empty = || ChangeFeedPage {
+        events: vec![],
+        next: positions.clone(),
+    };
+    if positions.is_empty() || limit == 0 {
+        return Ok(empty());
+    }
+
     let ctx = SessionContext::new();
     register_object_stores(&ctx, serving_store)?;
 
-    // --- Tier 1: the changelog Iceberg files (absent until the first flush). ---
-    let file_provider = build_file_tier(catalog, base).await?;
+    // --- Tier 1: the changelog Iceberg files, AT the pinned changelog snapshot. ---
+    let file_provider = build_file_tier(catalog, base, pins.clog.as_ref()).await?;
 
-    // --- Tier 2: the base table's LIVE inline tail (full — keeps -U), whose
-    // physical columns already carry the framing (iceberg_inline). ---
-    let base_snap = catalog.current_snapshot(base).await.map_err(to_serving)?;
-    let inline_provider = build_inline_tier(catalog, base, base_snap.id).await?;
+    // --- Tier 2: the base's inline tail, AT the pinned base snapshot.
+    // `inline_live_batch_full` is ALREADY an as-of read (`mvcc_live_pred`):
+    // `begin_snapshot <= pin and (end_snapshot is null or end_snapshot > pin)`. So a
+    // flush committing after the pin changes NEITHER tier — its changelog files carry a
+    // newer snapshot, and its end-cap stamps `end_snapshot` with a base snapshot newer
+    // than the pin, leaving these rows visible here. ---
+    let inline_provider = build_inline_tier(catalog, base, pins.base.id).await?;
 
-    // --- Disjoint UNION ALL, both tiers projected to the SAME column order:
-    // [user_cols..., loom_change_kind, loom_bucket, loom_offset]. ---
+    // --- Disjoint UNION ALL, both tiers projected to the SAME column order. ---
     let base_cols = catalog
-        .schema(base, base_snap.id)
+        .schema(base, pins.base.id)
         .await
         .map_err(to_serving)?
         .columns;
@@ -366,18 +437,14 @@ pub async fn changelog_feed_scan(
         return Ok(empty());
     };
 
-    // --- Governance BEFORE the ordered read: wrap the union view. Framing
-    // columns are never denied/masked (reserved names), so ordering survives;
-    // row filters and column masks apply to the user columns. ---
+    // --- Governance BEFORE the ordered read. ---
     let governed = GovernedTableProvider::new(unioned.into_view(), policy.clone())?;
     let df = ctx.read_table(Arc::new(governed)).map_err(to_serving)?;
 
-    // --- Resume predicate: OR over buckets of (bucket = b AND offset >= next_b). ---
     let Some(pred) = build_resume_predicate(positions) else {
         return Ok(empty());
     };
 
-    // --- Order + bound. ---
     let batches = df
         .filter(pred)
         .map_err(to_serving)?
@@ -392,6 +459,5 @@ pub async fn changelog_feed_scan(
         .await
         .map_err(to_serving)?;
 
-    // --- Decode: framing -> envelope; every other (governed) column -> fields. ---
     decode_page(&batches, positions)
 }

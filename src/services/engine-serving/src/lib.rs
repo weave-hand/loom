@@ -16,7 +16,7 @@ pub mod vector_search;
 
 pub use action_writer::{IcebergActionWriter, StepWrite};
 pub use consolidate::consolidate_table;
-pub use feed::changelog_feed_scan;
+pub use feed::{FeedPins, changelog_feed_scan, changelog_feed_scan_at};
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };
