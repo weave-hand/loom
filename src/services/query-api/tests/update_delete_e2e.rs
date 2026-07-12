@@ -95,9 +95,10 @@ async fn delete_removes_row() {
         serving: &serving,
     };
 
-    // Seed two rows so the table stays non-empty after deleting one (an empty table is
-    // unregistered in the serving engine, which would make the read-back error rather than
-    // report zero rows — the truncate-to-empty case is covered by overwrite_table_e2e).
+    // Seed two rows so the table stays non-empty after deleting one — keeps this test focused
+    // on "the other row is untouched"; the truncate-to-empty case (now a zero-row read, not an
+    // error — `iss-serving-empty-table-not-found`) is covered by overwrite_table_e2e /
+    // action_multi_object_e2e's `multi_step_delete_emptying_table_commits_atomically`.
     run_action(
         "createWidget",
         json!({ "id": "1", "name": "a", "qty": "1" })

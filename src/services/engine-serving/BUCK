@@ -312,3 +312,20 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "serving-empty-table",
+    crate = "serving_empty_table",
+    srcs = ["tests/serving_empty_table.rs"],
+    crate_root = "tests/serving_empty_table.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:datafusion",
+        "//third-party:futures",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

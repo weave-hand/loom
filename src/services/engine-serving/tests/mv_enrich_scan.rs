@@ -158,8 +158,9 @@ async fn enrich_scan_folds_filters_and_hides_framing() {
 
     // 3. Live-but-empty table: an inline append of ZERO rows still commits a
     //    live iceberg_mirror table/column/snapshot row set (schema known),
-    //    with no files and no live inline rows — exactly the case
-    //    `build_serving_provider` returns `Ok(None)` for.
+    //    with no files and no live inline rows. `build_serving_provider`
+    //    registers it as a zero-row provider over the mirror's authoritative
+    //    schema, so this reads back as zero rows over its declared schema.
     writer
         .inline("s", "empty", &cols(), &[], Uuid::new_v4())
         .await;
@@ -171,9 +172,22 @@ async fn enrich_scan_folds_filters_and_hides_framing() {
         empty.iter().all(|b| b.num_rows() == 0),
         "live-but-empty table serves zero rows"
     );
-    assert!(
-        !empty_schema.fields().is_empty(),
-        "live-but-empty table still serves its declared logical schema"
+    // Pin the EXACT declared schema (names, types, nullability) — the new live
+    // path builds this via `arrow_schema_from_mirror` (inside
+    // `build_serving_provider`), not the old dead `logical_arrow_schema`
+    // compensation; this asserts the two are equivalent for `cols()`.
+    let empty_fields: Vec<(&str, &arrow::datatypes::DataType, bool)> = empty_schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().as_str(), f.data_type(), f.is_nullable()))
+        .collect();
+    assert_eq!(
+        empty_fields,
+        vec![
+            ("id", &arrow::datatypes::DataType::Int64, false),
+            ("name", &arrow::datatypes::DataType::Utf8, false),
+        ],
+        "live-but-empty table serves its exact declared schema (names/types/nullability)"
     );
 
     // 4. Unknown table (never declared, never landed): deterministic error.

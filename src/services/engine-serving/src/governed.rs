@@ -302,6 +302,10 @@ pub async fn execute_governed_sql_stream(
         if governed.table_for(&table).is_none() {
             continue;
         }
+        // This loop always passes `at: None` (current snapshot), so
+        // `build_serving_provider`'s `Ok(None)` (as-of-not-live) case is
+        // unreachable here in practice — a live-but-empty table now yields
+        // `Ok(Some(_))` (a zero-row provider). Kept as a harmless skip.
         let Some(inner) =
             build_serving_provider(&ctx, catalog, &table, serving_store, None).await?
         else {

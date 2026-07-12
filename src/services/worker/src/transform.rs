@@ -251,12 +251,10 @@ async fn run_wire_transform(
     // 2+3. Resolve + register each input. ListFiles is the existence + declared-schema
     //      oracle: an absent `columns` means the table does not exist — deterministically
     //      bad (Abandon). The ROWS come from the engine's SQL serving path (`SELECT *`),
-    //      which merges the hot inline PG tier with the cold Parquet files — the cold
-    //      `files` list alone would silently drop unflushed inline rows. A live-but-empty
-    //      table (no inline, no files) is not registered in the serving catalog, so the
-    //      read plan-errors (`Validation`); since ListFiles already proved the table
-    //      exists, that is treated as an empty input (register the DECLARED schema with no
-    //      rows) so the SQL runs over an empty relation — matching the prior semantics.
+    //      which merges the hot inline PG tier with the cold Parquet files. The engine
+    //      registers every live table — a live-but-empty input answers an EMPTY result
+    //      (zero batches), which registers below under the DECLARED schema; a read error
+    //      is a real fault and retries.
     for (register_as, table) in &req.inputs {
         let listed = ctx
             .control
@@ -274,19 +272,12 @@ async fn run_wire_transform(
                 table.schema, table.name
             )));
         };
-        let batches = match ctx.sql.execute(select_all_sql(table)).await {
-            Ok(batches) => batches,
-            // The table exists (columns is Some) but the serving catalog holds no
-            // provider for it => it is empty (no inline, no cold files). Register an
-            // empty relation with the declared schema below.
-            Err(ControlPlaneError::Validation(_)) => Vec::new(),
-            Err(e) => {
-                return Err(JobFailure::retry(
-                    ctx.worker_tuning.backoff(attempts),
-                    format!("read input {}.{}: {e}", table.schema, table.name),
-                ));
-            }
-        };
+        let batches = ctx.sql.execute(select_all_sql(table)).await.map_err(|e| {
+            JobFailure::retry(
+                ctx.worker_tuning.backoff(attempts),
+                format!("read input {}.{}: {e}", table.schema, table.name),
+            )
+        })?;
         match batches.first().map(|b| b.schema()) {
             None => {
                 let schema = logical_arrow_schema(&columns)
