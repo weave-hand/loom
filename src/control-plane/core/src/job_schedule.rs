@@ -1,8 +1,9 @@
 //! The scheduled-maintenance-job contract, shared by the producer (operator
 //! HTTP endpoint) and the consumer (the worker/scheduler). Lives in core so a
 //! zero-pool worker can read it without depending on the postgres adapter.
-//! A `JobSchedule` binds a cron expression to a recurring `gc_table` or
-//! `compact_table` job; other queue kinds are not (yet) schedulable.
+//! A `JobSchedule` binds a cron expression to a recurring `gc_table`,
+//! `compact_table`, or `sweep_orphans` job; other queue kinds are not (yet)
+//! schedulable.
 
 use crate::compact_job::{COMPACT_JOB_KIND, CompactJob};
 use crate::error::{ControlPlaneError, Result};

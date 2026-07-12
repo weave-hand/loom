@@ -1,7 +1,7 @@
 //! The worker's job handlers: parse a flush_table / gc_table / build_vector_index
-//! job and run it over the wire. All three are one shape — deserialize the typed
-//! payload (parse error => Abandon), run one RPC (RPC error => Retry with backoff) —
-//! captured by `run_wire_job`.
+//! / sweep_orphans job and run it over the wire. All of them are one shape —
+//! deserialize the typed payload (parse error => Abandon), run one RPC (RPC error
+//! => Retry with backoff) — captured by `run_wire_job`.
 use std::future::Future;
 
 use control_plane_core::{BuildVectorIndexJob, FlushJob, GcJob, Job, JobFailure, OrphanSweepJob};

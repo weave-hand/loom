@@ -4,9 +4,9 @@
 //! `LOOM_LOCK_TIMEOUT_MS` (default: 5000), and `LOOM_WAREHOUSE_URI` (required for
 //! compaction). Connects to the engine over a UDS and runs the generic
 //! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
-//! `gc_table`, `compact_table`, `transform`, `typed-transform`, `stream_consolidate`,
-//! and `stream_mv` jobs (dispatched by kind). No Postgres in the dep closure — the
-//! engine owns PG.
+//! `gc_table`, `compact_table`, `sweep_orphans`, `transform`, `typed-transform`,
+//! `stream_consolidate`, and `stream_mv` jobs (dispatched by kind). No Postgres in
+//! the dep closure — the engine owns PG.
 
 use std::sync::Arc;
 use std::time::Duration;
