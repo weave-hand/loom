@@ -275,6 +275,7 @@ async fn rejects_a_non_cyclic_single_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     // `employer` lands on Company, not back on Person -> not a cycle.
     let err = read_graph_reach(&graph_query(&["employer"]), &Subject(subj), &deps)
@@ -296,6 +297,7 @@ async fn rejects_a_non_cyclic_multi_link_path() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     // Person --memberOf--> Team --worksAt--> Company: lands on Company, not Person.
     let err = read_graph_reach(
@@ -321,6 +323,7 @@ async fn rejects_a_type_without_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
@@ -346,6 +349,7 @@ async fn returns_reachable_objects_for_a_self_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let rows = read_graph_reach(&graph_query(&["knows"]), &Subject(subj), &deps)
         .await
@@ -381,6 +385,7 @@ async fn returns_reachable_objects_for_a_cyclic_path() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let rows = read_graph_reach(
         &graph_query(&["memberOf", "hasMember"]),
@@ -416,6 +421,7 @@ async fn resolves_a_mixed_forward_inverse_cycle() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let rows = read_graph_reach(
         &graph_query_hops(vec![fwd("memberOf"), inv("memberOf")]),
@@ -445,6 +451,7 @@ async fn inverse_hop_absent_inbound_is_unknown_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach(
         &graph_query_hops(vec![inv("employer")]),
@@ -474,6 +481,7 @@ async fn non_cyclic_mixed_path_reserializes_with_tilde() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach(
         &graph_query_hops(vec![inv("hasMember")]),
@@ -516,6 +524,7 @@ async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach(
         &graph_query_hops(vec![inv("sharesWith")]),
@@ -556,6 +565,7 @@ async fn forbidden_inverse_landing_type() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach(
         &graph_query_hops(vec![inv("watches")]),

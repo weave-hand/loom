@@ -65,6 +65,7 @@ pub async fn serve(
             serving,
             action_engine,
             default_limit: app_cfg.serving.default_limit,
+            gc_retention: cfg.gc_retention,
             naming,
         }),
         auth.clone(),

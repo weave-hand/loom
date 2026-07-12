@@ -199,6 +199,7 @@ async fn fk_traversal_returns_linked_targets() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -228,6 +229,7 @@ async fn missing_read_on_source_is_forbidden() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -256,6 +258,7 @@ async fn missing_read_on_target_is_forbidden() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -301,6 +304,7 @@ async fn source_row_filter_closes_the_leak() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -350,6 +354,7 @@ async fn target_row_filter_and_projection_apply() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -395,6 +400,7 @@ async fn source_filter_on_denied_column_is_bad_filter() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let err = read_linked_objects(
         &LinkQuery {
@@ -454,6 +460,7 @@ async fn many_to_many_dedups_shared_targets() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_linked_objects(
         &LinkQuery {
@@ -483,6 +490,7 @@ async fn unknown_link_is_reported() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let err = read_linked_objects(
         &LinkQuery {

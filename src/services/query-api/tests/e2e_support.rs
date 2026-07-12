@@ -50,6 +50,11 @@ use service_runtime::{AuthState, protect, token_sha256};
 use time::OffsetDateTime;
 use tower::ServiceExt;
 
+/// The 7-day production default (`LOOM_GC_RETENTION_SECS`'s own default) used by every
+/// test `AppState`/`QueryDeps` here — inert unless a test drives an `as_of` selector past
+/// the retention horizon.
+pub const TEST_GC_RETENTION: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+
 /// Convenience constructor for a `TableRef`.
 pub fn tref(s: &str, n: &str) -> TableRef {
     TableRef {
@@ -296,6 +301,7 @@ pub async fn get(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
@@ -344,6 +350,7 @@ pub async fn get_ndjson(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
@@ -440,6 +447,7 @@ pub async fn get_unauth(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
@@ -1116,6 +1124,7 @@ pub async fn read_widget(
         catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
+        gc_retention: TEST_GC_RETENTION,
     };
     let rows = read_object(
         &ObjectQuery {
@@ -1269,6 +1278,7 @@ pub async fn post_search(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
@@ -1319,6 +1329,7 @@ pub async fn post_action_raw(
             serving: eng,
             action_engine,
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {
@@ -1371,6 +1382,7 @@ pub async fn post_action_text(
             serving: eng,
             action_engine,
             default_limit: 1000,
+            gc_retention: TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {

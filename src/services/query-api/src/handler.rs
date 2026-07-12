@@ -114,6 +114,8 @@ pub struct QueryDeps<'a> {
     pub serving: &'a dyn ServingEngine,
     pub catalog: &'a (dyn control_plane_core::Catalog + Send + Sync),
     pub default_limit: u32,
+    /// GC retention window (`LOOM_GC_RETENTION_SECS`), threaded from `AppState`.
+    pub gc_retention: std::time::Duration,
 }
 
 #[derive(Debug, thiserror::Error)]

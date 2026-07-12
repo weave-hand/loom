@@ -123,6 +123,7 @@ async fn engine_hit_coercion_fault_is_internal_500_with_one_log() {
         catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let q = VectorSearchQuery {
         type_name: "Docs".into(),

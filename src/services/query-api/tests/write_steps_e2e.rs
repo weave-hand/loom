@@ -64,6 +64,7 @@ async fn read_labels(
         catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     // Read as the `reader` subject the test grants Read to on both types.
     let subj = control_plane_core::SubjectId("reader".into());

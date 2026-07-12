@@ -72,6 +72,11 @@ pub struct AppState {
     pub serving: Arc<dyn ServingEngine>,
     pub action_engine: Arc<dyn ActionEngine>,
     pub default_limit: u32,
+    /// GC retention window (`LOOM_GC_RETENTION_SECS`). Time-travel reads use it
+    /// to reject selectors resolving past the retention horizon (410) — the same
+    /// window `gc_table` reclaims under, so guard and reclaimer agree by
+    /// construction.
+    pub gc_retention: std::time::Duration,
     /// Deployment naming bridge: resolves a `DatasetRef` back to its governed
     /// `Table`/`Type` (or External) so the `/lineage` reads can ACL-filter per node.
     pub naming: Arc<LineageNaming>,
@@ -87,6 +92,7 @@ impl AppState {
             serving: self.serving.as_ref(),
             catalog: self.cp.catalog(),
             default_limit: self.default_limit,
+            gc_retention: self.gc_retention,
         }
     }
 }

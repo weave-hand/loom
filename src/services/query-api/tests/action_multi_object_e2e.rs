@@ -98,6 +98,7 @@ async fn read_objects(
         catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_object(
         &ObjectQuery {
@@ -742,6 +743,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
         catalog: cp.catalog(),
         serving: &serving2,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let order_read = read_object(
         &ObjectQuery {

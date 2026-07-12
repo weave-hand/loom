@@ -40,6 +40,7 @@ fn app(cp: Arc<PgControlPlane>, eng: Arc<dyn query_api::serving::ServingEngine>)
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
+            gc_retention: e2e_support::TEST_GC_RETENTION,
             naming: query_api::lineage_filter::local_naming(),
         }),
         auth.clone(),

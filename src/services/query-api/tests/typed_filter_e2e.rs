@@ -119,6 +119,7 @@ async fn typed_filters_match_and_reject() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -208,6 +209,7 @@ async fn comparison_set_and_null_operators() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -385,6 +387,7 @@ async fn between_matches_ge_and_le() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -444,6 +447,7 @@ async fn contains_is_case_insensitive_and_anchors() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -508,6 +512,7 @@ async fn contains_literal_percent_matches_the_character() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -558,6 +563,7 @@ async fn or_groups_union_and_governance() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let ids = |rows: &query_api::handler::ObjectRows| {
         let body = objects_to_json(rows, None);
@@ -660,6 +666,7 @@ async fn or_group_never_weakens_governance() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
 
     // A member naming a column the subject cannot filter on must fail the whole request.

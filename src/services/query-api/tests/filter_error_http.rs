@@ -129,6 +129,7 @@ async fn get(cp: MemoryControlPlane, subject: &str, uri: &str) -> (StatusCode, S
         serving: Arc::new(StubServing),
         action_engine: Arc::new(StubAction),
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
         naming: query_api::lineage_filter::local_naming(),
     };
     let app = router(state);

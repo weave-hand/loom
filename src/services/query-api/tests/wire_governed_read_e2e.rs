@@ -140,6 +140,7 @@ async fn governed_read_parity_over_wire() {
             catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
+            gc_retention: e2e_support::TEST_GC_RETENTION,
         },
     )
     .await
@@ -153,6 +154,7 @@ async fn governed_read_parity_over_wire() {
             catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
+            gc_retention: e2e_support::TEST_GC_RETENTION,
         },
     )
     .await
@@ -217,6 +219,7 @@ async fn governed_read_parity_over_wire() {
             catalog: cp.catalog(),
             serving: &eng,
             default_limit: 1000,
+            gc_retention: e2e_support::TEST_GC_RETENTION,
         },
     )
     .await
@@ -230,6 +233,7 @@ async fn governed_read_parity_over_wire() {
             catalog: wire.catalog(),
             serving: &eng,
             default_limit: 1000,
+            gc_retention: e2e_support::TEST_GC_RETENTION,
         },
     )
     .await

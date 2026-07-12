@@ -52,6 +52,7 @@ async fn inverse_single_hop_reaches_origin_customer() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -84,6 +85,7 @@ async fn inverse_two_hop_chain_reaches_origin_customer() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -118,6 +120,7 @@ async fn inverse_hop_is_governed_on_the_reached_type() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     // Grant LineItem (source) and Customer (final) but NOT Order (the intermediate type
     // the inverse `lineItems` hop reaches) -> the whole traversal is Forbidden.
@@ -150,6 +153,7 @@ async fn unknown_inbound_link_is_unknown_link() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "dan").await;
     grant_read(&cp, &role, "Customer").await;
@@ -184,6 +188,7 @@ async fn ambiguous_inbound_link_is_rejected() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     // Define a SECOND link also named `lineItems` but from Customer -> LineItem, so two
     // links named `lineItems` are inbound to LineItem (from Order and from Customer).

@@ -182,6 +182,7 @@ async fn derived_aggregates_are_served_and_governed() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
 
     // ---- subject A: Read on Customer AND Order -> sees derived ----
