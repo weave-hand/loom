@@ -451,16 +451,21 @@ async fn resolve_read_snapshot(
 
 /// Reject a resolved as-of snapshot older than the GC retention horizon.
 ///
-/// Predicate (see the plan/spec): gone iff `at < H` AND `at < current(table)`,
-/// where `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention` —
-/// the exact horizon `iceberg_gc` reclaims under (shared derivation:
-/// `Catalog::snapshot_horizon`). `at >= H` is provably complete (a reclaimable
-/// row has `end <= H`, visible only when `at < end`). `at >= current(table)` is
-/// the quiet-table exemption: this table's rows are only end-capped at its own
-/// later write snapshots, so nothing reclaimable was ever visible at `at` — a
-/// current-snapshot read must not 410 just because OTHER tables kept committing.
-/// Deterministic by design: enforced from config + snapshot timestamps whether
-/// or not GC has actually run (reclaimed-ness is not recorded anywhere).
+/// Pure contract guard: gone iff `at < H`, where
+/// `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention` — the
+/// exact horizon `iceberg_gc` reclaims under (shared derivation:
+/// `Catalog::snapshot_horizon`). `at >= H` is provably complete (a
+/// reclaimable row has `end <= H`, visible only when `at < end`).
+/// Deterministic by design: enforced from config + snapshot timestamps
+/// whether or not GC has actually run (reclaimed-ness is not recorded
+/// anywhere).
+///
+/// This is intentionally conservative — a below-horizon read of a table
+/// unchanged since `at` is still complete yet 410s; see
+/// `iss-timetravel-quiet-table-overconservative` (loom's single global
+/// snapshot sequence makes a per-table exemption via `current_snapshot`
+/// impossible, since it tracks the global tip, not the table's own last
+/// write).
 pub(crate) async fn ensure_within_retention(
     catalog: &(dyn control_plane_core::Catalog + Send + Sync),
     gc_retention: std::time::Duration,
@@ -475,13 +480,6 @@ pub(crate) async fn ensure_within_retention(
         .map_err(QueryError::ControlPlane)?;
     let Some(h) = horizon else { return Ok(()) };
     if at >= h {
-        return Ok(());
-    }
-    let current = catalog
-        .current_snapshot(table)
-        .await
-        .map_err(QueryError::ControlPlane)?;
-    if at >= current.id {
         return Ok(());
     }
     Err(QueryError::AsOfGone(format!(

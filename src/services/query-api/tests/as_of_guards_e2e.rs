@@ -16,25 +16,26 @@
 //!
 //! With the default (7-day) retention the same S1 selectors stay 200 (in-window).
 //!
-//! NOTE on the "quiet-table exemption" branch of `ensure_within_retention`
-//! (`at >= current_snapshot(table).id`, checked only after `at >= H` has
-//! already failed): this repo's `iceberg_mirror.snapshot` sequence
-//! (`iceberg_mirror.snapshot_seq`) is a single counter shared by every table in
-//! the catalog, and `Catalog::current_snapshot` resolves to the newest such id
-//! at which the queried table is still live (not dropped) -- i.e. for any live
-//! table it is always the catalog-global tip. `snapshot_horizon` is bounded by
-//! that same tip, so `H <= current_snapshot(table).id` holds unconditionally.
-//! Consequently `at < H` implies `at < current_snapshot(table).id` too, and the
-//! second check can never independently flip a `Gone` verdict to `Ok` for a
-//! live table -- the originally-drafted fixture for this test (a later write to
-//! a second table `main.other`, meant to push `H` past `thing`'s own current
-//! snapshot while `thing` stayed exempt) is unreachable: pushing `H` past
-//! `thing`'s current snapshot is impossible by the same invariant. This was
-//! confirmed empirically (a debug spike showed `current(thing)` tracking
-//! `main.other`'s later commit, not `thing`'s own last write) before adopting
-//! the single-table fixture below. Filed as a residual gap, not fixed here (it
-//! would need a per-table "last write" catalog query distinct from
-//! `current_snapshot`, which is out of this item's scope).
+//! NOTE on the removed "quiet-table exemption" branch of
+//! `ensure_within_retention`: the guard used to check
+//! `at >= current_snapshot(table).id` after `at >= H` had already failed, on
+//! the theory that a quiet table (unchanged since `at`) should be exempt even
+//! when `H` had advanced past it. That branch was dead code and has been
+//! removed -- the guard is now pure `at < H`. Reason: this repo's
+//! `iceberg_mirror.snapshot` sequence (`iceberg_mirror.snapshot_seq`) is a
+//! single counter shared by every table in the catalog, and
+//! `Catalog::current_snapshot` resolves to the newest such id at which the
+//! queried table is still live (not dropped) -- i.e. for any live table it is
+//! always the catalog-global tip. `snapshot_horizon` is bounded by that same
+//! tip, so `H <= current_snapshot(table).id` holds unconditionally, meaning
+//! `at < H` already implies `at < current_snapshot(table).id` too -- the
+//! second check could never independently flip a `Gone` verdict to `Ok`. A
+//! precise per-table exemption is impossible under the global snapshot
+//! sequence; it would need a distinct per-table "last write" catalog query.
+//! Filed as a known limitation, not fixed here: see
+//! `iss-timetravel-quiet-table-overconservative`. Every assertion below stays
+//! green: the `S2 -> 200` case already holds via `at >= H` (S2 is the tip = H
+//! under ZERO retention), independent of the removed branch.
 
 use std::sync::Arc;
 
