@@ -18,23 +18,9 @@ use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use store_config::{ObjectStoreConfig, build_write_store};
+use loom_test_flight::test_write_store;
 use tonic::transport::Server;
 use uuid::Uuid;
-
-// ---- helpers ---------------------------------------------------------------
-
-/// Build a local-filesystem `WriteStore` rooted at `warehouse` (the tempdir
-/// path `write_object_over_wire` uses), for `EngineControlService::write_store`.
-fn test_write_store(warehouse: &str) -> store_config::WriteStore {
-    let mut env = std::collections::HashMap::new();
-    env.insert(
-        "LOOM_WAREHOUSE_URI".to_string(),
-        format!("file://{warehouse}"),
-    );
-    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
-    build_write_store(&store_cfg).expect("write store")
-}
 
 fn one_row_ipc(id: i64, name: &str) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![

@@ -26,21 +26,9 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
-use store_config::{ObjectStoreConfig, build_write_store};
+use loom_test_flight::test_write_store;
 use tonic::transport::Server;
 use worker::handler::{handle_flush, handle_gc};
-
-/// Build a local-filesystem `WriteStore` rooted at `warehouse` (the tempdir
-/// path `spawn_server` uses), for `EngineControlService::write_store`.
-fn test_write_store(warehouse: &str) -> store_config::WriteStore {
-    let mut env = std::collections::HashMap::new();
-    env.insert(
-        "LOOM_WAREHOUSE_URI".to_string(),
-        format!("file://{warehouse}"),
-    );
-    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
-    build_write_store(&store_cfg).expect("write store")
-}
 
 /// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
 /// now takes pre-decoded batches, so build these directly rather than
