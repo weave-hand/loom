@@ -4,8 +4,8 @@
 use std::time::Duration;
 
 use control_plane_core::{
-    ControlPlane, OutputMode, PageReq, RunState, RunTrigger, TableRef, TransformBody, TransformDef,
-    TransformName, Transforms,
+    ControlPlane, GC_JOB_KIND, JobSchedule, OutputMode, PageReq, RunState, RunTrigger, TableRef,
+    TransformBody, TransformDef, TransformName, Transforms,
 };
 use control_plane_memory::MemoryControlPlane;
 
@@ -64,6 +64,61 @@ async fn due_schedule_fires_once_as_schedule_run() {
 
     // Same probe again: the claim already advanced next_run_at — no re-fire.
     assert_eq!(engine::scheduler::tick(&cp, probe, 32).await, 0);
+}
+
+fn gc_schedule(name: &str, table: &str) -> JobSchedule {
+    JobSchedule {
+        name: name.into(),
+        kind: GC_JOB_KIND.into(),
+        payload: serde_json::json!({"schema": "main", "name": table}),
+        cron: "0 3 * * *".into(),
+    }
+}
+
+#[tokio::test]
+async fn due_maintenance_schedule_fires_once_and_enqueues_job() {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.queue()
+        .define_job_schedule(gc_schedule("nightly-gc", "events"))
+        .await
+        .unwrap();
+
+    // Not due yet: nothing fires.
+    let now = time::OffsetDateTime::now_utc();
+    assert_eq!(engine::scheduler::maintenance_tick(&cp, now, 32).await, 0);
+
+    // Probe two days ahead: exactly one fire, job enqueued with the schedule's payload.
+    let probe = now + time::Duration::days(2);
+    assert_eq!(engine::scheduler::maintenance_tick(&cp, probe, 32).await, 1);
+    let job = cp
+        .queue()
+        .dequeue(&[GC_JOB_KIND.to_string()], "w")
+        .await
+        .unwrap()
+        .expect("maintenance job enqueued");
+    assert_eq!(
+        job.payload,
+        serde_json::json!({"schema": "main", "name": "events"})
+    );
+
+    // Same probe again: the claim already advanced next_run_at — no re-fire.
+    assert_eq!(engine::scheduler::maintenance_tick(&cp, probe, 32).await, 0);
+}
+
+#[tokio::test]
+async fn transform_and_maintenance_schedules_fire_on_one_pass() {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.define_transform(scheduled_def("nightly")).await.unwrap();
+    cp.queue()
+        .define_job_schedule(gc_schedule("nightly-gc", "events"))
+        .await
+        .unwrap();
+
+    let now = time::OffsetDateTime::now_utc();
+    let probe = now + time::Duration::days(2);
+
+    assert_eq!(engine::scheduler::tick(&cp, probe, 32).await, 1);
+    assert_eq!(engine::scheduler::maintenance_tick(&cp, probe, 32).await, 1);
 }
 
 #[tokio::test]

@@ -1316,3 +1316,165 @@ async fn define_model_agg_and_constraint_errors_are_400() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// Seed a live table (schema, columns, one data-file snapshot) into the
+/// catalog so `Catalog::current_snapshot` resolves it — satisfies the
+/// `/admin/schedules` define-time catalog-existence check for `gc_table` /
+/// `compact_table` payloads.
+fn seed_table(cp: &MemoryControlPlane, schema: &str, name: &str) {
+    cp.seed_catalog(
+        &control_plane_core::TableRef {
+            schema: schema.into(),
+            name: name.into(),
+        },
+        &[("id".to_string(), "Int".to_string(), false)],
+        &[3],
+    );
+}
+
+#[tokio::test]
+async fn schedule_crud_roundtrip() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_table(&cp, "main", "orders");
+
+    let body = r#"{"name":"nightly-gc","kind":"gc_table",
+        "payload":{"schema":"main","name":"orders"},"cron":"0 3 * * *"}"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/schedules", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, listed) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/schedules", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let schedules = v["schedules"].as_array().unwrap();
+    assert_eq!(schedules.len(), 1, "{listed}");
+    assert_eq!(schedules[0]["name"], "nightly-gc");
+    assert_eq!(schedules[0]["kind"], "gc_table");
+    assert_eq!(schedules[0]["cron"], "0 3 * * *");
+    assert_eq!(
+        schedules[0]["payload"],
+        serde_json::json!({"schema": "main", "name": "orders"})
+    );
+    let nra = schedules[0]["next_run_at"]
+        .as_str()
+        .expect("next_run_at present");
+    assert!(nra.contains('T'), "RFC3339 timestamp: {nra}");
+
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("DELETE", "/admin/schedules/nightly-gc", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, listed) = send(
+        app(cp.clone()),
+        req_empty("GET", "/admin/schedules", &token),
+    )
+    .await;
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    assert!(v["schedules"].as_array().unwrap().is_empty());
+
+    // Deleting again is 404 (unlike the other admin delete routes, which are
+    // idempotent — schedule delete's `NotFound` is deliberate per Queue::delete_job_schedule).
+    let (status, _) = send(
+        app(cp),
+        req_empty("DELETE", "/admin/schedules/nightly-gc", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn schedule_define_rejects_bad_shapes() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_table(&cp, "main", "orders");
+
+    // invalid cron expression
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/schedules",
+            &token,
+            r#"{"name":"bad-cron","kind":"gc_table",
+                "payload":{"schema":"main","name":"orders"},"cron":"not a cron"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // unschedulable kind
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/schedules",
+            &token,
+            r#"{"name":"bad-kind","kind":"transform","payload":{},"cron":"0 3 * * *"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // payload missing `name`
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/schedules",
+            &token,
+            r#"{"name":"bad-payload","kind":"gc_table",
+                "payload":{"schema":"main"},"cron":"0 3 * * *"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // payload names a table absent from the mirror — the 400 body names it
+    let (status, body) = send(
+        app(cp),
+        req_json(
+            "POST",
+            "/admin/schedules",
+            &token,
+            r#"{"name":"bad-table","kind":"gc_table",
+                "payload":{"schema":"main","name":"ghost"},"cron":"0 3 * * *"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("ghost"),
+        "400 body names the missing table: {body}"
+    );
+}
+
+#[tokio::test]
+async fn schedule_routes_gated() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    // no token -> 401
+    let (status, _) = send(
+        app(cp.clone()),
+        Request::builder()
+            .uri("/admin/schedules")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // non-admin bearer -> 403
+    let alice = seed_session(&cp, "alice").await;
+    let (status, _) = send(app(cp), req_empty("GET", "/admin/schedules", &alice)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

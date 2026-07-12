@@ -19,8 +19,8 @@ use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Auth, Catalog, ColumnDef, ControlPlane, FileRef, Lineage, NewJob, Ontology, Queue, Result,
-    SnapshotId, TableControlPlane, TableRef, TableTx, Transforms, Tx,
+    Acl, Auth, Catalog, ColumnDef, ControlPlane, FileRef, JobSchedule, Lineage, NewJob, Ontology,
+    Queue, Result, SnapshotId, TableControlPlane, TableRef, TableTx, Transforms, Tx,
 };
 use time::OffsetDateTime;
 use tokio::sync::Notify;
@@ -65,6 +65,10 @@ impl<T> Versioned<T> {
 /// `MemoryControlPlane` field stays under clippy's `type_complexity` threshold.
 type MvWatermarkMap = std::collections::HashMap<(String, i64, i32), i64>;
 
+/// Per-schedule-name state: the defined [`JobSchedule`] plus its derived
+/// `next_run_at` — aliased so the `MemoryControlPlane` field stays readable.
+type ScheduleMap = std::collections::HashMap<String, (JobSchedule, OffsetDateTime)>;
+
 #[derive(Clone)]
 pub struct MemoryControlPlane {
     rows: Arc<Mutex<Vec<Row>>>,
@@ -78,6 +82,9 @@ pub struct MemoryControlPlane {
     offsets: Arc<Mutex<std::collections::HashMap<(i64, i32), i64>>>,
     stream_tables: Arc<Mutex<std::collections::HashMap<i64, control_plane_core::StreamMeta>>>,
     mv_watermarks: Arc<Mutex<MvWatermarkMap>>,
+    /// Lock order (`Queue::fire_due_job_schedules`): `schedules` THEN `rows` —
+    /// always take `schedules` first when a call needs both, to avoid deadlock.
+    schedules: Arc<Mutex<ScheduleMap>>,
     lock_timeout: Duration,
 }
 
@@ -95,6 +102,7 @@ impl MemoryControlPlane {
             offsets: Arc::new(Mutex::new(std::collections::HashMap::new())),
             stream_tables: Arc::new(Mutex::new(std::collections::HashMap::new())),
             mv_watermarks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            schedules: Arc::new(Mutex::new(std::collections::HashMap::new())),
             lock_timeout,
         }
     }

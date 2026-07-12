@@ -14,11 +14,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use control_plane_core::{
-    ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, ControlPlane, ControlPlaneError,
-    DerivedPropertyDef, Effect, IndexSpec, LengthConstraint, LinkDef, Metric, NewUser, ObjectType,
-    PageReq, Policy, PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId,
-    RowFilter, RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef,
-    TransformName, TransformRun, TypeName, UserSummary, VectorIndexDef,
+    ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, COMPACT_JOB_KIND, ControlPlane,
+    ControlPlaneError, DerivedPropertyDef, Effect, GC_JOB_KIND, IndexSpec, JobSchedule,
+    JobScheduleStatus, LengthConstraint, LinkDef, Metric, NewUser, ObjectType, PageReq, Policy,
+    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
+    RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
+    TypeName, UserSummary, VectorIndexDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -1577,6 +1578,168 @@ async fn get_run_route(State(st): State<AdminState>, Path(run_id): Path<String>)
     }
 }
 
+/// A `gc_table`/`compact_table` job payload's table reference, the shape
+/// shared by [`control_plane_core::GcJob`] and [`control_plane_core::CompactJob`]
+/// — used only to pull `(schema, name)` out of the wire payload for the
+/// define-time catalog-existence check, not to re-validate the payload (that
+/// is [`control_plane_core::validate_job_schedule`]'s job, reached via
+/// `define_job_schedule`).
+#[derive(serde::Deserialize)]
+struct ScheduleTablePayload {
+    schema: String,
+    name: String,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct JobScheduleReq {
+    name: String,
+    /// `"gc_table"` | `"compact_table"` (the only schedulable job kinds).
+    kind: String,
+    /// The kind's typed job body, e.g. `{"schema": "main", "name": "orders"}`.
+    payload: serde_json::Value,
+    /// A 5-field UTC cron expression, e.g. `"0 3 * * *"`.
+    cron: String,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct JobScheduleView {
+    name: String,
+    kind: String,
+    payload: serde_json::Value,
+    cron: String,
+    /// RFC3339, UTC.
+    next_run_at: String,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct ListSchedulesResp {
+    schedules: Vec<JobScheduleView>,
+}
+
+fn schedule_view(s: &JobScheduleStatus) -> JobScheduleView {
+    JobScheduleView {
+        name: s.schedule.name.clone(),
+        kind: s.schedule.kind.clone(),
+        payload: s.schedule.payload.clone(),
+        cron: s.schedule.cron.clone(),
+        next_run_at: rfc3339(s.next_run_at),
+    }
+}
+
+/// Define-time catalog-existence check for the two schedulable job kinds: the
+/// table named by the payload's `{schema, name}` must already be live in the
+/// catalog, or a long-lived schedule for a typo'd table would fail forever.
+/// `Some(response)` short-circuits the caller with a 400 naming the missing
+/// table; `None` means either the check passed or the kind/payload isn't this
+/// check's business (an unschedulable kind, or a payload that doesn't decode —
+/// both are left to `define_job_schedule`'s own `validate_job_schedule`).
+async fn schedule_table_check(
+    st: &AdminState,
+    kind: &str,
+    payload: &serde_json::Value,
+) -> Option<Response> {
+    if kind != GC_JOB_KIND && kind != COMPACT_JOB_KIND {
+        return None;
+    }
+    let Ok(t) = serde_json::from_value::<ScheduleTablePayload>(payload.clone()) else {
+        return None;
+    };
+    let table = TableRef {
+        schema: t.schema,
+        name: t.name,
+    };
+    match st.cp.catalog().current_snapshot(&table).await {
+        Ok(_) => None,
+        Err(ControlPlaneError::NotFound(_)) => Some(
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("unknown table: {}.{}", table.schema, table.name)
+                })),
+            )
+                .into_response(),
+        ),
+        Err(e) => Some(status_for(&e).into_response()),
+    }
+}
+
+/// Define (or redefine) a named cron schedule for a recurring maintenance job.
+///
+/// For `gc_table`/`compact_table` (the only schedulable kinds) the payload's
+/// `{schema, name}` table must already exist in the catalog at define time —
+/// stricter than the manual `/tables/{schema}/{table}/compact`-style enqueue
+/// endpoints, since a long-lived schedule for a typo'd table would fail
+/// forever. A redefine (same `name`) resets `next_run_at` from now.
+#[utoipa::path(
+    post, path = "/admin/schedules",
+    request_body = JobScheduleReq,
+    responses(
+        (status = 201, description = "Schedule defined (redefine resets next_run_at)"),
+        (status = 400, description = "Invalid cron expression, an unschedulable kind, a \
+            payload that fails to decode as the kind's job body, or (gc_table/compact_table \
+            only) the payload names a table that does not exist in the catalog"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_schedule_route(
+    State(st): State<AdminState>,
+    Json(req): Json<JobScheduleReq>,
+) -> Response {
+    if let Some(resp) = schedule_table_check(&st, &req.kind, &req.payload).await {
+        return resp;
+    }
+    let schedule = JobSchedule {
+        name: req.name.clone(),
+        kind: req.kind,
+        payload: req.payload,
+        cron: req.cron,
+    };
+    match st.cp.queue().define_job_schedule(schedule).await {
+        Ok(()) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "name": req.name })),
+        )
+            .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// List all defined job schedules with their derived `next_run_at`.
+#[utoipa::path(
+    get, path = "/admin/schedules",
+    responses((status = 200, description = "All defined schedules", body = ListSchedulesResp)),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn list_schedules_route(State(st): State<AdminState>) -> Response {
+    match st.cp.queue().list_job_schedules().await {
+        Ok(list) => {
+            let schedules = list.iter().map(schedule_view).collect();
+            (StatusCode::OK, Json(ListSchedulesResp { schedules })).into_response()
+        }
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// Remove a named job schedule.
+#[utoipa::path(
+    delete, path = "/admin/schedules/{name}",
+    params(("name" = String, Path, description = "Schedule name")),
+    responses(
+        (status = 204, description = "Schedule deleted"),
+        (status = 404, description = "Unknown schedule name"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn delete_schedule_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
+    match st.cp.queue().delete_job_schedule(&name).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// Admin routes, behind `require_auth` (401) then [`require_admin`] (403).
 pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
     let inner = Router::new()
@@ -1622,6 +1785,11 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         .route("/admin/transforms/:name/run", post(run_transform_route))
         .route("/admin/transforms/:name/runs", get(list_transform_runs))
         .route("/admin/runs/:run_id", get(get_run_route))
+        .route(
+            "/admin/schedules",
+            post(define_schedule_route).get(list_schedules_route),
+        )
+        .route("/admin/schedules/:name", delete(delete_schedule_route))
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)
@@ -1661,7 +1829,10 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         run_transform_route,
         run_adhoc_route,
         list_transform_runs,
-        get_run_route
+        get_run_route,
+        define_schedule_route,
+        list_schedules_route,
+        delete_schedule_route
     ),
     components(schemas(
         CreateUserReq,
@@ -1692,7 +1863,10 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         ListTransformsResp,
         TransformRunView,
         ListRunsResp,
-        RunSubmittedResp
+        RunSubmittedResp,
+        JobScheduleReq,
+        JobScheduleView,
+        ListSchedulesResp
     ))
 )]
 struct AdminApiDoc;

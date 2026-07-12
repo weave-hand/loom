@@ -129,9 +129,9 @@ pattern. Transform schedules are untouched.
 
 ## Schema
 
-New migration `src/control-plane/postgres/migrations/0042_job_schedules.sql`
-(next free slot after `0041_action_downstream.sql`), in the existing `queue`
-schema — schedules are queue feeders, owned by the queue concern:
+New migration `src/control-plane/postgres/migrations/0043_job_schedules.sql`
+(next free slot — `0042_mv_watermark.sql` landed in PR #418), in the existing
+`queue` schema — schedules are queue feeders, owned by the queue concern:
 
 ```sql
 -- Scheduled maintenance jobs: named cron rows that enqueue (kind, payload)
@@ -341,7 +341,7 @@ not merged.
   - `JobScheduleStatus`, `ScheduleFired`, and the four `Queue` trait methods
     `define_job_schedule` / `list_job_schedules` / `delete_job_schedule` /
     `fire_due_job_schedules`.
-  - Migration `0042_job_schedules.sql` (`queue.schedule` + `schedule_due`).
+  - Migration `0043_job_schedules.sql` (`queue.schedule` + `schedule_due`).
   - `engine::scheduler::maintenance_tick`, folded into `scheduler_loop`.
   - `POST /admin/schedules`, `GET /admin/schedules`,
     `DELETE /admin/schedules/{name}` in `runtime/src/admin.rs`.

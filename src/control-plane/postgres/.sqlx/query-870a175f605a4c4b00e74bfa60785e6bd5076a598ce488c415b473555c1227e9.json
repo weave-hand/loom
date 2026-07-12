@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "update queue.schedule set next_run_at = $2 where name = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "870a175f605a4c4b00e74bfa60785e6bd5076a598ce488c415b473555c1227e9"
+}

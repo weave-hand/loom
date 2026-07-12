@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use control_plane_core::{Job, JobId, NewJob, Queue, Result, RetryPolicy};
+use control_plane_core::{
+    ControlPlaneError, Job, JobId, JobSchedule, JobScheduleStatus, NewJob, Queue, Result,
+    RetryPolicy, ScheduleFired, next_cron_occurrence, validate_job_schedule,
+};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -161,5 +164,110 @@ impl Queue for PgControlPlane {
         // A notification, or the polling-fallback timeout — whichever first.
         drop(tokio::time::timeout(timeout, listener.recv()).await);
         Ok(())
+    }
+
+    #[tracing::instrument(skip(self, s), level = "debug")]
+    async fn define_job_schedule(&self, s: JobSchedule) -> Result<()> {
+        validate_job_schedule(&s)?;
+        let next_run_at = next_cron_occurrence(&s.cron, OffsetDateTime::now_utc())?;
+        sqlx::query!(
+            "insert into queue.schedule (name, kind, payload, cron, next_run_at) \
+                 values ($1, $2, $3, $4, $5) \
+             on conflict (name) do update set \
+                 kind = excluded.kind, \
+                 payload = excluded.payload, \
+                 cron = excluded.cron, \
+                 next_run_at = excluded.next_run_at",
+            s.name,
+            s.kind,
+            s.payload,
+            s.cron,
+            next_run_at,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn list_job_schedules(&self) -> Result<Vec<JobScheduleStatus>> {
+        let rows = sqlx::query!(
+            "select name, kind, payload, cron, next_run_at from queue.schedule order by name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(rows
+            .into_iter()
+            .map(|r| JobScheduleStatus {
+                schedule: JobSchedule {
+                    name: r.name,
+                    kind: r.kind,
+                    payload: r.payload,
+                    cron: r.cron,
+                },
+                next_run_at: r.next_run_at,
+            })
+            .collect())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn delete_job_schedule(&self, name: &str) -> Result<()> {
+        let row = sqlx::query!(
+            "delete from queue.schedule where name = $1 returning name",
+            name,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        row.map(|_| ())
+            .ok_or_else(|| ControlPlaneError::NotFound(format!("job schedule '{name}'")))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn fire_due_job_schedules(
+        &self,
+        now: OffsetDateTime,
+        limit: u32,
+    ) -> Result<Vec<ScheduleFired>> {
+        let mut tx = self.pool.begin().await.map_err(backend)?;
+        let rows = sqlx::query!(
+            "select name, kind, payload, cron from queue.schedule \
+             where next_run_at <= $1 \
+             order by next_run_at, name \
+             limit $2 \
+             for update skip locked",
+            now,
+            i64::from(limit),
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(backend)?;
+        let mut fired = Vec::with_capacity(rows.len());
+        for r in rows {
+            let next_run_at = next_cron_occurrence(&r.cron, now)?;
+            sqlx::query!(
+                "update queue.schedule set next_run_at = $2 where name = $1",
+                &r.name,
+                next_run_at,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(backend)?;
+            let job = pg_insert_if_absent(
+                &mut *tx,
+                &NewJob {
+                    kind: r.kind,
+                    payload: r.payload,
+                    run_at: None,
+                    priority: 0,
+                },
+            )
+            .await?;
+            fired.push(ScheduleFired { name: r.name, job });
+        }
+        tx.commit().await.map_err(backend)?;
+        Ok(fired)
     }
 }

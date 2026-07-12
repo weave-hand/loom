@@ -404,6 +404,16 @@ claim that fails to make it into a submitted run (a `submit_run` error) is
 logged and the occurrence is skipped, not retried, since the clock has
 already advanced.
 
+The same loop also fires **maintenance schedules** on the same
+`LOOM_SCHEDULER_TICK_SECS` cadence: beside the transform `tick`, a
+`maintenance_tick` calls `Queue::fire_due_job_schedules(now, 32)`, which advances
+each due `queue.schedule` row and enqueues its `(kind, payload)` maintenance job
+(`gc_table` / `compact_table`) in one transaction — exactly-once, dedup-suppressing
+an identical still-`available` job (see [control-plane.md](control-plane.md)). It
+mirrors the transform tick's posture — a failed fire is logged and returns zero,
+never killing the loop — so one loop, one cadence, no new knob fires both transform
+and maintenance schedules.
+
 ## Known gaps
 
 - `#fut-flight-sql-surface` — the rest of the Flight SQL command surface
