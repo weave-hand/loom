@@ -10,13 +10,12 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, SchemaRef};
-use control_plane_core::{Catalog, ColumnSpec, ControlPlaneError, TableRef};
+use control_plane_core::{Catalog, ControlPlaneError, TableRef};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::prelude::{col, lit};
 use datafusion::scalar::ScalarValue;
-use datafusion_io::logical_arrow_schema;
 use store_config::ServingStore;
 
 use crate::serving::{EngineServingError, build_serving_provider, to_serving};
@@ -38,8 +37,10 @@ fn refuse(msg: &str) -> EngineServingError {
 /// A table that has never been committed to the Iceberg mirror at all (no
 /// declared/landed data, ever) is a deterministic error. A table that IS live
 /// in the mirror but currently has zero files and zero live inline rows (the
-/// "live-but-empty" transform-input posture) serves its declared logical
-/// schema with zero rows — not an error.
+/// "live-but-empty" transform-input posture) still reads as zero rows over
+/// its declared mirror schema — not an error — because `build_serving_provider`
+/// itself registers a live-but-empty table as a zero-row provider over that
+/// schema; this function needs no compensation of its own for that case.
 pub async fn mv_enrich_scan(
     catalog: &IcebergCatalog,
     table: &TableRef,
@@ -52,8 +53,8 @@ pub async fn mv_enrich_scan(
     // `build_serving_provider` re-resolves this snapshot internally, but by
     // the time an error crosses that boundary it has already been flattened
     // into an opaque `EngineServingError::Engine` string.
-    let snap = match catalog.current_snapshot(table).await {
-        Ok(s) => s,
+    match catalog.current_snapshot(table).await {
+        Ok(_) => {}
         Err(ControlPlaneError::NotFound(_)) => {
             return Err(refuse(&format!(
                 "unknown table {}.{}",
@@ -61,28 +62,19 @@ pub async fn mv_enrich_scan(
             )));
         }
         Err(e) => return Err(to_serving(e)),
-    };
+    }
 
     let ctx = SessionContext::new();
     let Some(provider) = build_serving_provider(&ctx, catalog, table, serving_store, None).await?
     else {
-        // Live-but-empty: no files, no live inline rows. Serve the declared
-        // logical schema (the mirror's authoritative column list, already
-        // known to be resolvable since `current_snapshot` above succeeded)
-        // with zero rows — the transform-input posture.
-        let table_schema = catalog.schema(table, snap.id).await.map_err(to_serving)?;
-        let columns: Vec<ColumnSpec> = table_schema
-            .columns
-            .into_iter()
-            .map(|c| ColumnSpec {
-                name: c.name,
-                ty: c.ty,
-                nullable: c.nullable,
-            })
-            .collect();
-        let schema = logical_arrow_schema(&columns)
-            .map_err(|e| refuse(&format!("unsupported column type: {e}")))?;
-        return Ok((schema, Vec::new()));
+        // `build_serving_provider` yields `Ok(None)` only for an as-of read of a
+        // table not live at the pinned snapshot. This call passes `at: None` and
+        // the table is proven live by `current_snapshot` above, so `None` is
+        // unreachable here — treat it defensively as an internal fault.
+        return Err(refuse(&format!(
+            "internal: no serving provider for live table {}.{}",
+            table.schema, table.name
+        )));
     };
 
     let df = ctx.read_table(provider).map_err(to_serving)?;
