@@ -115,8 +115,8 @@ impl FlightExportTuning {
     }
 }
 
-/// The query-api binary's composed config: serving tuning + external SQL wire
-/// tuning. `#[serde(default)]` so a partial config file deserializes (omitted
+/// The query-api binary's composed config: serving tuning + the two external-wire
+/// tunings (SQL wire + Flight export). `#[serde(default)]` so a partial config file deserializes (omitted
 /// domains fall to their `Default`). Loaded via `loom_config::load` (defaults <
 /// file < env) through the `LayeredConfig` impl below.
 #[derive(Default, serde::Deserialize)]
