@@ -66,7 +66,8 @@ Create `src/services/engine-serving/tests/serving_empty_table.rs`:
 use std::sync::Arc;
 
 use control_plane_core::{
-    ColumnSpec, ControlPlane, GovernedCatalog, ObjectType, SnapshotId, TableControlPlane, TableRef,
+    ColumnSpec, ControlPlane, GovernedCatalog, GovernedTable, ObjectType, SnapshotId,
+    TableControlPlane, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -273,9 +274,20 @@ async fn governed_read_of_empty_table_returns_zero_rows() {
     create_empty_table(&icp, &tref("s", "empty")).await;
 
     let catalog = IcebergCatalog::new(pool);
-    // Empty policy = full visibility (the governed_sql.rs convention): the
-    // governed loop must register the empty table instead of `continue`ing.
-    let cat = GovernedCatalog { tables: vec![] };
+    // The governed path is CLOSED-WORLD since PR #417: a live table with NO
+    // GovernedTable entry is skipped (`continue`) before build_serving_provider,
+    // so `tables: vec![]` would be deny-all — not what we want to test here. An
+    // entry with an EMPTY policy is fully visible (governed.rs struct doc); the
+    // governed loop must then register the empty table (wrapped in
+    // GovernedTableProvider) and read it as zero rows. Mirror governed_sql.rs:48.
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: tref("s", "empty"),
+            row_filters: vec![],
+            denied: vec![],
+            masked: vec![],
+        }],
+    };
     let stream = execute_governed_sql_stream(&catalog, "SELECT * FROM \"s\".\"empty\"", &cat, None)
         .await
         .expect("governed SELECT * over a live-but-empty table must plan");
@@ -285,7 +297,7 @@ async fn governed_read_of_empty_table_returns_zero_rows() {
 }
 ```
 
-(If `GovernedCatalog`'s construction differs — check `governed_sql.rs`'s `GovernedCatalog { tables: vec![…] }` literal — mirror that file exactly; the intent is "no policy rows".)
+(HARD REQUIREMENT — mirror `governed_sql.rs:48-59`'s `GovernedCatalog { tables: vec![GovernedTable { table, row_filters, denied, masked }] }` literal exactly. Do NOT use `tables: vec![]`: the governed path is closed-world (`governed.rs:302-303`), so an empty `tables` vec is deny-all and the table would never register — the test would fail even with the serving fix applied. The intent is "one entry, empty policy = fully visible".)
 
 - [ ] **Step 2: Wire the BUCK target**
 
@@ -338,8 +350,10 @@ never registered (iss-serving-empty-table-not-found)."
 
 ## Task 2: Implement — `empty_provider` + replace both `(None, None)` arms
 
+> **Line drift (verified against current `main`):** `build_serving_provider` fn `:80`; doc comment **`:75-79`** (stale `:69-73`); combine `match` **`:194-237`** (stale `:188-231`); the two arms at **`:207`**/**`:224`**; in-scope `schema` from `arrow_schema_from_mirror` at **`:128`** (defined **`:626`**); `to_serving` at **`:71`**; as-of `Ok(None)` arm **`:117-119`**; insert the helper before `with_cdc_framing_fields` (**`:250`**). Match the constructs, not the numbers.
+
 **Files:**
-- Modify: `src/services/engine-serving/src/serving.rs:69-73` (doc comment), `:188-231` (the combine match — two arms), new helper after `build_serving_provider` (near `:236`).
+- Modify: `src/services/engine-serving/src/serving.rs:75-79` (doc comment), `:194-237` (the combine match — two arms), new helper after `build_serving_provider` (near `:250`).
 
 **Interfaces:**
 - Consumes: the in-scope `schema` (`serving.rs:122`), `to_serving` (`serving.rs:65`), `datafusion::datasource::MemTable`.
@@ -371,11 +385,11 @@ fn empty_provider(schema: &SchemaRef) -> Result<Arc<dyn TableProvider>, EngineSe
 
 In the combine match (`serving.rs:188-231`):
 
-- Identity-less arm (`:201`):
+- Identity-less arm (**current `serving.rs:207`** — plan/spec cite the stale `:201`):
   `(None, None) => return Ok(None), // a live table with no data; nothing to register`
   becomes
   `(None, None) => empty_provider(&schema)?, // live but empty: zero rows, mirror schema`
-- Identity-bearing arm (`:218`):
+- Identity-bearing arm (**current `serving.rs:224`** — stale cite `:218`):
   `(None, None) => return Ok(None),`
   becomes
   `(None, None) => empty_provider(&schema)?,`
@@ -421,8 +435,10 @@ iss-serving-empty-table-not-found."
 
 ## Task 3: Drop the worker's `Validation`-means-empty guard
 
+> **Line drift (verified against current `main`):** comment block at **`transform.rs:251-259`** (plan cites stale `:247-255`); read + guard at **`:277-289`** (stale `:273-285`); the `Err(Validation) => Vec::new()` arm at **`:282`** (stale `:278`); the zero-batch `register_empty_table` arm that STAYS at **`:290-296`** (stale `:286-292`). Match the constructs, not the numbers.
+
 **Files:**
-- Modify: `src/services/worker/src/transform.rs:247-255` (comment block), `:273-285` (the read + guard).
+- Modify: `src/services/worker/src/transform.rs:251-259` (comment block), `:277-289` (the read + guard).
 
 **Interfaces:**
 - Consumes: the Task 2 serving invariant (an existing input's `SELECT *` never plan-errors).
@@ -507,9 +523,9 @@ iss-serving-empty-table-not-found."
 ## Task 4: Documentation — capability docs + close the register item
 
 **Files:**
-- Modify: `docs/system-capabilities/engine.md` — the serving read path section gains the invariant.
-- Modify: `docs/system-capabilities/transform.md:160-163` — remove the guard note.
-- Modify: `docs/ISSUES.md` — remove the closed `iss-serving-empty-table-not-found` entry (`ISSUES.md:20-21`).
+- Modify: `docs/system-capabilities/engine.md` — the serving read path section gains the invariant (the "register a zero-file table as an empty relation" text is around **`:258-260`**, governed-per-live-table at `:289`; the stale `:170-173` cite in Step 1 no longer points at it — grep for the relevant sentence).
+- Modify: `docs/system-capabilities/transform.md:168-170` (stale cite `:160-163`) — remove the guard note.
+- Modify: `docs/ISSUES.md` — remove the closed `iss-serving-empty-table-not-found` entry (title currently at **`ISSUES.md:32`**, stale cite `:20-21`).
 
 - [ ] **Step 1: Update `docs/system-capabilities/engine.md`**
 
@@ -524,7 +540,7 @@ Rewrite the clause at `transform.md:160-163` ("…a live-but-empty input (no inl
 Remove the `- [ ] **Serving path returns \`table not found\` for a live zero-row table** {#iss-serving-empty-table-not-found …}` entry (title + prose lines) from `docs/ISSUES.md` — the registers carry open work only; git history keeps the record. Run the `loom-docs-update` skill if operating under it, or edit directly.
 
 Validate: `bash tools/docs.sh validate`
-Expected: clean (no dangling `[[iss-serving-empty-table-not-found]]` cross-links — `transform.md`'s prose reference was rewritten in Step 2; grep to be sure: `grep -rn "iss-serving-empty-table-not-found" docs/ src/` should hit only this spec/plan pair).
+Expected: clean. Note: after removing the entry, `grep -rn "iss-serving-empty-table-not-found" docs/ src/` will STILL legitimately hit (a) this spec/plan pair and (b) **`docs/ISSUES.md`** — a *different*, still-open issue references this id in backticked prose (not a `[[…]]` cross-link, so `validate` passes). **Do NOT delete that reference** and do NOT expect a clean grep. The only thing to remove is this issue's own title + prose entry (title currently at `ISSUES.md:32`; the transform.md guard note at `transform.md:168-170` is rewritten in Task 4 Step 2).
 
 - [ ] **Step 4: Run prek + commit**
 
