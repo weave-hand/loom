@@ -659,6 +659,73 @@ where
         "as_of before the first snapshot resolves to None"
     );
 
+    // snapshot(id): exact history lookup — a seeded id resolves with its time;
+    // an id above the newest global snapshot is None (NOT live-forward like the
+    // liveness range); an id below the table's first LIVE snapshot is None.
+    // Keyed off `hist.first()`, not `s0` (`seeded[0].snapshot`, the first batch):
+    // the memory seeder allocates a table-creation snapshot before the first
+    // batch, so the table's true first live snapshot can precede `s0` — see
+    // `MemSeeder`/`seed_catalog`. `hist` already carries every live snapshot for
+    // `t`, so `hist.first()` is that true first-live point on both backends.
+    let got = catalog.snapshot(&t, s0.id).await.unwrap();
+    assert_eq!(
+        got.as_ref().map(|s| s.id),
+        Some(s0.id),
+        "seeded id resolves"
+    );
+    assert_eq!(
+        got.map(|s| s.time),
+        Some(s0.time),
+        "resolved snapshot carries its time"
+    );
+    assert_eq!(
+        catalog
+            .snapshot(&t, SnapshotId(cur.id.0 + 1_000_000))
+            .await
+            .unwrap(),
+        None,
+        "an id above the newest snapshot does not resolve"
+    );
+    let first_live = hist.first().unwrap().id;
+    assert_eq!(
+        catalog
+            .snapshot(&t, SnapshotId(first_live.0 - 1))
+            .await
+            .unwrap(),
+        None,
+        "an id before the table's first live snapshot does not resolve"
+    );
+
+    // snapshot_horizon(cutoff): strictly-before max; None when nothing has aged out.
+    // Cutoff is `hist.first()`'s time (not `s0.time`) for the same bootstrap-snapshot
+    // reason above: `hist.first()` is the earliest snapshot the freshly-seeded backend
+    // ever allocated (both harnesses are freshly seeded: `MemSeeder` on a new
+    // `MemoryControlPlane`, the pg harness on a `fresh_db` — a brand-new database with
+    // no pre-existing snapshot rows), so nothing can be strictly before it.
+    assert_eq!(
+        catalog
+            .snapshot_horizon(hist.first().unwrap().time)
+            .await
+            .unwrap(),
+        None,
+        "cutoff at the first snapshot's time: nothing strictly before -> None"
+    );
+    assert_eq!(
+        catalog
+            .snapshot_horizon(cur.time + time::Duration::seconds(1))
+            .await
+            .unwrap(),
+        Some(cur.id),
+        "cutoff after the newest snapshot -> the newest id"
+    );
+    if s0.time < s1.time {
+        assert_eq!(
+            catalog.snapshot_horizon(s1.time).await.unwrap(),
+            Some(s0.id),
+            "cutoff at s1's time -> s0 (strictly-before semantics)"
+        );
+    }
+
     // schema at current: the two columns, in order, with loom logical types and
     // correct nullability. The contract seeds loom LOGICAL types (`long`/`string`);
     // `Catalog::schema()` returns logical types for every backend (the pg adapter
@@ -829,6 +896,23 @@ where
     assert!(
         matches!(catalog.schema(&t, d).await, Err(NotFound(_))),
         "not live at the drop snapshot (schema)"
+    );
+
+    // snapshot(id): the table is not live at its own drop snapshot, but history
+    // before the drop (a seeded batch snapshot) stays resolvable.
+    assert_eq!(
+        catalog.snapshot(&t, d).await.unwrap(),
+        None,
+        "not live at the drop snapshot (snapshot)"
+    );
+    assert_eq!(
+        catalog
+            .snapshot(&t, seeded[0].snapshot)
+            .await
+            .unwrap()
+            .map(|s| s.id),
+        Some(seeded[0].snapshot),
+        "history before the drop stays resolvable"
     );
 
     // `end > s` true (non-null end): time-travel into the live past still works.
