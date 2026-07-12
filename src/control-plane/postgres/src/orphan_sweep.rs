@@ -59,11 +59,26 @@ fn in_scope(key: &str) -> bool {
 /// Normalize an absolute mirror path (`s3://bucket/key` or `file:///abs/key`) to
 /// the store-relative key that `ObjectMeta.location` yields: strip the store's
 /// `root_url` prefix, then any leading `/`.
+///
+/// A reference path that does NOT start with `root_url` cannot be normalized to a
+/// comparable key, so it silently fails to protect a matching object — a
+/// mass-delete precursor. Every verified caller's `root_url` prefixes every stored
+/// path, so this should never fire; if it does, log loudly rather than silently
+/// dropping the reference's protection.
 fn to_store_key(root_url: &str, abs: &str) -> String {
-    abs.strip_prefix(root_url)
-        .unwrap_or(abs)
-        .trim_start_matches('/')
-        .to_string()
+    match abs.strip_prefix(root_url) {
+        Some(rel) => rel.trim_start_matches('/').to_string(),
+        None => {
+            tracing::warn!(
+                path = %abs,
+                root_url = %root_url,
+                "orphan-sweep: reference path does not start with the warehouse root_url; \
+                 it cannot normalize to a store key and may fail to protect a matching object \
+                 (possible warehouse-root/path mismatch)"
+            );
+            abs.trim_start_matches('/').to_string()
+        }
+    }
 }
 
 /// Object-store error → opaque backend error (transport/IO faults have no more
