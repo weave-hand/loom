@@ -177,6 +177,76 @@ impl IcebergCatalog {
             .collect::<Result<Vec<_>>>()
     }
 
+    /// The current snapshots of `base` and `clog`, read in ONE statement — hence
+    /// against ONE Postgres MVCC snapshot, so the pair is mutually consistent by
+    /// construction. This is the changelog feed's pin.
+    ///
+    /// Why one statement: the slice-2b flush appends the changelog files AND end-caps
+    /// the base's inline rows in a single Postgres transaction (`iceberg_flush.rs`),
+    /// so a single-statement read sees that flush wholly or not at all. Two
+    /// independent `current_snapshot` calls can see HALF of it — the base already
+    /// advanced past the flush while the changelog files are still invisible — which
+    /// tears the feed's inline-XOR-files invariant and SILENTLY DROPS events
+    /// (`iss-stream-feed-torn-read`). Do not "simplify" this back into two reads.
+    ///
+    /// `None` for either element means that table has no live snapshot (e.g. the
+    /// changelog table before the first flush). Absence is an ANSWER, not an error —
+    /// unlike `Catalog::current_snapshot`, whose `NotFound` the feed would only have
+    /// to catch and discard.
+    #[tracing::instrument(skip(self), level = "debug")]
+    pub async fn current_snapshots_pair(
+        &self,
+        base: &TableRef,
+        clog: &TableRef,
+    ) -> Result<(Option<Snapshot>, Option<Snapshot>)> {
+        let rows = sqlx::query!(
+            "select v.tag as \"tag!\", \
+                    s.snapshot_id as \"snapshot_id?\", \
+                    s.snapshot_time as \"snapshot_time?\", \
+                    s.schema_version as \"schema_version?\" \
+             from (values ('base', $1::text, $2::text), ('clog', $3::text, $4::text)) \
+                  as v(tag, ns, nm) \
+             left join lateral ( \
+                 select sn.snapshot_id, sn.snapshot_time, sn.schema_version \
+                 from iceberg_mirror.snapshot sn \
+                 where exists ( \
+                     select 1 from iceberg_mirror.table t \
+                     where t.table_namespace = v.ns and t.table_name = v.nm \
+                       and t.begin_snapshot <= sn.snapshot_id \
+                       and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) \
+                 order by sn.snapshot_id desc limit 1 \
+             ) s on true",
+            base.schema,
+            base.name,
+            clog.schema,
+            clog.name,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+
+        let mut base_snap = None;
+        let mut clog_snap = None;
+        for r in rows {
+            // The three lateral columns are null together (no live snapshot) or present
+            // together — the lateral yields a whole row or no row.
+            let snap = match (r.snapshot_id, r.snapshot_time, r.schema_version) {
+                (Some(id), Some(time), Some(schema_version)) => Some(Snapshot {
+                    id: SnapshotId(id),
+                    time,
+                    schema_version,
+                }),
+                _ => None,
+            };
+            if r.tag == "base" {
+                base_snap = snap;
+            } else {
+                clog_snap = snap;
+            }
+        }
+        Ok((base_snap, clog_snap))
+    }
+
     /// Every table currently live in the mirror (those with no `end_snapshot`),
     /// as loom `TableRef`s (`table_namespace` -> schema, `table_name` -> name).
     /// The read engine registers each as a DataFusion table.

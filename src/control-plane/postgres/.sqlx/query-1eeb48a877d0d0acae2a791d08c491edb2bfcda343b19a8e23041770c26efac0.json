@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select v.tag as \"tag!\", s.snapshot_id as \"snapshot_id?\", s.snapshot_time as \"snapshot_time?\", s.schema_version as \"schema_version?\" from (values ('base', $1::text, $2::text), ('clog', $3::text, $4::text)) as v(tag, ns, nm) left join lateral ( select sn.snapshot_id, sn.snapshot_time, sn.schema_version from iceberg_mirror.snapshot sn where exists ( select 1 from iceberg_mirror.table t where t.table_namespace = v.ns and t.table_name = v.nm and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id)) order by sn.snapshot_id desc limit 1 ) s on true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "snapshot_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.snapshot",
+            "name": "snapshot_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "snapshot_time?",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.snapshot",
+            "name": "snapshot_time"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "schema_version?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.snapshot",
+            "name": "schema_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "1eeb48a877d0d0acae2a791d08c491edb2bfcda343b19a8e23041770c26efac0"
+}
