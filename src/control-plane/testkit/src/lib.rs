@@ -403,12 +403,23 @@ where
         cp.complete(j.id).await.expect("drain complete");
     }
 
-    // --- concurrent leg: two concurrent fires at a fresh probe enqueue exactly
-    // one job in total for that firing (the mutex serializes advance + insert).
-    // A generous +3 day margin guarantees at least one of the two now-defined
-    // schedules is due regardless of exact cron-boundary arithmetic above; since
-    // both share (kind, payload), same-call dedup caps the total at one even if
-    // both are due in the same winning call.
+    // --- concurrent leg: two concurrent callers firing the SAME due schedule
+    // fire it exactly once — the per-schedule exactly-once guarantee. On postgres
+    // `SELECT … FOR UPDATE SKIP LOCKED` hands the due row to exactly one caller;
+    // on memory the whole call is serialized under the `schedules` lock, so the
+    // loser sees the already-advanced `next_run_at` and fires nothing.
+    //
+    // We delete the dup first so `nightly-gc` is the ONLY due schedule. That is
+    // deliberate: the cross-schedule dedup (two *distinct* rows sharing a
+    // `(kind, payload)`) is best-effort and is exercised deterministically by the
+    // non-concurrent dedup leg above — it does NOT hold under two concurrent
+    // callers, because `pg_insert_if_absent`'s READ COMMITTED `WHERE NOT EXISTS`
+    // cannot see the other transaction's uncommitted insert. Asserting on it here
+    // would be a postgres-only flake. The per-schedule guarantee below is the one
+    // the design actually makes, and it is deterministic on both adapters.
+    cp.delete_job_schedule("nightly-gc-dup")
+        .await
+        .expect("delete dup before the concurrent leg");
     let probe4 = probe3 + time::Duration::days(3);
     let cp_a = cp.clone();
     let cp_b = cp.clone();
@@ -416,16 +427,18 @@ where
         async move { cp_a.fire_due_job_schedules(probe4, 32).await },
         async move { cp_b.fire_due_job_schedules(probe4, 32).await },
     );
-    let total_jobs = fired_a
+    let fired: Vec<_> = fired_a
         .expect("concurrent fire a")
         .into_iter()
         .chain(fired_b.expect("concurrent fire b"))
         .filter(|f| f.job.is_some())
-        .count();
+        .collect();
     assert_eq!(
-        total_jobs, 1,
-        "concurrent fires at the same probe enqueue exactly one job in total"
+        fired.len(),
+        1,
+        "two concurrent callers fire the same due schedule exactly once"
     );
+    assert_eq!(fired[0].name, "nightly-gc");
 
     // --- delete: gone from list; deleting again is NotFound ---
     cp.delete_job_schedule("nightly-gc")
