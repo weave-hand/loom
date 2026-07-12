@@ -89,6 +89,30 @@ handler outliving the lock timeout is no longer reclaimed and double-executed
 (#13); and handlers are wrapped in `catch_unwind`, so a panicking handler fails
 its job `Abandon` instead of poisoning the loop.
 
+The queue also owns a **schedule surface** for recurring maintenance jobs: a
+`queue.schedule` row `(name, kind, payload, cron, next_run_at)` names a cron
+schedule that enqueues a `(kind, payload)` job on each firing. `define_job_schedule`
+validates the shape (`validate_job_schedule`: a valid 5-field UTC cron, a kind in
+`SCHEDULABLE_JOB_KINDS` — today `gc_table` / `compact_table`, deliberately narrower
+than `KNOWN_JOB_KINDS` since transform kinds must go through the run ledger — and a
+payload that decodes as that kind's typed body) and derives `next_run_at`; a redefine
+resets the clock. `fire_due_job_schedules(now, limit)` folds the claim-advance and the
+deduped enqueue into **one transaction** (`SELECT … FOR UPDATE SKIP LOCKED` over due
+rows, per-row `next_run_at` advance, then `pg_insert_if_absent`), so each firing is
+**exactly-once** — never skipped, never double-fired by concurrent callers — and an
+identical still-`available` job suppresses the insert while the schedule still advances
+(no pile-up when cadence outpaces the queue). It is the operator-cadence complement to
+the event-driven compaction auto-trigger; the engine scheduler loop fires it on the
+same tick as transform schedules (see [engine.md](engine.md)). The admin HTTP surface
+is three routes under `require_admin` (`src/services/runtime/src/admin.rs`,
+OpenAPI-annotated): `POST /admin/schedules` (201; 400 on a bad cron, an unschedulable
+kind, an undecodable payload, or — a define-time catalog-existence check stricter than
+the manual enqueue endpoints — a payload naming a table absent from the mirror), `GET
+/admin/schedules` (200, each row's `next_run_at` as RFC3339 UTC), and `DELETE
+/admin/schedules/{name}` (204, or 404 unknown). A `gc_table`/`compact_table` schedule is
+proven end to end — cron fire → deduped enqueue → zero-pool worker drain (`handle_gc` /
+`handle_compact`) over the engine wire — by `worker/tests/scheduled_maintenance_e2e.rs`.
+
 ## Catalog and the Iceberg mirror
 
 The catalog concern is a read-only MVCC view over the active table-format
