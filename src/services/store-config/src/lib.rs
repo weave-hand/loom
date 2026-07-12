@@ -167,6 +167,7 @@ pub fn local_store(data_path: &Path) -> Result<LocalFileSystem, StoreConfigError
 }
 
 /// Bucket name + object store handle returned by [`build_serving_object_store`].
+#[derive(Clone)]
 pub struct ServingStore {
     pub bucket: String,
     pub store: Arc<dyn ObjectStore>,

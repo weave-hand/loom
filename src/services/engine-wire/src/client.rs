@@ -113,6 +113,17 @@ pub struct TableFiles {
     pub columns: Option<Vec<control_plane_core::ColumnSpec>>,
 }
 
+/// The caller-resolved change-feed policy as it crosses the wire: row filters plus the
+/// denied/masked column names. Mirrors query-api's `ChangeFeedPolicy` (which engine-wire
+/// must not depend on); the engine converts it to `engine_serving::TablePolicy` and
+/// enforces it there. The wire carries the RESOLVED policy, never the subject.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct WirePolicy {
+    pub row_filters: Vec<control_plane_core::RowFilter>,
+    pub denied: Vec<String>,
+    pub masked: Vec<String>,
+}
+
 /// A cloneable gRPC client for the engine's `EngineControl` service.
 /// Connects over a unix-domain socket; implements [`Queue`] by delegating to the
 /// remote server. `enqueue` is intentionally unsupported — workers don't enqueue.
@@ -141,6 +152,76 @@ impl GrpcQueueClient {
             .map_err(be)?
             .into_inner();
         Ok(resp.snapshot_id)
+    }
+
+    /// The per-bucket high-water offsets of a declared CDC table's changelog, or `None`
+    /// when it is not a declared CDC table (the "is this subscribable" probe — absence
+    /// is not an error).
+    pub async fn changelog_latest(
+        &self,
+        schema: String,
+        name: String,
+    ) -> Result<Option<std::collections::BTreeMap<i32, i64>>> {
+        let resp = self
+            .inner
+            .clone()
+            .changelog_latest(pb::ChangelogLatestRequest { schema, name })
+            .await
+            .map_err(be)?
+            .into_inner();
+        if resp.present {
+            Ok(Some(resp.positions.into_iter().collect()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// One bounded, governed, ordered page of a CDC table's changelog feed from
+    /// per-bucket `positions`. `policy` is the caller-RESOLVED governance policy; the
+    /// engine enforces it before the ordered read.
+    pub async fn changelog_feed(
+        &self,
+        schema: String,
+        name: String,
+        positions: &std::collections::BTreeMap<i32, i64>,
+        limit: u64,
+        policy: &WirePolicy,
+    ) -> Result<control_plane_core::ChangeFeedPage> {
+        let resp = self
+            .inner
+            .clone()
+            .changelog_feed(pb::ChangelogFeedRequest {
+                schema,
+                name,
+                positions: positions.iter().map(|(b, o)| (*b, *o)).collect(),
+                limit,
+                policy_json: se(policy)?,
+            })
+            .await
+            .map_err(be)?
+            .into_inner();
+        de(&resp.page_json)
+    }
+
+    /// Block until a CDC write commits against the table, or `timeout` elapses. Ok on
+    /// timeout (never an error).
+    pub async fn await_changelog(
+        &self,
+        schema: String,
+        name: String,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        let mut req = tonic::Request::new(pb::AwaitChangelogRequest {
+            schema,
+            name,
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        });
+        // The client deadline must EXCEED the server's long-poll timeout, or we get a
+        // spurious DeadlineExceeded before the server returns normally. Same +2s as
+        // `await_jobs` (`:688-698`).
+        req.set_timeout(timeout + std::time::Duration::from_secs(2));
+        self.inner.clone().await_changelog(req).await.map_err(be)?;
+        Ok(())
     }
 
     /// GC a table by schema + name; returns the reclaim counts

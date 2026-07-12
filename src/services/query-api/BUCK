@@ -2331,3 +2331,21 @@ rust_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "changelog-rpc-wire",
+    crate = "changelog_rpc_wire",
+    srcs = ["tests/changelog_rpc_wire.rs"],
+    crate_root = "tests/changelog_rpc_wire.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//src/testing:flight",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

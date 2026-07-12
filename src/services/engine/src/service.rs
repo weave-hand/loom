@@ -13,10 +13,16 @@ use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use engine_wire::convert;
 use engine_wire::pb;
+use service_runtime::ServingStore;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status};
 
 use crate::flight::serving_status;
+
+/// Server-side ceiling on one changelog-feed page. query-api already clamps to
+/// `FEED_BATCH_LIMIT` (256) before calling, but this is a public engine RPC — an
+/// unbounded `limit` would mean an unbounded `page_json` in a unary message.
+const MAX_FEED_LIMIT: usize = 1024;
 
 fn status(e: control_plane_core::ControlPlaneError) -> Status {
     use control_plane_core::ControlPlaneError::*;
@@ -77,6 +83,10 @@ pub struct EngineControlService {
     /// (`EngineTuning::flush_byte_threshold`) — threaded into `commit_micro_batch`'s
     /// `inline_append_mv` call, exactly as the writer's own inline-writing paths use it.
     pub flush_byte_threshold: i64,
+    /// `Some(ServingStore { bucket, store })` for an S3 warehouse; `None` => local FS.
+    /// The changelog feed's object store (the catalog is built inline from `pool`, as
+    /// `list_files` already does at `:190`).
+    pub serving_store: Option<ServingStore>,
 }
 
 #[tonic::async_trait]
@@ -135,6 +145,82 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             .await
             .map_err(status)?;
         Ok(Response::new(pb::AwaitJobsResponse {}))
+    }
+
+    async fn changelog_latest(
+        &self,
+        req: Request<pb::ChangelogLatestRequest>,
+    ) -> std::result::Result<Response<pb::ChangelogLatestResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let latest = control_plane_postgres::stream::changelog_positions_latest(&self.pool, &table)
+            .await
+            .map_err(status)?;
+        // `None` = not a declared CDC table: a legitimate answer, not an error.
+        Ok(Response::new(pb::ChangelogLatestResponse {
+            present: latest.is_some(),
+            positions: latest.unwrap_or_default().into_iter().collect(),
+        }))
+    }
+
+    async fn changelog_feed(
+        &self,
+        req: Request<pb::ChangelogFeedRequest>,
+    ) -> std::result::Result<Response<pb::ChangelogFeedResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let wire: engine_wire::client::WirePolicy = serde_json::from_str(&r.policy_json)
+            .map_err(|e| Status::invalid_argument(format!("bad policy_json: {e}")))?;
+        // Governance is enforced HERE, engine-side, before the ordered read. The wire
+        // carried the resolved policy; the subject never crossed it.
+        let policy = engine_serving::TablePolicy {
+            row_filters: wire.row_filters,
+            denied: wire.denied.into_iter().collect(),
+            masked: wire.masked.into_iter().collect(),
+        };
+        let positions: std::collections::BTreeMap<i32, i64> = r.positions.into_iter().collect();
+        let limit = usize::try_from(r.limit)
+            .unwrap_or(MAX_FEED_LIMIT)
+            .min(MAX_FEED_LIMIT);
+        let ice = control_plane_postgres::iceberg_catalog::IcebergCatalog::new(self.pool.clone());
+        let page = engine_serving::changelog_feed_scan(
+            &ice,
+            &table,
+            self.serving_store.as_ref(),
+            &positions,
+            limit,
+            &policy,
+        )
+        .await
+        .map_err(serving_status)?;
+        let page_json = serde_json::to_string(&page)
+            .map_err(|e| Status::internal(format!("page encode: {e}")))?;
+        Ok(Response::new(pb::ChangelogFeedResponse { page_json }))
+    }
+
+    async fn await_changelog(
+        &self,
+        req: Request<pb::AwaitChangelogRequest>,
+    ) -> std::result::Result<Response<pb::AwaitChangelogResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        control_plane_postgres::stream::await_changelog(
+            &self.pool,
+            &table,
+            std::time::Duration::from_millis(r.timeout_ms),
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(pb::AwaitChangelogResponse {}))
     }
 
     async fn flush_table(

@@ -1276,6 +1276,31 @@ pub async fn spawn_engine(
     (eng.sock.clone(), eng)
 }
 
+/// Spawn an engine serving BOTH `EngineControl` and Arrow Flight on one UDS — the
+/// production shape (`serve.rs` dials one socket for the control, action, and serving
+/// clients alike). `spawn_engine` stays control-only for the write-path tests.
+pub async fn spawn_engine_full(
+    fx: &control_plane_postgres::fixture::PgFixture,
+    db: &str,
+    warehouse: &std::path::Path,
+    inline_byte_limit: usize,
+    flush_byte_threshold: i64,
+) -> (String, EngineGuard) {
+    let eng = loom_test_flight::spawn_engine_uds(
+        fx,
+        db,
+        &warehouse.display().to_string(),
+        loom_test_flight::EngineOpts {
+            control: true,
+            flight: true,
+            inline_byte_limit,
+            flush_byte_threshold,
+        },
+    )
+    .await;
+    (eng.sock.clone(), eng)
+}
+
 /// Connect a raw governance/queue client to a spawned engine socket.
 pub async fn connect_gov_client(sock: &str) -> engine_wire::client::GrpcQueueClient {
     engine_wire::client::GrpcQueueClient::connect(sock.to_string())

@@ -22,6 +22,10 @@ service EngineControl {
   rpc CurrentInlineVersion (CurrentInlineVersionRequest) returns (CurrentInlineVersionResponse);
   rpc WriteDelta           (WriteDeltaRequest)           returns (WriteDeltaResponse);
   rpc CommitMicroBatch     (CommitMicroBatchRequest)     returns (CommitMicroBatchResponse);
+  // Changelog feed (query-api serves `GET /objects/{type}/changes` over these three).
+  rpc ChangelogLatest (ChangelogLatestRequest) returns (ChangelogLatestResponse);
+  rpc ChangelogFeed   (ChangelogFeedRequest)   returns (ChangelogFeedResponse);
+  rpc AwaitChangelog  (AwaitChangelogRequest)  returns (AwaitChangelogResponse);  // unary long-poll
   // Governance reads (query-api reads ACL + ontology over the wire).
   rpc Check            (CheckRequest)            returns (CheckResponse);
   rpc PoliciesFor      (PoliciesForRequest)      returns (PoliciesForResponse);
@@ -189,6 +193,37 @@ message WriteDeltaRequest {
   string jobs_json = 11;            // serde_json of Vec<NewJob> to enqueue atomically; empty = none
 }
 message WriteDeltaResponse { int64 snapshot_id = 1; }
+
+// ---- Changelog feed. ----
+
+// The per-bucket high-water offsets of a declared CDC table's changelog.
+// `present = false` <=> not a declared CDC table — query-api maps that to its existing
+// 400. Absence is an ANSWER, not an error.
+message ChangelogLatestRequest  { string schema = 1; string name = 2; }
+message ChangelogLatestResponse {
+  bool present = 1;
+  map<int32, int64> positions = 2;
+}
+
+// One bounded, governed, (bucket, offset)-ordered page of the changelog feed from
+// per-bucket `positions`. `policy_json` is a serde_json `WirePolicy` — the
+// CALLER-RESOLVED policy (row filters + denied/masked columns); the engine enforces it
+// via `GovernedTableProvider` before the ordered read, so the SUBJECT never crosses the
+// wire. `page_json` is a serde_json `ChangeFeedPage` (events + advanced positions). The
+// engine CLAMPS `limit` (an unbounded page would be an unbounded unary message).
+message ChangelogFeedRequest {
+  string schema = 1;
+  string name = 2;
+  map<int32, int64> positions = 3;
+  uint64 limit = 4;
+  string policy_json = 5;
+}
+message ChangelogFeedResponse { string page_json = 1; }
+
+// Block until a CDC write commits against the table, or `timeout_ms` elapses — whichever
+// first. Returns Ok on timeout (never an error), like AwaitJobs.
+message AwaitChangelogRequest  { string schema = 1; string name = 2; uint64 timeout_ms = 3; }
+message AwaitChangelogResponse {}
 
 // ---- Governance-read messages. *_json fields are serde_json of the named core type. ----
 
