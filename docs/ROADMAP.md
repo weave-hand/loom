@@ -18,7 +18,7 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 ## query
 
 - [ ] **Log-table (non-CDC) subscribe** `{#road-stream-log-table-subscribe area:query status:planned from:2026-07-08-stream-subscribe-design pr:- spec:2026-07-12-stream-log-table-subscribe-design}`
-  Promoted 2026-07-12 from `#fut-stream-log-table-subscribe` (entry removed). Log (append-only) tables carry offsets but no separate changelog — the events *are* the data — so their tail feed reads the base table's offset-framed rows directly (files ∪ inline, `mv_delta_scan`'s union shape, constant `+I` change kind), relaxing the `Cdc`-only positions probe (`changelog_positions_latest`). Cursor + NDJSON contract unchanged; the kind dispatch lives in the `ChangelogFeed` unary `EngineControl` RPC (engine-side), which is kind-agnostic, so log tables slot in with no wire change (shipped as part of `road-stream-subscribe-wire`, since closed).
+  Promoted 2026-07-12 from `#fut-stream-log-table-subscribe` (entry removed). Log (append-only) tables carry offsets but no separate changelog — the events *are* the data — so their tail feed reads the base table's offset-framed rows directly (files ∪ inline, `mv_delta_scan`'s union shape, constant `+I` change kind), relaxing the `Cdc`-only positions probe (`changelog_positions_latest`). Cursor + NDJSON contract unchanged; the kind dispatch lives in the `ChangelogFeed` unary `EngineControl` RPC (engine-side), which is kind-agnostic, so log tables slot in with no wire change (shipped, PR #426).
 
 ## transform
 
