@@ -571,6 +571,28 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "orphan-sweep",
+    crate = "orphan_sweep",
+    srcs = ["tests/orphan_sweep.rs"],
+    crate_root = "tests/orphan_sweep.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-overwrite",
     crate = "iceberg_overwrite",
     srcs = ["tests/iceberg_overwrite.rs"],
