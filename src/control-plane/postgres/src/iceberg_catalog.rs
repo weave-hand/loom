@@ -255,6 +255,36 @@ impl Catalog for IcebergCatalog {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot(&self, table: &TableRef, id: SnapshotId) -> Result<Option<Snapshot>> {
+        let row = sqlx::query!(
+            "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \
+             from iceberg_mirror.snapshot sn \
+             where sn.snapshot_id = $3 and exists ( \
+                 select 1 from iceberg_mirror.table t \
+                 where t.table_namespace = $1 and t.table_name = $2 \
+                   and t.begin_snapshot <= sn.snapshot_id and (t.end_snapshot is null or t.end_snapshot > sn.snapshot_id))",
+            table.schema,
+            table.name,
+            id.0,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(row.map(|r| Snapshot {
+            id: SnapshotId(r.snapshot_id),
+            time: r.snapshot_time,
+            schema_version: r.schema_version,
+        }))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_horizon(&self, cutoff: OffsetDateTime) -> Result<Option<SnapshotId>> {
+        Ok(crate::iceberg_mirror::horizon_before(&self.pool, cutoff)
+            .await?
+            .map(SnapshotId))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let rows = sqlx::query!(
             "select sn.snapshot_id as \"snapshot_id!\", sn.snapshot_time as \"snapshot_time!\", sn.schema_version as \"schema_version!\" \

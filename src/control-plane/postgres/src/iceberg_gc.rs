@@ -98,13 +98,7 @@ async fn gc_locked(
     //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
     //    `max()` over zero matching rows yields NULL → None → a clean no-op.
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
-    let horizon: Option<i64> = sqlx::query_scalar!(
-        "select max(snapshot_id) from iceberg_mirror.snapshot where snapshot_time < $1",
-        cutoff,
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(backend)?;
+    let horizon = crate::iceberg_mirror::horizon_before(pool, cutoff).await?;
     let Some(h) = horizon else {
         return Ok(GcSummary::default());
     };

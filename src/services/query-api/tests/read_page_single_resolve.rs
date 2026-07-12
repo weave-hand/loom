@@ -186,6 +186,7 @@ async fn paginated_read_resolves_governance_exactly_once() {
         catalog: &cp,
         serving: &serving,
         default_limit: 100,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let q = ObjectQuery {
         type_name: "Person".into(),

@@ -147,6 +147,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
         catalog: cp.catalog(),
         serving: &serving,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows_before = read_object(
         &ObjectQuery {
@@ -205,6 +206,7 @@ async fn overwrite_table_replaces_all_rows_with_atomic_lineage() {
         catalog: cp.catalog(),
         serving: &serving2,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows_after = read_object(
         &ObjectQuery {

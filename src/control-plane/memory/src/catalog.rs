@@ -75,6 +75,30 @@ impl Catalog for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot(&self, table: &TableRef, id: SnapshotId) -> Result<Option<Snapshot>> {
+        let cat = self.catalog.lock();
+        let Some(t) = cat.tables.get(table) else {
+            return Ok(None);
+        };
+        Ok(cat
+            .snapshots
+            .iter()
+            .find(|sn| sn.id == id && t.live_at(sn.id.0))
+            .cloned())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_horizon(&self, cutoff: OffsetDateTime) -> Result<Option<SnapshotId>> {
+        let cat = self.catalog.lock();
+        Ok(cat
+            .snapshots
+            .iter()
+            .filter(|sn| sn.time < cutoff)
+            .map(|sn| sn.id)
+            .max())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let cat = self.catalog.lock();
         let t = cat.tables.get(table).ok_or_else(|| {

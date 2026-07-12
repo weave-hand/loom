@@ -108,6 +108,7 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
         ))),
         action_engine: Arc::new(action_client),
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
         naming: query_api::lineage_filter::local_naming(),
     });
 

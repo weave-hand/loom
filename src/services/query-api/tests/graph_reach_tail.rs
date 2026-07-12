@@ -170,6 +170,7 @@ async fn rejects_a_non_self_core_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     // `worksAt` lands on Company, not back on Person -> not a self-link core.
     let err = read_graph_reach_with_tail(&tail_query("worksAt", &["knows"]), &Subject(subj), &deps)
@@ -191,6 +192,7 @@ async fn rejects_an_unknown_core_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach_with_tail(&tail_query("nope", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -211,6 +213,7 @@ async fn rejects_an_unknown_tail_link() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["nope"]), &Subject(subj), &deps)
         .await
@@ -231,6 +234,7 @@ async fn rejects_an_empty_tail() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &[]), &Subject(subj), &deps)
         .await
@@ -251,6 +255,7 @@ async fn rejects_a_type_without_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -272,6 +277,7 @@ async fn forbids_when_tail_type_not_granted() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)
         .await
@@ -297,6 +303,7 @@ async fn returns_projected_tail_objects() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let rows =
         read_graph_reach_with_tail(&tail_query("knows", &["worksAt"]), &Subject(subj), &deps)

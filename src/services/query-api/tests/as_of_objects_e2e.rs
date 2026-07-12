@@ -8,18 +8,17 @@
 //!   - `?as_of={rfc3339 of S1}` -> the first-write ids {1,2}.
 //!   - `?as_of=x&as_of_snapshot=1` (both given) -> 400.
 //!   - `?as_of_snapshot=0` (before the table's first snapshot -> never live) -> 404.
-//!     (A snapshot id ABOVE the current max is deliberately not used here: `schema`'s
-//!     liveness gate treats a currently-live table's version range as open-ended, so an
-//!     id past the max still resolves as "live" — only an id before the table's own
-//!     `begin_snapshot` is reliably never-live.)
+//!   - `?as_of_snapshot=999999999` (above the newest snapshot) -> 404. Both surfaces
+//!     resolve the explicit-id case via `Catalog::snapshot` (exists in history AND
+//!     the table live at it), so an id outside the table's snapshot history 404s
+//!     regardless of whether it falls below or above the live range.
 //!   - `?as_of=not-a-date` -> 400.
 //!
 //! Dataset-detail (`GET /datasets/main/thing`) assertions reuse the same fixture:
 //!   - `?as_of_snapshot={S1}` -> `snapshot_id == S1`.
 //!   - no selector -> `snapshot_id == S2` (the current snapshot).
-//!   - `?as_of_snapshot=999999` (non-existent id) -> 404 (dataset detail resolves via
-//!     `snapshots().find`, unlike the object-read path's liveness-range check, so an
-//!     id that never appears in the table's snapshot history 404s directly).
+//!   - `?as_of_snapshot=999999` (non-existent id) -> 404, via the same
+//!     `Catalog::snapshot` history lookup as the object-read path.
 //!   - `?as_of=bad` -> 400.
 
 use std::sync::Arc;
@@ -170,6 +169,23 @@ async fn as_of_selectors_resolve_and_apply() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "as_of_snapshot=0");
+
+    // An id ABOVE the newest snapshot -> 404. Previously the object path's
+    // open-ended liveness range resolved this as "live" and read current data;
+    // history-backed validation (Catalog::snapshot) now rejects it, matching
+    // the dataset path.
+    let (status, _body) = get(
+        cp.clone(),
+        eng.clone(),
+        "/objects/Thing?as_of_snapshot=999999999",
+        "alice",
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "as_of_snapshot above history"
+    );
 
     // An unparseable timestamp -> 400.
     let (status, _body) = get(

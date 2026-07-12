@@ -102,6 +102,7 @@ async fn build_faulting_app() -> axum::Router {
         serving: Arc::new(FaultEngine),
         action_engine: Arc::new(NullAction),
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
         naming: query_api::lineage_filter::local_naming(),
     })
 }

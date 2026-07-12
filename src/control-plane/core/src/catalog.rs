@@ -81,6 +81,17 @@ pub trait Catalog {
     /// table never existed. The `page` request is accepted but not yet enforced;
     /// results are a single full page.
     async fn snapshots(&self, table: &TableRef, page: PageReq) -> Result<Page<Snapshot>>;
+    /// The global snapshot `id`, if it exists in the catalog's history AND `table`
+    /// is live at it. `None` for an id never allocated (including any id above the
+    /// newest snapshot), or one at which the table is not live (pre-creation /
+    /// post-drop). The exact-history gate both time-travel read surfaces validate
+    /// `?as_of_snapshot=` against. Same per-id semantics as the `snapshots` listing.
+    async fn snapshot(&self, table: &TableRef, id: SnapshotId) -> Result<Option<Snapshot>>;
+    /// The GC retention horizon at `cutoff`: the youngest snapshot wholly aged out
+    /// (max snapshot id with `snapshot_time < cutoff`), or `None` when no snapshot
+    /// has aged out. The same derivation `iceberg_gc` reclaims under; a read at a
+    /// snapshot `>=` this horizon is guaranteed complete.
+    async fn snapshot_horizon(&self, cutoff: OffsetDateTime) -> Result<Option<SnapshotId>>;
     /// The Parquet files live for `table` at snapshot `at`. `NotFound` if the
     /// table is not live at `at`. The `page` request is accepted but not yet enforced;
     /// results are a single full page.

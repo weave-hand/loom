@@ -108,6 +108,7 @@ async fn landed_then_bound_dataset_is_queryable() {
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_object(
         &ObjectQuery {

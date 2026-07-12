@@ -114,6 +114,8 @@ pub struct QueryDeps<'a> {
     pub serving: &'a dyn ServingEngine,
     pub catalog: &'a (dyn control_plane_core::Catalog + Send + Sync),
     pub default_limit: u32,
+    /// GC retention window (`LOOM_GC_RETENTION_SECS`), threaded from `AppState`.
+    pub gc_retention: std::time::Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -181,6 +183,12 @@ pub enum QueryError {
     /// caller-forgeable case renders 404.
     #[error("no snapshot at or before the requested point: {0}")]
     AsOfNotFound(String),
+    /// A time-travel selector resolved to a snapshot older than the GC retention
+    /// horizon: its data files may already be physically reclaimed, so serving it
+    /// could silently under-read. Renders 410 Gone — the snapshot existed (unlike
+    /// `AsOfNotFound`) but is permanently outside the served window.
+    #[error("as-of snapshot past the retention horizon: {0}")]
+    AsOfGone(String),
 }
 
 impl QueryError {
@@ -397,30 +405,33 @@ pub async fn compile_object_read_with(
 }
 
 /// Resolve a time-travel selector to a concrete snapshot id for `table`, or `None`
-/// when no selector was given (live read). A selector that resolves to no live
-/// snapshot — an as-of snapshot id the table is not live at, or a timestamp before
-/// the table's first snapshot — is `AsOfNotFound` (renders 404); a genuine backend
+/// when no selector was given (live read). A selector that resolves to no
+/// history-backed snapshot — an as-of snapshot id absent from the table's
+/// snapshot history (below, above, or never live), or a timestamp before the
+/// table's first snapshot — is `AsOfNotFound` (renders 404); a genuine backend
 /// fault from the catalog stays `ControlPlane` (renders 500).
 async fn resolve_read_snapshot(
     deps: &QueryDeps<'_>,
     table: &control_plane_core::TableRef,
     sel: Option<&AsOfSelector>,
 ) -> Result<Option<control_plane_core::SnapshotId>, QueryError> {
-    use control_plane_core::ControlPlaneError;
     let Some(sel) = sel else { return Ok(None) };
     let id = match sel {
         AsOfSelector::Snapshot(id) => {
             let sid = control_plane_core::SnapshotId(*id);
-            // Liveness gate: `schema` NotFounds if the table is not live at `sid`.
-            match deps.catalog.schema(table, sid).await {
-                Ok(_) => sid,
-                Err(ControlPlaneError::NotFound(_)) => {
+            // Exact-history gate: the id must exist in the catalog's snapshot
+            // history AND the table must be live at it. Unlike the previous
+            // `schema()` liveness-range check this is bounded above — an id
+            // past the newest snapshot 404s instead of reading live data.
+            match deps.catalog.snapshot(table, sid).await {
+                Ok(Some(s)) => s.id,
+                Ok(None) => {
                     return Err(QueryError::AsOfNotFound(format!(
-                        "{}.{} not live at snapshot {}",
+                        "{}.{} has no snapshot {}",
                         table.schema, table.name, id
                     )));
                 }
-                Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
+                Err(e) => return Err(QueryError::ControlPlane(e)), // backend fault -> 500
             }
         }
         AsOfSelector::Time(ts) => match deps.catalog.snapshot_as_of(table, *ts).await {
@@ -434,7 +445,48 @@ async fn resolve_read_snapshot(
             Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
         },
     };
+    ensure_within_retention(deps.catalog, deps.gc_retention, table, id).await?;
     Ok(Some(id))
+}
+
+/// Reject a resolved as-of snapshot older than the GC retention horizon.
+///
+/// Pure contract guard: gone iff `at < H`, where
+/// `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention` — the
+/// exact horizon `iceberg_gc` reclaims under (shared derivation:
+/// `Catalog::snapshot_horizon`). `at >= H` is provably complete (a
+/// reclaimable row has `end <= H`, visible only when `at < end`).
+/// Deterministic by design: enforced from config + snapshot timestamps
+/// whether or not GC has actually run (reclaimed-ness is not recorded
+/// anywhere).
+///
+/// This is intentionally conservative — a below-horizon read of a table
+/// unchanged since `at` is still complete yet 410s; see
+/// `iss-timetravel-quiet-table-overconservative` (loom's single global
+/// snapshot sequence makes a per-table exemption via `current_snapshot`
+/// impossible, since it tracks the global tip, not the table's own last
+/// write).
+pub(crate) async fn ensure_within_retention(
+    catalog: &(dyn control_plane_core::Catalog + Send + Sync),
+    gc_retention: std::time::Duration,
+    table: &control_plane_core::TableRef,
+    at: control_plane_core::SnapshotId,
+) -> Result<(), QueryError> {
+    let cutoff =
+        time::OffsetDateTime::now_utc() - time::Duration::seconds(gc_retention.as_secs() as i64);
+    let horizon = catalog
+        .snapshot_horizon(cutoff)
+        .await
+        .map_err(QueryError::ControlPlane)?;
+    let Some(h) = horizon else { return Ok(()) };
+    if at >= h {
+        return Ok(());
+    }
+    Err(QueryError::AsOfGone(format!(
+        "{}.{} snapshot {} is older than the GC retention horizon ({}); its data may \
+         already be reclaimed — pick a snapshot >= {} or widen LOOM_GC_RETENTION_SECS",
+        table.schema, table.name, at.0, h.0, h.0
+    )))
 }
 
 pub async fn read_object(

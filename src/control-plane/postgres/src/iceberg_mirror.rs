@@ -7,7 +7,8 @@
 
 use control_plane_core::{ControlPlaneError, Result, SnapshotId, TableRef};
 use iceberg::table::Table;
-use sqlx::PgConnection;
+use sqlx::{PgConnection, PgPool};
+use time::OffsetDateTime;
 
 use crate::backend;
 use crate::iceberg_inline::is_duplicate_object_race;
@@ -269,6 +270,20 @@ pub async fn live_table_id(conn: &mut PgConnection, ns: &str, name: &str) -> Res
         name,
     )
     .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
+/// The GC retention horizon at `cutoff`: max snapshot_id with snapshot_time
+/// strictly before it. THE horizon derivation — `iceberg_gc::gc_locked` reclaims
+/// under it and `Catalog::snapshot_horizon` guards reads with it; keep them the
+/// same query so the two can never drift.
+pub(crate) async fn horizon_before(pool: &PgPool, cutoff: OffsetDateTime) -> Result<Option<i64>> {
+    sqlx::query_scalar!(
+        "select max(snapshot_id) from iceberg_mirror.snapshot where snapshot_time < $1",
+        cutoff,
+    )
+    .fetch_one(pool)
     .await
     .map_err(backend)
 }

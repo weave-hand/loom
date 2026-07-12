@@ -121,6 +121,7 @@ async fn rejects_a_type_without_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_tree(&graph_query(), &Subject(subj), &deps)
         .await
@@ -154,6 +155,7 @@ async fn masked_identity_is_forbidden() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_tree(&graph_query(), &Subject(subj), &deps)
         .await
@@ -188,6 +190,7 @@ async fn denied_identity_is_forbidden() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_graph_tree(&graph_query(), &Subject(subj), &deps)
         .await
@@ -233,6 +236,7 @@ async fn builds_tree_with_root_and_parent_pointers() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let tree = read_graph_tree(&graph_query(), &Subject(subj), &deps)
         .await

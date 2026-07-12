@@ -59,6 +59,7 @@ async fn multi_hop_served_and_governed() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
 
     // ---- subject A: Read on all three -> sees the reachable LineItems ----
@@ -152,6 +153,7 @@ async fn target_filter_narrows_final_set() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -188,6 +190,7 @@ async fn intermediate_typed_filter_coerces_and_narrows() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -224,6 +227,7 @@ async fn source_and_intermediate_filters_combine() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -256,6 +260,7 @@ async fn bad_positioned_filters_are_rejected() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;
@@ -340,6 +345,7 @@ async fn intermediate_comparison_operator_narrows() {
         catalog: cp.catalog(),
         serving: &*eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let (a, role) = subject_with_role(&cp, "alice").await;
     grant_read(&cp, &role, "Customer").await;

@@ -156,6 +156,7 @@ async fn read_associations_returns_id_pairs() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let Associations {
         from_id_type,
@@ -186,6 +187,7 @@ async fn read_associations_rejects_source_without_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -206,6 +208,7 @@ async fn read_associations_rejects_target_without_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -247,6 +250,7 @@ async fn read_associations_forbids_a_denied_source_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await
@@ -284,6 +288,7 @@ async fn read_associations_forbids_a_masked_target_identity() {
         catalog: &cp,
         serving: &serving,
         default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let err = read_associations(&assoc_query(), &Subject(subj), &deps)
         .await

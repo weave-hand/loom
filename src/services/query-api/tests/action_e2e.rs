@@ -150,6 +150,7 @@ async fn widget_count(cp: &PgControlPlane, pool: &sqlx::PgPool, subj: &SubjectId
         catalog: cp.catalog(),
         serving: &eng,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_object(
         &ObjectQuery {
@@ -212,6 +213,7 @@ async fn action_inserts_a_typed_object_that_reads_back_with_atomic_lineage() {
         catalog: cp.catalog(),
         serving: &reader,
         default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
     };
     let rows = read_object(
         &ObjectQuery {
