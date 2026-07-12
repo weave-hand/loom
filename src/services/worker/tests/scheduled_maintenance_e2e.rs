@@ -16,7 +16,7 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     COMPACT_JOB_KIND, Catalog, ColumnSpec, DatasetId, EventType, GC_JOB_KIND, JobSchedule,
-    LineageEvent, Queue, RunId, TableRef,
+    LineageEvent, ORPHAN_SWEEP_JOB_KIND, Queue, RunId, TableRef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -28,7 +28,7 @@ use loom_test_flight::{EngineOpts, spawn_engine_uds};
 use loom_test_seed::local_sql_catalog;
 use store_config::{ObjectStoreConfig, build_write_store};
 use worker::compact::{CompactCtx, handle_compact};
-use worker::handler::handle_gc;
+use worker::handler::{handle_gc, handle_sweep_orphans};
 
 // ---- helpers ---------------------------------------------------------------
 
@@ -358,5 +358,133 @@ async fn compact_schedule_fires_and_worker_drains_over_the_wire() {
     assert!(
         again.is_none(),
         "queue must be empty after the scheduled compact job completed"
+    );
+}
+
+// ---- sweep_orphans leg -------------------------------------------------------
+
+/// A `sweep_orphans` schedule fires exactly once at its due probe and the
+/// enqueued job drains end-to-end through `handle_sweep_orphans` over the engine
+/// wire: a planted orphan `.parquet` is deleted while a referenced (landed) file
+/// survives. Grace is 0 (via `EngineOpts`) so the freshly-planted orphan is
+/// immediately reclaimable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sweep_orphans_schedule_fires_and_worker_drains_over_the_wire() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let cp = PgControlPlane::new(pool.clone(), Duration::from_millis(5000));
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            orphan_sweep_grace: Duration::ZERO,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // A referenced (landed) file that MUST survive the sweep.
+    let table = TableRef {
+        schema: "main".into(),
+        name: "kept".into(),
+    };
+    let (schema, batches) = ipc_body(&[1, 2, 3]);
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        schema,
+        batches,
+        small_limits(),
+        lineage(RunId(uuid::Uuid::new_v4()), &table),
+        None,
+    )
+    .await
+    .expect("land kept");
+    let ice = IcebergCatalog::new(pool.clone());
+    let cur = ice.current_snapshot(&table).await.expect("snapshot");
+    let kept = std::path::PathBuf::from(
+        ice.files_with_stats(&table, cur.id).await.expect("files")[0]
+            .path
+            .strip_prefix("file://")
+            .expect("file:// path"),
+    );
+    assert!(kept.exists(), "referenced file present before sweep");
+
+    // A planted orphan under the warehouse, referenced by NO mirror row.
+    let orphan = wh.path().join("orphan-xyz.parquet");
+    std::fs::write(&orphan, b"orphan-bytes").expect("write orphan");
+
+    let now = time::OffsetDateTime::now_utc();
+    cp.define_job_schedule(JobSchedule {
+        name: "nightly-sweep-e2e".into(),
+        kind: ORPHAN_SWEEP_JOB_KIND.into(),
+        payload: serde_json::json!({}),
+        cron: "0 4 * * *".into(),
+    })
+    .await
+    .expect("define sweep schedule");
+
+    assert!(
+        cp.fire_due_job_schedules(now, 32)
+            .await
+            .expect("fire (not due)")
+            .is_empty(),
+        "a freshly defined daily schedule is not due at define-time"
+    );
+
+    let probe = now + time::Duration::days(2);
+    let fired = cp
+        .fire_due_job_schedules(probe, 32)
+        .await
+        .expect("fire (due)");
+    assert_eq!(fired.len(), 1, "exactly one schedule fires at the probe");
+    assert_eq!(fired[0].name, "nightly-sweep-e2e");
+    let job_id = fired[0].job.expect("due fire enqueues a job");
+
+    let client = GrpcQueueClient::connect(&eng.sock).await.expect("connect");
+    let job = client
+        .dequeue(&[ORPHAN_SWEEP_JOB_KIND.to_string()], "sched-e2e")
+        .await
+        .expect("dequeue")
+        .expect("the fired sweep_orphans job must be present");
+    assert_eq!(
+        job.id, job_id,
+        "dequeued job matches the fired schedule's job id"
+    );
+    assert_eq!(job.kind, ORPHAN_SWEEP_JOB_KIND);
+    assert_eq!(
+        job.payload,
+        serde_json::json!({}),
+        "empty warehouse-scoped payload"
+    );
+
+    handle_sweep_orphans(client.clone(), loom_config::WorkerTuning::default(), job)
+        .await
+        .expect("handle_sweep_orphans must succeed over the wire");
+    client.complete(job_id).await.expect("complete sweep job");
+
+    assert!(
+        !orphan.exists(),
+        "planted orphan deleted by the scheduled sweep"
+    );
+    assert!(kept.exists(), "referenced file survived the sweep");
+
+    let again = client
+        .dequeue(&[ORPHAN_SWEEP_JOB_KIND.to_string()], "sched-e2e")
+        .await
+        .expect("dequeue after complete");
+    assert!(
+        again.is_none(),
+        "queue empty after the scheduled sweep completed"
     );
 }
