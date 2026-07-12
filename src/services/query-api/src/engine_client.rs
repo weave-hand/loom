@@ -6,26 +6,37 @@
 use async_trait::async_trait;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient};
 
-use crate::serving::{Rows, ServingError, SqlValue, inline_params};
+use crate::serving::{ChangeFeedPolicy, Rows, ServingError, SqlValue, inline_params};
 use crate::serving_datafusion::batches_to_rows;
 use crate::sql::SqlDialect;
 
 pub struct EngineServingClient {
     sql: FlightSqlClient,
     table: FlightTableClient,
+    /// The changelog feed rides the control plane (three unary RPCs), not Flight: a page
+    /// is bounded (<= FEED_BATCH_LIMIT events) and `ndjson_feed_stream` re-serializes it
+    /// to JSON anyway.
+    control: engine_wire::client::GrpcQueueClient,
 }
 
 impl EngineServingClient {
-    /// Connect to the engine's Arrow Flight service at `socket` (a UDS path).
+    /// Connect to the engine's Flight + control services at `socket` (a UDS path).
     pub async fn connect(socket: impl Into<String>) -> Result<Self, ServingError> {
         let socket = socket.into();
         let sql = FlightSqlClient::connect(socket.clone())
             .await
             .map_err(|e| ServingError::Engine(e.to_string()))?;
-        let table = FlightTableClient::connect(socket)
+        let table = FlightTableClient::connect(socket.clone())
             .await
             .map_err(|e| ServingError::Engine(e.to_string()))?;
-        Ok(Self { sql, table })
+        let control = engine_wire::client::GrpcQueueClient::connect(socket)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))?;
+        Ok(Self {
+            sql,
+            table,
+            control,
+        })
     }
 }
 
@@ -92,5 +103,52 @@ impl crate::serving::ServingEngine for EngineServingClient {
 
     fn dialect(&self) -> &'static dyn SqlDialect {
         &crate::sql::DataFusionDialect
+    }
+
+    async fn changelog_latest(
+        &self,
+        table: &control_plane_core::TableRef,
+    ) -> Result<Option<std::collections::BTreeMap<i32, i64>>, ServingError> {
+        self.control
+            .changelog_latest(table.schema.clone(), table.name.clone())
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
+    async fn changelog_feed(
+        &self,
+        table: &control_plane_core::TableRef,
+        positions: &std::collections::BTreeMap<i32, i64>,
+        limit: usize,
+        policy: &ChangeFeedPolicy,
+    ) -> Result<control_plane_core::ChangeFeedPage, ServingError> {
+        let wire = engine_wire::client::WirePolicy {
+            row_filters: policy.row_filters.clone(),
+            denied: policy.denied.clone(),
+            masked: policy.masked.clone(),
+        };
+        // No `as` cast: usize -> u64 must not silently truncate (clippy restriction).
+        let limit = u64::try_from(limit).unwrap_or(u64::MAX);
+        self.control
+            .changelog_feed(
+                table.schema.clone(),
+                table.name.clone(),
+                positions,
+                limit,
+                &wire,
+            )
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
+    }
+
+    async fn await_changelog(
+        &self,
+        table: &control_plane_core::TableRef,
+        timeout: std::time::Duration,
+    ) -> Result<(), ServingError> {
+        self.control
+            .await_changelog(table.schema.clone(), table.name.clone(), timeout)
+            .await
+            .map_err(|e| ServingError::Engine(e.to_string()))
     }
 }

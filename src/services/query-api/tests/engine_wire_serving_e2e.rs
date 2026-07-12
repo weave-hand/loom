@@ -5,7 +5,7 @@
 //!      intact (the payoff of streaming);
 //!   3. a malformed query surfaces as a `ServingError`.
 
-use loom_test_flight::spawn_flight_uds;
+use loom_test_flight::{EngineOpts, spawn_engine_uds, spawn_flight_uds};
 
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use query_api::engine_client::EngineServingClient;
@@ -124,4 +124,48 @@ async fn malformed_sql_is_plan_class() {
         matches!(&err, ServingError::Plan(m) if m.starts_with("query planning failed: ")),
         "planning fault must carry the Plan class, got: {err:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feed_methods_are_no_longer_unsupported_over_the_wire() {
+    use query_api::serving::ServingEngine;
+
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let wh = tempfile::tempdir().expect("warehouse");
+
+    let cols = vec![("id".to_string(), "long".to_string(), false)];
+    IcebergWriter::new(pool.clone(), dsn)
+        .seed("sales", "orders", &cols, &[3])
+        .await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh.path().display().to_string(),
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let client = EngineServingClient::connect(&eng.sock)
+        .await
+        .expect("connect");
+
+    // A plain (non-CDC) table probes as Ok(None) — "not subscribable" — NOT
+    // Err(Unsupported), which is what the wire client returned before this hop and what
+    // `http.rs` turns into a 501.
+    let table = control_plane_core::TableRef {
+        schema: "sales".into(),
+        name: "orders".into(),
+    };
+    match client.changelog_latest(&table).await {
+        Ok(None) => {}
+        Ok(Some(p)) => panic!("a batch table is not subscribable, got {p:?}"),
+        Err(e) => panic!("must not be Unsupported over the wire: {e}"),
+    }
 }
