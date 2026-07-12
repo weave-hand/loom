@@ -288,11 +288,26 @@ pub async fn session_token(cp: &PgControlPlane, subject: &str) -> String {
 }
 
 /// Drive the HTTP router (behind the auth gate) and return (status, parsed JSON body).
+/// Uses the default `TEST_GC_RETENTION` (7 days) — see `get_with_retention` for tests
+/// that need to drive the retention-horizon guard with a caller-chosen window.
 pub async fn get(
     cp: Arc<PgControlPlane>,
     eng: Arc<dyn query_api::serving::ServingEngine>,
     uri: &str,
     subject: &str,
+) -> (StatusCode, serde_json::Value) {
+    get_with_retention(cp, eng, uri, subject, TEST_GC_RETENTION).await
+}
+
+/// Sibling to [`get`] with a caller-chosen `gc_retention` — lets a test drive the
+/// 410 retention-horizon guard (e.g. `Duration::ZERO` to age out every committed
+/// snapshot) without duplicating the router/auth harness.
+pub async fn get_with_retention(
+    cp: Arc<PgControlPlane>,
+    eng: Arc<dyn query_api::serving::ServingEngine>,
+    uri: &str,
+    subject: &str,
+    gc_retention: std::time::Duration,
 ) -> (StatusCode, serde_json::Value) {
     let token = session_token(&cp, subject).await;
     let app = protect(
@@ -301,7 +316,7 @@ pub async fn get(
             serving: eng,
             action_engine: Arc::new(StubAction),
             default_limit: 1000,
-            gc_retention: TEST_GC_RETENTION,
+            gc_retention,
             naming: query_api::lineage_filter::local_naming(),
         }),
         AuthState {

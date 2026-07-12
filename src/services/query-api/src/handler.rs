@@ -183,6 +183,12 @@ pub enum QueryError {
     /// caller-forgeable case renders 404.
     #[error("no snapshot at or before the requested point: {0}")]
     AsOfNotFound(String),
+    /// A time-travel selector resolved to a snapshot older than the GC retention
+    /// horizon: its data files may already be physically reclaimed, so serving it
+    /// could silently under-read. Renders 410 Gone — the snapshot existed (unlike
+    /// `AsOfNotFound`) but is permanently outside the served window.
+    #[error("as-of snapshot past the retention horizon: {0}")]
+    AsOfGone(String),
 }
 
 impl QueryError {
@@ -439,7 +445,50 @@ async fn resolve_read_snapshot(
             Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
         },
     };
+    ensure_within_retention(deps.catalog, deps.gc_retention, table, id).await?;
     Ok(Some(id))
+}
+
+/// Reject a resolved as-of snapshot older than the GC retention horizon.
+///
+/// Predicate (see the plan/spec): gone iff `at < H` AND `at < current(table)`,
+/// where `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention` —
+/// the exact horizon `iceberg_gc` reclaims under (shared derivation:
+/// `Catalog::snapshot_horizon`). `at >= H` is provably complete (a reclaimable
+/// row has `end <= H`, visible only when `at < end`). `at >= current(table)` is
+/// the quiet-table exemption: this table's rows are only end-capped at its own
+/// later write snapshots, so nothing reclaimable was ever visible at `at` — a
+/// current-snapshot read must not 410 just because OTHER tables kept committing.
+/// Deterministic by design: enforced from config + snapshot timestamps whether
+/// or not GC has actually run (reclaimed-ness is not recorded anywhere).
+pub(crate) async fn ensure_within_retention(
+    catalog: &(dyn control_plane_core::Catalog + Send + Sync),
+    gc_retention: std::time::Duration,
+    table: &control_plane_core::TableRef,
+    at: control_plane_core::SnapshotId,
+) -> Result<(), QueryError> {
+    let cutoff =
+        time::OffsetDateTime::now_utc() - time::Duration::seconds(gc_retention.as_secs() as i64);
+    let horizon = catalog
+        .snapshot_horizon(cutoff)
+        .await
+        .map_err(QueryError::ControlPlane)?;
+    let Some(h) = horizon else { return Ok(()) };
+    if at >= h {
+        return Ok(());
+    }
+    let current = catalog
+        .current_snapshot(table)
+        .await
+        .map_err(QueryError::ControlPlane)?;
+    if at >= current.id {
+        return Ok(());
+    }
+    Err(QueryError::AsOfGone(format!(
+        "{}.{} snapshot {} is older than the GC retention horizon ({}); its data may \
+         already be reclaimed — pick a snapshot >= {} or widen LOOM_GC_RETENTION_SECS",
+        table.schema, table.name, at.0, h.0, h.0
+    )))
 }
 
 pub async fn read_object(

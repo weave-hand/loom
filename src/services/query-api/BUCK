@@ -2078,6 +2078,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "as_of_guards_e2e",
+    crate = "as_of_guards_e2e",
+    srcs = ["tests/as_of_guards_e2e.rs"],
+    crate_root = "tests/as_of_guards_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:time",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-cdc-e2e",
     crate = "stream_cdc_e2e",
     srcs = ["tests/stream_cdc_e2e.rs"],

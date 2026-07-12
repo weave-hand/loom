@@ -273,6 +273,7 @@ async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::r
         (status = 200, description = "Target snapshot + column schema", body = DatasetDetailResponse),
         (status = 400, description = "Malformed as_of/as_of_snapshot selector"),
         (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot"),
+        (status = 410, description = "Selector resolves to a snapshot older than the GC retention horizon (data may be reclaimed)"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -298,6 +299,17 @@ async fn get_dataset(
         Ok(s) => s,
         Err(e) => return cp_read_error("catalog snapshot resolution fault", e),
     };
+    if sel.is_some()
+        && let Err(e) = crate::handler::ensure_within_retention(
+            catalog,
+            st.gc_retention,
+            &table_ref,
+            snapshot.id,
+        )
+        .await
+    {
+        return query_error_response(e, "dataset as-of retention guard");
+    }
     let table_schema = match catalog.schema(&table_ref, snapshot.id).await {
         Ok(s) => s,
         Err(e) => return cp_read_error("catalog schema fault", e),
@@ -461,6 +473,7 @@ async fn enqueue_gc(
         (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, a malformed cursor, or a malformed/mutually-exclusive as_of selector)"),
         (status = 403, description = "Forbidden by ACL policy"),
         (status = 404, description = "Unknown type, or the requested as-of snapshot/timestamp resolves to no live snapshot"),
+        (status = 410, description = "Selector resolves to a snapshot older than the GC retention horizon (data may be reclaimed)"),
     ),
     security(("bearer_auth" = [])),
     tag = "objects",
@@ -908,6 +921,7 @@ pub fn query_error_response(e: QueryError, context: &'static str) -> axum::respo
         QueryError::BadGraphPath(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::BadPagination(m) => (StatusCode::BAD_REQUEST, m).into_response(),
         QueryError::AsOfNotFound(m) => (StatusCode::NOT_FOUND, m).into_response(),
+        QueryError::AsOfGone(m) => (StatusCode::GONE, m).into_response(),
         QueryError::Serving(crate::serving::ServingError::NoIndex(m)) => {
             (StatusCode::NOT_FOUND, m).into_response()
         }
