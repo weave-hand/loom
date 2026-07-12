@@ -376,6 +376,46 @@ loom_fixture_test(
     ],
 )
 
+# Scheduled-maintenance e2e: a cron `queue.schedule` row (gc_table / compact_table)
+# fires via `fire_due_job_schedules` (not due -> due-at-probe -> atomic re-fire
+# no-op), and the zero-pool worker drains the enqueued job over the engine wire
+# through the real handler (`handle_gc` / `handle_compact`), for both legs.
+loom_fixture_test(
+    name = "scheduled-maintenance-e2e",
+    crate = "scheduled_maintenance_e2e",
+    srcs = ["tests/scheduled_maintenance_e2e.rs"],
+    crate_root = "tests/scheduled_maintenance_e2e.rs",
+    edition = "2024",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":worker",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/worker:worker",
+        "//src/loom-config:loom-config",
+        "//src/services/datafusion-io:datafusion-io",
+        "//src/services/engine:engine",
+        "//src/services/engine-serving:engine-serving",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/store-config:store-config",
+        "//third-party:arrow-array",
+        "//third-party:arrow-flight",
+        "//third-party:arrow-ipc",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:object_store",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tokio-stream",
+        "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
 # Stream-consolidate job e2e: seed a CDC table with an unconsolidated update
 # delta (flushed to real Parquet), run handle_stream_consolidate over the wire
 # (decode payload -> EngineControl::ConsolidateStream RPC), assert the base
