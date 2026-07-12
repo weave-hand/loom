@@ -397,30 +397,33 @@ pub async fn compile_object_read_with(
 }
 
 /// Resolve a time-travel selector to a concrete snapshot id for `table`, or `None`
-/// when no selector was given (live read). A selector that resolves to no live
-/// snapshot — an as-of snapshot id the table is not live at, or a timestamp before
-/// the table's first snapshot — is `AsOfNotFound` (renders 404); a genuine backend
+/// when no selector was given (live read). A selector that resolves to no
+/// history-backed snapshot — an as-of snapshot id absent from the table's
+/// snapshot history (below, above, or never live), or a timestamp before the
+/// table's first snapshot — is `AsOfNotFound` (renders 404); a genuine backend
 /// fault from the catalog stays `ControlPlane` (renders 500).
 async fn resolve_read_snapshot(
     deps: &QueryDeps<'_>,
     table: &control_plane_core::TableRef,
     sel: Option<&AsOfSelector>,
 ) -> Result<Option<control_plane_core::SnapshotId>, QueryError> {
-    use control_plane_core::ControlPlaneError;
     let Some(sel) = sel else { return Ok(None) };
     let id = match sel {
         AsOfSelector::Snapshot(id) => {
             let sid = control_plane_core::SnapshotId(*id);
-            // Liveness gate: `schema` NotFounds if the table is not live at `sid`.
-            match deps.catalog.schema(table, sid).await {
-                Ok(_) => sid,
-                Err(ControlPlaneError::NotFound(_)) => {
+            // Exact-history gate: the id must exist in the catalog's snapshot
+            // history AND the table must be live at it. Unlike the previous
+            // `schema()` liveness-range check this is bounded above — an id
+            // past the newest snapshot 404s instead of reading live data.
+            match deps.catalog.snapshot(table, sid).await {
+                Ok(Some(s)) => s.id,
+                Ok(None) => {
                     return Err(QueryError::AsOfNotFound(format!(
-                        "{}.{} not live at snapshot {}",
+                        "{}.{} has no snapshot {}",
                         table.schema, table.name, id
                     )));
                 }
-                Err(e) => return Err(QueryError::ControlPlane(e)), // real backend fault -> 500
+                Err(e) => return Err(QueryError::ControlPlane(e)), // backend fault -> 500
             }
         }
         AsOfSelector::Time(ts) => match deps.catalog.snapshot_as_of(table, *ts).await {

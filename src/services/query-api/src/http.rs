@@ -327,19 +327,14 @@ async fn resolve_dataset_snapshot(
         None => catalog.current_snapshot(table).await,
         Some(AsOfSelector::Snapshot(id)) => {
             let sid = control_plane_core::SnapshotId(*id);
-            // Liveness + fetch: `snapshots` lists the table's live snapshots; pick `sid`.
-            catalog
-                .snapshots(table, PageReq::unbounded())
-                .await?
-                .items
-                .into_iter()
-                .find(|s| s.id == sid)
-                .ok_or_else(|| {
-                    ControlPlaneError::NotFound(format!(
-                        "{}.{} not live at snapshot {}",
-                        table.schema, table.name, id
-                    ))
-                })
+            // Exact-history gate, shared with the object path (Catalog::snapshot):
+            // replaces the previous O(history) snapshots().find(id) scan.
+            catalog.snapshot(table, sid).await?.ok_or_else(|| {
+                ControlPlaneError::NotFound(format!(
+                    "{}.{} has no snapshot {}",
+                    table.schema, table.name, id
+                ))
+            })
         }
         Some(AsOfSelector::Time(ts)) => {
             catalog.snapshot_as_of(table, *ts).await?.ok_or_else(|| {
