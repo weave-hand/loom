@@ -9,7 +9,9 @@
 //!
 //! Three cases: the pinned page is self-consistent across that interleave; the inline
 //! tier is genuinely as-of (the property Part A rests on); and the real, unpinned
-//! public scan is gapless under ACTUAL concurrency (flush + writes racing a reader).
+//! public scan pages gaplessly ACROSS a flush boundary post-hoc (writes + flush land
+//! sequentially, then paging starts — no concurrent reader; see that test's own doc
+//! comment for what it does and does not exercise).
 
 use std::collections::BTreeMap;
 
@@ -19,7 +21,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::changelog_table_ref;
 use e2e_support::{
     InProcessServingEngine, connect_gov_client, declare_cdc_table, define_widget, grant_writer,
-    spawn_engine_writer,
+    seed_widget_create_then_update, spawn_engine_writer,
 };
 use engine_serving::TablePolicy;
 use engine_serving::feed::{FeedPins, changelog_feed_scan, changelog_feed_scan_at};
@@ -52,26 +54,7 @@ async fn pinned_page_is_self_consistent_across_a_concurrent_flush_and_write() {
     };
 
     // 3 events, all inline: +I(1) @0, then -U(1) @1 and +U(1) @2.
-    run_action(
-        "createWidget",
-        json!({ "id": "1", "name": "a", "qty": "1" })
-            .as_object()
-            .expect("object body"),
-        &subj,
-        &deps,
-    )
-    .await
-    .expect("+I(1)");
-    run_action(
-        "updateWidget",
-        json!({ "id": "1", "qty": "9" })
-            .as_object()
-            .expect("object body"),
-        &subj,
-        &deps,
-    )
-    .await
-    .expect("-U/+U(1)");
+    seed_widget_create_then_update(&subj, &deps).await;
 
     let cat = IcebergCatalog::new(pool.clone());
 
@@ -228,12 +211,18 @@ async fn inline_tier_is_as_of_across_a_flush_end_cap() {
     );
 }
 
-/// The real, unpinned, PUBLIC scan under ACTUAL concurrency: a reader pages the feed
-/// while writes and a flush land underneath it. The concatenated stream must be
-/// gapless and duplicate-free. This is the closest a test can get to asserting the
-/// atomicity itself (rather than its consequences).
+/// The real, unpinned, PUBLIC scan paging ACROSS a flush boundary: all 6 writes
+/// (with a flush landing midway, after the 3rd) commit SEQUENTIALLY and complete
+/// BEFORE the paging loop below ever starts — there is no interleave here, and no
+/// concurrent reader. (Despite an earlier version of this doc comment's claim, this
+/// test does NOT exercise concurrency; a reader racing the writer/flush is not what
+/// this asserts.) What this DOES prove: paging the public, unpinned
+/// `changelog_feed_scan` entry point in small (2-event) batches after the flush has
+/// already landed still yields every event exactly once, in order, with no gap
+/// introduced at the flush boundary — the post-hoc consequence of the pinned-pair
+/// atomicity the other two tests in this file assert directly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn public_scan_is_gapless_under_concurrent_flush_and_writes() {
+async fn post_hoc_paging_across_a_flush_boundary_is_gapless_and_dup_free() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -252,7 +241,8 @@ async fn public_scan_is_gapless_under_concurrent_flush_and_writes() {
     };
     let cat = IcebergCatalog::new(pool.clone());
 
-    // Writer: 6 creates, flushing midway — the flush races the reader's paging.
+    // Writer: 6 creates, flushing midway. All of this completes before the paging
+    // loop below starts — sequential, not a race.
     let mut expected = 0i64;
     for i in 0..6i64 {
         run_action(

@@ -62,6 +62,35 @@ pub fn sql_status(s: tonic::Status) -> ControlPlaneError {
     }
 }
 
+/// [`GrpcQueueClient::changelog_latest`]'s status-preserving error: distinguishes an
+/// engine that does not (yet) implement `ChangelogLatest` — a rolling-deploy skew,
+/// where query-api is ahead of the engine — from a genuine backend fault, so the
+/// caller can answer 501 rather than 500. `changelog_latest` deliberately does NOT
+/// return a plain [`ControlPlaneError`] (whose `Backend` variant would erase the gRPC
+/// status class, as [`be`] does for every other RPC on this client) because this is
+/// the one changelog RPC query-api's `http.rs` needs to tell "unsupported" apart from
+/// "broken" on. Mirrors `engine-wire::flight::vector_search`'s `VectorSearchError`,
+/// which preserves `tonic::Code` the same way for a Flight-plane RPC.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangelogLatestError {
+    /// The engine returned `Unimplemented` — it does not carry this RPC yet.
+    #[error("changelog feed is not implemented by this engine")]
+    Unimplemented,
+    /// Any other transport/backend fault, opaque like every other [`be`]-mapped RPC.
+    #[error(transparent)]
+    Backend(ControlPlaneError),
+}
+
+/// Ceiling on a single `EngineControl` gRPC message, both directions. tonic's
+/// built-in default is 4 MiB to *decode* but UNBOUNDED to *encode* — so without an
+/// explicit ceiling here the engine will happily encode a `page_json` the client
+/// then fails to decode. The changelog feed's `page_json` (a serde `ChangeFeedPage`)
+/// is the only payload on this channel whose width is caller-influenced (a wide-row
+/// CDC type) rather than bounded by loom's own framing, so this must exceed the
+/// engine's `MAX_FEED_PAGE_BYTES` truncation budget with headroom to spare, while
+/// still capping the channel so a bug elsewhere can't grow a message unboundedly.
+const MAX_RPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
 /// Decode a serde-JSON governance payload, mapping decode failure to `Serialization`.
 fn de<T: serde::de::DeserializeOwned>(json: &str) -> Result<T> {
     serde_json::from_str(json).map_err(|e| ControlPlaneError::Serialization(e.to_string()))
@@ -137,7 +166,9 @@ impl GrpcQueueClient {
     pub async fn connect(socket: impl Into<String>) -> Result<Self> {
         let channel = crate::uds_channel(socket.into()).await?;
         Ok(Self {
-            inner: EngineControlClient::new(channel),
+            inner: EngineControlClient::new(channel)
+                .max_decoding_message_size(MAX_RPC_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_RPC_MESSAGE_BYTES),
         })
     }
 
@@ -161,13 +192,17 @@ impl GrpcQueueClient {
         &self,
         schema: String,
         name: String,
-    ) -> Result<Option<std::collections::BTreeMap<i32, i64>>> {
+    ) -> std::result::Result<Option<std::collections::BTreeMap<i32, i64>>, ChangelogLatestError>
+    {
         let resp = self
             .inner
             .clone()
             .changelog_latest(pb::ChangelogLatestRequest { schema, name })
             .await
-            .map_err(be)?
+            .map_err(|s: tonic::Status| match s.code() {
+                tonic::Code::Unimplemented => ChangelogLatestError::Unimplemented,
+                _ => ChangelogLatestError::Backend(be(s)),
+            })?
             .into_inner();
         if resp.present {
             Ok(Some(resp.positions.into_iter().collect()))

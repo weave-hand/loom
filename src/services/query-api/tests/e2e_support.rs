@@ -41,6 +41,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::build_vector_index;
 use http_body_util::BodyExt;
+use query_api::action::{ActionDeps, run_action};
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
@@ -1028,6 +1029,36 @@ pub async fn declare_cdc_table(
     }
 }
 
+/// Run the canonical 2-action `Widget` seed several changelog-feed regressions open
+/// with: `createWidget(id=1, qty=1)` (`+I(1)@0`) then `updateWidget(id=1, qty=9)`
+/// (`-U/+U(1)@1,2`). Shared by `changelog_rpc_wire.rs`, `stream_feed_torn_read.rs`,
+/// and `stream_subscribe_e2e.rs` — the identical warm-up sequence each opens its
+/// feed-scan case with, before diverging into per-test writes/flushes/spawns (which
+/// stay local per test; only this byte-identical action pair was genuine
+/// duplication — see the `loom-duplication` census).
+pub async fn seed_widget_create_then_update(subj: &SubjectId, deps: &ActionDeps<'_>) {
+    run_action(
+        "createWidget",
+        serde_json::json!({ "id": "1", "name": "a", "qty": "1" })
+            .as_object()
+            .expect("object body"),
+        subj,
+        deps,
+    )
+    .await
+    .expect("+I(1)");
+    run_action(
+        "updateWidget",
+        serde_json::json!({ "id": "1", "qty": "9" })
+            .as_object()
+            .expect("object body"),
+        subj,
+        deps,
+    )
+    .await
+    .expect("-U/+U(1)");
+}
+
 /// Define `Widget(id Long required identity, name String, qty Long)` + the
 /// `createWidget` (insert), `updateWidget` (id + qty), and `deleteWidget` (id) actions.
 /// Promoted from `update_delete_tiers_e2e.rs` so wire-client tests can reuse it.
@@ -1072,6 +1103,36 @@ pub async fn define_widget(cp: &PgControlPlane) -> TypeName {
         .await
         .unwrap();
     widget
+}
+
+/// Define `WideWidget(id Long required identity, blob String)` + the
+/// `createWideWidget` (insert) action — a CDC type deliberately shaped for the
+/// changelog feed's byte-truncation regression in `changelog_rpc_wire.rs` (a wide
+/// row was a poison pill that stalled a caught-up subscriber): the caller writes a
+/// large `blob` per row, so a page bounded by EVENT COUNT alone (not bytes) can
+/// serialize to several megabytes from a handful of rows.
+pub async fn define_wide_widget(cp: &PgControlPlane) -> TypeName {
+    let ty = TypeName("WideWidget".into());
+    cp.ontology()
+        .define_type(
+            ObjectType::build("WideWidget", ("main", "wide_widget"))
+                .prop_req("id", "Long")
+                .prop("blob", "String")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .unwrap();
+    cp.ontology()
+        .define_action(
+            ActionDef::build("createWideWidget", "WideWidget", ActionKind::Insert)
+                .param_req("id", "Long")
+                .param("blob", "String")
+                .done(),
+        )
+        .await
+        .unwrap();
+    ty
 }
 
 /// A `VWidget` type keyed on `id` with a `seq` (Long) **version** column — for the

@@ -112,7 +112,18 @@ impl crate::serving::ServingEngine for EngineServingClient {
         self.control
             .changelog_latest(table.schema.clone(), table.name.clone())
             .await
-            .map_err(|e| ServingError::Engine(e.to_string()))
+            .map_err(|e| match e {
+                // A rolling deploy where query-api is ahead of the engine: preserve it
+                // as the semantically-correct 501 (`http.rs`'s `Unsupported` arm),
+                // rather than letting it fall through to the 500 every other engine
+                // fault gets.
+                engine_wire::client::ChangelogLatestError::Unimplemented => {
+                    ServingError::Unsupported("changelog feed".into())
+                }
+                engine_wire::client::ChangelogLatestError::Backend(e) => {
+                    ServingError::Engine(e.to_string())
+                }
+            })
     }
 
     async fn changelog_feed(

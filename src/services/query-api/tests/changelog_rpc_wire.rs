@@ -10,8 +10,8 @@ use control_plane_core::ChangeFeedPage;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use e2e_support::{
-    InProcessServingEngine, connect_gov_client, declare_cdc_table, define_widget, grant_writer,
-    spawn_engine_full,
+    InProcessServingEngine, connect_gov_client, declare_cdc_table, define_wide_widget,
+    define_widget, grant_writer, seed_widget_create_then_update, spawn_engine_full,
 };
 use engine_wire::client::WirePolicy;
 use query_api::action::{ActionDeps, run_action};
@@ -43,26 +43,7 @@ async fn changelog_rpcs_probe_serve_and_wait() {
     };
 
     // 3 events: +I(1) @0, -U(1) @1, +U(1) @2.
-    run_action(
-        "createWidget",
-        json!({ "id": "1", "name": "a", "qty": "1" })
-            .as_object()
-            .expect("object body"),
-        &subj,
-        &deps,
-    )
-    .await
-    .expect("+I(1)");
-    run_action(
-        "updateWidget",
-        json!({ "id": "1", "qty": "9" })
-            .as_object()
-            .expect("object body"),
-        &subj,
-        &deps,
-    )
-    .await
-    .expect("-U/+U(1)");
+    seed_widget_create_then_update(&subj, &deps).await;
 
     let client = connect_gov_client(&sock).await;
 
@@ -134,6 +115,43 @@ async fn changelog_rpcs_probe_serve_and_wait() {
         "an empty page returns the caller's positions unchanged"
     );
 
+    // FIX 2 regression: the caught-up fast path (a cheap Postgres probe that skips
+    // the object-store scan when every bucket is exhausted) must NEVER wrongly
+    // suppress a real event — it has to re-probe on every call, not cache a stale
+    // "nothing available" verdict. Land one more write from the caught-up
+    // position, then confirm the very next `changelog_feed` call returns it.
+    run_action(
+        "updateWidget",
+        json!({ "id": "1", "qty": "42" })
+            .as_object()
+            .expect("object body"),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("-U/+U(1) landed after the caught-up probe");
+    let after_write = client
+        .changelog_feed(
+            "main".to_string(),
+            "widget".to_string(),
+            &empty.next,
+            100,
+            &WirePolicy::default(),
+        )
+        .await
+        .expect("changelog_feed right after a fresh write");
+    let after_coords: Vec<(i32, i64)> = after_write
+        .events
+        .iter()
+        .map(|e| (e.bucket, e.offset))
+        .collect();
+    assert_eq!(
+        after_coords,
+        vec![(0, 3), (0, 4)],
+        "the fast path must not suppress an event landed just after an empty probe: {:?}",
+        after_write.events
+    );
+
     // 3. AwaitChangelog — returns cleanly at its timeout when no write lands.
     client
         .await_changelog(
@@ -143,4 +161,118 @@ async fn changelog_rpcs_probe_serve_and_wait() {
         )
         .await
         .expect("await_changelog returns Ok at timeout, never errors");
+}
+
+/// FIX 1 regression: a WIDE-ROW CDC type must not become a poison pill. The feed
+/// page was bounded by EVENT COUNT alone (`FEED_BATCH_LIMIT` / `MAX_FEED_LIMIT`),
+/// never by BYTES — a caught-up subscriber of a type with a large text column could
+/// ask for a full page whose `page_json` the wire client then fails to decode, and
+/// because the HTTP response is already committed as 200 the body just ends: the
+/// consumer reads a clean EOF, thinks it caught up, reconnects at the SAME
+/// position, and reproduces the identical oversized page — forever.
+///
+/// This seeds a type whose rows are individually modest (~900 KB) but whose
+/// COMBINED page comfortably exceeds the engine's byte budget, and proves: (i) the
+/// call still SUCCEEDS (the decode ceiling was raised to cover one legitimately
+/// wide row), (ii) the engine TRUNCATES rather than erroring or hanging — strictly
+/// fewer events than were written/requested, (iii) `next` is exactly consistent
+/// with what was actually returned (not what was scanned), and (iv) resuming from
+/// `next` returns precisely the remaining events — no gap, no duplicate. That last
+/// assertion is what proves the truncation is safe rather than just "doesn't crash".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changelog_feed_wide_row_page_is_byte_truncated_and_resumable() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    declare_cdc_table(&cp, &pool, "main", "wide_widget", 1).await;
+    let wide = define_wide_widget(&cp).await;
+    let subj = grant_writer(&cp, &wide).await;
+
+    let (sock, _eg) =
+        spawn_engine_full(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+    let engine = EngineActionClient::connect(sock.clone())
+        .await
+        .expect("connect EngineActionClient");
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // 12 rows x a ~900 KB blob each (~10.8 MB combined) — comfortably over the
+    // engine's byte budget (8 MiB) while each individual row stays well under the
+    // engine-wire channel's raised decode ceiling (64 MiB).
+    const ROWS: i64 = 12;
+    let blob = "x".repeat(900_000);
+    for id in 0..ROWS {
+        run_action(
+            "createWideWidget",
+            json!({ "id": id.to_string(), "blob": blob.clone() })
+                .as_object()
+                .expect("object body"),
+            &subj,
+            &deps,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("createWideWidget({id}): {e:?}"));
+    }
+
+    let client = connect_gov_client(&sock).await;
+
+    // Ask for every written row in one page: without byte-bounding, this would be
+    // ~10.8 MB of `page_json`.
+    let page = client
+        .changelog_feed(
+            "main".to_string(),
+            "wide_widget".to_string(),
+            &BTreeMap::from([(0, 0)]),
+            ROWS as u64,
+            &WirePolicy::default(),
+        )
+        .await
+        .expect("changelog_feed must decode successfully despite the wide rows");
+
+    let n = page.events.len();
+    assert!(
+        n >= 1,
+        "truncation must NEVER drop to zero events (that is the poison-pill stall)"
+    );
+    assert!(
+        (n as i64) < ROWS,
+        "the page must have been byte-truncated: got {n} of {ROWS} written rows in one page"
+    );
+
+    let coords: Vec<i64> = page.events.iter().map(|e| e.offset).collect();
+    let want_coords: Vec<i64> = (0..n as i64).collect();
+    assert_eq!(
+        coords, want_coords,
+        "the retained prefix is contiguous from offset 0"
+    );
+    assert_eq!(
+        page.next.get(&0).copied(),
+        Some(n as i64),
+        "`next` is exactly one past the last event ACTUALLY returned, not the full scan"
+    );
+
+    // Resume from `next`: the remaining rows come back with no gap, no duplicate —
+    // the assertion that proves the truncation is SAFE, not merely non-crashing.
+    let rest = client
+        .changelog_feed(
+            "main".to_string(),
+            "wide_widget".to_string(),
+            &page.next,
+            ROWS as u64,
+            &WirePolicy::default(),
+        )
+        .await
+        .expect("resumed changelog_feed");
+    let rest_coords: Vec<i64> = rest.events.iter().map(|e| e.offset).collect();
+    let want_rest: Vec<i64> = (n as i64..ROWS).collect();
+    assert_eq!(
+        rest_coords, want_rest,
+        "resuming from `next` yields exactly the remaining events: no gap, no duplicate"
+    );
 }

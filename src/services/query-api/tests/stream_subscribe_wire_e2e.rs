@@ -14,9 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use control_plane_core::{
-    CompareOp, ControlPlane, ObjectType, RoleId, RowFilter, ScalarValue, SubjectId,
-};
+use control_plane_core::{CompareOp, ControlPlane, ObjectType, RowFilter, ScalarValue, SubjectId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -59,12 +57,6 @@ struct Wire {
     cp: PgControlPlane,
     cp_arc: Arc<PgControlPlane>,
     read_eng: Arc<dyn query_api::serving::ServingEngine>,
-    #[expect(
-        dead_code,
-        reason = "kept alongside subj for symmetry with grant_writer_role's return; \
-                  governance cases mint their own roles instead of reusing this one"
-    )]
-    role: RoleId,
     sock: String,
     engine: EngineActionClient,
     serving: InProcessServingEngine,
@@ -145,7 +137,6 @@ async fn setup(fx: &PgFixture) -> Wire {
                 .await
                 .expect("connect EngineServingClient"),
         ),
-        role,
         sock: sock.clone(),
         engine,
         serving,
