@@ -198,6 +198,19 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "flight-export-config",
+    crate = "flight_export_config",
+    srcs = ["tests/flight_export_config.rs"],
+    crate_root = "tests/flight_export_config.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/loom-config:loom-config",
+        "//third-party:tempfile",
+    ],
+)
+
 loom_fixture_test(
     name = "governed-read",
     crate = "governed_read",
