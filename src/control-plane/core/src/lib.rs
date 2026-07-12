@@ -17,6 +17,7 @@ mod job_schedule;
 mod lineage;
 mod logical_type;
 mod ontology;
+mod orphan_sweep;
 mod page;
 mod queue;
 pub mod snapshot;
@@ -71,6 +72,7 @@ pub use ontology::{
     ObjectType, ObjectTypeBuilder, Ontology, ParamDef, PropertyDef, ResultExpectation, TypeName,
     VectorIndexDef, validate_derived_columns,
 };
+pub use orphan_sweep::{ORPHAN_SWEEP_JOB_KIND, OrphanSweepJob};
 pub use page::{Cursor, Page, PageReq};
 pub use queue::{
     Job, JobFailure, JobId, JobScheduleStatus, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy,

@@ -516,3 +516,16 @@ rust_test(
         "//third-party:uuid",
     ],
 )
+
+rust_test(
+    name = "orphan-sweep-job",
+    crate = "orphan_sweep_job",
+    srcs = ["tests/orphan_sweep_job.rs"],
+    crate_root = "tests/orphan_sweep_job.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [
+        ":core",
+        "//third-party:serde_json",
+    ],
+)
