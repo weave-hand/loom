@@ -11,10 +11,6 @@ use crate::serving::{ActionEngine, ServingEngine};
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default per-export row cap (`LOOM_EXPORT_MAX_ROWS`). Bounds a runaway governed export; an
-/// operator hydrating a large working set raises it.
-const DEFAULT_EXPORT_MAX_ROWS: u32 = 1_000_000;
-
 pub async fn serve(
     cfg: &service_runtime::Config,
     direct: Arc<dyn ControlPlane>,
@@ -97,18 +93,22 @@ pub async fn serve(
     );
     let app = crate::web_static::with_cors(app, &origins);
 
-    // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR).
-    if let Some(bind) = env.get("LOOM_FLIGHT_BIND_ADDR") {
-        // Fail-loud: a malformed row cap is a startup error when the export
-        // endpoint was explicitly requested (was: silent fallback to the default).
-        let max_rows =
-            service_runtime::parse_var(&env, "LOOM_EXPORT_MAX_ROWS", DEFAULT_EXPORT_MAX_ROWS)?;
-        spawn_flight_export(bind, &engine_socket, auth_flight, cp_flight, max_rows).await?;
+    // Optional external Arrow Flight export listener (opt-in via LOOM_FLIGHT_BIND_ADDR;
+    // typed seam — its knobs are the typed `FlightExportTuning`, validated at config
+    // load, not raw env reads, per road-flight-export-config-seam).
+    if let Some(bind) = app_cfg.flight_export.bind_addr.clone() {
+        spawn_flight_export(
+            &bind,
+            &engine_socket,
+            auth_flight,
+            cp_flight,
+            app_cfg.flight_export.max_rows,
+        )
+        .await?;
     }
 
     // Optional external Flight SQL wire (opt-in via LOOM_SQL_WIRE_BIND_ADDR; typed seam —
-    // this wire's knobs are the typed `SqlWireTuning`, not raw env reads, per
-    // fut-flight-export-config-seam).
+    // its knobs are the typed `SqlWireTuning`, the twin of the flight-export block above).
     if let Some(bind) = app_cfg.sql_wire.bind_addr.clone() {
         spawn_sql_wire(
             &bind,
