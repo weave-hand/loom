@@ -95,6 +95,9 @@ async fn admin_fragment_documents_exactly_the_admin_routes() {
         ("post", "/admin/transforms/run"),
         ("get", "/admin/transforms/{name}/runs"),
         ("get", "/admin/runs/{run_id}"),
+        ("post", "/admin/schedules"),
+        ("get", "/admin/schedules"),
+        ("delete", "/admin/schedules/{name}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_string(), p.to_string()))
