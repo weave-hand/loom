@@ -26,8 +26,21 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use store_config::{ObjectStoreConfig, build_write_store};
 use tonic::transport::Server;
 use worker::handler::{handle_flush, handle_gc};
+
+/// Build a local-filesystem `WriteStore` rooted at `warehouse` (the tempdir
+/// path `spawn_server` uses), for `EngineControlService::write_store`.
+fn test_write_store(warehouse: &str) -> store_config::WriteStore {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "LOOM_WAREHOUSE_URI".to_string(),
+        format!("file://{warehouse}"),
+    );
+    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
+    build_write_store(&store_cfg).expect("write store")
+}
 
 /// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
 /// now takes pre-decoded batches, so build these directly rather than
@@ -104,6 +117,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         16 * 1024 * 1024,
         i64::MAX,
     );
+    let write_store = test_write_store(&wh_str);
 
     let svc = EngineControlService {
         cp: cp.clone(),
@@ -112,6 +126,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
         flush_byte_threshold: i64::MAX,
+        write_store,
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
     };
     let flight_svc = FlightDataService {
         catalog: flight_catalog,

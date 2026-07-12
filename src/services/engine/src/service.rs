@@ -77,6 +77,10 @@ pub struct EngineControlService {
     /// (`EngineTuning::flush_byte_threshold`) — threaded into `commit_micro_batch`'s
     /// `inline_append_mv` call, exactly as the writer's own inline-writing paths use it.
     pub flush_byte_threshold: i64,
+    /// The warehouse object store + root URL, for the orphan sweep's LIST/delete.
+    pub write_store: service_runtime::WriteStore,
+    /// Grace window for the orphan sweep (from `LOOM_ORPHAN_SWEEP_GRACE_SECS`).
+    pub orphan_sweep_grace: std::time::Duration,
 }
 
 #[tonic::async_trait]
@@ -175,6 +179,25 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             data_file_rows: summary.data_file_rows,
             inline_rows: summary.inline_rows,
             objects_deleted: summary.objects_deleted,
+        }))
+    }
+
+    async fn sweep_orphans(
+        &self,
+        _req: Request<pb::SweepOrphansRequest>,
+    ) -> std::result::Result<Response<pb::SweepOrphansResponse>, Status> {
+        let summary = control_plane_postgres::orphan_sweep::sweep_orphans(
+            &self.write_store.store,
+            &self.write_store.root_url,
+            &self.pool,
+            self.orphan_sweep_grace,
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(pb::SweepOrphansResponse {
+            objects_deleted: summary.objects_deleted,
+            bytes_deleted: summary.bytes_deleted,
+            candidates_skipped_grace: summary.candidates_skipped_grace,
         }))
     }
 

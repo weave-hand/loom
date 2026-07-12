@@ -20,9 +20,22 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use store_config::{ObjectStoreConfig, build_write_store};
 use tonic::transport::Server;
 
 // ---- helpers copied from postgres/tests/iceberg_flush.rs ------------------
+
+/// Build a local-filesystem `WriteStore` rooted at `warehouse` (the tempdir
+/// path each `spawn_server` uses), for `EngineControlService::write_store`.
+fn test_write_store(warehouse: &str) -> store_config::WriteStore {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "LOOM_WAREHOUSE_URI".to_string(),
+        format!("file://{warehouse}"),
+    );
+    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
+    build_write_store(&store_cfg).expect("write store")
+}
 
 fn columns() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -69,6 +82,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         16 * 1024 * 1024,
         i64::MAX,
     );
+    let write_store = test_write_store(&wh_str);
 
     let svc = EngineControlService {
         cp,
@@ -77,6 +91,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
         flush_byte_threshold: i64::MAX,
+        write_store,
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
     };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
@@ -261,6 +277,7 @@ async fn flush_over_wire() {
             16 * 1024 * 1024,
             i64::MAX,
         );
+        let write_store2 = test_write_store(&wh2_str);
 
         let svc = EngineControlService {
             cp: cp2,
@@ -269,6 +286,8 @@ async fn flush_over_wire() {
             retention: Duration::from_secs(7 * 24 * 3600),
             writer: writer2,
             flush_byte_threshold: i64::MAX,
+            write_store: write_store2,
+            orphan_sweep_grace: Duration::from_secs(24 * 3600),
         };
         let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind");
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);

@@ -1242,6 +1242,7 @@ pub async fn spawn_engine(
             flight: false,
             inline_byte_limit,
             flush_byte_threshold,
+            ..Default::default()
         },
     )
     .await;

@@ -20,6 +20,7 @@
 //! (the tree's classic flake source). The guard owns the socket dir and the
 //! serve task; hold it alive for the duration of the test.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,7 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::pb::engine_control_server::EngineControlServer;
 use loom_test_seed::local_sql_catalog;
+use store_config::{ObjectStoreConfig, build_write_store};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -48,6 +50,8 @@ pub struct EngineOpts {
     pub inline_byte_limit: usize,
     /// `IcebergActionWriter` flush byte threshold.
     pub flush_byte_threshold: i64,
+    /// Grace window for the engine's orphan sweep RPC.
+    pub orphan_sweep_grace: Duration,
 }
 
 impl Default for EngineOpts {
@@ -57,6 +61,7 @@ impl Default for EngineOpts {
             flight: true,
             inline_byte_limit: 16 * 1024 * 1024,
             flush_byte_threshold: i64::MAX,
+            orphan_sweep_grace: Duration::from_secs(24 * 3600),
         }
     }
 }
@@ -107,6 +112,13 @@ pub async fn spawn_engine_uds(
             opts.inline_byte_limit,
             opts.flush_byte_threshold,
         );
+        let mut env = HashMap::new();
+        env.insert(
+            "LOOM_WAREHOUSE_URI".to_string(),
+            format!("file://{warehouse}"),
+        );
+        let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
+        let write_store = build_write_store(&store_cfg).expect("write store");
         EngineControlServer::new(EngineControlService {
             cp,
             catalog: catalog.clone(),
@@ -114,6 +126,8 @@ pub async fn spawn_engine_uds(
             retention: Duration::from_secs(7 * 24 * 3600),
             writer,
             flush_byte_threshold: opts.flush_byte_threshold,
+            write_store,
+            orphan_sweep_grace: opts.orphan_sweep_grace,
         })
     });
     let flight = opts.flight.then(|| {

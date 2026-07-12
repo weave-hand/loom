@@ -18,10 +18,23 @@ use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use store_config::{ObjectStoreConfig, build_write_store};
 use tonic::transport::Server;
 use uuid::Uuid;
 
 // ---- helpers ---------------------------------------------------------------
+
+/// Build a local-filesystem `WriteStore` rooted at `warehouse` (the tempdir
+/// path `write_object_over_wire` uses), for `EngineControlService::write_store`.
+fn test_write_store(warehouse: &str) -> store_config::WriteStore {
+    let mut env = std::collections::HashMap::new();
+    env.insert(
+        "LOOM_WAREHOUSE_URI".to_string(),
+        format!("file://{warehouse}"),
+    );
+    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
+    build_write_store(&store_cfg).expect("write store")
+}
 
 fn one_row_ipc(id: i64, name: &str) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![
@@ -129,6 +142,7 @@ async fn write_object_over_wire() {
     let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
     let writer_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
     let writer = IcebergActionWriter::new(writer_catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let write_store = test_write_store(&wh_str);
 
     let svc = EngineControlService {
         cp: cp2,
@@ -137,6 +151,8 @@ async fn write_object_over_wire() {
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
         flush_byte_threshold: i64::MAX,
+        write_store,
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
     };
     let listener = tokio::net::UnixListener::bind(&sock).expect("bind");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
