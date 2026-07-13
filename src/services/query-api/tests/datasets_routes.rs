@@ -9,7 +9,10 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{SubjectId, TableRef};
+use control_plane_core::{
+    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, SubjectId, TableRef,
+    TypeName,
+};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use query_api::http::{AppState, router};
@@ -133,9 +136,31 @@ fn seeded() -> (MemoryControlPlane, i64) {
     (cp, latest)
 }
 
+/// Give `analyst` a role and a Table Read grant on main.events so the positive
+/// route tests still see the dataset once gating is enforced.
+async fn grant_analyst_table(cp: &MemoryControlPlane) {
+    let subj = SubjectId("analyst".into());
+    let role = RoleId("analyst-role".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Table(TableRef {
+            schema: "main".into(),
+            name: "events".into(),
+        }),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn datasets_lists_the_seeded_table() {
     let (cp, _) = seeded();
+    grant_analyst_table(&cp).await;
     let app = app(cp);
     let (status, json) = get(&app, "/datasets").await;
     assert_eq!(status, StatusCode::OK);
@@ -153,6 +178,7 @@ async fn datasets_lists_the_seeded_table() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dataset_detail_composes_snapshot_and_columns() {
     let (cp, latest) = seeded();
+    grant_analyst_table(&cp).await;
     let app = app(cp);
     let (status, json) = get(&app, "/datasets/main/events").await;
     assert_eq!(status, StatusCode::OK);
@@ -185,6 +211,7 @@ async fn unknown_dataset_is_404() {
 #[tokio::test(flavor = "multi_thread")]
 async fn dataset_preview_returns_sampled_rows() {
     let (cp, _) = seeded();
+    grant_analyst_table(&cp).await;
     let app = app_canned(cp);
     let (status, json) = get(&app, "/datasets/main/events/preview?limit=5").await;
     assert_eq!(status, StatusCode::OK);
@@ -199,4 +226,54 @@ async fn dataset_preview_rejects_bad_limit() {
     let app = app_canned(cp);
     let (status, _) = get(&app, "/datasets/main/events/preview?limit=nope").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_list_is_empty_for_ungranted_subject() {
+    let (cp, _) = seeded();
+    let app = app(cp);
+    let (status, json) = get(&app, "/datasets").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["datasets"].as_array().unwrap().len(), 0);
+}
+
+/// Spec Testing "Type grant (backing table listed)" at the route level: a Read grant
+/// on a TYPE backed by main.events makes the backing dataset appear in the list — the
+/// lineage-symmetry case, exercised through the fallback in `is_table_readable`.
+#[tokio::test(flavor = "multi_thread")]
+async fn type_grant_lists_backing_table() {
+    let (cp, _) = seeded();
+    cp.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Event".into()),
+            properties: vec![],
+            derived: vec![],
+            table: TableRef {
+                schema: "main".into(),
+                name: "events".into(),
+            },
+            identity: None,
+            version: None,
+        })
+        .await
+        .unwrap();
+    let subj = SubjectId("analyst".into());
+    let role = RoleId("analyst-role".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Event".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let app = app(cp);
+    let (status, json) = get(&app, "/datasets").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["datasets"].as_array().unwrap().len(), 1);
+    assert_eq!(json["datasets"][0]["name"], "events");
 }

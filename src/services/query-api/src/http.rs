@@ -220,8 +220,9 @@ async fn get_ontology_type(
 
 /// List every table live in the Iceberg mirror, `(schema, name)`-ordered.
 ///
-/// Catalog metadata (like `/ontology/types`) — auth-required but not ACL-gated; ACL
-/// governs the data reads themselves.
+/// Catalog metadata reads are now per-dataset ACL-gated: a table is listed only if
+/// `subject` can read it, under the same Table∨backing-Type predicate `/lineage`
+/// enforces (`DatasetVisibility::is_table_readable`).
 #[utoipa::path(
     get, path = "/datasets",
     responses(
@@ -231,14 +232,24 @@ async fn get_ontology_type(
     security(("bearer_auth" = [])),
     tag = "datasets",
 )]
-async fn list_datasets(State(st): State<AppState>, _subject: Subject) -> axum::response::Response {
+async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::response::Response {
     let catalog = st.cp.catalog();
     let page = match catalog.list_tables(PageReq::unbounded()).await {
         Ok(p) => p,
         Err(e) => return internal_error("catalog list_tables fault", e),
     };
+    let vis = crate::dataset_acl::DatasetVisibility::new(
+        st.cp.acl(),
+        st.cp.ontology(),
+        st.naming.as_ref(),
+    );
     let mut datasets: Vec<serde_json::Value> = Vec::with_capacity(page.items.len());
     for t in &page.items {
+        match vis.is_table_readable(&subject.0, t).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => return cp_read_error("catalog dataset acl fault", e),
+        }
         // Best-effort updated-time: a table with no readable snapshot renders "".
         let updated = match catalog.current_snapshot(t).await {
             Ok(s) => s
