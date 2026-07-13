@@ -180,6 +180,38 @@ picks the rank-1 winner per identity, and a tombstoned winner is dropped from
 the output — so a read before and after consolidation is byte-identical by
 construction.
 
+**Nullability across the union (#435).** A non-CDC tombstone row carries NULL
+data columns (only the identity and the framing columns are set), and it *must*
+flow through the union — it is what suppresses the base row. So the **inline
+tier's** provider declares its non-identity fields nullable, which is simply the
+truth about that tier. But DataFusion's `Union` derives `nullable = any(inputs)`
+and `Filter` never re-narrows, so that widening would otherwise propagate into
+the **served** schema — and the worker infers a transform's output columns from
+the served Arrow schema (`infer_columns`), where a widened required property
+would abort a typed transform on `check_conformance`'s `NullabilityViolation`
+and fail an MV re-run on `classify_schema_change`'s `ColumnNullabilityChanged`.
+Since the merge view filters tombstones out **before** its final projection, the
+output provably carries no NULLs under a required column, so the projection
+**restores** the mirror's nullability with `loom_not_null` (`not_null.rs`), an
+identity UDF whose declared return field is non-nullable. The invariant is that
+`build_serving_provider(...).schema()` stays byte-identical to
+`arrow_schema_from_mirror(...)` — pinned by `//src/services/engine-serving:merge-view-schema`
+over a table with a live tombstone, and by a typed-transform case that conforms
+over a source with a live inline row. The identity column is deliberately left
+**bare** (both tiers already agree on its flag, so there is nothing to restore),
+which also keeps identity-predicate pushdown into Postgres intact — the MV
+keyed-lookup hot path; `build_scan_sql` additionally refuses to render any filter
+carrying the marker, so it can never escape into Postgres SQL (the provider is
+`Inexact`, so DataFusion re-applies whatever is skipped). The same class of bug
+sat in `/search`'s **query-time hot-delta read** (`inline_delta_batch`), which
+declared a non-nullable vector field over rows that could be tombstones; it now
+excludes tombstone / `-U` / NULL-vector rows from the delta instead. One
+consequence worth stating: for a *nullable* vector column, an identity whose
+current inline version has a NULL vector is dropped from the hot tier while
+remaining a live survivor, so its stale **cold** entry is no longer suppressed
+and can still be scored. That is strictly better than the pre-fix 500, and a
+nullable-`vector(N)` scoring policy is an explicit non-goal of the spec.
+
 The commit uses a **consuming** overwrite, not the blanket one:
 `overwrite_parquet_snapshot_consuming` (`iceberg_landing.rs`) carries a
 targeted `InlineEndCap { table_id, row_ids }` that retires **exactly** the
