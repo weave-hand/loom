@@ -31,7 +31,9 @@ use datafusion::prelude::{Expr, col, lit};
 use datafusion::scalar::ScalarValue as DfScalar;
 use store_config::ServingStore;
 
-use crate::serving::{EngineServingError, build_serving_provider, register_qualified, to_serving};
+use crate::serving::{
+    EngineServingError, build_serving_provider, fold_view, register_qualified, to_serving,
+};
 
 /// The redaction marker a masked column's every value is replaced with. Kept local
 /// to engine-serving (query-api owns its own private copy) so the enforcing path has
@@ -314,6 +316,37 @@ pub async fn execute_governed_sql_stream(
         let policy = policy_for(governed, &table);
         let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
         register_qualified(&ctx, &table.schema, &table.name, provider)?;
+    }
+    // Catalog views: a view is an ordinary governed relation. It registers only
+    // when the VIEW itself has a `GovernedTable` entry (closed-world, exactly as
+    // for a base table) — a view grant is sufficient and never requires the
+    // base's own grant. The view's inner base relation is therefore built
+    // PRIVATELY and UNGOVERNED (`build_serving_provider`, never `ctx.table`): in
+    // this governed session a base is registered only when it has its own entry,
+    // and then it is wrapped in the BASE's policy — both wrong for the view. The
+    // folded view is wrapped in the VIEW's policy, so no base policy contaminates
+    // the view scan.
+    use control_plane_core::Catalog as _;
+    for v in catalog
+        .list_views(control_plane_core::PageReq::unbounded())
+        .await
+        .map_err(to_serving)?
+        .items
+    {
+        if governed.table_for(&v.view).is_none() {
+            continue; // closed-world: unlisted view is unresolvable
+        }
+        let policy = policy_for(governed, &v.view);
+        let Some(inner) =
+            build_serving_provider(&ctx, catalog, &v.base, serving_store, None).await?
+        else {
+            continue; // dangling view: base not live here
+        };
+        let df = ctx.read_table(inner).map_err(to_serving)?;
+        let provider = fold_view(df, &v)?.into_view();
+        let governed_provider: Arc<dyn TableProvider> =
+            Arc::new(GovernedTableProvider::new(provider, policy)?);
+        register_qualified(&ctx, &v.view.schema, &v.view.name, governed_provider)?;
     }
     let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)
