@@ -31,7 +31,7 @@ Carried from the spec; every task implicitly includes these:
 - `src/control-plane/postgres/src/stream.rs` — the symmetric Log-side kind guard in `reconcile_stream_mode`'s `(Some(_), Some(m))` arm; doc-comment + stale-comment updates. **Only file with a production change.**
 
 **Modify (build):**
-- `src/control-plane/postgres/BUCK` — `loom_fixture_test` target `stream-log-vs-cdc-declare` (mirror `stream-merge-declare`, `BUCK:1414`).
+- `src/control-plane/postgres/BUCK` — `loom_fixture_test` target `stream-log-vs-cdc-declare` (mirror `stream-merge-declare`, which now sits at `BUCK:1672-1687` — the plan's original `BUCK:1414` is stale).
 - `src/services/ingest/BUCK` — `loom_fixture_test` target `stream-log-vs-cdc-http` (mirror `model-cdc-declare`, `BUCK:240`).
 
 ---
@@ -40,7 +40,7 @@ Carried from the spec; every task implicitly includes these:
 
 **Files:**
 - Create: `src/control-plane/postgres/tests/stream_log_vs_cdc_declare.rs`
-- Modify: `src/control-plane/postgres/BUCK` (new target after `stream-merge-declare`, line 1414)
+- Modify: `src/control-plane/postgres/BUCK` (new target after `stream-merge-declare`, which closes at line 1687)
 - Modify: `src/control-plane/postgres/src/stream.rs:37-46` (doc comment), `:135-176` (the arm)
 
 **Interfaces:**
@@ -300,7 +300,7 @@ async fn log_redeclare_matching_count_against_log_table_stays_ok() {
 
 - [ ] **Step 2: Wire the test target**
 
-In `src/control-plane/postgres/BUCK`, immediately after the `stream-merge-declare` target (line 1414), add a `loom_fixture_test` mirroring it exactly:
+In `src/control-plane/postgres/BUCK`, immediately after the `stream-merge-declare` target (it closes at line 1687), add a `loom_fixture_test` mirroring it exactly:
 
 ```python
 loom_fixture_test(
@@ -378,6 +378,11 @@ In `src/control-plane/postgres/src/stream.rs`, inside `reconcile_stream_mode`'s 
 
 No other production change. `StreamKind` is already imported (`stream.rs:3`); no new SQL, no `.sqlx` regen.
 
+**Micro-batch MV coverage (added at plan review; post-dates the spec).** `#road-stream-continuous` (PR #418) landed `inline_append_mv` (`iceberg_inline.rs:826-848`), which commits an MV's output through `inline_append_decl(…, &StreamDecl::Log(buckets), …)` — i.e. **every micro-batch MV commit now traverses this arm** with a `Log` decl. Two consequences, both already handled by the guard as written:
+
+- The ISSUES entry's second exposure ("an MV whose output names a pre-existing CDC table is refused at neither define nor commit and would stamp log-framing into CDC storage") is **closed by this same guard**, with no extra code: the commit's `StreamDecl::Log` against a `kind='cdc'` output now rejects at `reconcile_stream_mode`.
+- A normal MV (log-kind output) must stay unaffected. That is the byte-identical constraint applied to a path the spec's non-regression list predates, so Step 5 sweeps it explicitly.
+
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `buck2 test --console none //src/control-plane/postgres:stream-log-vs-cdc-declare`
@@ -385,8 +390,8 @@ Expected: PASS (both tests).
 
 Then the non-regression sweep of every suite that pins the arm and the pure log/batch/CDC declare paths:
 
-Run: `buck2 test --console none //src/control-plane/postgres:stream-merge-declare //src/services/ingest:stream-declare //src/services/ingest:model-cdc-declare //src/services/query-api:stream-cdc-declare`
-Expected: PASS, no changes to any of those files.
+Run: `buck2 test --console none //src/control-plane/postgres:stream-merge-declare //src/services/ingest:stream-declare //src/services/ingest:model-cdc-declare //src/services/query-api:stream-cdc-declare //src/control-plane/postgres:stream-flush-persist //src/control-plane/postgres:stream-mv-triggers //src/services/engine:mv-commit-wire`
+Expected: PASS, no changes to any of those files. (The last three cover the `StreamDecl::Log` callers the spec's list predates: `stream-flush-persist` is the other `inline_append(…, Some(n))` log caller, and the two MV suites now traverse the new guard on every micro-batch commit.)
 
 - [ ] **Step 6: Run prek + commit**
 
@@ -567,13 +572,13 @@ end to end."
 
 **Files:**
 - Modify: `docs/ISSUES.md` — remove the `iss-stream-log-vs-cdc-declare` entry (closed).
-- Modify: `docs/system-capabilities/stream.md` — if it documents the declaration guards / known gaps, note the now-symmetric kind check (and drop any mention of the asymmetry).
+- Modify: `docs/system-capabilities/stream.md` — two exact edits (located at plan review): **`:42-44`**, whose bullet currently reads "A `mode=cdc` request against a table already declared a **different kind** (e.g. an existing `log` table) is rejected — but the converse is not: see `#iss-stream-log-vs-cdc-declare` in Known gaps" → rewrite as a symmetric kind check in **either** direction (log-vs-cdc), noting it also refuses a micro-batch MV commit whose declared log output names a pre-existing CDC table; and **`:657-659`**, the Known-gaps bullet for the issue → delete it.
 
 - [ ] **Step 1: Full verification sweep**
 
 ```bash
 buck2 build -v0 --console none //src/...
-buck2 test --console none //src/control-plane/postgres:stream-log-vs-cdc-declare //src/services/ingest:stream-log-vs-cdc-http //src/control-plane/postgres:stream-merge-declare //src/services/ingest:stream-declare //src/services/ingest:model-cdc-declare //src/services/query-api:stream-cdc-declare //src/services/query-api:stream-cdc-e2e //src/services/query-api:stream-cdc-consolidate
+buck2 test --console none //src/control-plane/postgres:stream-log-vs-cdc-declare //src/services/ingest:stream-log-vs-cdc-http //src/control-plane/postgres:stream-merge-declare //src/services/ingest:stream-declare //src/services/ingest:model-cdc-declare //src/services/query-api:stream-cdc-declare //src/services/query-api:stream-cdc-e2e //src/services/query-api:stream-cdc-consolidate //src/control-plane/postgres:stream-flush-persist //src/control-plane/postgres:stream-mv-triggers //src/services/engine:mv-commit-wire
 ```
 
 Expected: build silent (exit 0); `Tests finished: Pass N. Fail 0`. (Locally, a wider `buck2 test //src/... -j 8` is the belt-and-braces option; in a cloud session scope to the list above.)

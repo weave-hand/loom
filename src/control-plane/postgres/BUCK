@@ -1687,6 +1687,23 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-log-vs-cdc-declare",
+    crate = "stream_log_vs_cdc_declare",
+    srcs = ["tests/stream_log_vs_cdc_declare.rs"],
+    crate_root = "tests/stream_log_vs_cdc_declare.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "compact-trigger",
     crate = "compact_trigger",
     srcs = ["tests/compact_trigger.rs"],
