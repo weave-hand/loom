@@ -174,6 +174,46 @@ INSERT blocks until the winner commits, so exactly one live row is guaranteed to
 be found. `ensure_table` must run inside the caller's transaction; every
 production write path already does.
 
+## Catalog views
+
+A **view** is a first-class virtual dataset — a named row/column subset of one
+physical base table — sharing the `(schema, name)` namespace with physical
+tables, so it binds and grants exactly like one (`ObjectType.table`,
+`PolicyTarget::Table`): subsets of one physical dataset now get independent
+permission scopes without row duplication (the prior workaround was
+dataset-partition-per-scope, e.g. `grimoire-kg-agenda`) (PR pending). `ViewDef`
+carries `view`/`base` refs, an optional `RowFilter` `predicate` (naming BASE
+columns directly, `None` = all rows), and an optional `columns` projection
+(`None` = all columns). `Catalog` grows `define_view`/`drop_view`/`get_view`/
+`list_views` — defaulted no-ops on the trait (a catalog that doesn't support
+views degrades gracefully) — backed by the memory fake and a dedicated
+postgres `dataset_view.view` store (migration 0044).
+
+`define_view` is **create-only**: an existing view or a name colliding with a
+live physical table is `Conflict`; the base must be a **physical** table (no
+view-over-view in v1 — `[[fut-view-nesting]]`) or `NotFound`; and the shape is
+validated by the shared, pure `validate_view_shape` (a view cannot name itself
+as base, a predicate/projection column must exist in the base schema, the
+projection must be non-empty and duplicate-free) before anything is
+persisted. A successful define emits a base→view lineage edge
+(`view_definition_event`, `VIEW_DEFINITION_KIND = "view-definition"`, same
+input/output orientation as the type→table binding edge) **atomically** with
+the `dataset_view.view` insert — one Postgres transaction. Dropping the
+**base** table is guarded: `mark_dropped` refuses (`Conflict`, naming every
+dependent view) while any view still resolves to it, so a base can never be
+dropped out from under a live view — the caller must `drop_view` the
+dependents first.
+
+Every catalog read that takes a `TableRef` (`current_snapshot`,
+`snapshot_as_of`, `files`, `schema`) transparently delegates a view ref to its
+base — a private `fetch_view` lookup resolves the ref before the read runs,
+so `bind`, `get_dataset`, and every existing catalog consumer work over a view
+name **unchanged**; `schema` additionally narrows the returned columns to the
+view's declared projection when one is set. A `catalog_view_contract` in
+`testkit` certifies the define/collision/base-physical/shape-validation/
+lineage-edge/drop-protection/delegation behavior identically on both the
+memory fake and the postgres adapter.
+
 ## Ontology and typed writes (actions)
 
 The ontology concern is loom's user-facing typed model: object types with a
@@ -516,6 +556,9 @@ lives entirely in the service layer.
 - `#fut-lineage-datasetref-validation` — validate lineage `DatasetRef`s at emit
 - `#fut-storage-derived-lineage-emit` — emit canonical storage-derived dataset names
 - `#fut-lineage-filter-batch-resolve` — batch/CTE-pushdown of the governed lineage closure
+- `#fut-view-nesting` — view-over-view (a view's base must be physical in v1)
+- `#fut-view-sql-derived` — arbitrary-SQL (join/aggregate) read-only views
+- `#fut-view-predicate-projection-guard` — reject at `define_view` time a view whose projection excludes its own predicate column
 - `#fut-compaction-incremental` — incremental (append-delta) compaction output
 - `#fut-compaction-auto-trigger` — automatic compaction triggering
 - `#fut-fgac-subject-attribute` — fine-grained subject-attribute access control
