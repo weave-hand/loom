@@ -431,7 +431,18 @@ every other ticket shape via its required `mv` field), dispatches to
 `mv_delta_scan` (`engine-serving/src/mv_delta.rs:49`) — the same
 `files_with_stats` + `read_files_as_batches` ∪ `inline_live_batch_full` union
 `consolidate_stream` reads, under the same per-table advisory lock
-(`lock_table`) so a flush racing the read cannot double-read or drop rows.
+(`lock_table`) so a flush racing the read cannot double-read or drop rows. Each
+tier is registered **only if it exists** (#436): `read_files_as_batches` bottoms
+out in `catalog.load_table`, which fails for a table that has never been flushed
+to Iceberg — and *every* micro-batch MV output is inline-only until its
+byte-threshold flush fires, so calling it unconditionally made a fresh MV output
+unreadable as a delta **source**. A downstream MV chained onto one therefore
+wedged until the upstream happened to flush. Now an absent file tier is skipped,
+an absent inline tier is skipped, and a source with neither returns an empty
+batch under the authoritative framed schema — mirroring `build_serving_provider`'s
+tier union (`#iss-serving-empty-table-not-found`). Chained MVs compose with no
+flush in between, which the slice-5 composability e2e now asserts directly (its
+explicit `flush_table` workaround is deleted).
 It resolves the source table, requires a declared `kind = 'log'` stream table
 (anything else — an unknown table or a CDC/batch source — is a deterministic
 `"mv delta: ..."`-prefixed error the worker maps to an abandon, never a
@@ -653,13 +664,11 @@ from the continuous-query slice.
   bulk landing (a batch over `inline_byte_limit`) commits no notify, so a
   blocked `await_changelog` catches those writes only on its poll-fallback
   timer, not sub-second.
-- `#iss-mv-delta-inline-source-unflushed` — `mv_delta_scan` /
-  `read_files_as_batches` unconditionally calls `catalog.load_table`, which only
-  succeeds for a table that has been flushed to Iceberg at least once; an
-  inline-only table (every MV output, before the byte-threshold auto-flush fires)
-  cannot be read as a delta **source** until then. A downstream MV chained onto a
-  fresh MV output wedges until the upstream flushes — see **Stream joins** /
-  **Continuous queries**.
+- `#iss-consolidate-inline-only-base` — `consolidate_locked`'s CDC arm still calls
+  `read_files_as_batches` unconditionally, so it dies on `load_table` for a base
+  table that has only ever been inline-appended. Same bug, different trigger, from
+  the `#iss-mv-delta-inline-source-unflushed` fix; the shadow arm beside it is
+  already guarded, which is the shape of the fix.
 - `#iss-stream-first-declare-race-kind` — the kind check is symmetric on the
   count-equal redeclare arm, but the **first-declare** arm's post-`ON CONFLICT`
   re-read compares only the bucket count, so two writers racing to declare a
