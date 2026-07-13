@@ -1112,7 +1112,9 @@ git add src/services/runtime src/services/query-api
 git commit -m "feat(runtime): admin define/drop view routes with OpenAPI coverage"
 ```
 
----### Task 6: View-aware writes in query-api (`action.rs`)
+---
+
+### Task 6: View-aware writes in query-api (`action.rs`)
 
 **Files:**
 - Modify: `src/services/query-api/src/action.rs`
