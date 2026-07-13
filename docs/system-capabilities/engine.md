@@ -406,7 +406,9 @@ longer exists — and warns, naming the MVs it strands. The escape hatch out of 
 dead MV's floor is real: `Transforms::delete_transform` deletes the MV's
 watermark rows in the same transaction as the def (certified against both
 backends by a testkit contract), so removing a wedged MV's registration releases
-its hold.
+its hold — and `define_transform` does the same for the *previous* output when a
+redefinition moves an MV off it (or drops the micro-batch body), so a watermark
+key can never outlive every def that names it and floor its source forever.
 
 **What the floor does and does not deliver — read this before relying on it.**
 It is **byte-retention defense plus a reusable primitive**, not a guarantee that

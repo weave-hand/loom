@@ -5551,6 +5551,108 @@ where
         "deleting the MV def releases its watermark rows — no reader, no floor"
     );
 
+    // --- REDEFINING an MV releases the watermark rows of the output it no longer
+    // writes. `define_transform` is an upsert; the watermark is keyed by the
+    // OUTPUT (`mv_key`), so a redefinition that changes the output — or drops the
+    // micro-batch body entirely — would otherwise orphan the OLD key's rows: no
+    // def references them, so `delete_transform` (which keys on the def's CURRENT
+    // output) can never reach them, while `mv_floor`'s reader set still counts any
+    // mv holding watermark rows. That would pin the source's floor forever. Both
+    // backends clear the old key inside the define; this certifies it. ---
+    let redef_src = tref("main", "mv_redef_src");
+    let out_v1 = tref("main", "mv_redef_out_v1");
+    let out_v2 = tref("main", "mv_redef_out_v2");
+    let mv_redef = |output: &TableRef| TransformDef {
+        name: TransformName("mv_redef".into()),
+        body: TransformBody::MicroBatch {
+            source: redef_src.clone(),
+            output: output.clone(),
+            buckets: 1,
+            sql: "select id from events".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    let redef_source_table_id = 9001;
+    cp.define_transform(mv_redef(&out_v1)).await.unwrap();
+    let key_v1 = mv_key(&out_v1);
+    cp.advance_mv_watermark(
+        &key_v1,
+        redef_source_table_id,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 5,
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cp.mv_watermarks(&key_v1, redef_source_table_id)
+            .await
+            .unwrap()
+            .get(&0),
+        Some(&5),
+        "watermark recorded before redefine"
+    );
+    // Redefine with a DIFFERENT output: the old key's rows must go.
+    cp.define_transform(mv_redef(&out_v2)).await.unwrap();
+    assert!(
+        cp.mv_watermarks(&key_v1, redef_source_table_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "redefining an MV's output releases the OLD output key's watermark rows"
+    );
+    // Redefining with the SAME output is a no-op for the watermark — the MV keeps
+    // reading where it left off (that is why the key is the output, not the name).
+    let key_v2 = mv_key(&out_v2);
+    cp.advance_mv_watermark(
+        &key_v2,
+        redef_source_table_id,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 7,
+        }],
+    )
+    .await
+    .unwrap();
+    cp.define_transform(mv_redef(&out_v2)).await.unwrap();
+    assert_eq!(
+        cp.mv_watermarks(&key_v2, redef_source_table_id)
+            .await
+            .unwrap()
+            .get(&0),
+        Some(&7),
+        "redefining an MV with the SAME output keeps its watermark — resume, not reset"
+    );
+    // Flipping the body OFF the micro-batch shape is the same orphaning hazard: the
+    // def no longer names any mv key, so the old one must be released too.
+    cp.define_transform(TransformDef {
+        name: TransformName("mv_redef".into()),
+        body: TransformBody::Physical {
+            inputs: vec![redef_src.clone()],
+            output: tref("main", "mv_redef_phys_out"),
+            sql: "select id from mv_redef_src".into(),
+            output_mode: OutputMode::Append,
+        },
+        schedule: None,
+        on_input_commit: false,
+    })
+    .await
+    .unwrap();
+    assert!(
+        cp.mv_watermarks(&key_v2, redef_source_table_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "redefining an MV as a non-MV body releases its watermark rows"
+    );
+    cp.delete_transform(&TransformName("mv_redef".into()))
+        .await
+        .unwrap();
+
     // --- rebind cycle: a define_type that re-points a binding into a trigger
     // cycle among data-triggered defs is rejected (not silently allowed) ---
     // `tn` is a closure scoped to `ontology_contract`, NOT visible here, so

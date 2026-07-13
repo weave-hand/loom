@@ -1,23 +1,34 @@
-//! The MV read-position floor: how far GC may reclaim a micro-batch MV's SOURCE
-//! table without eating offsets the MV has not consumed yet
-//! (road-mv-watermark-aware-gc).
+//! The MV read-position floor: the per-bucket offset below which GC may reclaim a
+//! micro-batch MV's SOURCE table (road-mv-watermark-aware-gc).
 //!
 //! `stream.mv_watermark(mv, source_table_id, bucket, next_offset)` records the
 //! next unprocessed `loom_offset` per MV per bucket. A bucket with NO row for an
 //! MV has been consumed not at all by it — `mv_delta_scan` reads such a bucket
 //! from 0 (`engine-serving/src/mv_delta.rs`), so the floor must too. A bucket's
 //! floor is therefore the MINIMUM, across every MV reading the source, of (that
-//! MV's watermark for the bucket, or 0), and GC may not reclaim a row or file
-//! carrying an offset at or above it.
+//! MV's watermark for the bucket, or 0), and a guarded caller may not reclaim (or
+//! end-cap) a row or file carrying an offset at or above it.
+//!
+//! ## What this delivers — and what it does not
+//! On GC (`crate::iceberg_gc`, its only caller today) the floor is **byte-retention
+//! defense**: a lagging MV's end-capped bytes are not physically destroyed while it
+//! is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged with
+//! the laggard's name. It does NOT stand between an MV and a data hole, and must not
+//! be described as one — GC only ever reclaims END-CAPPED rows, which an MV's
+//! current-snapshot delta can no longer read anyway. This module's other half is
+//! being the **reusable primitive** the END-CAP-issuing paths must call before they
+//! end-cap an offset an MV has not consumed (that is where the hole is actually
+//! created); wiring it in there is `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md).
 //!
 //! ## Who reads a source
 //! The union of (a) every registered `MicroBatch`/`MicroBatchJoin` transform def
 //! whose `source` is the table (keyed by `mv_key(output)`) — this is what makes a
 //! registered-but-never-run MV pin its source at 0 — and (b) every `mv` holding a
 //! watermark row against the source (an ad-hoc run, or one mid-deletion).
-//! Deleting an MV's transform def deletes its watermark rows in the same
-//! transaction (`Transforms::delete_transform`), so dropping the registration is a
-//! real escape hatch out of a floor held by a dead MV.
+//! Un-registering an MV releases its floor: both `Transforms::delete_transform` and
+//! a `define_transform` that redefines the MV off its output delete that output's
+//! watermark rows in the same transaction, so no key can outlive every def that
+//! names it (a ghost key would floor the source forever — nothing could reach it).
 
 use std::collections::{BTreeMap, BTreeSet};
 

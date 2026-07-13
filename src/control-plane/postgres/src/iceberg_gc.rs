@@ -29,14 +29,25 @@
 //!
 //! ## The MV watermark floor
 //! Age is not the only thing that makes a byte dead. A micro-batch materialized
-//! view reads its SOURCE table by `loom_offset`, so reclaiming an aged-out row or
-//! file the MV has not consumed yet silently drops input (road-mv-watermark-aware-gc).
-//! Every reclaim of the LIVE incarnation is therefore additionally guarded by the
-//! source's MV read-position floor (`crate::mv_floor`): a row/file is reclaimable
-//! only STRICTLY BELOW it. For the overwhelming majority of tables — anything no
-//! micro-batch MV reads — the floor is `None` and every predicate below is
-//! byte-identical to the pre-floor behavior. A DROPPED incarnation's reclaim
-//! deliberately bypasses the floor (see `gc_locked`).
+//! view reads its SOURCE table by `loom_offset`, so every reclaim of the LIVE
+//! incarnation is additionally guarded by the source's MV read-position floor
+//! (`crate::mv_floor`): a row/file is reclaimable only STRICTLY BELOW it
+//! (road-mv-watermark-aware-gc). What that guard delivers is **byte-retention
+//! defense** — a lagging MV's end-capped bytes are not physically destroyed while
+//! it is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged
+//! with the laggard's name — plus `mv_floor` itself as a reusable primitive.
+//! It is NOT what stands between an MV and a data hole, and must not be described
+//! as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`) while an
+//! MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped row is
+//! already invisible to the MV before GC touches it — `gc_table` could never have
+//! removed a row an MV was still able to read. The hole is created at END-CAP
+//! time, by whichever path end-caps offsets an MV has not consumed; making those
+//! paths consult `mv_floor` first is the real fix, tracked as
+//! `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md) and not built here.
+//! For the overwhelming majority of tables — anything no micro-batch MV reads —
+//! the floor is `None` and every predicate below is byte-identical to the
+//! pre-floor behavior. A DROPPED incarnation's reclaim deliberately bypasses the
+//! floor (see `gc_locked`).
 //!
 //! ## Ordering: commit-then-delete
 //! The mirror is the source of truth. The transaction deletes the rows first;

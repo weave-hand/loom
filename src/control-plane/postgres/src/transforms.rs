@@ -422,6 +422,50 @@ impl Transforms for PgControlPlane {
         if let Some(t) = &output_table {
             crate::stream::pg_refuse_stream_target(&mut tx, t).await?;
         }
+        // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
+        // (`mv_key`), not by this def's name. So a redefinition that changes the
+        // output — or drops the micro-batch body altogether — leaves the PRIOR
+        // output's watermark rows referenced by no def at all: `delete_transform`
+        // keys on the def's CURRENT output and can never reach them, while
+        // `crate::mv_floor`'s reader set counts every mv holding watermark rows.
+        // The source would stay floored at the dead MV's last watermark forever.
+        // Release them here, in the same transaction as the upsert — the exact
+        // mirror of what `delete_transform` does. Redefining with the SAME output
+        // is deliberately untouched: the MV resumes where it left off.
+        let new_mv = match &def.body {
+            TransformBody::MicroBatch { output, .. }
+            | TransformBody::MicroBatchJoin { output, .. } => Some(mv_key(output)),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+        };
+        let prior = sqlx::query!(
+            "select body from transforms.transform where name = $1 for update",
+            def.name.0,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(row) = prior {
+            match de_body(row.body) {
+                Ok(
+                    TransformBody::MicroBatch { output, .. }
+                    | TransformBody::MicroBatchJoin { output, .. },
+                ) => {
+                    let old_mv = mv_key(&output);
+                    if new_mv.as_ref() != Some(&old_mv) {
+                        sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(backend)?;
+                    }
+                }
+                Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
+                Err(e) => tracing::warn!(
+                    transform = %def.name.0,
+                    error = %e,
+                    "define_transform: undecodable prior body; redefining without watermark cleanup"
+                ),
+            }
+        }
         sqlx::query!(
             "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
              values ($1, $2, $3, $4, $5) \
