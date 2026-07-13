@@ -460,8 +460,8 @@ pub async fn changelog_feed_scan(
         .await
         .map_err(to_serving)?;
     // An unknown base table stays an error, as before. (`to_serving` erases the error
-    // class to `Engine` — as it already did for the previous `current_snapshot(base)`
-    // call — so this is not a `NotFound`-classed error and no caller may match on one.)
+    // class to `Engine`, so this is not a `NotFound`-classed error and no caller may
+    // match on one.)
     let Some(base_snap) = base_pin else {
         return Err(to_serving(ControlPlaneError::NotFound(format!(
             "{}.{}",

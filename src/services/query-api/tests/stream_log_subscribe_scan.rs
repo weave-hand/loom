@@ -145,4 +145,32 @@ async fn log_feed_scan_unions_files_and_inline_ordered_and_resumable() {
             .all(|e| e.fields.get("val") == Some(&serde_json::json!("***"))),
         "masked column is '***' on every event"
     );
+
+    // 6. Governance: denying `val` drops the column, not the rows; framing survives.
+    let denied = TablePolicy {
+        row_filters: vec![],
+        denied: std::collections::HashSet::from(["val".to_string()]),
+        masked: std::collections::HashSet::new(),
+    };
+    let page6 = changelog_feed_scan(&ice, &table, None, &earliest, 100, &denied)
+        .await
+        .expect("scan denied");
+    assert_eq!(
+        page6.events.len(),
+        5,
+        "denying a column does not drop events"
+    );
+    for e in &page6.events {
+        assert!(
+            !e.fields.contains_key("val"),
+            "denied column absent from fields: {:?}",
+            e.fields
+        );
+        assert!(
+            e.fields.contains_key("id"),
+            "non-denied user column survives: {:?}",
+            e.fields
+        );
+        assert_eq!(e.change_kind, "+I", "framing survives denial");
+    }
 }
