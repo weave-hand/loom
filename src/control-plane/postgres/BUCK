@@ -1685,6 +1685,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-log-notify",
+    crate = "stream_log_notify",
+    srcs = ["tests/stream_log_notify.rs"],
+    crate_root = "tests/stream_log_notify.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/testing:seed",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "define-transform-refuse",
     crate = "define_transform_refuse",
     srcs = ["tests/define_transform_refuse.rs"],

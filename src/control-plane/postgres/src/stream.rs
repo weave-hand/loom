@@ -494,10 +494,11 @@ impl StreamTables for PgControlPlane {
     }
 }
 
-/// Fire the changelog wakeup for a CDC base table's inline write. MUST be called
-/// INSIDE the write's transaction: `pg_notify` in a tx is buffered until commit,
-/// so a rolled-back write is silent — the same fire-and-forget-in-commit shape as
-/// the queue's enqueue (`queue::pg_insert`). Channel: `loom_changelog:{table_id}`.
+/// Fire the changelog wakeup for a stream (CDC or log) base table's inline
+/// write. MUST be called INSIDE the write's transaction: `pg_notify` in a tx is
+/// buffered until commit, so a rolled-back write is silent — the same
+/// fire-and-forget-in-commit shape as the queue's enqueue (`queue::pg_insert`).
+/// Channel: `loom_changelog:{table_id}`.
 pub(crate) async fn pg_notify_changelog<'e, E: sqlx::PgExecutor<'e>>(
     ex: E,
     table_id: i64,
@@ -512,7 +513,7 @@ pub(crate) async fn pg_notify_changelog<'e, E: sqlx::PgExecutor<'e>>(
     Ok(())
 }
 
-/// Block until a CDC inline write commits against `table`, or `timeout` elapses —
+/// Block until a stream inline write commits against `table`, or `timeout` elapses —
 /// whichever first (the poll-fallback bound for a missed notify). Never errors on
 /// timeout. Mirrors the queue's `await_jobs` waiter (`queue.rs:152`). Note the
 /// listen-after-scan race: an event committed between the caller's empty scan and
