@@ -12,7 +12,8 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, Job, JobFailure, JobId, LineageEvent,
     MvWatermarks, Queue, RetryPolicy, RunId, RunState, RunTrigger, STREAM_MV_JOB_KIND, StreamKind,
-    StreamMvJob, StreamTables, TableRef, TransformBody, TransformRun, mv_key,
+    StreamMvJob, StreamTables, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
+    WatermarkAdvance, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -545,5 +546,251 @@ async fn plain_batch_source_abandons() {
         err.error.contains("mv delta:") && err.error.contains("not a declared log stream table"),
         "error names the refusal, got: {}",
         err.error
+    );
+}
+
+// ---- MV watermark floor over the wire (road-mv-watermark-aware-gc) ----------
+
+/// Backdate EVERY snapshot so the whole history is aged out of the engine's GC
+/// window (7 days in the test harness — `loom_test_flight::spawn_engine_uds`).
+async fn age_all_snapshots(pool: &sqlx::PgPool) {
+    let old = time::OffsetDateTime::now_utc() - time::Duration::days(365);
+    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1")
+        .bind(old)
+        .execute(pool)
+        .await
+        .expect("age all snapshots");
+}
+
+/// End-cap every live data file of `tid` at snapshot `snap` — the mirror state any
+/// file-retiring path (compaction, a future small-file merge, stream retention)
+/// leaves behind, and the only state GC ever reclaims. Done in SQL because the real
+/// writers of it live above this crate (they must write replacement Parquet first).
+async fn end_cap_data_files(pool: &sqlx::PgPool, tid: i64, snap: i64) {
+    sqlx::query(
+        "update iceberg_mirror.data_file set end_snapshot = $1 \
+         where table_id = $2 and end_snapshot is null",
+    )
+    .bind(snap)
+    .bind(tid)
+    .execute(pool)
+    .await
+    .expect("end-cap data files");
+}
+
+/// Every `iceberg_mirror.data_file` row of `tid` (any `end_snapshot`) as
+/// `(local path, max loom_offset)`, ordered by that offset: the Parquet object plus
+/// the exact bound GC's file guard compares against the MV floor.
+async fn data_files(pool: &sqlx::PgPool, tid: i64) -> Vec<(std::path::PathBuf, i64)> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "select df.path, cs.max_value::bigint from iceberg_mirror.data_file df \
+         join iceberg_mirror.data_file_column_stat cs on cs.data_file_id = df.data_file_id \
+         where df.table_id = $1 and cs.column_name = 'loom_offset' \
+         order by cs.max_value::bigint",
+    )
+    .bind(tid)
+    .fetch_all(pool)
+    .await
+    .expect("list data files with their loom_offset bound");
+    rows.into_iter()
+        .map(|(url, max_offset)| {
+            (
+                std::path::PathBuf::from(url.strip_prefix("file://").unwrap_or(&url)),
+                max_offset,
+            )
+        })
+        .collect()
+}
+
+/// GC's MV watermark floor, end to end over the engine wire
+/// (road-mv-watermark-aware-gc): a source whose micro-batch MV is behind keeps the
+/// BYTES of its unread tail — the end-capped FILE tier a compaction/retention path
+/// leaves for GC — until the MV catches up, at which point GC converges and takes
+/// both the mirror row and the Parquet object.
+///
+/// Scope, stated honestly: this proves BYTE RETENTION, not hole prevention. GC only
+/// ever reclaims end-capped rows, which an MV delta (a current-snapshot read via
+/// `mv_delta_scan`) cannot see in the first place — so no GC-tier guard can keep an
+/// MV's delta complete. The hole is created at END-CAP time, and closing that is the
+/// follow-up item this branch files. What the guard does deliver, and what is pinned
+/// here, is that the bytes the lagging MV still needs are not destroyed underneath it.
+///
+/// The lag is produced through the real API: the events land in TWO batches and the
+/// micro-batch runs only over the first, so the MV's watermark genuinely sits
+/// mid-stream. Catch-up uses `advance_mv_watermark` (the same CAS
+/// `pg_advance_mv_watermark` a micro-batch commit issues) — re-running the MV cannot
+/// serve as catch-up here, because by then the source's files are end-capped and a
+/// delta scan reads LIVE rows only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let ctx = build_ctx(&eng.sock).await;
+    let engine = GrpcQueueClient::connect(&eng.sock)
+        .await
+        .expect("connect control");
+
+    let src = tref("s", "events");
+    let out = tref("s", "doubled");
+    let sql = "select id, val * 2 as dbl from events";
+
+    // 1. REGISTER the MV (no data trigger: this test drives its runs by hand, so the
+    //    floor comes from the registration plus the watermarks those runs commit).
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("mv_doubled".into()),
+            body: TransformBody::MicroBatch {
+                source: src.clone(),
+                output: out.clone(),
+                buckets: 1,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv");
+
+    // 2. Batch #1: 3 events into a 1-bucket log stream, landed straight to PARQUET
+    //    (inline_byte_limit: 0) — the FILE tier is what this test is about. These are
+    //    loom_offsets 0,1,2.
+    let land_events = async |ids: &[i64], vals: &[i64]| {
+        let (schema, batches) = events_batch(ids, vals);
+        land(
+            &pool,
+            &catalog,
+            &src,
+            &events_columns(),
+            schema,
+            batches,
+            InlineLimits {
+                inline_byte_limit: 0,
+                flush_byte_threshold: i64::MAX,
+            },
+            seed_lineage(&src),
+            Some(1),
+        )
+        .await
+        .expect("land events");
+    };
+    land_events(&[1, 2, 3], &[10, 20, 30]).await;
+
+    // 3. Micro-batch #1 consumes exactly that batch: the watermark lands at 3.
+    let (_, r1) = run_micro_batch(&cp, &ctx, &src, &out, 1, sql).await;
+    r1.expect("first micro-batch");
+
+    // 4. Batch #2 lands offsets 3,4,5 into a SECOND file — and the MV is not run
+    //    again. It is now genuinely lagging at 3, through the real API only.
+    land_events(&[4, 5, 6], &[40, 50, 60]).await;
+
+    let mut conn = pool.acquire().await.expect("conn");
+    let tid = live_table_id(&mut conn, &src.schema, &src.name)
+        .await
+        .expect("tid")
+        .expect("live tid");
+    drop(conn);
+    let mv = mv_key(&out);
+    assert_eq!(
+        cp.mv_watermarks(&mv, tid).await.expect("watermarks"),
+        [(0, 3)].into_iter().collect(),
+        "the MV consumed batch #1 only: bucket 0 sits at offset 3 of 6"
+    );
+
+    // 5. A file-retiring path runs (compaction / retention): both live Parquet files
+    //    are end-capped, and the history ages out. Now GC may take them.
+    let before = data_files(&pool, tid).await;
+    assert_eq!(
+        before.len(),
+        2,
+        "each land wrote one Parquet file, got: {before:?}"
+    );
+    assert_eq!(
+        before.iter().map(|f| f.1).collect::<Vec<_>>(),
+        vec![2, 5],
+        "file A carries offsets 0..2, file B carries 3..5"
+    );
+    let (file_a, file_b) = (before[0].0.clone(), before[1].0.clone());
+
+    let snap = IcebergCatalog::new(pool.clone())
+        .current_snapshot(&src)
+        .await
+        .expect("current snapshot")
+        .id
+        .0;
+    end_cap_data_files(&pool, tid, snap).await;
+    age_all_snapshots(&pool).await;
+
+    // 6. GC over the wire. The floor (next_offset = 3) is above every offset in file A
+    //    (max 2) but not file B (max 5): A is reclaimed, B is HELD — mirror row and
+    //    Parquet object alike. Without the floor, BOTH would go.
+    let (file_rows, _inline_rows, objects) = engine
+        .gc_table(src.schema.clone(), src.name.clone())
+        .await
+        .expect("gc over the wire");
+    assert_eq!(
+        file_rows, 1,
+        "only file A — wholly below the floor — is taken"
+    );
+    assert_eq!(objects, 1, "and exactly one Parquet object is deleted");
+
+    assert_eq!(
+        data_files(&pool, tid).await,
+        vec![(file_b.clone(), 5)],
+        "the lagging MV's unread offsets keep file B's mirror row alive"
+    );
+    assert!(
+        file_b.exists(),
+        "and its Parquet bytes are still on disk: {}",
+        file_b.display()
+    );
+    assert!(
+        !file_a.exists(),
+        "the consumed file's Parquet is gone — the guard holds bytes, it does not stall GC"
+    );
+
+    // 7. The MV catches up (the CAS a micro-batch commit issues), and the floor
+    //    releases: the next GC converges, taking file B's row AND its object.
+    cp.advance_mv_watermark(
+        &mv,
+        tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 3,
+            to: 6,
+        }],
+    )
+    .await
+    .expect("the mv catches up past the tail");
+
+    let (file_rows2, _, objects2) = engine
+        .gc_table(src.schema.clone(), src.name.clone())
+        .await
+        .expect("second gc");
+    assert_eq!(file_rows2, 1, "the held file is now reclaimed");
+    assert_eq!(objects2, 1, "and its Parquet object with it");
+    assert!(
+        data_files(&pool, tid).await.is_empty(),
+        "with the MV caught up, GC converges: no data_file row survives"
+    );
+    assert!(
+        !file_b.exists(),
+        "the held Parquet object is finally reclaimed: {}",
+        file_b.display()
     );
 }
