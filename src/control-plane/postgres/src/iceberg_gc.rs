@@ -113,10 +113,8 @@ async fn gc_locked(
     table: &TableRef,
     retention: Duration,
 ) -> Result<GcSummary> {
-    // 1. Horizon H = youngest snapshot fully aged out of the window. Applies to
-    //    every incarnation (live and, in the dropped loop, each dropped one).
-    //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
-    //    `max()` over zero matching rows yields NULL → None → a clean no-op.
+    // 1. Horizon H = youngest snapshot fully aged out of the window (see module docs
+    //    for the safety invariant this derives).
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
     let horizon = crate::iceberg_mirror::horizon_before(pool, cutoff).await?;
     let Some(h) = horizon else {
@@ -129,9 +127,8 @@ async fn gc_locked(
     let dropped = dropped_table_ids(&mut conn, &table.schema, &table.name).await?;
     drop(conn);
 
-    // 2b. The MV read-position floor of the LIVE incarnation. `None` for every table
-    //     no micro-batch MV reads (the overwhelming majority): the guard below goes
-    //     NULL and every predicate is byte-identical to the pre-floor behavior.
+    // 2b. The MV read-position floor of the LIVE incarnation (`None` for a table no
+    //     micro-batch MV reads — the guard then goes NULL, a pre-floor no-op).
     let floor = match live {
         Some(tid) => mv_floor(pool, table, tid).await?,
         None => None,
@@ -139,73 +136,29 @@ async fn gc_locked(
     let file_guard: Option<i64> = floor.as_ref().map(MvFloor::min_offset);
     let stranded = stranded_readers(pool, table, live, &dropped).await?;
 
-    // 3. One transaction: materialize the victim set ONCE, then delete the mirror
-    //    rows it names. The victims' `path`s — collected inside the same transaction,
-    //    before any delete — are the ONLY source of the post-commit object deletions,
-    //    so the rows deleted from the mirror and the objects deleted from the store
-    //    can never disagree (they are literally the same set).
+    // 3. One transaction: reclaim the live incarnation (floor-guarded, see
+    //    `reclaim_live`), then every dropped incarnation (unguarded, see
+    //    `reclaim_dropped`), collecting every object path to delete post-commit.
     let mut tx = pool.begin().await.map_err(backend)?;
     let mut paths: Vec<String> = Vec::new();
     let mut data_file_rows = 0u64;
-    let mut dropped_file_rows = 0u64;
     let mut inline_rows = 0u64;
     let mut held_by_mv_floor = 0u64;
     if let Some(tid) = live {
-        // One `to_regclass` probe for the whole run: `inline_<tid>` exists or it does not.
-        let has_inline = inline_table_exists(&mut tx, tid).await?;
-        // The denominator of `held_by_mv_floor` — what an unguarded run would have
-        // taken. Only measured when a floor is active, so the fast path pays nothing.
-        let candidates = if floor.is_some() {
-            count_candidates(&mut tx, tid, h, has_inline).await?
-        } else {
-            0
-        };
-        let victims = victim_data_files(&mut tx, tid, h, file_guard).await?;
-        let files = delete_data_files(&mut tx, &victims.ids).await?;
-        let inline =
-            delete_end_capped_inline_rows(&mut tx, tid, h, floor.as_ref(), has_inline).await?;
-        paths.extend(victims.paths);
-        data_file_rows += files;
-        inline_rows += inline;
-        held_by_mv_floor = candidates.saturating_sub(files.saturating_add(inline));
+        let live_reclaim = reclaim_live(&mut tx, tid, h, floor.as_ref(), file_guard).await?;
+        paths.extend(live_reclaim.paths);
+        data_file_rows += live_reclaim.data_file_rows;
+        inline_rows += live_reclaim.inline_rows;
+        held_by_mv_floor = live_reclaim.held_by_mv_floor;
     }
-
-    // Dropped incarnations: always reclaim aged-out data files (unguarded — see
-    // `stranded_readers`); drop the physical inline table + metadata rows only once the
-    // DROP snapshot itself ages past H (D <= h), so no in-window time-travel read as-of
-    // before the drop can reach it.
-    let mut fully_reclaimed = false;
-    for inc in &dropped {
-        let victims = victim_data_files(&mut tx, inc.table_id, h, None).await?;
-        let files = delete_data_files(&mut tx, &victims.ids).await?;
-        paths.extend(victims.paths);
-        dropped_file_rows += files;
-        data_file_rows += files;
-        if inc.drop_snapshot <= h {
-            fully_reclaimed = true;
-            // Full reclaim: no in-window time-travel read can reach this incarnation.
-            // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
-            //   data_file (above) → vector_index → column → table.
-            // Then the no-FK inline_trigger orphan, and the physical inline table.
-            // The Puffin sidecars are read before their rows go, same commit-then-delete
-            // policy as the Parquet data files.
-            paths.extend(vector_index_paths(&mut tx, inc.table_id).await?);
-            drop_inline_table(&mut tx, inc.table_id).await?;
-            delete_vector_index_rows(&mut tx, inc.table_id).await?;
-            delete_column_rows(&mut tx, inc.table_id).await?;
-            delete_table_row(&mut tx, inc.table_id).await?;
-            delete_inline_trigger_row(&mut tx, inc.table_id).await?;
-            tracing::info!(
-                table_id = inc.table_id,
-                "gc: fully reclaimed dropped incarnation (dropped inline table + child mirror rows)"
-            );
-        }
-    }
+    let dropped_reclaim = reclaim_dropped(&mut tx, &dropped, h).await?;
+    paths.extend(dropped_reclaim.paths);
+    data_file_rows += dropped_reclaim.file_rows;
+    let dropped_file_rows = dropped_reclaim.file_rows;
+    let fully_reclaimed = dropped_reclaim.fully_reclaimed;
     tx.commit().await.map_err(backend)?;
 
-    // The dropped-source strand and the live hold are both operator-facing leads to a
-    // wedged MV. Emitted AFTER the commit, and only when something actually happened —
-    // a warning on a no-op run is noise.
+    // 4. Operator-facing warnings, emitted AFTER commit and only when something happened.
     if !stranded.is_empty() && (dropped_file_rows > 0 || fully_reclaimed) {
         tracing::warn!(
             schema = %table.schema,
@@ -229,9 +182,7 @@ async fn gc_locked(
         );
     }
 
-    // 5. Commit-then-delete: reclaim the objects (Parquet data files + Puffin
-    //    vector-index sidecars). A failed delete is logged and left as an orphan
-    //    (never re-raised into a hard error).
+    // 5. Commit-then-delete: reclaim the objects; a failed delete is logged, not raised.
     let mut objects_deleted = 0u64;
     for path in &paths {
         match catalog.delete_file(path).await {
@@ -249,6 +200,104 @@ async fn gc_locked(
         inline_rows,
         objects_deleted,
         held_by_mv_floor,
+    })
+}
+
+/// What reclaiming the LIVE incarnation did: the paths to delete post-commit, the two
+/// tiers of rows deleted, and how many age-eligible candidates the MV floor held back.
+struct LiveReclaim {
+    paths: Vec<String>,
+    data_file_rows: u64,
+    inline_rows: u64,
+    held_by_mv_floor: u64,
+}
+
+/// Reclaim the LIVE incarnation `tid`: count candidates (only when a floor is active),
+/// materialize + delete the guarded victim data files, delete end-capped inline rows
+/// under the per-bucket floor, and derive `held_by_mv_floor` from the two. Must run
+/// INSIDE the caller's GC transaction — see `victim_data_files` for why the victim set
+/// has to be materialized before any delete.
+async fn reclaim_live(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+    floor: Option<&MvFloor>,
+    file_guard: Option<i64>,
+) -> Result<LiveReclaim> {
+    // One `to_regclass` probe for the whole run: `inline_<tid>` exists or it does not.
+    let has_inline = inline_table_exists(tx, tid).await?;
+    // The denominator of `held_by_mv_floor` — what an unguarded run would have taken.
+    // Only measured when a floor is active, so the fast path pays nothing.
+    let candidates = if floor.is_some() {
+        count_candidates(tx, tid, h, has_inline).await?
+    } else {
+        0
+    };
+    let victims = victim_data_files(tx, tid, h, file_guard).await?;
+    let files = delete_data_files(tx, &victims.ids).await?;
+    let inline = delete_end_capped_inline_rows(tx, tid, h, floor, has_inline).await?;
+    let held_by_mv_floor = candidates.saturating_sub(files.saturating_add(inline));
+    Ok(LiveReclaim {
+        paths: victims.paths,
+        data_file_rows: files,
+        inline_rows: inline,
+        held_by_mv_floor,
+    })
+}
+
+/// What reclaiming the DROPPED incarnations did: the paths to delete post-commit, the
+/// total `data_file` rows deleted across all of them, and whether any incarnation was
+/// FULLY reclaimed (its drop snapshot aged past `H`) — that flag gates the
+/// dropped-source-strand warning in `gc_locked`.
+struct DroppedReclaim {
+    paths: Vec<String>,
+    file_rows: u64,
+    fully_reclaimed: bool,
+}
+
+/// Reclaim every DROPPED incarnation of a table: always reclaim its aged-out data files
+/// (unguarded — a dropped source's reclaim deliberately bypasses the MV floor, see
+/// `stranded_readers`), and — only once its drop snapshot `D` has aged past `H`
+/// (`D <= h`) — fully reclaim it: drop the physical inline table and delete its
+/// `vector_index`/`column`/`table` mirror rows (FK order) plus the `inline_trigger`
+/// row. Must run INSIDE the caller's GC transaction.
+async fn reclaim_dropped(
+    tx: &mut sqlx::PgConnection,
+    dropped: &[DroppedIncarnation],
+    h: i64,
+) -> Result<DroppedReclaim> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut file_rows = 0u64;
+    let mut fully_reclaimed = false;
+    for inc in dropped {
+        let victims = victim_data_files(tx, inc.table_id, h, None).await?;
+        let files = delete_data_files(tx, &victims.ids).await?;
+        paths.extend(victims.paths);
+        file_rows += files;
+        if inc.drop_snapshot <= h {
+            fully_reclaimed = true;
+            // Full reclaim: no in-window time-travel read can reach this incarnation.
+            // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
+            //   data_file (above) → vector_index → column → table.
+            // Then the no-FK inline_trigger orphan, and the physical inline table.
+            // The Puffin sidecars are read before their rows go, same commit-then-delete
+            // policy as the Parquet data files.
+            paths.extend(vector_index_paths(tx, inc.table_id).await?);
+            drop_inline_table(tx, inc.table_id).await?;
+            delete_vector_index_rows(tx, inc.table_id).await?;
+            delete_column_rows(tx, inc.table_id).await?;
+            delete_table_row(tx, inc.table_id).await?;
+            delete_inline_trigger_row(tx, inc.table_id).await?;
+            tracing::info!(
+                table_id = inc.table_id,
+                "gc: fully reclaimed dropped incarnation (dropped inline table + child mirror rows)"
+            );
+        }
+    }
+    Ok(DroppedReclaim {
+        paths,
+        file_rows,
+        fully_reclaimed,
     })
 }
 
