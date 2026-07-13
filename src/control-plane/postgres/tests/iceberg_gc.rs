@@ -254,7 +254,8 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
         GcSummary {
             data_file_rows: 1,
             inline_rows: 0,
-            objects_deleted: 1
+            objects_deleted: 1,
+            held_by_mv_floor: 0
         }
     );
 

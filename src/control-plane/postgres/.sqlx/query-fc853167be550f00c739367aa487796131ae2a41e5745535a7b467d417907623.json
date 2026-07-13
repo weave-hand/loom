@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select df.path from iceberg_mirror.data_file df where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 and ($3::bigint is null or ( select cs.max_value from iceberg_mirror.data_file_column_stat cs where cs.data_file_id = df.data_file_id and cs.column_name = 'loom_offset')::bigint < $3::bigint)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fc853167be550f00c739367aa487796131ae2a41e5745535a7b467d417907623"
+}
