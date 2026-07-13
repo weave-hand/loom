@@ -259,6 +259,28 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "stream-log-vs-cdc-http",
+    crate = "stream_log_vs_cdc_http",
+    srcs = ["tests/stream_log_vs_cdc_http.rs"],
+    crate_root = "tests/stream_log_vs_cdc_http.rs",
+    deps = [
+        ":ingest",
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:axum",
+        "//third-party:http-body-util",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:tower",
+    ],
+)
+
 rust_test(
     name = "routing-tuning",
     crate = "routing_tuning",
