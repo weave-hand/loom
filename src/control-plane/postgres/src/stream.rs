@@ -37,8 +37,9 @@ pub(crate) enum StreamDecl {
 /// Rejections (all raised BEFORE any `pg_declare_stream`/`pg_declare_cdc`, per
 /// the Plan 1a fix): a `< 1` requested count → `Validation`; a batch→stream
 /// conversion of a PRE-EXISTING table → `Validation`; a bucket-count mismatch
-/// against an existing stream table → `Conflict`; a `Cdc` request against an
-/// already-declared table of a DIFFERENT kind (e.g. a log table) → `Validation`.
+/// against an existing stream table → `Conflict`; a request against an
+/// already-declared table of a DIFFERENT kind (cdc-vs-log in either direction)
+/// → `Validation`.
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
 /// it declares the stream (as a log or cdc table, per `decl`) and honours the
 /// recorded count (a concurrent first-writer may have won the declare with a
@@ -135,9 +136,8 @@ pub(crate) async fn reconcile_stream_mode(
         (Some(_), Some(m)) => {
             // A `Cdc` request against an already-declared table must also match its
             // KIND, not just its bucket count — a log table with the same bucket
-            // count is not a valid cdc target. (A `Log` request is unaffected: it
-            // keeps its original count-only comparison, so log/batch behavior is
-            // unchanged.)
+            // count is not a valid cdc target. (The symmetric Log-side guard follows
+            // below.)
             if matches!(decl, StreamDecl::Cdc { .. })
                 && existing_meta
                     .as_ref()
@@ -146,6 +146,23 @@ pub(crate) async fn reconcile_stream_mode(
                 return Err(ControlPlaneError::Validation(format!(
                     "cannot declare {}.{} as a cdc table: already declared with a \
                      different stream kind",
+                    table.schema, table.name
+                )));
+            }
+            // Symmetric kind guard for the Log side (iss-stream-log-vs-cdc-declare):
+            // a `mode=stream` (log) request against an already-declared table must
+            // also match its KIND — a cdc table with the same bucket count is not a
+            // valid log-declare target. Fires only when a `kind='cdc'` registry row
+            // already exists, so the pure log/batch paths (no such row) stay
+            // byte-identical.
+            if matches!(decl, StreamDecl::Log(_))
+                && existing_meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.kind != StreamKind::Log)
+            {
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot declare {}.{} as a log stream table: already declared \
+                     with a different stream kind",
                     table.schema, table.name
                 )));
             }
