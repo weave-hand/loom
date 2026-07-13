@@ -64,15 +64,17 @@ One capability, three seams:
    and prevents the same flush race). `change_kind` serves as the stored
    `'+I'`.
 3. **Kind-agnostic dispatch.** The dispatch keys off `StreamMeta.kind`
-   engine-side, so both the in-process engine and the wire ticket
-   (`ChangelogFeedTicket`, specced in parallel) serve log tables with no
+   engine-side, inside the `ChangelogFeed` unary `EngineControl` RPC (shipped
+   by `road-stream-subscribe-wire`, since closed — there is no Flight ticket;
+   see spec deviation 2 in `2026-07-12-stream-subscribe-wire-design`), so both
+   the in-process engine and the production wire serve log tables with no
    client/handler change. `GET /objects/{type}/changes` is unchanged.
 
 Sequencing: independent of the wire item — this lands in the engine-serving
-scan layer; whichever merges second inherits the other (the wire ticket calls
-the same scan; the scan's pinning comes from the wire spec's Part A if that
-lands first, else this item picks up live reads and the wire item retrofits
-the pins).
+scan layer; whichever merges second inherits the other (the `ChangelogFeed`
+RPC calls the same scan; the scan's pinning comes from the wire spec's Part A
+if that lands first, else this item picks up live reads and the wire item
+retrofits the pins).
 
 ## Non-regression
 

@@ -174,6 +174,7 @@ pub async fn run(
     )
     .with_consolidate_delta_threshold(tuning.consolidate_delta_threshold);
 
+    let serving_store = service_runtime::build_serving_object_store(&cfg.object_store)?;
     let control = EngineControlService {
         cp: cp.clone(),
         catalog: catalog.clone(),
@@ -181,11 +182,12 @@ pub async fn run(
         retention: cfg.gc_retention,
         writer,
         flush_byte_threshold: tuning.flush_byte_threshold,
+        serving_store: serving_store.clone(),
     };
     let flight = FlightDataService {
         catalog,
         serving_catalog: IcebergCatalog::new(pool.clone()),
-        serving_store: service_runtime::build_serving_object_store(&cfg.object_store)?,
+        serving_store,
         pool,
         cp,
     };

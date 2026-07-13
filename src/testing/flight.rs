@@ -114,6 +114,7 @@ pub async fn spawn_engine_uds(
             retention: Duration::from_secs(7 * 24 * 3600),
             writer,
             flush_byte_threshold: opts.flush_byte_threshold,
+            serving_store: None,
         })
     });
     let flight = opts.flight.then(|| {
