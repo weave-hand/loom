@@ -113,12 +113,9 @@ async fn dropping_a_base_with_dependent_views_is_refused() {
     // Drop the view; now the base can be dropped.
     catalog.drop_view(&view).await.expect("drop_view");
 
-    let mut tx = cp.pool().begin().await.expect("begin tx 2");
-    let at2 = next_snapshot(&mut tx, None).await.expect("next_snapshot 2");
-    mark_dropped(&mut tx, &base.schema, &base.name, at2)
-        .await
-        .expect("drop succeeds once the dependent view is gone");
-    tx.commit().await.expect("commit");
+    // Drive the production drop path (IcebergWriter::drop_table → SqlCatalog::drop_table
+    // → mark_dropped), not the low-level mark_dropped directly.
+    writer.drop_table(&base.schema, &base.name).await;
 
     // Dropped: no longer a live physical table (though — same MVCC semantics as
     // `catalog_delete_contract` — `current_snapshot` still resolves to its last
