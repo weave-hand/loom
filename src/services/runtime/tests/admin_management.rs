@@ -11,8 +11,8 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
-    ADMIN_ROLE, Acl, Aggregation, Auth, ControlPlane, NewUser, ObjectType, Ontology, RoleId,
-    SubjectId, TypeName,
+    ADMIN_ROLE, Acl, Action, Aggregation, Auth, ControlPlane, NewUser, ObjectType, Ontology,
+    PolicyTarget, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -617,6 +617,86 @@ const TRANSFORM_BODY: &str = r#"{
              "output": {"schema": "main", "name": "dst"},
              "sql": "select * from src"}
 }"#;
+
+const TYPED_TRANSFORM_BODY: &str = r#"{
+    "name": "typed_daily",
+    "body": {"kind": "typed",
+             "inputs": ["Src"],
+             "output": "Dst",
+             "sql": "select 1"}
+}"#;
+
+/// A subject in the reserved admin role can read main.dst iff a Table grant exists.
+async fn admin_can_read_table(cp: &MemoryControlPlane, schema: &str, name: &str) -> bool {
+    // ADMIN is seeded into ADMIN_ROLE by seed_admin_session.
+    cp.acl()
+        .check(
+            &SubjectId(ADMIN.into()),
+            Action::Read,
+            &PolicyTarget::Table(TableRef {
+                schema: schema.into(),
+                name: name.into(),
+            }),
+        )
+        .await
+        .unwrap()
+        == control_plane_core::Decision::Allow
+}
+
+#[tokio::test]
+async fn physical_define_grants_admin_read_on_output() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    assert!(!admin_can_read_table(&cp, "main", "dst").await);
+
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(admin_can_read_table(&cp, "main", "dst").await);
+
+    // Re-define is idempotent: still 201, still granted.
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TRANSFORM_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(admin_can_read_table(&cp, "main", "dst").await);
+}
+
+#[tokio::test]
+async fn typed_define_grants_no_table() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    // Seed the Src/Dst ontology types the typed body references (define validates them).
+    for name in ["Src", "Dst"] {
+        cp.ontology()
+            .define_type(ObjectType {
+                name: TypeName(name.into()),
+                properties: vec![],
+                derived: vec![],
+                table: control_plane_core::TableRef {
+                    schema: "onto".into(),
+                    name: name.to_lowercase(),
+                },
+                identity: None,
+                version: None,
+            })
+            .await
+            .unwrap();
+    }
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/transforms", &token, TYPED_TRANSFORM_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // No Table grant was created for a typed output.
+    assert!(!admin_can_read_table(&cp, "onto", "dst").await);
+}
 
 #[tokio::test]
 async fn define_get_delete_transform() {
