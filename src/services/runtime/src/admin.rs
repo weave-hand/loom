@@ -1390,10 +1390,31 @@ async fn define_transform_route(
                 .into_response();
         }
     };
-    match st.cp.transforms().define_transform(def).await {
-        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
-        Err(e) => status_for(&e).into_response(),
+    // Capture the physical output table (if any) before the def is moved into define.
+    let grant_table = def.body.physical_output_grant_table().cloned();
+    if let Err(e) = st.cp.transforms().define_transform(def).await {
+        return status_for(&e).into_response();
     }
+    // A physical output is a fresh untyped table with no grant; grant the reserved
+    // admin role Read so its catalog metadata + lineage node are visible regardless
+    // of the defining client. Idempotent (no-op upsert on redefine). A grant failure
+    // surfaces (the define is committed and idempotent, so a re-POST recovers — the
+    // known cross-concern-atomicity gap, fut-auth-acl-provisioning-tx).
+    if let Some(output) = grant_table
+        && let Err(e) = st
+            .cp
+            .acl()
+            .grant(
+                &RoleId(ADMIN_ROLE.to_string()),
+                Action::Read,
+                PolicyTarget::Table(output),
+                Effect::Allow,
+            )
+            .await
+    {
+        return status_for(&e).into_response();
+    }
+    (StatusCode::CREATED, "defined").into_response()
 }
 
 /// `GET /admin/transforms` — list all transform definitions.

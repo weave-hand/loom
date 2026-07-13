@@ -99,32 +99,3 @@ fn body_builder_skips_name_and_schedule_validation() {
     let body = form_to_body(&form).expect("valid body");
     assert_eq!(body["kind"], json!("physical"));
 }
-
-#[test]
-fn physical_form_yields_output_table_grant_body() {
-    // A physical transform creates a fresh untyped table; the define flow
-    // self-grants `read` on it (to the defining admin role) so its lineage
-    // and preview are visible without a manual grant.
-    let body = loom_ui_core::output_table_grant(&physical_form()).expect("physical → grant");
-    assert_eq!(
-        body,
-        json!({"action": "read", "table": {"schema": "marts", "name": "order_totals"}})
-    );
-}
-
-#[test]
-fn typed_form_yields_no_output_table_grant() {
-    // A typed output is governed by its type's existing grants (and the
-    // lineage Table→Type fallback) — no table grant is needed or sent.
-    let form = TransformForm {
-        kind: TransformKind::Typed,
-        name: "enrich".into(),
-        inputs: vec!["Customer".into()],
-        output: "EnrichedCustomer".into(),
-        sql: "SELECT *".into(),
-        schedule: String::new(),
-        on_input_commit: false,
-        output_mode: OutputMode::Append,
-    };
-    assert_eq!(loom_ui_core::output_table_grant(&form), None);
-}

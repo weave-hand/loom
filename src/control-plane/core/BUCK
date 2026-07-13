@@ -447,6 +447,16 @@ rust_test(
 )
 
 rust_test(
+    name = "transform-grant-target",
+    crate = "transform_grant_target",
+    srcs = ["tests/transform_grant_target.rs"],
+    crate_root = "tests/transform_grant_target.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "job-schedule",
     crate = "job_schedule",
     srcs = ["tests/job_schedule.rs"],

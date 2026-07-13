@@ -306,10 +306,15 @@ pub async fn define_transform(base: &str, token: &str, def: &Value) -> Result<()
     }
 }
 
-/// POST /admin/roles/{role}/grants — add one coarse grant (expects 2xx). Used by
-/// the transform define flow to self-grant `read` on a physical output table
-/// (body from `output_table_grant`); the admin surface implies the caller holds
-/// the reserved `admin` role, so `role` is `"admin"` there.
+/// POST /admin/roles/{role}/grants — add one coarse grant (expects 2xx). Generic
+/// role-grant POST; the admin surface implies the caller holds the reserved
+/// `admin` role.
+#[expect(
+    dead_code,
+    reason = "kept as a generic role-grant helper now that the transform-output \
+        self-grant call site (its only caller) moved server-side; \
+        see iss-catalog-lineage-acl-asymmetry task 4"
+)]
 pub async fn post_role_grant(
     base: &str,
     token: &str,

@@ -84,6 +84,19 @@ pub enum TransformBody {
 }
 
 impl TransformBody {
+    /// The physical (untyped) output table that must be explicitly Read-granted for
+    /// the output to be visible in the catalog / lineage. `Some` only for a `Physical`
+    /// body — a `Typed` output's visibility rides its bound type's grants, and the MV
+    /// variants' output governance is out of scope here (matching the UI's Physical-only
+    /// self-grant split this replaces).
+    #[must_use]
+    pub fn physical_output_grant_table(&self) -> Option<&TableRef> {
+        match self {
+            Self::Physical { output, .. } => Some(output),
+            Self::Typed { .. } | Self::MicroBatch { .. } | Self::MicroBatchJoin { .. } => None,
+        }
+    }
+
     /// Build the queue job for one run of this body, threading `run_id` into
     /// the payload. Serialization of the payload structs cannot fail (plain
     /// data), so this is infallible.
