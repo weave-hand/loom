@@ -52,7 +52,10 @@ pub async fn serve(
         pool: state_pool,
         compact_small_file_bytes,
     };
-    let app = service_runtime::protect(router(state), auth.clone())
+    let app = service_runtime::protect(router(state.clone()), auth.clone())
+        // The operator compact route carries its own gate (require_auth THEN
+        // require_admin), so it is mounted as a sibling sub-router.
+        .merge(crate::http::compact_routes(state, auth.clone()))
         .merge(service_runtime::login_routes(auth.clone()))
         .merge(service_runtime::session_routes(auth.clone()))
         .merge(service_runtime::service_account_routes(

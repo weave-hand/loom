@@ -125,12 +125,45 @@ pub struct AppState {
     pub compact_small_file_bytes: i64,
 }
 
+/// The ingest data plane: landing routes, authentication-only (the binary wraps
+/// this in `service_runtime::protect`). The operator maintenance surface lives
+/// in [`compact_routes`], which additionally requires the reserved `admin` role.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/datasets/:schema/:table", post(land))
         .route("/models/:type", post(land_model))
-        .route("/tables/:schema/:table/compact", post(compact))
         .with_state(state)
+}
+
+/// The operator maintenance surface: `POST /tables/{schema}/{table}/compact`,
+/// gated `require_auth` (401) THEN `require_admin` (403) — the `/admin/*`
+/// posture (`service_runtime::admin_routes`). Kept out of [`router`] because
+/// landing is a data-plane surface (authn only) while compaction is an operator
+/// cost lever.
+///
+/// Layer order is load-bearing: `require_admin` reads the `Subject` that
+/// `require_auth` injects into request extensions, so `protect` must wrap (i.e.
+/// run before) the admin `route_layer` — exactly as `admin_routes` composes
+/// them. Note `Router::route_layer` gates every route of *its* router, which is
+/// why the compact route gets its own sub-router rather than a layer on
+/// [`router`].
+pub fn compact_routes(state: AppState, auth: service_runtime::AuthState) -> Router {
+    // `require_admin` reads only `AdminState::cp` (the reserved-role ACL check);
+    // the `auth` field is required by the struct and unused by the gate.
+    let admin = service_runtime::AdminState {
+        auth: auth.auth.clone(),
+        cp: state.cp.clone(),
+    };
+    service_runtime::protect(
+        Router::new()
+            .route("/tables/:schema/:table/compact", post(compact))
+            .with_state(state)
+            .route_layer(axum::middleware::from_fn_with_state(
+                admin,
+                service_runtime::require_admin,
+            )),
+        auth,
+    )
 }
 
 /// Operator action: enqueue a compaction job for `{schema}.{table}`. Returns the

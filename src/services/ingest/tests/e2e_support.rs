@@ -41,7 +41,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use http_body_util::BodyExt;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
-use ingest::http::{AppState, router};
+use ingest::http::{AppState, compact_routes, router};
 use ingest::landing::IcebergMaterializer;
 use service_runtime::{AuthState, generate_session_token, protect, token_sha256};
 use sqlx::PgPool;
@@ -143,6 +143,31 @@ pub async fn session_token(pg: &PgControlPlane, subject: &str) -> String {
         .await
         .expect("create_session");
     token
+}
+
+/// A subject holding the reserved `admin` role, plus its session token — the
+/// caller the admin-gated operator surface (`compact_app`) requires.
+pub async fn admin_session_token(pg: &PgControlPlane, subject: &str) -> String {
+    let token = session_token(pg, subject).await;
+    let subj = SubjectId(subject.into());
+    let role = RoleId(control_plane_core::ADMIN_ROLE.to_string());
+    pg.define_subject(&subj).await.expect("define_subject");
+    pg.define_role(&role).await.expect("define_role");
+    pg.assign_role(&subj, &role).await.expect("assign_role");
+    token
+}
+
+/// The admin-gated operator maintenance router (`compact_routes`), wired exactly
+/// as the binary does: `require_auth` (401) outside, `require_admin` (403) inside.
+pub fn compact_app(state: AppState, pg: Arc<PgControlPlane>) -> Router {
+    compact_routes(
+        state,
+        AuthState {
+            auth: pg,
+            session_ttl: Duration::from_secs(3600),
+            lockout: service_runtime::LockoutPolicy::default(),
+        },
+    )
 }
 
 /// Seed a Write grant on a type that does NOT exist yet (the public `grant` API
