@@ -2,11 +2,13 @@
 //! `(loom_bucket, loom_offset)`-ordered event of a declared LOG stream table at
 //! or beyond `mv`'s committed per-bucket watermark. Mirrors `consolidate_locked`'s
 //! read shape (`consolidate.rs:180`) — same `lock_table` + `current_snapshot` +
-//! `schema` -> `user_cols` + `files_with_stats` -> `read_files_as_batches` +
-//! `inline_live_batch_full` read — but folds NOTHING: the output is every framed
-//! row at-or-beyond the watermark, `(bucket, offset)`-ordered, framing columns
-//! INCLUDED (the worker derives its watermark CAS bounds from them, then strips
-//! them before running user SQL — see `MvDeltaTicket`'s doc comment).
+//! `schema` -> `user_cols` + `files_with_stats` -> `read_files_as_batches` (only
+//! when the mirror reports live files — an inline-only source has no Iceberg
+//! catalog row to load) + `inline_live_batch_full` read — but folds NOTHING: the
+//! output is every framed row at-or-beyond the watermark, `(bucket, offset)`-
+//! ordered, framing columns INCLUDED (the worker derives its watermark CAS bounds
+//! from them, then strips them before running user SQL — see `MvDeltaTicket`'s
+//! doc comment).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -45,7 +47,9 @@ fn quote_ident(name: &str) -> String {
 /// `Status::failed_precondition`). Read under the per-table flush/GC/consolidate
 /// advisory lock, exactly `consolidate_locked`'s read shape
 /// (`engine-serving/src/consolidate.rs:180`) — a flush moving rows
-/// files<->inline mid-read would otherwise double-read or drop them.
+/// files<->inline mid-read would otherwise double-read or drop them. A source
+/// that has only ever been inline-appended (every fresh micro-batch MV output)
+/// reads fine — the file tier is skipped, not loaded.
 pub async fn mv_delta_scan(
     cp: &PgControlPlane,
     catalog: &SqlCatalog,
@@ -128,9 +132,6 @@ async fn mv_delta_locked(
         .await
         .map_err(to_serving)?;
     let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
-    let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
-        .await
-        .map_err(to_serving)?;
 
     // ... UNION any still-live inline tail (un-flushed events), so a delta read
     // that runs without a preceding flush still sees the whole tail. `_full`
@@ -142,9 +143,36 @@ async fn mv_delta_locked(
         .await
         .map_err(to_serving)?;
 
+    // Neither tier: an empty delta over the MIRROR-derived framed schema. Returning
+    // here (rather than falling through) is what keeps `read_files_as_batches` — and
+    // therefore `catalog.load_table` — off the path for a table that has ONLY ever
+    // been inline-appended: such a table has no vendored `iceberg_tables` row (only
+    // the Parquet-write path's `ensure_iceberg_table` creates one), so `load_table`
+    // would error even for an EMPTY file list. Same mirror-authoritative shape as
+    // `build_serving_provider`'s zero-row provider (`serving.rs:211`, the #421
+    // `iss-serving-empty-table-not-found` fix).
+    if paths.is_empty() && inline.is_none() {
+        return Ok((framed_schema(&user_cols)?, vec![]));
+    }
+
+    // Register ONLY the tiers that exist. Skipping the file tier when the mirror
+    // reports no live files is the other half of the same fix — an MV output is
+    // inline-only until its first flush (`commit_micro_batch` -> `inline_append_mv`),
+    // and a downstream MV must be able to read it as a source immediately
+    // (`iss-mv-delta-inline-source-unflushed`). A source WITH files takes the
+    // unchanged path. Mirrors `consolidate_locked`'s shadow read
+    // (`consolidate.rs:420`).
     let df_ctx = SessionContext::new();
-    register_batches(&df_ctx, "mv_delta_files", file_schema, file_batches).map_err(to_serving)?;
-    let has_inline = if let Some((_, _, inline_batch)) = &inline {
+    let mut tiers: Vec<&str> = Vec::new();
+    if !paths.is_empty() {
+        let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
+            .await
+            .map_err(to_serving)?;
+        register_batches(&df_ctx, "mv_delta_files", file_schema, file_batches)
+            .map_err(to_serving)?;
+        tiers.push("mv_delta_files");
+    }
+    if let Some((_, _, inline_batch)) = &inline {
         register_batches(
             &df_ctx,
             "mv_delta_inline",
@@ -152,25 +180,21 @@ async fn mv_delta_locked(
             vec![inline_batch.clone()],
         )
         .map_err(to_serving)?;
-        true
-    } else {
-        false
-    };
+        tiers.push("mv_delta_inline");
+    }
 
     let col_list = user_cols
         .iter()
         .map(|c| quote_ident(&c.name))
         .collect::<Vec<_>>()
         .join(", ");
-    let union_sql = if has_inline {
-        format!(
-            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from mv_delta_files \
-             union all \
-             select {col_list}, loom_change_kind, loom_bucket, loom_offset from mv_delta_inline"
-        )
-    } else {
-        format!("select {col_list}, loom_change_kind, loom_bucket, loom_offset from mv_delta_files")
-    };
+    // One `select ... from <tier>` per registered tier, UNION ALL'd. With both tiers
+    // present this is byte-identical to the previous two-arm `has_inline` format!.
+    let union_sql = tiers
+        .iter()
+        .map(|t| format!("select {col_list}, loom_change_kind, loom_bucket, loom_offset from {t}"))
+        .collect::<Vec<_>>()
+        .join(" union all ");
 
     // Per-bucket watermark predicate: every event at or beyond the mv's committed
     // next-offset for that bucket (a bucket absent from `wm` reads as 0 — the

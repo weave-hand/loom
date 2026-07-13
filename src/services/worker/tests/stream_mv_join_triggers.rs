@@ -10,7 +10,9 @@
 //! 2. a source commit produces the join MV's enriched output;
 //! 3. the join MV's own output commit is itself a data-trigger seam that
 //!    fires a plain slice-4 `MicroBatch` MV defined over its output
-//!    (composability); and
+//!    (composability) — with NO flush of the upstream output first: the
+//!    downstream MV reads an inline-only source
+//!    (`iss-mv-delta-inline-source-unflushed`); and
 //! 4. an enrich-edge cycle (`MV1.enrich == MV2.output`, `MV2.source ==
 //!    MV1.output`) is rejected at define time.
 //!
@@ -30,14 +32,14 @@ use std::sync::Arc;
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, ControlPlaneError, EventType, LineageEvent, LookupOn, MergeEngine,
-    MvWatermarks, ObjectType, Ontology, PropertyConstraints, PropertyDef, Queue, RunState,
-    RunTrigger, STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody,
+    Catalog, ColumnSpec, ControlPlane, ControlPlaneError, EventType, LineageEvent, LookupOn,
+    MergeEngine, MvWatermarks, ObjectType, Ontology, PropertyConstraints, PropertyDef, Queue,
+    RunState, RunTrigger, STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody,
     TransformDef, TransformName, Transforms, TypeName, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_mirror::{ensure_table, live_table_id, next_snapshot};
@@ -591,25 +593,26 @@ async fn enrich_and_source_triggers_compose_downstream() {
 
     // ---- Case 3: the join MV's output commit fires the downstream MV. -----
 
-    // Flush enriched_orders to Parquet before it is read as the downstream
-    // MV's SOURCE: `mv_delta_scan`'s file read resolves the table through the
-    // Iceberg catalog (`read_files_as_batches` -> `catalog.load_table`), which
-    // only ever gets a row via the Parquet-write path (`ensure_iceberg_table`)
-    // — an MV output that has ONLY ever been inline-appended (as every
-    // `commit_micro_batch` write is) has no such row yet. Every other worker
-    // fixture test sidesteps this by landing its SOURCE with
-    // `inline_byte_limit: 0` (forcing a Parquet write); an MV's OUTPUT has no
-    // such landing call, so this explicit flush is the composability
-    // equivalent — mirrors `stream_mv_e2e.rs`'s convergence-across-flush use
-    // of the same helper.
-    flush_table(
-        &catalog,
-        &pool,
-        &dst,
-        control_plane_core::RunId(uuid::Uuid::new_v4()),
-    )
-    .await
-    .expect("flush enriched_orders before it is read as downstream_mv's source");
+    // NO FLUSH. `s.enriched_orders` has only ever been inline-appended (every
+    // `commit_micro_batch` write goes through `inline_append_mv`), so it has no
+    // Iceberg SQL-catalog row — and `mv_delta_scan` reads it as the downstream
+    // MV's SOURCE anyway: the file tier is skipped when the mirror reports no
+    // live files (`iss-mv-delta-inline-source-unflushed`). Pin that precondition,
+    // so a future auto-flush cannot silently turn this back into the
+    // already-file-backed case and hide a regression.
+    let ice = IcebergCatalog::new(pool.clone());
+    let dst_current = ice
+        .current_snapshot(&dst)
+        .await
+        .expect("the join MV's output has a mirror snapshot");
+    assert!(
+        ice.files_with_stats(&dst, dst_current.id)
+            .await
+            .expect("files_with_stats")
+            .is_empty(),
+        "Case 3 precondition: the join MV's output is INLINE-ONLY (zero Parquet \
+         files) when the downstream MV reads it as a delta source"
+    );
 
     let (job3, payload3) = dequeue_stream_mv_job(&ctx).await;
     assert_eq!(

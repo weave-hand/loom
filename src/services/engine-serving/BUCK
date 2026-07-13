@@ -362,3 +362,23 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "mv-delta-inline-source",
+    crate = "mv_delta_inline_source",
+    srcs = ["tests/mv_delta_inline_source.rs"],
+    crate_root = "tests/mv_delta_inline_source.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:arrow",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
