@@ -76,6 +76,47 @@ fn customer_body() -> (Arc<Schema>, Vec<RecordBatch>) {
     (schema, vec![batch])
 }
 
+/// Like [`customer_columns`] but BOTH columns are REQUIRED (`nullable: false`) —
+/// the shape the merge-view nullability blast radius needs (a required
+/// non-identity column, as `Docs.embedding` is).
+fn required_customer_columns() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "region".into(),
+            ty: "string".into(),
+            nullable: false,
+        },
+    ]
+}
+
+/// The arrow schema of [`required_customer_columns`] — both fields non-nullable.
+fn required_customer_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("region", DataType::Utf8, false),
+    ]))
+}
+
+/// A full `{id, region}` row batch — a `land` payload, and (single-row) the
+/// non-CDC inline VERSION an UPDATE shadow writes.
+fn required_customer_rows(rows: &[(i64, &str)]) -> RecordBatch {
+    let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+    let regions: Vec<&str> = rows.iter().map(|(_, r)| *r).collect();
+    RecordBatch::try_new(
+        required_customer_schema(),
+        vec![
+            Arc::new(Int64Array::from(ids)),
+            Arc::new(StringArray::from(regions)),
+        ],
+    )
+    .expect("required_customer_rows")
+}
+
 fn seed_lineage(table: &TableRef) -> LineageEvent {
     LineageEvent {
         run_id: RunId(uuid::Uuid::new_v4()),
@@ -436,6 +477,165 @@ async fn nonconforming_result_abandons_without_commit() {
     assert_eq!(
         events, 0,
         "non-conforming transform emitted no lineage for the output"
+    );
+}
+
+/// Blast-radius non-regression (iss-search-vector-merge-view-nullable): a typed
+/// transform whose SOURCE table has a LIVE INLINE ROW (a benign UPDATE shadow — no
+/// tombstone) over an IDENTITY type with a REQUIRED non-identity column must still
+/// conform and commit. The source's rows come from the engine's SQL serving path,
+/// i.e. `build_merge_view`; the worker infers the output columns from THAT served
+/// Arrow schema (`infer_columns`, which copies `is_nullable()`), and
+/// `check_conformance` rejects a nullable column for a REQUIRED property. Widening
+/// the merged view's served nullability — the naive form of the Defect-B fix —
+/// would abort this transform with a `NullabilityViolation`. The real fix restores
+/// the mirror's nullability in the merge view's final projection (`loom_not_null`),
+/// so this stays green — and the merge fold still wins (id=1 serves the shadow).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
+    let fx = PgFixture::shared();
+    let (pg, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    // Cold tier: two rows, every column present.
+    let customers = tref("main", "customers");
+    let cols = required_customer_columns();
+    land(
+        &pool,
+        &catalog,
+        &customers,
+        &cols,
+        required_customer_schema(),
+        vec![required_customer_rows(&[(1, "CA"), (2, "NY")])],
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&customers),
+        None,
+    )
+    .await
+    .expect("land");
+
+    // The input type has an IDENTITY — that is what routes the source through
+    // `build_merge_view` at all — and a REQUIRED non-identity property.
+    pg.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Customer".into()),
+            properties: vec![prop("id", "Long", true), prop("region", "String", true)],
+            derived: vec![],
+            table: customers.clone(),
+            identity: Some("id".into()),
+            version: None,
+        })
+        .await
+        .unwrap();
+    // The OUTPUT type also declares `region` REQUIRED: a nullable `region` in the
+    // result schema is exactly what `check_conformance` refuses.
+    let slim = tref("main", "customer_regions");
+    pg.ontology()
+        .define_type(ObjectType {
+            name: TypeName("CustomerRegion".into()),
+            properties: vec![prop("id", "Long", true), prop("region", "String", true)],
+            derived: vec![],
+            table: slim.clone(),
+            identity: None,
+            version: None,
+        })
+        .await
+        .unwrap();
+
+    // A LIVE INLINE UPDATE SHADOW on id=1 (a full row — no tombstone anywhere).
+    let id_only = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        vec![Arc::new(Int64Array::from(vec![1_i64]))],
+    )
+    .expect("id batch");
+    let v = control_plane_postgres::iceberg_inline::current_inline_version(
+        &pool, &customers, &cols, "id", &id_only,
+    )
+    .await
+    .expect("current inline version");
+    control_plane_postgres::iceberg_inline::write_inline_delta(
+        &pool,
+        &customers,
+        &cols,
+        "id",
+        false, // row-version, NOT a tombstone
+        &required_customer_rows(&[(1, "WA")]),
+        None,
+        seed_lineage(&customers),
+        v,
+        None,
+        &[], // jobs
+    )
+    .await
+    .expect("inline update shadow");
+
+    // The same typed transform as the happy path, over the now-shadowed source.
+    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let job = make_typed_job(
+        &["Customer"],
+        "CustomerRegion",
+        "SELECT \"Customer\".id AS id, \"Customer\".region AS region FROM \"Customer\"",
+        OutputMode::Append,
+    );
+    handle_typed_transform(&ctx, job)
+        .await
+        .expect("typed transform over a source with a live inline row must conform and commit");
+
+    // Committed — and the merge fold picked the shadow for id=1.
+    let ice = IcebergCatalog::new(pool.clone());
+    let snap = ice.current_snapshot(&slim).await.expect("output snapshot");
+    let flight = FlightTableClient::connect(&eng.sock)
+        .await
+        .expect("connect flight");
+    let files = ice.files_with_stats(&slim, snap.id).await.expect("files");
+    let batches = flight
+        .fetch(FlightTicket {
+            schema: slim.schema.clone(),
+            name: slim.name.clone(),
+            files: files.iter().map(|f| f.path.clone()).collect(),
+        })
+        .await
+        .expect("flight read-back");
+    let mut got: Vec<(i64, String)> = Vec::new();
+    for b in &batches {
+        let ids = b
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int64 id");
+        let regions = b
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8 region");
+        for i in 0..ids.len() {
+            got.push((ids.value(i), regions.value(i).to_string()));
+        }
+    }
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![(1, "WA".to_string()), (2, "NY".to_string())],
+        "the transform committed, and the inline shadow won for id=1"
     );
 }
 

@@ -26,6 +26,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{Result, exec_err};
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ReturnFieldArgs, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
@@ -89,4 +90,20 @@ impl ScalarUDFImpl for NotNull {
 /// module doc); the alias is the caller's job.
 pub fn not_null(expr: Expr) -> Expr {
     ScalarUDF::from(NotNull::default()).call(vec![expr])
+}
+
+/// Does `expr` reference `loom_not_null` anywhere in its tree?
+///
+/// `loom_not_null` is loom's OWN marker — it exists in no database. DataFusion's
+/// filter pushdown rewrites a predicate over the merged view THROUGH its final
+/// projection, so a predicate on a restored column reaches the tier providers
+/// wrapped in `loom_not_null(...)`. Rendering that into Postgres SQL fails the scan
+/// (`function loom_not_null(bigint) does not exist`), so
+/// [`crate::provider::build_scan_sql`] uses this to skip such a filter — the PG
+/// provider reports `Inexact`, so DataFusion re-applies the predicate itself. The
+/// physical (arrow) side needs no such guard: the UDF evaluates as the identity it
+/// is.
+pub fn contains_not_null(expr: &Expr) -> bool {
+    expr.exists(|e| Ok(matches!(e, Expr::ScalarFunction(f) if f.name() == NAME)))
+        .unwrap_or(false)
 }

@@ -513,12 +513,23 @@ fn build_merge_view(
     //
     // If a NULL ever did survive the filter, `ProjectionExec`'s `RecordBatch::try_new`
     // fails loudly — never a silent wrong answer.
+    //
+    // The IDENTITY column is deliberately left BARE: both tiers already declare it
+    // with the mirror's own flag (the inline tier widens only NON-identity columns —
+    // a tombstone always carries its identity), so the union never widens it and
+    // there is nothing to restore. Leaving it bare also keeps identity predicates
+    // PUSHABLE into the inline tier's Postgres SQL — DataFusion rewrites a predicate
+    // over this view through the projection, and the partition key is the one column
+    // whose predicates can travel below the window into the tier scans (the MV
+    // keyed-lookup hot path, `mv_enrich`). A `loom_not_null(id) = ?` predicate cannot
+    // be executed by Postgres; `build_scan_sql` skips it, which is correct but loses
+    // the pushdown.
     let final_projection: Vec<Expr> = schema
         .fields()
         .iter()
         .map(|f| {
             let c = cref(f.name().as_str());
-            if f.is_nullable() {
+            if f.is_nullable() || f.name() == identity {
                 c
             } else {
                 crate::not_null::not_null(c).alias(f.name())
