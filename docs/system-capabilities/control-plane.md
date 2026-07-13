@@ -149,7 +149,20 @@ propagates commit failure (#239). And garbage collection covers dropped tables:
 the live table — reclaims their aged-out Parquet under the same retention
 horizon, and once a drop snapshot ages past the horizon physically drops the
 `inline_<tid>` table and deletes the mirror rows, gated on full reclaim so
-nothing time-travellable vanishes.
+nothing time-travellable vanishes. GC's reclaim of a **micro-batch MV source**
+is additionally bounded by the **MV read-position floor** — `mv_floor`
+(`postgres/src/mv_floor.rs`), the per-bucket `min(next_offset)` over
+`stream.mv_watermark` across every MV registered against the source (an absent
+watermark row, including a registered-but-never-run MV, floors that bucket at
+`0`) — so a lagging MV's end-capped bytes are held rather than destroyed while it
+is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged with
+the laggard's name. The escape hatch is `Transforms::delete_transform`, which
+deletes the MV's watermark rows in the same transaction as the def (a testkit
+contract certifies both the postgres adapter and the memory fake). The floor is
+**byte-retention defense plus a reusable primitive, not hole-freedom** — GC only
+reclaims end-capped rows, which an MV's current-snapshot delta already cannot
+see; the paths that end-cap unread offsets must call `mv_floor` themselves
+(`#iss-end-cap-ignores-mv-floor`). Full account: engine's **GC** section.
 
 Concurrent first-writes to a brand-new table are race-safe: `ensure_table` —
 the SELECT-live-then-INSERT that materializes the `iceberg_mirror.table` row for

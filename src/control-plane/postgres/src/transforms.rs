@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
     TableRef, TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
-    next_cron_occurrence, validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle,
+    mv_key, next_cron_occurrence, validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle,
     validate_transform_def,
 };
 use time::OffsetDateTime;
@@ -71,6 +71,44 @@ pub(crate) async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
             )
         })
         .collect())
+}
+
+/// The `mv_key`s of every registered micro-batch MV (`MicroBatch` /
+/// `MicroBatchJoin`) whose SOURCE is `table` — the registration half of the GC
+/// floor's reader set (`crate::mv_floor`). An undecodable body is skipped with a
+/// warning: a poisoned admin artifact must not wedge GC, exactly as it must not
+/// fail unrelated ingest commits (`pg_fire_data_triggers`).
+pub(crate) async fn pg_micro_batch_readers<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table: &TableRef,
+) -> Result<std::collections::BTreeSet<String>> {
+    let rows = sqlx::query!("select name, body from transforms.transform order by name")
+        .fetch_all(ex)
+        .await
+        .map_err(backend)?;
+    let mut out = std::collections::BTreeSet::new();
+    for r in rows {
+        let body = match de_body(r.body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    transform = %r.name,
+                    error = %e,
+                    "mv floor: skipping undecodable transform body"
+                );
+                continue;
+            }
+        };
+        let (source, output) = match &body {
+            TransformBody::MicroBatch { source, output, .. }
+            | TransformBody::MicroBatchJoin { source, output, .. } => (source, output),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => continue,
+        };
+        if source.schema == table.schema && source.name == table.name {
+            out.insert(mv_key(output));
+        }
+    }
+    Ok(out)
 }
 
 /// Re-validate the data-triggered trigger DAG against the CURRENT ontology
@@ -384,6 +422,50 @@ impl Transforms for PgControlPlane {
         if let Some(t) = &output_table {
             crate::stream::pg_refuse_stream_target(&mut tx, t).await?;
         }
+        // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
+        // (`mv_key`), not by this def's name. So a redefinition that changes the
+        // output — or drops the micro-batch body altogether — leaves the PRIOR
+        // output's watermark rows referenced by no def at all: `delete_transform`
+        // keys on the def's CURRENT output and can never reach them, while
+        // `crate::mv_floor`'s reader set counts every mv holding watermark rows.
+        // The source would stay floored at the dead MV's last watermark forever.
+        // Release them here, in the same transaction as the upsert — the exact
+        // mirror of what `delete_transform` does. Redefining with the SAME output
+        // is deliberately untouched: the MV resumes where it left off.
+        let new_mv = match &def.body {
+            TransformBody::MicroBatch { output, .. }
+            | TransformBody::MicroBatchJoin { output, .. } => Some(mv_key(output)),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+        };
+        let prior = sqlx::query!(
+            "select body from transforms.transform where name = $1 for update",
+            def.name.0,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(row) = prior {
+            match de_body(row.body) {
+                Ok(
+                    TransformBody::MicroBatch { output, .. }
+                    | TransformBody::MicroBatchJoin { output, .. },
+                ) => {
+                    let old_mv = mv_key(&output);
+                    if new_mv.as_ref() != Some(&old_mv) {
+                        sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(backend)?;
+                    }
+                }
+                Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
+                Err(e) => tracing::warn!(
+                    transform = %def.name.0,
+                    error = %e,
+                    "define_transform: undecodable prior body; redefining without watermark cleanup"
+                ),
+            }
+        }
         sqlx::query!(
             "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
              values ($1, $2, $3, $4, $5) \
@@ -448,10 +530,47 @@ impl Transforms for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_transform(&self, name: &TransformName) -> Result<()> {
+        // An MV's watermark rows are part of its registration: deleting the def is
+        // the documented escape hatch out of a GC floor held by a dead MV
+        // (`crate::mv_floor`), so the rows must go with it — atomically, or the
+        // floor would outlive the registration that justified it. The delete is
+        // keyed by `mv_key(output)` alone (not by source), which drops every cursor
+        // this MV holds — correct, because the MV itself is going away.
+        let mut tx = self.pool().begin().await.map_err(backend)?;
+        let existing = sqlx::query!(
+            "select body from transforms.transform where name = $1",
+            name.0,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(row) = existing {
+            match de_body(row.body) {
+                Ok(
+                    TransformBody::MicroBatch { output, .. }
+                    | TransformBody::MicroBatchJoin { output, .. },
+                ) => {
+                    sqlx::query!(
+                        "delete from stream.mv_watermark where mv = $1",
+                        mv_key(&output),
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(backend)?;
+                }
+                Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
+                Err(e) => tracing::warn!(
+                    transform = %name.0,
+                    error = %e,
+                    "delete_transform: undecodable body; deleting the def without watermark cleanup"
+                ),
+            }
+        }
         sqlx::query!("delete from transforms.transform where name = $1", name.0)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 

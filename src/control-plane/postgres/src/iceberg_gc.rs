@@ -27,6 +27,28 @@
 //! `next_snapshot`), so it is the snapshot's commit time — no extra column is
 //! needed.
 //!
+//! ## The MV watermark floor
+//! Age is not the only thing that makes a byte dead. A micro-batch materialized
+//! view reads its SOURCE table by `loom_offset`, so every reclaim of the LIVE
+//! incarnation is additionally guarded by the source's MV read-position floor
+//! (`crate::mv_floor`): a row/file is reclaimable only STRICTLY BELOW it
+//! (road-mv-watermark-aware-gc). What that guard delivers is **byte-retention
+//! defense** — a lagging MV's end-capped bytes are not physically destroyed while
+//! it is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged
+//! with the laggard's name — plus `mv_floor` itself as a reusable primitive.
+//! It is NOT what stands between an MV and a data hole, and must not be described
+//! as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`) while an
+//! MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped row is
+//! already invisible to the MV before GC touches it — `gc_table` could never have
+//! removed a row an MV was still able to read. The hole is created at END-CAP
+//! time, by whichever path end-caps offsets an MV has not consumed; making those
+//! paths consult `mv_floor` first is the real fix, tracked as
+//! `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md) and not built here.
+//! For the overwhelming majority of tables — anything no micro-batch MV reads —
+//! the floor is `None` and every predicate below is byte-identical to the
+//! pre-floor behavior. A DROPPED incarnation's reclaim deliberately bypasses the
+//! floor (see `gc_locked`).
+//!
 //! ## Ordering: commit-then-delete
 //! The mirror is the source of truth. The transaction deletes the rows first;
 //! the Parquet objects are deleted *after* commit. A failure between the two
@@ -40,6 +62,7 @@
 //! uses a runtime `sqlx::query(AssertSqlSafe(...))`. Every query is exercised against a
 //! real schema by the fixture tests in `tests/iceberg_gc.rs`.
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use control_plane_core::{Result, TableRef};
@@ -49,8 +72,9 @@ use time::OffsetDateTime;
 use crate::backend;
 use crate::iceberg_flush::lock_key;
 use crate::iceberg_inline::inline_table_name;
-use crate::iceberg_mirror::{dropped_table_ids, live_table_id};
+use crate::iceberg_mirror::{DroppedIncarnation, dropped_table_ids, live_table_id};
 use crate::iceberg_sql_catalog::SqlCatalog;
+use crate::mv_floor::{MvFloor, mv_floor, stranded_mv_readers};
 
 /// Counts of what a `gc_table` run reclaimed, for observability and tests.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,6 +82,13 @@ pub struct GcSummary {
     pub data_file_rows: u64,
     pub inline_rows: u64,
     pub objects_deleted: u64,
+    /// How many age-eligible reclaim candidates of the LIVE incarnation the MV
+    /// watermark floor held back — a lagging materialized view has not consumed
+    /// those offsets yet. UNIT: `data_file` rows PLUS end-capped inline rows, summed
+    /// (the same two tiers `data_file_rows` and `inline_rows` report separately), so
+    /// read it as "candidates held", not as a row count or a byte count. Always 0
+    /// for a table no micro-batch MV reads.
+    pub held_by_mv_floor: u64,
 }
 
 /// Reclaim aged-out end-capped rows + their Parquet for one table.
@@ -93,10 +124,8 @@ async fn gc_locked(
     table: &TableRef,
     retention: Duration,
 ) -> Result<GcSummary> {
-    // 1. Horizon H = youngest snapshot fully aged out of the window. Applies to
-    //    every incarnation (live and, in the dropped loop, each dropped one).
-    //    `now()` is taken in Rust; sub-second precision is irrelevant at GC scale.
-    //    `max()` over zero matching rows yields NULL → None → a clean no-op.
+    // 1. Horizon H = youngest snapshot fully aged out of the window (see module docs
+    //    for the safety invariant this derives).
     let cutoff = OffsetDateTime::now_utc() - time::Duration::seconds(retention.as_secs() as i64);
     let horizon = crate::iceberg_mirror::horizon_before(pool, cutoff).await?;
     let Some(h) = horizon else {
@@ -109,54 +138,62 @@ async fn gc_locked(
     let dropped = dropped_table_ids(&mut conn, &table.schema, &table.name).await?;
     drop(conn);
 
-    // 3. Collect the reclaimable Parquet paths (before deleting the rows that name
-    //    them), across the live incarnation and every dropped one.
-    let mut paths: Vec<String> = Vec::new();
-    if let Some(tid) = live {
-        paths.extend(reclaimable_paths(pool, tid, h).await?);
-    }
-    for inc in &dropped {
-        paths.extend(reclaimable_paths(pool, inc.table_id, h).await?);
-        if inc.drop_snapshot <= h {
-            paths.extend(vector_index_paths(pool, inc.table_id).await?);
-        }
-    }
+    // 2b. The MV read-position floor of the LIVE incarnation (`None` for a table no
+    //     micro-batch MV reads — the guard then goes NULL, a pre-floor no-op).
+    let floor = match live {
+        Some(tid) => mv_floor(pool, table, tid).await?,
+        None => None,
+    };
+    let file_guard: Option<i64> = floor.as_ref().map(MvFloor::min_offset);
+    let stranded = stranded_readers(pool, table, live, &dropped).await?;
 
-    // 4. One transaction: delete the reclaimable mirror rows.
+    // 3. One transaction: reclaim the live incarnation (floor-guarded, see
+    //    `reclaim_live`), then every dropped incarnation (unguarded, see
+    //    `reclaim_dropped`), collecting every object path to delete post-commit.
     let mut tx = pool.begin().await.map_err(backend)?;
+    let mut paths: Vec<String> = Vec::new();
     let mut data_file_rows = 0u64;
     let mut inline_rows = 0u64;
+    let mut held_by_mv_floor = 0u64;
     if let Some(tid) = live {
-        data_file_rows += delete_data_files(&mut tx, tid, h).await?;
-        inline_rows += delete_end_capped_inline_rows(&mut tx, tid, h).await?;
+        let live_reclaim = reclaim_live(&mut tx, tid, h, floor.as_ref(), file_guard).await?;
+        paths.extend(live_reclaim.paths);
+        data_file_rows += live_reclaim.data_file_rows;
+        inline_rows += live_reclaim.inline_rows;
+        held_by_mv_floor = live_reclaim.held_by_mv_floor;
     }
-
-    // Dropped incarnations: always reclaim aged-out data files; drop the physical
-    // inline table + metadata rows only once the DROP snapshot itself ages past H
-    // (D <= h), so no in-window time-travel read as-of before the drop can reach it.
-    for inc in &dropped {
-        data_file_rows += delete_data_files(&mut tx, inc.table_id, h).await?;
-        if inc.drop_snapshot <= h {
-            // Full reclaim: no in-window time-travel read can reach this incarnation.
-            // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
-            //   data_file (above) → vector_index → column → table.
-            // Then the no-FK inline_trigger orphan, and the physical inline table.
-            drop_inline_table(&mut tx, inc.table_id).await?;
-            delete_vector_index_rows(&mut tx, inc.table_id).await?;
-            delete_column_rows(&mut tx, inc.table_id).await?;
-            delete_table_row(&mut tx, inc.table_id).await?;
-            delete_inline_trigger_row(&mut tx, inc.table_id).await?;
-            tracing::info!(
-                table_id = inc.table_id,
-                "gc: fully reclaimed dropped incarnation (dropped inline table + child mirror rows)"
-            );
-        }
-    }
+    let dropped_reclaim = reclaim_dropped(&mut tx, &dropped, h).await?;
+    paths.extend(dropped_reclaim.paths);
+    data_file_rows += dropped_reclaim.file_rows;
+    let dropped_file_rows = dropped_reclaim.file_rows;
+    let fully_reclaimed = dropped_reclaim.fully_reclaimed;
     tx.commit().await.map_err(backend)?;
 
-    // 5. Commit-then-delete: reclaim the objects (Parquet data files + Puffin
-    //    vector-index sidecars). A failed delete is logged and left as an orphan
-    //    (never re-raised into a hard error).
+    // 4. Operator-facing warnings, emitted AFTER commit and only when something happened.
+    if !stranded.is_empty() && (dropped_file_rows > 0 || fully_reclaimed) {
+        tracing::warn!(
+            schema = %table.schema,
+            name = %table.name,
+            mvs = ?stranded,
+            "gc: dropped source — full reclaim bypasses the MV watermark floor, \
+             stranding these materialized views"
+        );
+    }
+    if held_by_mv_floor > 0
+        && let Some(f) = &floor
+    {
+        tracing::warn!(
+            schema = %table.schema,
+            name = %table.name,
+            held = held_by_mv_floor,
+            floor = ?f.per_bucket,
+            slowest = ?f.slowest,
+            "gc: reclaim held by the MV watermark floor — a lagging materialized view \
+             has not consumed these offsets"
+        );
+    }
+
+    // 5. Commit-then-delete: reclaim the objects; a failed delete is logged, not raised.
     let mut objects_deleted = 0u64;
     for path in &paths {
         match catalog.delete_file(path).await {
@@ -173,42 +210,213 @@ async fn gc_locked(
         data_file_rows,
         inline_rows,
         objects_deleted,
+        held_by_mv_floor,
     })
 }
 
-/// Parquet paths of `tid`'s data files reclaimable at horizon `h`
-/// (`end_snapshot IS NOT NULL AND end_snapshot <= h`).
-async fn reclaimable_paths(pool: &PgPool, tid: i64, h: i64) -> Result<Vec<String>> {
-    sqlx::query_scalar!(
-        "select path from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(backend)
+/// What reclaiming the LIVE incarnation did: the paths to delete post-commit, the two
+/// tiers of rows deleted, and how many age-eligible candidates the MV floor held back.
+struct LiveReclaim {
+    paths: Vec<String>,
+    data_file_rows: u64,
+    inline_rows: u64,
+    held_by_mv_floor: u64,
 }
 
-/// Delete `tid`'s reclaimable data files (stats child first, then the rows).
-/// Returns the number of `data_file` rows deleted.
-async fn delete_data_files(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> Result<u64> {
-    sqlx::query!(
-        "delete from iceberg_mirror.data_file_column_stat \
-         where data_file_id in ( \
-             select data_file_id from iceberg_mirror.data_file \
-             where table_id = $1 and end_snapshot is not null and end_snapshot <= $2)",
+/// Reclaim the LIVE incarnation `tid`: count candidates (only when a floor is active),
+/// materialize + delete the guarded victim data files, delete end-capped inline rows
+/// under the per-bucket floor, and derive `held_by_mv_floor` from the two. Must run
+/// INSIDE the caller's GC transaction — see `victim_data_files` for why the victim set
+/// has to be materialized before any delete.
+async fn reclaim_live(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+    floor: Option<&MvFloor>,
+    file_guard: Option<i64>,
+) -> Result<LiveReclaim> {
+    // One `to_regclass` probe for the whole run: `inline_<tid>` exists or it does not.
+    let has_inline = inline_table_exists(tx, tid).await?;
+    // The denominator of `held_by_mv_floor` — what an unguarded run would have taken.
+    // Only measured when a floor is active, so the fast path pays nothing.
+    let candidates = if floor.is_some() {
+        count_candidates(tx, tid, h, has_inline).await?
+    } else {
+        0
+    };
+    let victims = victim_data_files(tx, tid, h, file_guard).await?;
+    let files = delete_data_files(tx, &victims.ids).await?;
+    let inline = delete_end_capped_inline_rows(tx, tid, h, floor, has_inline).await?;
+    let held_by_mv_floor = candidates.saturating_sub(files.saturating_add(inline));
+    Ok(LiveReclaim {
+        paths: victims.paths,
+        data_file_rows: files,
+        inline_rows: inline,
+        held_by_mv_floor,
+    })
+}
+
+/// What reclaiming the DROPPED incarnations did: the paths to delete post-commit, the
+/// total `data_file` rows deleted across all of them, and whether any incarnation was
+/// FULLY reclaimed (its drop snapshot aged past `H`) — that flag gates the
+/// dropped-source-strand warning in `gc_locked`.
+struct DroppedReclaim {
+    paths: Vec<String>,
+    file_rows: u64,
+    fully_reclaimed: bool,
+}
+
+/// Reclaim every DROPPED incarnation of a table: always reclaim its aged-out data files
+/// (unguarded — a dropped source's reclaim deliberately bypasses the MV floor, see
+/// `stranded_readers`), and — only once its drop snapshot `D` has aged past `H`
+/// (`D <= h`) — fully reclaim it: drop the physical inline table and delete its
+/// `vector_index`/`column`/`table` mirror rows (FK order) plus the `inline_trigger`
+/// row. Must run INSIDE the caller's GC transaction.
+async fn reclaim_dropped(
+    tx: &mut sqlx::PgConnection,
+    dropped: &[DroppedIncarnation],
+    h: i64,
+) -> Result<DroppedReclaim> {
+    let mut paths: Vec<String> = Vec::new();
+    let mut file_rows = 0u64;
+    let mut fully_reclaimed = false;
+    for inc in dropped {
+        let victims = victim_data_files(tx, inc.table_id, h, None).await?;
+        let files = delete_data_files(tx, &victims.ids).await?;
+        paths.extend(victims.paths);
+        file_rows += files;
+        if inc.drop_snapshot <= h {
+            fully_reclaimed = true;
+            // Full reclaim: no in-window time-travel read can reach this incarnation.
+            // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
+            //   data_file (above) → vector_index → column → table.
+            // Then the no-FK inline_trigger orphan, and the physical inline table.
+            // The Puffin sidecars are read before their rows go, same commit-then-delete
+            // policy as the Parquet data files.
+            paths.extend(vector_index_paths(tx, inc.table_id).await?);
+            drop_inline_table(tx, inc.table_id).await?;
+            delete_vector_index_rows(tx, inc.table_id).await?;
+            delete_column_rows(tx, inc.table_id).await?;
+            delete_table_row(tx, inc.table_id).await?;
+            delete_inline_trigger_row(tx, inc.table_id).await?;
+            tracing::info!(
+                table_id = inc.table_id,
+                "gc: fully reclaimed dropped incarnation (dropped inline table + child mirror rows)"
+            );
+        }
+    }
+    Ok(DroppedReclaim {
+        paths,
+        file_rows,
+        fully_reclaimed,
+    })
+}
+
+/// The MVs a full reclaim of `dropped` would strand — empty when there is nothing
+/// dropped to reclaim.
+///
+/// A dropped incarnation's reclaim deliberately BYPASSES the floor: the operator
+/// dropped the source, so its MVs are dead by definition, and wedging drop-GC on a
+/// dead MV forever is strictly worse than a loud, bounded strand. The warning must
+/// not misfire on drop-and-recreate, though: registration keys on `(schema, name)`
+/// and cannot tell incarnations apart, so an MV happily reading the NEW table would
+/// be named "stranded" on every GC run while the old incarnations drain. Registered
+/// readers therefore count only when there is no live incarnation (`live.is_none()`);
+/// a reader holding watermarks against a DROPPED tid is a real strand either way.
+async fn stranded_readers(
+    pool: &PgPool,
+    table: &TableRef,
+    live: Option<i64>,
+    dropped: &[DroppedIncarnation],
+) -> Result<BTreeSet<String>> {
+    if dropped.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let tids: Vec<i64> = dropped.iter().map(|d| d.table_id).collect();
+    stranded_mv_readers(pool, table, &tids, live.is_none()).await
+}
+
+/// The data files one GC run reclaims for one incarnation: their ids (what the deletes
+/// key on) and their Parquet paths (what the post-commit object deletion uses).
+///
+/// Both come out of ONE evaluation of the reclaim predicate, so the mirror rows deleted
+/// and the objects deleted are the same set by construction.
+struct Victims {
+    ids: Vec<i64>,
+    paths: Vec<String>,
+}
+
+/// The data files of `tid` reclaimable at horizon `h`
+/// (`end_snapshot IS NOT NULL AND end_snapshot <= h`). `guard` is the MV floor's
+/// cross-bucket minimum (`MvFloor::min_offset`): when set, a file is reclaimable only
+/// if it carries a `loom_offset` max stat STRICTLY BELOW it.
+///
+/// Call this ONCE per incarnation, INSIDE the GC transaction, BEFORE any delete — it is
+/// the single source of truth for the run. Re-evaluating this predicate after the stats
+/// child has been deleted would silently invert it (the scalar subquery would find no
+/// row → NULL → nothing matches), which is how a run could once destroy a Parquet object
+/// while keeping the mirror row that names it.
+///
+/// A file with NO `loom_offset` stat is HELD — the scalar subquery yields NULL, so the
+/// comparison is NULL and the row is not selected. That is the fail-safe direction, and
+/// it is reachable: `declare_stream` may be applied to a table that ALREADY has data
+/// files, and those pre-declaration files carry no framing column and hence no offset
+/// stat. They are held for as long as any MV reads the table — bounded, visible in
+/// `held_by_mv_floor`, never lossy.
+///
+/// The cast lives OUTSIDE the subquery on purpose: `max_value` is `text` holding every
+/// column's bound (including string columns), and Postgres may reorder quals inside one
+/// `WHERE`, so an inline `column_name = 'loom_offset' and max_value::bigint` can blow up
+/// with `invalid input syntax for type bigint` on a table with a string column. A
+/// subquery's own `WHERE` provably runs before its projection reaches the outer cast.
+/// (`tests/mv_floor.rs` seeds a string column precisely so this shape stays honest.)
+async fn victim_data_files(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+    guard: Option<i64>,
+) -> Result<Victims> {
+    let rows = sqlx::query!(
+        "select df.data_file_id, df.path from iceberg_mirror.data_file df \
+         where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 \
+           and ($3::bigint is null or ( \
+                 select cs.max_value from iceberg_mirror.data_file_column_stat cs \
+                 where cs.data_file_id = df.data_file_id \
+                   and cs.column_name = 'loom_offset')::bigint < $3::bigint)",
         tid,
         h,
+        guard,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut paths = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(row.data_file_id);
+        paths.push(row.path);
+    }
+    Ok(Victims { ids, paths })
+}
+
+/// Delete the `data_file` rows named by `ids` (stats child first, then the rows).
+/// Keyed on the victim ids from `victim_data_files` — never on a re-evaluated
+/// predicate, so deleting the stats cannot change what the second statement deletes.
+/// Returns the number of `data_file` rows deleted.
+async fn delete_data_files(conn: &mut sqlx::PgConnection, ids: &[i64]) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    sqlx::query!(
+        "delete from iceberg_mirror.data_file_column_stat where data_file_id = any($1)",
+        ids,
     )
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
     let rows = sqlx::query!(
-        "delete from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
-        tid,
-        h,
+        "delete from iceberg_mirror.data_file where data_file_id = any($1)",
+        ids,
     )
     .execute(&mut *conn)
     .await
@@ -217,24 +425,61 @@ async fn delete_data_files(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> R
     Ok(rows)
 }
 
-/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>`, if the
-/// physical table exists. Returns the number of rows deleted.
+/// Does the physical `inline_<tid>` table exist? Probed ONCE per GC run and passed to
+/// the two callers that need it (`count_candidates`, `delete_end_capped_inline_rows`).
+async fn inline_table_exists(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool> {
+    let name = inline_table_name(tid);
+    let reg: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
+        .bind(&name)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(reg.is_some())
+}
+
+/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>` (`has_inline`
+/// says whether that physical table exists — see `inline_table_exists`). With a floor, a
+/// row is reclaimable only strictly below ITS
+/// bucket's floor (inline rows carry `loom_bucket`/`loom_offset`, so this tier is
+/// per-bucket precise); a bucket at floor 0 contributes no clause (nothing in it is
+/// reclaimable); an unframed row (NULL bucket/offset — impossible on a stream table)
+/// is held. Returns the number of rows deleted.
+///
+/// The SQL is already dynamic (`AssertSqlSafe` + the `inline_<tid>` identifier), so the
+/// predicate is built from the floor map — the bucket/offset literals come from our own
+/// mirror, never from user input, exactly as `mv_delta_locked` builds its watermark
+/// predicate.
 async fn delete_end_capped_inline_rows(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     h: i64,
+    floor: Option<&MvFloor>,
+    has_inline: bool,
 ) -> Result<u64> {
-    let inline = inline_table_name(tid);
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
-        .bind(&inline)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-    if exists.is_none() {
+    if !has_inline {
         return Ok(0);
     }
+    let inline = inline_table_name(tid);
+    let guard = match floor {
+        None => String::new(),
+        Some(f) => {
+            let clauses: Vec<String> = f
+                .per_bucket
+                .iter()
+                .filter(|(_, offset)| **offset > 0)
+                .map(|(bucket, offset)| {
+                    format!("(loom_bucket = {bucket} and loom_offset < {offset})")
+                })
+                .collect();
+            if clauses.is_empty() {
+                " and false".to_owned()
+            } else {
+                format!(" and ({})", clauses.join(" or "))
+            }
+        }
+    };
     let rows = sqlx::query(AssertSqlSafe(format!(
-        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1"
+        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard}"
     )))
     .bind(h)
     .execute(&mut *conn)
@@ -244,15 +489,49 @@ async fn delete_end_capped_inline_rows(
     Ok(rows)
 }
 
-/// Puffin sidecar object paths of `tid`'s vector-index bindings. Collected before the
-/// rows are deleted so the objects reclaim post-commit (commit-then-delete, same policy
-/// as Parquet data files).
-async fn vector_index_paths(pool: &PgPool, tid: i64) -> Result<Vec<String>> {
+/// Age-eligible reclaim candidates for `tid` IGNORING the floor: data-file rows +
+/// end-capped inline rows. The denominator of `held_by_mv_floor` (held = candidates −
+/// actually deleted). Only called when a floor is active, so the fast path pays nothing.
+async fn count_candidates(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+    has_inline: bool,
+) -> Result<u64> {
+    let files = sqlx::query_scalar!(
+        "select count(*) as \"n!\" from iceberg_mirror.data_file \
+         where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
+        tid,
+        h,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    let rows: i64 = if has_inline {
+        let inline = inline_table_name(tid);
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            "select count(*) from {inline} where end_snapshot is not null and end_snapshot <= $1"
+        )))
+        .bind(h)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?
+    } else {
+        0
+    };
+    Ok(u64::try_from(files.saturating_add(rows)).unwrap_or(0))
+}
+
+/// Puffin sidecar object paths of `tid`'s vector-index bindings. Read INSIDE the GC
+/// transaction, immediately before `delete_vector_index_rows` deletes the rows that name
+/// them, so the objects reclaim post-commit (commit-then-delete, same policy as Parquet
+/// data files) and the paths can never disagree with the rows.
+async fn vector_index_paths(conn: &mut sqlx::PgConnection, tid: i64) -> Result<Vec<String>> {
     sqlx::query_scalar!(
         "select puffin_path from iceberg_mirror.vector_index where table_id = $1",
         tid,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(backend)
 }

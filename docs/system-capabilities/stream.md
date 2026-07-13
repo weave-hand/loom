@@ -510,15 +510,34 @@ serves both CDC tables' changelogs and log tables' offset-framed base rows
 directly (reading its base rows, no changelog union) with zero additional work
 in this slice.
 
-**Retention caveat.** `gc_table` stays age-based and watermark-unaware: if a
-lagging MV's unread source tail is reclaimed before it runs, the next
-micro-batch's delta starts at an offset **above** the committed watermark, so
-the derived CAS `from` no longer matches the stored `next_offset` and the
-commit **Conflict-aborts the run (fails loud)** rather than silently
-under-reading — but the MV is then wedged until an operator intervenes.
-Retention must exceed the slowest MV's lag — an operational caveat shared with
-the subscribe feed's own retention story (see `#fut-stream-consumer-offsets` in
-Known gaps), and not yet enforced by a watermark-aware GC guard (named below).
+**Retention: the MV read-position floor, and what it does not cover.**
+`gc_table` is no longer watermark-unaware — for a table that is an MV **source**
+its reclaim is bounded by the per-bucket **`mv_floor`** (the minimum committed
+`stream.mv_watermark` `next_offset` across every MV reading the source, an absent
+row — including a registered-but-never-run MV — counting as `0`), so a lagging
+MV's end-capped source bytes are **held on disk** instead of being destroyed
+while it is behind; the hold is counted (`GcSummary.held_by_mv_floor`) and a
+warning names the per-bucket laggard, and deleting the MV's transform def deletes
+its watermark rows (releasing the floor) as the escape hatch. See engine's **GC**
+section for the full guard.
+
+**That is byte-retention defense, not hole-freedom** — read the distinction
+before relying on it. GC only reclaims **end-capped** rows (`end_snapshot <= H`),
+whereas a micro-batch delta reads **live** rows at the **current** snapshot
+(`mv_delta_scan`): an end-capped row is already invisible to the MV before GC
+touches it, so `gc_table` could never have taken a row an MV could still read.
+The starvation is created by whichever path **end-caps** offsets the MV has not
+consumed (the catalog drop today; changelog retention, stream consolidation, and
+any truncation/replay surface tomorrow) — those rows leave the MV's delta
+immediately, no GC-tier guard can bring them back, and the next micro-batch's
+delta then starts at an offset **above** the committed watermark, so the derived
+CAS `from` no longer matches the stored `next_offset` and the commit
+**Conflict-aborts the run (fails loud)** rather than silently under-reading — but
+the MV is wedged until an operator intervenes. Making the end-cap-issuing paths
+consult `mv_floor` **before** end-capping is the real fix, tracked as
+`#iss-end-cap-ignores-mv-floor` (Known gaps). Until it lands, retention must
+still exceed the slowest MV's lag — an operational caveat shared with the
+subscribe feed's own retention story (see `#fut-stream-consumer-offsets`).
 
 Deferred from this slice, named so the register close-out can track them as
 their own items:
@@ -542,8 +561,9 @@ their own items:
   whole, the same posture as `consolidate_stream`; pruning by `loom_offset`
   file stats and streaming (non-collecting) execution are follow-ons under
   `#fut-transform-followups`.
-- **Watermark-aware GC** — see the retention caveat above; `gc_table` has no
-  MV-lag-aware horizon.
+- **Watermark-aware GC** — shipped: `gc_locked` now holds reclaim of an MV
+  source at the per-bucket `mv_floor` (see the retention section above). The
+  end-cap-side half of the guarantee is not (`#iss-end-cap-ignores-mv-floor`).
 - **`/admin/views` sugar surface** — MVs register through the ordinary
   transforms admin surface in v1; a dedicated, MV-shaped admin surface is
   deferred.
@@ -637,6 +657,16 @@ from the continuous-query slice.
 - `#iss-stream-log-vs-cdc-declare` — a `mode=stream` (log) declaration
   against an already-CDC table is silently accepted (only the converse,
   `mode=cdc` against an existing non-CDC kind, is rejected).
+- `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards GC only;
+  the paths that **end-cap** unread source offsets do not consult `mv_floor`, so
+  an MV can still be starved by an end-cap (byte-retention defense ≠
+  hole-freedom).
+- `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
+  offset `0` even if the source's low offsets are already gone, and the floor
+  read sits outside the GC transaction (registration/GC race).
+- `#iss-mv-floor-holds-pre-declaration-files` — data files written before
+  `declare_stream` carry no `loom_offset` stat and are held forever by the
+  floor's fail-safe, inflating `held_by_mv_floor`.
 
 Two residuals noted during review, not yet tracked as separate register
 items: `consolidate_stream`'s pre-lock metadata reads (`stream_meta`,

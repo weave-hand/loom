@@ -546,6 +546,12 @@ fn validate_trigger_cycle_impl(nodes: &[TriggerNode], skip_self_edges: bool) -> 
 pub trait Transforms {
     /// Define or redefine (upsert) a transform. Typed bodies validate that
     /// input/output type names exist in the ontology (`Validation` otherwise).
+    /// Redefining a micro-batch MV so that it no longer writes its previous
+    /// output (a changed `output`, or a body that is no longer a micro-batch)
+    /// also deletes the watermark rows of that previous output, atomically with
+    /// the upsert — the rows are keyed by the output, so nothing else could ever
+    /// reach them again. An unchanged output keeps its watermarks (the MV
+    /// resumes where it left off).
     async fn define_transform(&self, def: TransformDef) -> Result<()>;
     /// `NotFound` if undefined.
     async fn get_transform(&self, name: &TransformName) -> Result<TransformDef>;
@@ -554,6 +560,10 @@ pub trait Transforms {
     async fn list_transforms(&self, page: PageReq) -> Result<Page<TransformDef>>;
     /// Idempotent: deleting an unknown name is `Ok(())`. Runs keep their
     /// frozen body and name (plain text, no FK) — history survives deletion.
+    /// Deleting a micro-batch MV def additionally deletes that MV's watermark
+    /// rows (keyed by its output) in the same transaction — its registration and
+    /// its read position go together, so a deleted MV stops holding its source's
+    /// GC read-position floor.
     async fn delete_transform(&self, name: &TransformName) -> Result<()>;
 
     /// Record `run` (must be `Queued`) and enqueue `job` atomically: the job

@@ -382,6 +382,56 @@ horizon, and once fully reclaimed the physical `inline_<tid>` table and the
 `table`/`column` mirror rows are removed — gated on full reclaim so nothing
 time-travellable vanishes (#266).
 
+**The MV read-position floor.** Reclaim of a table that is a micro-batch MV
+**source** is bounded by a second, non-age condition: the per-bucket
+**`mv_floor`** (`control-plane/postgres/src/mv_floor.rs`) — the minimum, across
+every MV reading that source, of the MV's committed `stream.mv_watermark`
+`next_offset` for the bucket, taking an **absent** watermark row as `0` (an MV's
+delta reads an unseen bucket from `0`, so the floor must too, and a
+registered-but-never-run MV therefore floors its source at `0`). The reader set
+is the union of every registered `MicroBatch`/`MicroBatchJoin` transform def
+whose source is the table and every `mv` holding a watermark row against it.
+`gc_locked` guards its reclaim with that floor: a **file** is reclaimable only if
+its `loom_offset` **max** column stat is strictly below the smallest floor across
+all buckets (per-file stats are not per-bucket, so the cross-bucket minimum is
+the only sound bound — conservative by construction; a file with **no**
+`loom_offset` stat is **held**, the fail-safe direction), and an **inline row**
+only if its `(loom_bucket, loom_offset)` is strictly below that bucket's own
+floor. A table no MV reads takes a `None` floor and GCs byte-identically to the
+pre-floor behavior. Holds are observable — `GcSummary.held_by_mv_floor` counts
+the candidates withheld, and a `tracing::warn!` names the per-bucket laggard MV
+(the operator's lead to a wedged MV). The **dropped-incarnation** reclaim
+deliberately **bypasses** the floor — drop-GC must converge on a table that no
+longer exists — and warns, naming the MVs it strands. The escape hatch out of a
+dead MV's floor is real: `Transforms::delete_transform` deletes the MV's
+watermark rows in the same transaction as the def (certified against both
+backends by a testkit contract), so removing a wedged MV's registration releases
+its hold — and `define_transform` does the same for the *previous* output when a
+redefinition moves an MV off it (or drops the micro-batch body), so a watermark
+key can never outlive every def that names it and floor its source forever.
+
+**What the floor does and does not deliver — read this before relying on it.**
+It is **byte-retention defense plus a reusable primitive**, not a guarantee that
+an MV cannot lose events. GC only ever reclaims **end-capped** rows/files
+(`end_snapshot <= H`), while an MV's delta reads **live** rows at the **current**
+snapshot (`engine-serving/src/mv_delta.rs`) — so an end-capped row is already
+invisible to the MV before GC touches it, and `gc_table` could never have removed
+a row an MV was still able to read. What the guard buys is that a lagging MV's
+end-capped **bytes are not destroyed while it is behind** (they stay on disk, the
+hold is counted and logged), and that `mv_floor` now exists as the primitive the
+paths that *do* create the harm must call. Those are the **end-cap-issuing**
+paths — the catalog drop today, and CDC changelog retention, stream small-file
+consolidation, and any truncation/replay surface tomorrow: end-capping an offset
+an MV has not consumed removes it from the MV's current-snapshot delta
+immediately, and no GC-tier guard can bring it back. Making those paths consult
+`mv_floor` **before** end-capping is tracked as `#iss-end-cap-ignores-mv-floor`;
+two smaller gaps the floor exposed are `#iss-mv-register-below-reclaimed-floor`
+(a newly registered MV floors at `0` over a source whose low offsets may already
+be gone, plus the floor-read/registration race) and
+`#iss-mv-floor-holds-pre-declaration-files` (files written before
+`declare_stream` carry no `loom_offset` stat and are held forever by the
+fail-safe).
+
 The **third GC source** is an **orphaned-object sweep** — the only path that
 reclaims bytes **no mirror row references**, the residue of write-then-commit
 crashes (Parquet is written pre-tx) and commit-then-delete degradations (a
@@ -473,3 +523,14 @@ and maintenance schedules.
 - `#fut-wire-governance-cache` — cache wire-fetched governance reads.
 - `#fut-iceberg-external-oracle` — an independent external Iceberg reader as
   a cross-check oracle.
+- `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards
+  `gc_locked` only; the paths that **end-cap** rows an MV has not read (drop
+  today; changelog retention / consolidation / truncation tomorrow) do not
+  consult `mv_floor`, so the GC-tier guard is byte-retention defense, not
+  hole-freedom.
+- `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
+  offset `0` over a source whose low offsets may already be reclaimed, and the
+  floor read sits outside the GC transaction (registration race).
+- `#iss-mv-floor-holds-pre-declaration-files` — files written before
+  `declare_stream` carry no `loom_offset` stat, so the fail-safe guard holds
+  them forever and inflates `held_by_mv_floor`.

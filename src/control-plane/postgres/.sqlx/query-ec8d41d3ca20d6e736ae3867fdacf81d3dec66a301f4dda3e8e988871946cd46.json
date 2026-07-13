@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select body from transforms.transform where name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "body",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "transforms.transform",
+            "name": "body"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ec8d41d3ca20d6e736ae3867fdacf81d3dec66a301f4dda3e8e988871946cd46"
+}

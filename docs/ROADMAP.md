@@ -19,9 +19,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## transform
 
-- [ ] **MV watermark-aware GC (source-retention floor)** `{#road-mv-watermark-aware-gc area:transform status:planned from:2026-07-09-stream-continuous-design pr:- spec:2026-07-12-mv-watermark-aware-gc-design}`
-  Promoted 2026-07-12 from `#fut-mv-watermark-aware-gc` (entry removed). `gc_locked` gains a durable invariant: for a table that is a micro-batch MV **source**, reclaim holds any row/file at or above the per-bucket `min(next_offset)` floor across `stream.mv_watermark` (a registered-but-unrun MV floors at 0), so a lagging MV's unread tail survives GC instead of silently losing events — today's only protection is "retention must exceed the slowest MV's lag". Dropped sources bypass the floor (loud warning naming the stranded MV); holds are observable (`GcSummary.held_by_mv_floor` + logs). Built to union a second floor source when [[fut-stream-consumer-offsets]] lands.
-
 ## iceberg
 
 ## cross-cutting

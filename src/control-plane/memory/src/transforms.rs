@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, TableRef,
-    TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
+    TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode, mv_key,
     next_cron_occurrence, validate_no_trigger_cycle, validate_transform_def,
 };
 use time::OffsetDateTime;
@@ -18,6 +18,16 @@ pub(crate) struct TransformsState {
     pub(crate) defs: HashMap<String, TransformDef>,
     pub(crate) runs: HashMap<Uuid, TransformRun>,
     pub(crate) next_run_at: HashMap<String, OffsetDateTime>,
+}
+
+/// The `mv_key` a body's watermarks live under, or `None` for a non-MV body.
+fn mv_output_key(body: &TransformBody) -> Option<String> {
+    match body {
+        TransformBody::MicroBatch { output, .. } | TransformBody::MicroBatchJoin { output, .. } => {
+            Some(mv_key(output))
+        }
+        TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+    }
 }
 
 #[async_trait]
@@ -76,7 +86,26 @@ impl Transforms for MemoryControlPlane {
                 st.next_run_at.remove(&def.name.0);
             }
         }
+        // Same semantic as the postgres adapter: a define is an upsert, and an MV's
+        // watermarks are keyed by its OUTPUT (`mv_key`), so a redefinition that
+        // changes the output — or drops the micro-batch body — would orphan the
+        // PRIOR output's rows beyond the reach of `delete_transform` and pin the
+        // source's GC floor forever (`control_plane_postgres::mv_floor`). Release
+        // them; an unchanged output is left alone (the MV resumes). The testkit
+        // contract certifies both backends.
+        let new_mv = mv_output_key(&def.body);
+        let stale = st
+            .defs
+            .get(&def.name.0)
+            .and_then(|prior| mv_output_key(&prior.body))
+            .filter(|old| Some(old) != new_mv.as_ref());
         st.defs.insert(def.name.0.clone(), def);
+        // LOCK ORDER: drop `transforms` before taking `mv_watermarks` — the two are
+        // never held together (see `delete_transform`).
+        drop(st);
+        if let Some(old) = stale {
+            self.mv_watermarks.lock().retain(|(m, _, _), _| *m != old);
+        }
         Ok(())
     }
 
@@ -99,9 +128,21 @@ impl Transforms for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_transform(&self, name: &TransformName) -> Result<()> {
+        // Same semantic as the postgres adapter: an MV's watermarks are part of its
+        // registration and go with it (the GC floor's escape hatch — see
+        // `control_plane_postgres::mv_floor`). Keep the two backends in step; the
+        // testkit contract certifies it.
         let mut st = self.transforms.lock();
+        let mv = st
+            .defs
+            .get(&name.0)
+            .and_then(|def| mv_output_key(&def.body));
         st.defs.remove(&name.0);
         st.next_run_at.remove(&name.0);
+        drop(st);
+        if let Some(mv) = mv {
+            self.mv_watermarks.lock().retain(|(m, _, _), _| *m != mv);
+        }
         Ok(())
     }
 

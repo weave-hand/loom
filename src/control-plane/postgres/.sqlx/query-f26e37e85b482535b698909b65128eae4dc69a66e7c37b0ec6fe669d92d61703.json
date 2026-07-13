@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select mv, bucket, next_offset from stream.mv_watermark where source_table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mv",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stream.mv_watermark",
+            "name": "mv"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bucket",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "stream.mv_watermark",
+            "name": "bucket"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "next_offset",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "stream.mv_watermark",
+            "name": "next_offset"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f26e37e85b482535b698909b65128eae4dc69a66e7c37b0ec6fe669d92d61703"
+}
