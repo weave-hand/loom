@@ -38,6 +38,7 @@
   - `pub struct ViewDef { pub view: TableRef, pub base: TableRef, pub predicate: Option<RowFilter>, pub columns: Option<Vec<String>> }`
   - `pub fn validate_view_shape(v: &ViewDef, base_schema: &TableSchema) -> std::result::Result<(), String>`
   - `Catalog` trait methods: `define_view(&self, view: ViewDef) -> Result<()>`, `drop_view(&self, view: &TableRef) -> Result<()>`, `get_view(&self, view: &TableRef) -> Result<Option<ViewDef>>`, `list_views(&self, page: PageReq) -> Result<Page<ViewDef>>` — all with default bodies so existing impls/stubs keep compiling.
+  - Naming note: the spec's `resolve_dataset(ref) → Physical | View{...}` surface is realized as `get_view` (`None` = physical) — the read-method delegation makes a separate resolution enum unnecessary.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -631,7 +632,7 @@ and in `schema()` only, after collecting `cols`, apply the projection:
         }
 ```
 
-4. Base-drop protection in the memory drop path: in `drop_table_catalog` (the inherent test seam), panic-free enforcement is not needed for the fake — instead have it debug-assert nothing depends: skip; protection is contract-tested only for postgres (Task 3) where the production drop path lives. (The contract above deliberately does not test base-drop; see Task 3's adapter-specific test.)
+4. Base-drop protection: **deliberate deviation from the spec's testing bullet** (which implies contract-level coverage in both adapters). `CatalogSeed::drop_table` returns a bare `SnapshotId` — no `Result` — so a refusal cannot be expressed through the contract seam without breaking the existing delete contract. Protection is therefore enforced and tested where the production drop path lives: postgres `mark_dropped` (Task 3). Memory's `drop_table_catalog` is a test-only seam with no production drop consumer and stays unguarded. Record this in the PR description.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -735,6 +736,8 @@ Create `src/control-plane/postgres/migrations/0044_dataset_view.sql`:
 -- adapter against iceberg_mirror.table) and carries an optional RowFilter
 -- predicate (jsonb, the control-plane serde) plus an optional column
 -- projection. Metadata-only: no snapshots, no files.
+-- (Naming: the spec sketches `catalog.dataset_view`; `catalog` is avoided as a
+-- schema name for its SQL-keyword adjacency — the store is `dataset_view.view`.)
 create schema if not exists dataset_view;
 
 create table dataset_view.view (
@@ -977,7 +980,28 @@ Call it in `execute_query_stream` after the live-tables loop:
     register_catalog_views(&ctx, catalog).await?;
 ```
 
-In `governed.rs`'s `execute_governed_sql_stream`, after its registration loop, add the governed analog inline (closed-world: only views with a `GovernedTable` entry register; the policy wraps OUTSIDE the view expansion so masks/filters apply to the view's output):
+Extract the predicate/projection folding into a shared helper so both call sites use it:
+
+```rust
+/// Fold a view's predicate + projection onto a base DataFrame.
+fn fold_view(df: DataFrame, v: &ViewDef) -> Result<DataFrame, EngineServingError> {
+    let df = match &v.predicate {
+        Some(f) => df.filter(row_filter_to_expr(f)?).map_err(to_serving)?,
+        None => df,
+    };
+    match &v.columns {
+        Some(cols) => {
+            let names: Vec<&str> = cols.iter().map(String::as_str).collect();
+            df.select_columns(&names).map_err(to_serving)
+        }
+        None => Ok(df),
+    }
+}
+```
+
+(`register_catalog_views` above becomes `fold_view(df, &v)` after the `ctx.table(...)` fetch.)
+
+In `governed.rs`'s `execute_governed_sql_stream`, after its registration loop, add the governed analog. **Normative construction** — the base's own governed status must NOT matter (spec §2: the caller needs only the view grant, never the base grant), so build the base provider **privately and ungoverned** via `build_serving_provider` and never via `ctx.table(...)` (in the governed session a base is registered only when it has its own entry, and then it is wrapped in the BASE's policy — both wrong for the view):
 
 ```rust
     for v in catalog
@@ -986,29 +1010,31 @@ In `governed.rs`'s `execute_governed_sql_stream`, after its registration loop, a
         .map_err(to_serving)?
         .items
     {
-        let Some(policy) = policy_for(governed, &v.view) else { continue };
-        let Ok(df) = ctx
-            .table(TableReference::partial(v.base.schema.clone(), v.base.name.clone()))
-            .await
-        else {
+        // Closed-world: only views with a GovernedTable entry register.
+        if governed.table_for(&v.view).is_none() {
             continue;
+        }
+        let policy = policy_for(governed, &v.view);
+        // Ungoverned inner base provider, never registered under the base name.
+        let Some(inner) = build_serving_provider(&ctx, catalog, &v.base, serving_store, at).await?
+        else {
+            continue; // dangling view: base not live here
         };
-        // same filter/select folding as register_catalog_views (extract a
-        // shared `fn view_dataframe(ctx, &ViewDef) -> Result<DataFrame>` helper
-        // rather than duplicating — both call sites use it)
-        let provider = df_folded.into_view();
-        register_qualified(
-            &ctx,
-            &v.view.schema,
-            &v.view.name,
-            Arc::new(GovernedTableProvider::new(provider, policy)),
-        )?;
+        let df = ctx.read_table(inner).map_err(to_serving)?;
+        let provider = fold_view(df, &v)?.into_view();
+        let governed_provider =
+            GovernedTableProvider::new(provider, policy).map_err(to_serving)?;
+        register_qualified(&ctx, &v.view.schema, &v.view.name, Arc::new(governed_provider))?;
     }
 ```
 
-IMPORTANT: match `policy_for`'s actual signature/semantics in `governed.rs:152-161` (it resolves a `TablePolicy` from the `GovernedCatalog`; "no entry" must mean SKIP registration — the closed-world posture — while "entry with empty policy" registers unwrapped-equivalent). Match `GovernedTableProvider::new`'s actual constructor. Note the governed loop registers views only when their **base got registered** in the loop above — the base may itself lack a governed entry; in that case register the base provider privately (build it via `build_serving_provider` without registering) and fold the view DataFrame from a one-off context, OR simpler: build the view's DataFrame from a `SessionContext::read_table(inner_base_provider)` instead of `ctx.table(...)`. Choose the simpler correct one and pin it with the governed test below.
+Match the surrounding code's actual details before trusting this snippet: `table_for`'s exact name on the `GovernedCatalog` (the closed-world skip idiom used by the existing loop at `governed.rs:302-304`), `policy_for(governed, &ref) -> TablePolicy` (NOT `Option` — absent ⇒ empty/fully-visible policy, `governed.rs:152-161`), `GovernedTableProvider::new(...)` returning `Result` (`governed.rs:315` uses `?`), and whether `execute_governed_sql_stream` has `serving_store`/`at` parameters to forward.
 
-Add one governed test to `view_scan.rs` if `execute_governed_sql_stream` is reachable from a fixture test (see `tests/governed_sql.rs` for the harness): a view with a `GovernedTable` entry carrying a mask on a projected column returns `'***'` for it; a view with no entry is not queryable.
+Add MANDATORY governed cases (the harness is `tests/governed_sql.rs`, which drives `execute_governed_sql_stream` directly) — either there or in `view_scan.rs`:
+- a view with a `GovernedTable` entry carrying a mask on a projected column returns `'***'` for it;
+- a view with **no** entry is not queryable (closed-world);
+- a view with an entry over a base **without** one is readable (view grant suffices);
+- a base policy (row filter/mask on the base's own entry) does NOT apply to the view scan.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -1027,9 +1053,9 @@ git commit -m "feat(engine): register catalog views as logical views at serving 
 ### Task 5: Admin routes — `POST /admin/views`, `DELETE /admin/views/{schema}/{name}`
 
 **Files:**
-- Modify: `src/services/runtime/src/admin.rs`
-- Modify: `src/services/query-api/src/openapi.rs` (drift guard 1)
-- Modify: `src/services/runtime/src/openapi_fragments.rs` (drift guard 2)
+- Modify: `src/services/runtime/src/admin.rs` (handlers + routes + the new `#[utoipa::path]` operations added to `AdminApiDoc`'s `paths(...)` at ~`admin.rs:1819-1821` — `admin_openapi()` at `:1900` serializes it)
+- Modify: `src/services/runtime/tests/openapi_fragments.rs` (drift guard 1: `admin_fragment_documents_exactly_the_admin_routes` asserts the exact `(method, path)` set — add both new routes)
+- Modify: `src/services/query-api/tests/openapi.rs` (drift guard 2: the enumerated route list at ~lines 38-56; `query-api/src/openapi.rs` itself needs NO change — it merges `service_runtime::admin_openapi()` wholesale)
 - Modify: `src/services/runtime/tests/admin_management.rs` (or a new sibling test file if that file's setup doesn't fit)
 - Modify: `src/services/runtime/BUCK` (only if a new test file is added)
 
@@ -1063,7 +1089,7 @@ async fn admin_defines_and_drops_a_view() {
 }
 ```
 
-Write it out fully following the file's existing helpers. **Memory note (two drift guards):** adding an `/admin/*` route requires updating BOTH `query-api/src/openapi.rs` and `runtime/src/openapi_fragments.rs`; the second failure only shows in the full `//src/...` sweep — update both in this task.
+Write it out fully following the file's existing helpers. NOTE: `admin_management.rs` runs against `MemoryControlPlane` with **no catalog seeding** — seed the base table via the memory inherent `seed_catalog(&table, &cols, &row_batches)` (see `memory/tests/catalog.rs` for the exact column-tuple signature); Task 2 gives memory `define_view`/`get_view`, so the whole test is implementable in that harness. **Two drift guards:** adding an `/admin/*` route requires updating BOTH `runtime/tests/openapi_fragments.rs` and `query-api/tests/openapi.rs`; the second failure only shows in the full `//src/...` sweep — update both in this task.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1072,7 +1098,7 @@ Expected: FAIL — 404 on the unrouted path.
 
 - [ ] **Step 3: Implement the routes**
 
-In `runtime/src/admin.rs`: a `DefineViewBody { view: TableRefBody, base: TableRefBody, predicate: Option<RowFilter>, columns: Option<Vec<String>> }` deserialize struct (reuse whatever table-ref body type the file already has, or `TableRef` directly — it derives `Deserialize`); handler builds `ViewDef` and calls `st.cp.catalog().define_view(...)`; DELETE handler calls `drop_view`. Wire both into the admin router next to the transforms routes, behind the same admin gate. Update both OpenAPI drift-guard files with the new paths/schemas, mirroring how the transforms routes are documented.
+In `runtime/src/admin.rs`: a `DefineViewBody { view: TableRefBody, base: TableRefBody, predicate: Option<RowFilter>, columns: Option<Vec<String>> }` deserialize struct (reuse whatever table-ref body type the file already has, or `TableRef` directly — it derives `Deserialize`); handler builds `ViewDef` and calls `st.cp.catalog().define_view(...)`; DELETE handler calls `drop_view`. Wire both into the admin router next to the transforms routes (`admin.rs:1356+` shows the handler pattern), behind the same admin gate, and add both `#[utoipa::path]` operations to `AdminApiDoc`'s `paths(...)`. Update both drift-guard TEST files with the new `(method, path)` entries, mirroring how the transforms routes appear there.
 
 - [ ] **Step 4: Run to verify it passes**
 
@@ -1095,7 +1121,7 @@ git commit -m "feat(runtime): admin define/drop view routes with OpenAPI coverag
 - Modify: `src/services/query-api/tests/e2e_support.rs` (only if a shared helper is genuinely reusable — e.g. a `define_view` seed helper; per-test graph topologies stay local)
 
 **Interfaces:**
-- Consumes: `Catalog::get_view` (via `deps.cp.catalog()`), `write_filter::eval` (`pub`, three-valued), the existing `run_insert` (`action.rs:776-794`), `run_mutate` (`action.rs:1050-1252`), `enforce_mutate_policy` legs (`action.rs:931-983`), `check_conformance_steps` clash check (`action.rs:160-176`), `coalesce_appends`, `deps.action_engine.write_object/write_delta` (physical, take `&TableRef`).
+- Consumes: `Catalog::get_view` (via `deps.cp.catalog()`), `write_filter::eval` (`pub`, three-valued), the existing `run_insert` (`action.rs:687`, its `write_object` call at `:776-794`), `run_mutate` (`action.rs:1050-1252`), `enforce_mutate_policy` legs (`action.rs:931-983`), `check_conformance_steps` (`action.rs:141`, clash check inside at `:160-176`), `coalesce_appends`, `deps.action_engine.write_object/write_delta` (physical, take `&TableRef`).
 - Produces: writes through a view-bound type land in the **base** table gated by the view predicate. New error surface: reuse `ActionError::Forbidden` for a row outside the writer's view (no new variant unless the file's error mapping makes a dedicated message trivial — prefer `Forbidden`, matching the ACL row-filter denial posture).
 
 Semantics to implement (from the spec):
@@ -1104,6 +1130,7 @@ Semantics to implement (from the spec):
 3. **Mutate gates:** in `enforce_mutate_policy` (or its caller `mutate_governance`), when the target is view-bound: treat the view predicate as an additional row filter for leg 1 (existing row must satisfy it — already guaranteed by the view-scoped read, but keep the explicit check as belt-and-braces; it is one `eval` call) and leg 3 (UPDATE's post-image must still satisfy it — this is the load-bearing "no writing a row out of your own view" rule).
 4. **Multi-step clash:** in `check_conformance_steps`, compare **resolved base** tables — two steps whose targets resolve to the same physical base clash even when their `TableRef`s differ (view vs base vs sibling view). Resolve the targets' views once up front (the function is currently sync over pre-fetched `targets`; fetch the `Option<ViewDef>` per target where `targets` is built and pass a parallel slice, keeping this function pure).
 5. **Append coalescing:** `coalesce_appends` keys steps by `target.table` — leave the KEY as the type's bound ref (so two different views never coalesce even over one base — their predicates differ), but the emitted `StepLand.table` must be the **base**.
+6. **Projected-columns rule needs NO runtime gate:** spec §5's "insert may only touch projected columns" falls out structurally — bind (Task 7's `bind_through_view_validates_against_projected_schema`) validates type properties against the view's projected schema, and action columns come from type properties. Do not add a redundant per-write check; this sentence is the record of where the rule lives.
 
 - [ ] **Step 1: Write the failing e2e test**
 
@@ -1150,7 +1177,7 @@ Expected: FAIL — first test: the insert either errors (engine refuses a write 
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `buck2 test --console none //src/services/query-api:view-write-e2e`
-Then the action regression suite: `buck2 test --console none //src/services/query-api:actions-e2e` (confirm target names via `rg 'actions' src/services/query-api/BUCK` — run every action/mutate-related target).
+Then the action regression suite: `buck2 test --console none //src/services/query-api:action-e2e` plus the sibling action/mutate targets (`action-mapping-e2e`, `action-computed-e2e`, `update-delete-*`, `mutate-phases` — confirm the full set via `rg 'action|mutate' src/services/query-api/BUCK`).
 Expected: green.
 
 - [ ] **Step 5: Commit**
@@ -1194,13 +1221,9 @@ async fn view_get_dataset_returns_projected_columns() {
     // GET /datasets/gov/customers_eu (granted) → 200, kind "view",
     // columns == projected subset, snapshot_id == the base's current.
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn view_preview_is_predicate_and_projection_narrowed() {
-    // seed EU+US rows; preview of the view returns only EU rows and only
-    // projected columns; preview of the base (other role) returns all.
-}
 ```
+
+(The preview-narrowing test does NOT belong here: this harness wires `StubServing`, whose `fetch_rows` returns empty `Rows` — engine expansion never runs and a "only EU rows" assertion would pass vacuously. It goes in `view_read_e2e.rs` below, on the real fixture engine.)
 
 Create `tests/view_read_e2e.rs` — the acceptance-criteria e2e:
 
@@ -1219,6 +1242,24 @@ async fn disjoint_view_grants_read_disjoint_slices() {
 async fn base_grant_does_not_leak_views_and_vice_versa() {
     // Table-grant on base: /datasets/gov/customers_eu → 404; Type-grant on a
     // view-bound type: base dataset stays 404. (Exact-match ACL decoupling.)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_preview_is_predicate_and_projection_narrowed() {
+    // Fixture engine (not the stub): seed EU+US rows; GET
+    // /datasets/gov/customers_eu/preview returns only EU rows and only
+    // projected columns; preview of the base (base-granted role) returns all.
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn link_traversal_through_view_bound_type_stays_in_view() {
+    // Acceptance criterion 2 names link traversal. Bind a second type over a
+    // second view (or the base) and define an FK link whose endpoint type is
+    // view-bound (bind_link validates backing columns against the projected
+    // schema — include the FK column in the projection). GET
+    // /objects/{from}/links/{link} through the view-bound endpoint returns
+    // only rows inside the view; a target row outside the endpoint view's
+    // predicate does not appear.
 }
 
 #[tokio::test(flavor = "multi_thread")]
