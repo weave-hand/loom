@@ -41,7 +41,8 @@ pub use auth::{
     ServiceToken, UserSummary,
 };
 pub use catalog::{
-    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, small_files,
+    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, ViewDef, small_files,
+    validate_view_shape,
 };
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use conform::{Violation, check_conformance};
