@@ -61,7 +61,7 @@ use time::OffsetDateTime;
 use crate::backend;
 use crate::iceberg_flush::lock_key;
 use crate::iceberg_inline::inline_table_name;
-use crate::iceberg_mirror::{dropped_table_ids, live_table_id};
+use crate::iceberg_mirror::{DroppedIncarnation, dropped_table_ids, live_table_id};
 use crate::iceberg_sql_catalog::SqlCatalog;
 use crate::mv_floor::{MvFloor, mv_floor, stranded_mv_readers};
 
@@ -174,6 +174,7 @@ async fn gc_locked(
     // `stranded_readers`); drop the physical inline table + metadata rows only once the
     // DROP snapshot itself ages past H (D <= h), so no in-window time-travel read as-of
     // before the drop can reach it.
+    let mut fully_reclaimed = false;
     for inc in &dropped {
         let victims = victim_data_files(&mut tx, inc.table_id, h, None).await?;
         let files = delete_data_files(&mut tx, &victims.ids).await?;
@@ -181,6 +182,7 @@ async fn gc_locked(
         dropped_file_rows += files;
         data_file_rows += files;
         if inc.drop_snapshot <= h {
+            fully_reclaimed = true;
             // Full reclaim: no in-window time-travel read can reach this incarnation.
             // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
             //   data_file (above) → vector_index → column → table.
@@ -204,7 +206,7 @@ async fn gc_locked(
     // The dropped-source strand and the live hold are both operator-facing leads to a
     // wedged MV. Emitted AFTER the commit, and only when something actually happened —
     // a warning on a no-op run is noise.
-    if !stranded.is_empty() && dropped_file_rows > 0 {
+    if !stranded.is_empty() && (dropped_file_rows > 0 || fully_reclaimed) {
         tracing::warn!(
             schema = %table.schema,
             name = %table.name,
@@ -265,7 +267,7 @@ async fn stranded_readers(
     pool: &PgPool,
     table: &TableRef,
     live: Option<i64>,
-    dropped: &[crate::iceberg_mirror::DroppedIncarnation],
+    dropped: &[DroppedIncarnation],
 ) -> Result<BTreeSet<String>> {
     if dropped.is_empty() {
         return Ok(BTreeSet::new());
