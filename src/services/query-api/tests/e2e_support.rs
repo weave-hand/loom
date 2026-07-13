@@ -22,7 +22,7 @@
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
 
-use loom_test_seed::{vec4_batches, vec4_columns};
+use loom_test_seed::{id_val_batch, id_val_columns, vec4_batches, vec4_columns};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -1027,6 +1027,44 @@ pub async fn declare_cdc_table(
         schema: schema.to_string(),
         name: name.to_string(),
     }
+}
+
+/// Land `(id, val)` rows into `table` as a declared `buckets`-bucket LOG stream
+/// via the offset-framed **inline** append path (`hot_limits()`), so the rows
+/// populate the feed's inline tier and a later `flush_table` genuinely moves
+/// them to files (with `cold_limits()`/`inline_byte_limit: 0` they would land
+/// straight to Parquet and the inline tier would always be empty). The
+/// log-subscribe analogue of the CDC `seed_widget_*` helpers.
+pub async fn seed_log_stream(
+    pool: &sqlx::PgPool,
+    catalog: &control_plane_postgres::iceberg_sql_catalog::SqlCatalog,
+    table: &TableRef,
+    ids: &[i64],
+    vals: &[i64],
+    buckets: i32,
+) {
+    let (schema, batches) = id_val_batch(ids, vals);
+    let lineage = LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetId::from(table).dataset_ref()],
+        payload: serde_json::json!({ "source": "seed_log_stream" }),
+    };
+    land(
+        pool,
+        catalog,
+        table,
+        &id_val_columns(),
+        schema,
+        batches,
+        loom_test_seed::hot_limits(),
+        lineage,
+        Some(buckets),
+    )
+    .await
+    .expect("seed_log_stream: land");
 }
 
 /// Run the canonical 2-action `Widget` seed several changelog-feed regressions open

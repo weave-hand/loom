@@ -17,10 +17,12 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use control_plane_core::{
-    Catalog, ChangeEvent, ChangeFeedPage, ControlPlaneError, Snapshot, TableRef,
+    Catalog, ChangeEvent, ChangeFeedPage, ControlPlaneError, Snapshot, SnapshotId, StreamKind,
+    TableRef,
 };
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::changelog_table_ref;
+use control_plane_postgres::stream::stream_meta_for;
 use datafusion::common::Column;
 use datafusion::datasource::MemTable;
 use datafusion::execution::object_store::ObjectStoreUrl;
@@ -325,6 +327,61 @@ fn build_resume_predicate(positions: &BTreeMap<i32, i64>) -> Option<Expr> {
     pred
 }
 
+/// The shared tail of every feed scan, given both tiers already built: project
+/// to the common `[user…, loom_change_kind, loom_bucket, loom_offset]` order,
+/// disjoint UNION ALL, wrap in governance BEFORE the ordered read, then apply
+/// the per-bucket resume predicate, order by `(loom_bucket, loom_offset)`,
+/// limit, and decode. Identical for CDC and LOG feeds — only the file tier
+/// (changelog files vs the base's own files) differs upstream.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the verbatim-extracted shared tail of both feed scans — every one of the ctx/catalog/base/pin/tiers/positions/limit/policy params is load-bearing at the call site; a params struct would only obscure it"
+)]
+async fn union_govern_read(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    base_pin_id: SnapshotId,
+    file_provider: Option<IcebergMirrorTableProvider>,
+    inline_provider: Option<MemTable>,
+    positions: &BTreeMap<i32, i64>,
+    limit: usize,
+    policy: &TablePolicy,
+) -> Result<ChangeFeedPage, EngineServingError> {
+    let empty = || ChangeFeedPage {
+        events: vec![],
+        next: positions.clone(),
+    };
+    let base_cols = catalog
+        .schema(base, base_pin_id)
+        .await
+        .map_err(to_serving)?
+        .columns;
+    let select = union_select_columns(&base_cols);
+    let Some(unioned) = union_tiers(ctx, file_provider, inline_provider, &select)? else {
+        return Ok(empty());
+    };
+    let governed = GovernedTableProvider::new(unioned.into_view(), policy.clone())?;
+    let df = ctx.read_table(Arc::new(governed)).map_err(to_serving)?;
+    let Some(pred) = build_resume_predicate(positions) else {
+        return Ok(empty());
+    };
+    let batches = df
+        .filter(pred)
+        .map_err(to_serving)?
+        .sort(vec![
+            col("loom_bucket").sort(true, false),
+            col("loom_offset").sort(true, false),
+        ])
+        .map_err(to_serving)?
+        .limit(0, Some(limit))
+        .map_err(to_serving)?
+        .collect()
+        .await
+        .map_err(to_serving)?;
+    decode_page(&batches, positions)
+}
+
 /// One bounded, governed, ordered page of `base`'s changelog feed from
 /// per-bucket `positions` (bucket -> first offset not yet consumed; the caller
 /// supplies EVERY bucket). Returns the events ordered by `(bucket, offset)`
@@ -341,6 +398,11 @@ fn build_resume_predicate(positions: &BTreeMap<i32, i64>) -> Option<Expr> {
 /// Pins both tiers to ONE snapshot pair before reading either (`current_snapshots_pair`,
 /// a single Postgres statement) and delegates to [`changelog_feed_scan_at`] — see that
 /// function's body for why an independent two-read version tears (`iss-stream-feed-torn-read`).
+///
+/// Dispatches by `StreamMeta.kind` first (road-stream-log-table-subscribe): a LOG table
+/// has no changelog sibling, so it pins a SINGLE base snapshot and reads base files ∪
+/// inline via [`log_feed_scan_at`]; a CDC table (or a table this handler let through
+/// with no stream declaration) keeps the two-tier pinned-pair union below, unchanged.
 pub async fn changelog_feed_scan(
     catalog: &IcebergCatalog,
     base: &TableRef,
@@ -355,6 +417,35 @@ pub async fn changelog_feed_scan(
     };
     if positions.is_empty() || limit == 0 {
         return Ok(empty());
+    }
+
+    // Kind dispatch (road-stream-log-table-subscribe): a LOG table has no
+    // changelog sibling — its base rows ARE the feed — so it pins ONE snapshot
+    // and reads base files ∪ inline. A CDC table keeps the two-tier pinned-pair
+    // union. The handler only reaches here for a declared stream table; a
+    // non-Log kind falls through to the CDC path unchanged.
+    let kind = stream_meta_for(&catalog.pool, base)
+        .await
+        .map_err(to_serving)?
+        .map(|m| m.kind);
+    if kind == Some(StreamKind::Log) {
+        let base_pin = match catalog.current_snapshot(base).await {
+            Ok(s) => s,
+            // Declared but never written: nothing to read. The RPC fast-path
+            // normally short-circuits this, but stay total.
+            Err(ControlPlaneError::NotFound(_)) => return Ok(empty()),
+            Err(e) => return Err(to_serving(e)),
+        };
+        return log_feed_scan_at(
+            catalog,
+            base,
+            serving_store,
+            positions,
+            limit,
+            policy,
+            &base_pin,
+        )
+        .await;
     }
 
     // ONE statement, ONE Postgres MVCC snapshot: the base and changelog snapshots are
@@ -414,50 +505,85 @@ pub async fn changelog_feed_scan_at(
 
     let ctx = SessionContext::new();
     register_object_stores(&ctx, serving_store)?;
-
-    // --- Tier 1: the changelog Iceberg files, AT the pinned changelog snapshot. ---
+    // Tier 1: the changelog Iceberg files, AT the pinned changelog snapshot.
     let file_provider = build_file_tier(catalog, base, pins.clog.as_ref()).await?;
-
-    // --- Tier 2: the base's inline tail, AT the pinned base snapshot.
-    // `inline_live_batch_full` is ALREADY an as-of read (`mvcc_live_pred`):
-    // `begin_snapshot <= pin and (end_snapshot is null or end_snapshot > pin)`. So a
-    // flush committing after the pin changes NEITHER tier — its changelog files carry a
-    // newer snapshot, and its end-cap stamps `end_snapshot` with a base snapshot newer
-    // than the pin, leaving these rows visible here. ---
+    // Tier 2: the base's inline tail, AT the pinned base snapshot.
     let inline_provider = build_inline_tier(catalog, base, pins.base.id).await?;
+    union_govern_read(
+        &ctx,
+        catalog,
+        base,
+        pins.base.id,
+        file_provider,
+        inline_provider,
+        positions,
+        limit,
+        policy,
+    )
+    .await
+}
 
-    // --- Disjoint UNION ALL, both tiers projected to the SAME column order. ---
-    let base_cols = catalog
-        .schema(base, pins.base.id)
+/// Tier 1 of a LOG feed union: the BASE table's own Iceberg files, AT the pinned
+/// base snapshot. A log table has no changelog sibling — the events ARE the base
+/// rows — so this reads `base` where [`build_file_tier`] reads its changelog.
+async fn build_base_file_tier(
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    base_pin: &Snapshot,
+) -> Result<Option<IcebergMirrorTableProvider>, EngineServingError> {
+    let cols = catalog
+        .schema(base, base_pin.id)
         .await
         .map_err(to_serving)?
         .columns;
-    let select = union_select_columns(&base_cols);
-    let Some(unioned) = union_tiers(&ctx, file_provider, inline_provider, &select)? else {
-        return Ok(empty());
-    };
-
-    // --- Governance BEFORE the ordered read. ---
-    let governed = GovernedTableProvider::new(unioned.into_view(), policy.clone())?;
-    let df = ctx.read_table(Arc::new(governed)).map_err(to_serving)?;
-
-    let Some(pred) = build_resume_predicate(positions) else {
-        return Ok(empty());
-    };
-
-    let batches = df
-        .filter(pred)
-        .map_err(to_serving)?
-        .sort(vec![
-            col("loom_bucket").sort(true, false),
-            col("loom_offset").sort(true, false),
-        ])
-        .map_err(to_serving)?
-        .limit(0, Some(limit))
-        .map_err(to_serving)?
-        .collect()
+    let framed = with_feed_framing_fields(&arrow_schema_from_mirror(&cols)?);
+    let files = catalog
+        .files_with_stats(base, base_pin.id)
         .await
         .map_err(to_serving)?;
+    if files.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(IcebergMirrorTableProvider::try_new_with_schema(
+            files, framed,
+        )))
+    }
+}
 
-    decode_page(&batches, positions)
+/// The LOG-table analogue of [`changelog_feed_scan_at`]: the base table IS the
+/// ordered log (no changelog sibling), so tier 1 reads the base's own files and
+/// a SINGLE base snapshot pins both tiers (`inline_live_batch_full` is already an
+/// as-of read against it — see [`build_inline_tier`]). `change_kind` is the
+/// stored constant `'+I'`. Public so a test can pin the read deterministically.
+pub async fn log_feed_scan_at(
+    catalog: &IcebergCatalog,
+    base: &TableRef,
+    serving_store: Option<&ServingStore>,
+    positions: &BTreeMap<i32, i64>,
+    limit: usize,
+    policy: &TablePolicy,
+    base_pin: &Snapshot,
+) -> Result<ChangeFeedPage, EngineServingError> {
+    if positions.is_empty() || limit == 0 {
+        return Ok(ChangeFeedPage {
+            events: vec![],
+            next: positions.clone(),
+        });
+    }
+    let ctx = SessionContext::new();
+    register_object_stores(&ctx, serving_store)?;
+    let file_provider = build_base_file_tier(catalog, base, base_pin).await?;
+    let inline_provider = build_inline_tier(catalog, base, base_pin.id).await?;
+    union_govern_read(
+        &ctx,
+        catalog,
+        base,
+        base_pin.id,
+        file_provider,
+        inline_provider,
+        positions,
+        limit,
+        policy,
+    )
+    .await
 }
