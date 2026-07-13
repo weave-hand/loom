@@ -205,7 +205,11 @@ pub(crate) async fn compact(
         name: table,
     };
     // 404 an unknown table rather than enqueueing a job that can never succeed
-    // (the `schedule_table_check` posture, service_runtime/admin.rs).
+    // (the `schedule_table_check` posture, service_runtime/admin.rs). Note
+    // `current_snapshot` matches any snapshot at which the table was live, so a
+    // *dropped* table is not NotFound here: it falls through to the guard, which
+    // finds nothing to compact and answers 200 `{job_id: null}` (suppressed).
+    // Only a never-written table is the 404 case.
     match st.cp.catalog().current_snapshot(&table).await {
         Ok(_) => {}
         Err(ControlPlaneError::NotFound(_)) => {
@@ -231,6 +235,9 @@ pub(crate) async fn compact(
     let job = maybe_enqueue_compact(&mut conn, &table, &cfg)
         .await
         .map_err(|e| ApiError::internal("ingest compact: enqueue job", e))?;
+    // Back to the pool before we format the reply — the connection is not needed
+    // to build the response.
+    drop(conn);
 
     match job {
         Some(id) => Ok((

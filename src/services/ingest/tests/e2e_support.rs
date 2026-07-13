@@ -114,16 +114,39 @@ pub async fn app_state(
     (pg, pool, wh, state)
 }
 
+/// The `AuthState` the binary builds (session TTL + default lockout policy).
+fn auth_state(pg: Arc<PgControlPlane>) -> AuthState {
+    AuthState {
+        auth: pg,
+        session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
+    }
+}
+
 /// Wrap the router with the auth gate, exactly as the binary does.
 pub fn protected(state: AppState, pg: Arc<PgControlPlane>) -> Router {
-    protect(
-        router(state),
-        AuthState {
-            auth: pg,
-            session_ttl: Duration::from_secs(3600),
-            lockout: service_runtime::LockoutPolicy::default(),
-        },
-    )
+    protect(router(state), auth_state(pg))
+}
+
+/// The WHOLE ingest app, composed exactly as `serve::serve` composes it: the
+/// authn-only data plane (`protect(router(state))`) `merge`d with the
+/// admin-gated operator sub-router (`compact_routes`) and the auth surfaces.
+/// Tests that drive `router` or `compact_routes` in isolation cannot see the
+/// composition — e.g. an admin gate bleeding onto `/datasets` — so the
+/// merged-router test drives this.
+pub fn merged_app(state: AppState, pg: Arc<PgControlPlane>) -> Router {
+    let auth = auth_state(pg.clone());
+    let app = protect(router(state.clone()), auth.clone())
+        .merge(compact_routes(state, auth.clone()))
+        .merge(service_runtime::login_routes(auth.clone()))
+        .merge(service_runtime::session_routes(auth.clone()))
+        .merge(service_runtime::service_account_routes(
+            auth,
+            pg,
+            Duration::from_secs(3600),
+        ));
+    let app = app.layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
+    service_runtime::with_openapi(app, ingest::build_openapi())
 }
 
 /// Create the user (ensures the ACL subject exists) and mint a live bearer token —
@@ -160,14 +183,7 @@ pub async fn admin_session_token(pg: &PgControlPlane, subject: &str) -> String {
 /// The admin-gated operator maintenance router (`compact_routes`), wired exactly
 /// as the binary does: `require_auth` (401) outside, `require_admin` (403) inside.
 pub fn compact_app(state: AppState, pg: Arc<PgControlPlane>) -> Router {
-    compact_routes(
-        state,
-        AuthState {
-            auth: pg,
-            session_ttl: Duration::from_secs(3600),
-            lockout: service_runtime::LockoutPolicy::default(),
-        },
-    )
+    compact_routes(state, auth_state(pg))
 }
 
 /// Seed a Write grant on a type that does NOT exist yet (the public `grant` API

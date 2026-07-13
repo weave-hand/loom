@@ -23,7 +23,10 @@ use control_plane_postgres::iceberg_inline::set_has_shadow;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_mirror::live_table_id;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use e2e_support::{admin_session_token, app_state, compact_app, session_token};
+use e2e_support::{
+    admin_session_token, app_state, compact_app, ipc_bytes, merged_app, post_dataset_q,
+    sample_batch, session_token,
+};
 use http_body_util::BodyExt;
 use ingest::http::AppState;
 use loom_test_seed::local_sql_catalog;
@@ -372,6 +375,51 @@ async fn shadow_flagged_table_is_refused() {
     assert_eq!(status, StatusCode::OK);
     assert!(body["job_id"].is_null());
     assert_eq!(available_jobs(&pool).await, 0);
+}
+
+/// The composition pin: the app as `serve.rs` builds it — `protect(router(state),
+/// auth)` MERGED with `compact_routes(state, auth)`. Driving the two sub-routers in
+/// isolation cannot see the merge, so this is where an admin gate accidentally
+/// bleeding onto the data plane (or falling off the operator route) shows up. One
+/// authenticated NON-admin token: `POST /datasets/{schema}/{table}` lands (the data
+/// plane is authn-only), the same token on `POST /tables/../compact` is 403, and an
+/// admin token on that same merged app gets the 202.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn merged_app_gates_only_the_operator_route() {
+    let fx = PgFixture::shared();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, catalog, _wh, state) = harness(fx, &db).await;
+    land_n_small(&pool, &catalog, &table("orders"), 2).await;
+
+    let app = merged_app(state, pg.clone());
+    let alice = session_token(&pg, "alice").await; // authenticated, NOT admin
+
+    // The data plane is NOT admin-gated: a plain authenticated token lands.
+    let (status, body) = post_dataset_q(
+        app.clone(),
+        "wh",
+        "landed",
+        "",
+        &alice,
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
+    assert!(
+        status.is_success(),
+        "the merged app must not admin-gate /datasets, got {status} ({body})"
+    );
+
+    // The operator route IS admin-gated — same app, same non-admin token.
+    let (status, _body) = post_compact(app.clone(), "wh", "orders", &alice).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(available_jobs(&pool).await, 0, "no job from a denied POST");
+
+    // ... and an admin still gets through the merged app.
+    let root = admin_session_token(&pg, "root").await;
+    let (status, body) = post_compact(app, "wh", "orders", &root).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(body["job_id"].is_string(), "202 carries the job id: {body}");
+    assert_eq!(available_jobs(&pool).await, 1);
 }
 
 /// 404: a never-written table. (The pre-fix endpoint happily enqueued here.)
