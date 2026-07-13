@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select distinct mv from stream.mv_watermark where source_table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mv",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "stream.mv_watermark",
+            "name": "mv"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cd9caaed6124514ea8289c751647cbad11ff1bb23e907ec240d00a51c16697d6"
+}

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, RunTrigger,
     TableRef, TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
-    next_cron_occurrence, validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle,
+    mv_key, next_cron_occurrence, validate_no_multi_def_trigger_cycle, validate_no_trigger_cycle,
     validate_transform_def,
 };
 use time::OffsetDateTime;
@@ -71,6 +71,44 @@ pub(crate) async fn pg_type_tables<'e, E: sqlx::PgExecutor<'e>>(
             )
         })
         .collect())
+}
+
+/// The `mv_key`s of every registered micro-batch MV (`MicroBatch` /
+/// `MicroBatchJoin`) whose SOURCE is `table` — the registration half of the GC
+/// floor's reader set (`crate::mv_floor`). An undecodable body is skipped with a
+/// warning: a poisoned admin artifact must not wedge GC, exactly as it must not
+/// fail unrelated ingest commits (`pg_fire_data_triggers`).
+pub(crate) async fn pg_micro_batch_readers<'e, E: sqlx::PgExecutor<'e>>(
+    ex: E,
+    table: &TableRef,
+) -> Result<std::collections::BTreeSet<String>> {
+    let rows = sqlx::query!("select name, body from transforms.transform order by name")
+        .fetch_all(ex)
+        .await
+        .map_err(backend)?;
+    let mut out = std::collections::BTreeSet::new();
+    for r in rows {
+        let body = match de_body(r.body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    transform = %r.name,
+                    error = %e,
+                    "mv floor: skipping undecodable transform body"
+                );
+                continue;
+            }
+        };
+        let (source, output) = match &body {
+            TransformBody::MicroBatch { source, output, .. }
+            | TransformBody::MicroBatchJoin { source, output, .. } => (source, output),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => continue,
+        };
+        if source.schema == table.schema && source.name == table.name {
+            out.insert(mv_key(output));
+        }
+    }
+    Ok(out)
 }
 
 /// Re-validate the data-triggered trigger DAG against the CURRENT ontology
