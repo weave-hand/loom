@@ -209,6 +209,50 @@ async fn unknown_dataset_is_404() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn get_dataset_404_body_is_identical_for_unreadable_and_nonexistent() {
+    // Ungranted `analyst`: an existing dataset and a nonexistent one must return the
+    // byte-identical 404 (no existence oracle).
+    let (cp1, _) = seeded();
+    let app_existing = app(cp1);
+    let (s_existing, b_existing) = get(&app_existing, "/datasets/main/events").await;
+
+    let (cp2, _) = seeded();
+    let app_missing = app(cp2);
+    let (s_missing, b_missing) = get(&app_missing, "/datasets/main/no-such-table").await;
+
+    assert_eq!(s_existing, StatusCode::NOT_FOUND);
+    assert_eq!(s_missing, StatusCode::NOT_FOUND);
+    assert_eq!(b_existing, b_missing);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_404_body_is_identical_for_unreadable_and_nonexistent() {
+    let (cp1, _) = seeded();
+    let app_existing = app_canned(cp1);
+    let (s_existing, b_existing) = get(&app_existing, "/datasets/main/events/preview").await;
+
+    let (cp2, _) = seeded();
+    let app_missing = app_canned(cp2);
+    let (s_missing, b_missing) = get(&app_missing, "/datasets/main/no-such-table/preview").await;
+
+    assert_eq!(s_existing, StatusCode::NOT_FOUND);
+    assert_eq!(s_missing, StatusCode::NOT_FOUND);
+    assert_eq!(b_existing, b_missing);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn granted_subject_reads_get_and_preview() {
+    let (cp, _) = seeded();
+    grant_analyst_table(&cp).await;
+    let app = app_canned(cp);
+    let (s_get, _) = get(&app, "/datasets/main/events").await;
+    assert_eq!(s_get, StatusCode::OK);
+    let (s_prev, prev) = get(&app, "/datasets/main/events/preview?limit=5").await;
+    assert_eq!(s_prev, StatusCode::OK);
+    assert_eq!(prev["sampled"], serde_json::json!(true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn dataset_preview_returns_sampled_rows() {
     let (cp, _) = seeded();
     grant_analyst_table(&cp).await;

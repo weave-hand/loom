@@ -155,6 +155,13 @@ fn cp_read_error(context: &str, e: ControlPlaneError) -> axum::response::Respons
     }
 }
 
+/// The canonical "dataset not visible" 404 — one fixed body shared by the point
+/// reads so an unreadable existing dataset is byte-identical to a nonexistent one
+/// (no existence oracle; the point-read analog of the lineage seed gate's empty page).
+fn dataset_not_found() -> axum::response::Response {
+    (StatusCode::NOT_FOUND, "dataset not found").into_response()
+}
+
 /// Render one `LinkDef` as the `LinkView` documentation shape (`cardinality` as its
 /// persisted token). The physical `backing` stays server-side — this is ontology
 /// metadata for callers, not storage detail.
@@ -283,7 +290,7 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
     responses(
         (status = 200, description = "Target snapshot + column schema", body = DatasetDetailResponse),
         (status = 400, description = "Malformed as_of/as_of_snapshot selector"),
-        (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot"),
+        (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot, or a dataset the caller may not read (indistinguishable — no existence oracle)"),
         (status = 410, description = "Selector resolves to a snapshot older than the GC retention horizon (data may be reclaimed)"),
         (status = 500, description = "Internal error"),
     ),
@@ -294,13 +301,23 @@ async fn get_dataset(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    _subject: Subject,
+    subject: Subject,
 ) -> axum::response::Response {
     let catalog = st.cp.catalog();
     let table_ref = TableRef {
         schema,
         name: table,
     };
+    let vis = crate::dataset_acl::DatasetVisibility::new(
+        st.cp.acl(),
+        st.cp.ontology(),
+        st.naming.as_ref(),
+    );
+    match vis.is_table_readable(&subject.0, &table_ref).await {
+        Ok(true) => {}
+        Ok(false) => return dataset_not_found(),
+        Err(e) => return cp_read_error("dataset detail acl fault", e),
+    }
     let reserved = crate::query_params::split_reserved(params, &["as_of", "as_of_snapshot"]).0;
     let sel = match parse_as_of(reserved.last("as_of"), reserved.last("as_of_snapshot")) {
         Ok(s) => s,
@@ -378,7 +395,7 @@ async fn resolve_dataset_snapshot(
 
 /// Sample rows from a dataset: `SELECT * FROM "schema"."table" LIMIT n` over the engine.
 ///
-/// Coarse-auth (authenticated), mirroring `list_datasets`. `limit` defaults to 20 and is
+/// Per-dataset ACL-gated (same predicate as `/datasets`). `limit` defaults to 20 and is
 /// capped at 200; a malformed `limit` is a 400.
 #[utoipa::path(
     get, path = "/datasets/{schema}/{table}/preview",
@@ -390,6 +407,7 @@ async fn resolve_dataset_snapshot(
     responses(
         (status = 200, description = "Sampled rows", body = DatasetPreviewResponse),
         (status = 400, description = "Bad limit"),
+        (status = 404, description = "Unknown or unreadable dataset"),
         (status = 500, description = "Serving error"),
     ),
     security(("bearer_auth" = [])),
@@ -399,7 +417,7 @@ async fn dataset_preview(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
     Query(params): Query<Vec<(String, String)>>,
-    _subject: Subject,
+    subject: Subject,
 ) -> axum::response::Response {
     const DEFAULT_LIMIT: u32 = 20;
     const MAX_LIMIT: u32 = 200;
@@ -417,6 +435,20 @@ async fn dataset_preview(
             }
         },
     };
+    let table_ref = TableRef {
+        schema: schema.clone(),
+        name: table.clone(),
+    };
+    let vis = crate::dataset_acl::DatasetVisibility::new(
+        st.cp.acl(),
+        st.cp.ontology(),
+        st.naming.as_ref(),
+    );
+    match vis.is_table_readable(&subject.0, &table_ref).await {
+        Ok(true) => {}
+        Ok(false) => return dataset_not_found(),
+        Err(e) => return cp_read_error("dataset preview acl fault", e),
+    }
     let dialect = crate::sql::DataFusionDialect;
     let sql = format!(
         "SELECT * FROM {}.{} LIMIT {limit}",
