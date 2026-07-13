@@ -481,3 +481,65 @@ pub fn kind_badge_label(kind: TransformKind) -> &'static str {
 pub fn clamp_drawer_width(px: i32, min: u32, max: u32) -> u32 {
     u32::try_from(px).unwrap_or(0).clamp(min, max)
 }
+
+/// The `Workspace` state transition applied when a drawer action (Run saved /
+/// Delete) resolves. Pure and DOM-free so the drawer-action contract is
+/// `rust_test`-able (component rendering is not — see `src/ui/CLAUDE.md`).
+/// The caller routes `FetchError::Unauthorized` to logout BEFORE building the
+/// `Result<(), String>` — a 401 never reaches these helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawerActionEffect {
+    /// The surface's server-error line (`tf_server_error`): `Some(msg)` renders
+    /// beside the drawer's action buttons; `None` clears a previous error.
+    pub error: Option<String>,
+    /// Flip the drawer to the Runs tab.
+    pub open_runs_tab: bool,
+    /// Clear `tf_runs` and bump the runs-fetch epoch, so the runs effect
+    /// refires even when the Runs tab is already part of its dep tuple.
+    pub refetch_runs: bool,
+    /// Clear the selection + loaded def and reload the transform list (the
+    /// selected row no longer exists).
+    pub clear_selection: bool,
+}
+
+/// The transition for a **Run saved** response. Success opens the Runs tab and
+/// forces a refetch; failure surfaces the message and deliberately stays on
+/// the Definition tab, where the error line renders beside the Run button.
+#[must_use]
+pub fn run_action_effect(result: Result<(), String>) -> DrawerActionEffect {
+    match result {
+        Ok(()) => DrawerActionEffect {
+            error: None,
+            open_runs_tab: true,
+            refetch_runs: true,
+            clear_selection: false,
+        },
+        Err(msg) => DrawerActionEffect {
+            error: Some(msg),
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: false,
+        },
+    }
+}
+
+/// The transition for a **Delete** response. Success clears the selection
+/// (the row is gone); failure surfaces the message and otherwise changes
+/// nothing — the row and drawer remain.
+#[must_use]
+pub fn delete_action_effect(result: Result<(), String>) -> DrawerActionEffect {
+    match result {
+        Ok(()) => DrawerActionEffect {
+            error: None,
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: true,
+        },
+        Err(msg) => DrawerActionEffect {
+            error: Some(msg),
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: false,
+        },
+    }
+}
