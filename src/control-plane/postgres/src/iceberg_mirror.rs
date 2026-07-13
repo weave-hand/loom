@@ -389,12 +389,35 @@ pub async fn end_cap_live_data_files(
 /// Mark a table (and its live columns/files) dropped at `at` — sets `end_snapshot = at` on every
 /// currently-live row. Drives `CatalogSeed::drop_table` and the MVCC `end`-bound the delete
 /// contract exercises.
+///
+/// Refuses (`ControlPlaneError::Conflict`, naming the dependents) when a catalog view is
+/// still defined over `(ns, name)` — dropping the base out from under a live view would
+/// leave it resolving to nothing. Callers must `drop_view` the dependents first.
 pub async fn mark_dropped(
     conn: &mut PgConnection,
     ns: &str,
     name: &str,
     at: SnapshotId,
 ) -> Result<()> {
+    let dependents = sqlx::query!(
+        "select view_schema, view_name from dataset_view.view \
+         where base_schema = $1 and base_name = $2 order by view_schema, view_name",
+        ns,
+        name,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if !dependents.is_empty() {
+        let names: Vec<String> = dependents
+            .iter()
+            .map(|d| format!("{}.{}", d.view_schema, d.view_name))
+            .collect();
+        return Err(ControlPlaneError::Conflict(format!(
+            "table has dependent views: {}",
+            names.join(", ")
+        )));
+    }
     let tid = sqlx::query_scalar!(
         "update iceberg_mirror.table set end_snapshot = $3 \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null \

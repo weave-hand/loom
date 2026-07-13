@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select view_schema, view_name, base_schema, base_name, predicate, columns from dataset_view.view order by view_schema, view_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "view_schema",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "view_schema"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "view_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "view_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "base_schema",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "base_schema"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "base_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "base_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "predicate",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "predicate"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "columns",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "columns"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "bb1e0f003c688660e89b432487901c3c8f3d69aea5fc7f319565fba20132313c"
+}

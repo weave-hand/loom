@@ -500,6 +500,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "dataset_view",
+    crate = "dataset_view",
+    srcs = ["tests/dataset_view.rs"],
+    crate_root = "tests/dataset_view.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "snapshot-pair",
     crate = "snapshot_pair",
     srcs = ["tests/snapshot_pair.rs"],
