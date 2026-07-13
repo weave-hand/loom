@@ -609,4 +609,60 @@ async fn lineage_shows_base_to_view_edge_under_view_grant() {
         0,
         "the base is cut for a view-only subject (denied seed): {body}"
     );
+
+    // Strong case: seed the walk at the ontology TYPE bound to the view (not the
+    // denied base), and walk upstream. This exercises two view-specific mechanisms
+    // the seed-gated assertion above cannot: (a) a view-only subject can see their
+    // own view node in a lineage walk (the walk is a normal non-empty page, not the
+    // seed-gated empty-like-unknown shape); (b) the base is cut MID-WALK by node
+    // ACL — a different mechanism from seed rejection, since here the seed
+    // (CustomerEu) is readable to both subjects and only the ancestor differs.
+    //
+    // Chain: main.customers --[view-definition edge]--> gov.customers_eu
+    //        --[type-table-binding edge]--> CustomerEu (loom:type).
+    // upstream(CustomerEu, depth=2): depth 1 = gov.customers_eu (the view's own
+    // backing table, visible via the Table->Type ACL fallback); depth 2 =
+    // main.customers (the base, two hops up).
+    let (s, body) = get(
+        cp.clone(),
+        Arc::new(NoServing),
+        "/lineage/datasets/loom:type/CustomerEu/upstream?depth=2",
+        "both",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let names: Vec<String> = body["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"gov.customers_eu".to_string())
+            && names.contains(&"main.customers".to_string()),
+        "both-grantee walks upstream(type) all the way to the base: {body}"
+    );
+
+    let (s, body) = get(
+        cp.clone(),
+        Arc::new(NoServing),
+        "/lineage/datasets/loom:type/CustomerEu/upstream?depth=2",
+        "viewonly",
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let names: Vec<String> = body["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"gov.customers_eu".to_string()),
+        "view-only subject sees their own view node in the walk (not seed-gated): {body}"
+    );
+    assert!(
+        !names.contains(&"main.customers".to_string()),
+        "the base is ACL-cut mid-walk, not because the seed was denied: {body}"
+    );
 }
