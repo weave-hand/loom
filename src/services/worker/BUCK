@@ -85,6 +85,7 @@ loom_fixture_test(
     edition = "2024",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -120,6 +121,7 @@ loom_fixture_test(
     edition = "2024",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":worker",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",

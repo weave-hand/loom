@@ -58,6 +58,21 @@ fn gc_retention_defaults_to_seven_days_and_parses_override() {
 }
 
 #[test]
+fn orphan_sweep_grace_defaults_to_24h_and_parses_override() {
+    let mut v = full();
+    v.remove("LOOM_ORPHAN_SWEEP_GRACE_SECS");
+    assert_eq!(
+        Config::from_map(&v).unwrap().orphan_sweep_grace,
+        Duration::from_secs(24 * 3600)
+    );
+    v.insert("LOOM_ORPHAN_SWEEP_GRACE_SECS".into(), "60".into());
+    assert_eq!(
+        Config::from_map(&v).unwrap().orphan_sweep_grace,
+        Duration::from_secs(60)
+    );
+}
+
+#[test]
 fn missing_required_var_errors() {
     let mut v = full();
     v.remove("LOOM_DB_HOST");

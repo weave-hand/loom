@@ -1393,6 +1393,38 @@ async fn schedule_crud_roundtrip() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A warehouse-scoped `sweep_orphans` schedule is accepted with an empty payload
+/// and NO seeded table — pinning that `schedule_table_check` only gates the
+/// table-scoped kinds (`gc_table`/`compact_table`) and lets `sweep_orphans` fall
+/// through untouched.
+#[tokio::test]
+async fn sweep_orphans_schedule_accepted_without_table() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    // Deliberately no seed_table(..): a warehouse-scoped kind needs no table.
+
+    let body = r#"{"name":"nightly-sweep","kind":"sweep_orphans",
+        "payload":{},"cron":"0 4 * * *"}"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/schedules", &token, body),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "sweep_orphans schedule accepted with no table"
+    );
+
+    let (status, listed) = send(app(cp), req_empty("GET", "/admin/schedules", &token)).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let schedules = v["schedules"].as_array().unwrap();
+    assert_eq!(schedules.len(), 1, "{listed}");
+    assert_eq!(schedules[0]["kind"], "sweep_orphans");
+    assert_eq!(schedules[0]["payload"], serde_json::json!({}));
+}
+
 #[tokio::test]
 async fn schedule_define_rejects_bad_shapes() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));

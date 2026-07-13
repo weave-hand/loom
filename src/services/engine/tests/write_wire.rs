@@ -18,10 +18,9 @@ use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::convert::LineageWire;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use loom_test_flight::test_write_store;
 use tonic::transport::Server;
 use uuid::Uuid;
-
-// ---- helpers ---------------------------------------------------------------
 
 fn one_row_ipc(id: i64, name: &str) -> Vec<u8> {
     let schema = Arc::new(Schema::new(vec![
@@ -129,6 +128,7 @@ async fn write_object_over_wire() {
     let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
     let writer_catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh_str).await);
     let writer = IcebergActionWriter::new(writer_catalog, pool.clone(), 16 * 1024 * 1024, i64::MAX);
+    let write_store = test_write_store(&wh_str);
 
     let svc = EngineControlService {
         cp: cp2,
@@ -137,6 +137,8 @@ async fn write_object_over_wire() {
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
         flush_byte_threshold: i64::MAX,
+        write_store,
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
         serving_store: None,
     };
     let listener = tokio::net::UnixListener::bind(&sock).expect("bind");

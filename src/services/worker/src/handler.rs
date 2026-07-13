@@ -1,10 +1,10 @@
 //! The worker's job handlers: parse a flush_table / gc_table / build_vector_index
-//! job and run it over the wire. All three are one shape — deserialize the typed
-//! payload (parse error => Abandon), run one RPC (RPC error => Retry with backoff) —
-//! captured by `run_wire_job`.
+//! / sweep_orphans job and run it over the wire. All of them are one shape —
+//! deserialize the typed payload (parse error => Abandon), run one RPC (RPC error
+//! => Retry with backoff) — captured by `run_wire_job`.
 use std::future::Future;
 
-use control_plane_core::{BuildVectorIndexJob, FlushJob, GcJob, Job, JobFailure};
+use control_plane_core::{BuildVectorIndexJob, FlushJob, GcJob, Job, JobFailure, OrphanSweepJob};
 use engine_wire::client::GrpcQueueClient;
 use loom_config::WorkerTuning;
 
@@ -50,6 +50,20 @@ pub async fn handle_gc(
     run_wire_job(job, tuning, "gc", |GcJob { schema, name }| async move {
         engine.gc_table(schema, name).await.map(|_| ())
     })
+    .await
+}
+
+pub async fn handle_sweep_orphans(
+    engine: GrpcQueueClient,
+    tuning: WorkerTuning,
+    job: Job,
+) -> std::result::Result<(), JobFailure> {
+    run_wire_job(
+        job,
+        tuning,
+        "sweep_orphans",
+        |OrphanSweepJob {}| async move { engine.sweep_orphans().await.map(|_| ()) },
+    )
     .await
 }
 

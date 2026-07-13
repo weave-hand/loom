@@ -20,6 +20,7 @@
 //! (the tree's classic flake source). The guard owns the socket dir and the
 //! serve task; hold it alive for the duration of the test.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,6 +34,7 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::pb::engine_control_server::EngineControlServer;
 use loom_test_seed::local_sql_catalog;
+use store_config::{ObjectStoreConfig, build_write_store};
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
 
@@ -48,6 +50,8 @@ pub struct EngineOpts {
     pub inline_byte_limit: usize,
     /// `IcebergActionWriter` flush byte threshold.
     pub flush_byte_threshold: i64,
+    /// Grace window for the engine's orphan sweep RPC.
+    pub orphan_sweep_grace: Duration,
 }
 
 impl Default for EngineOpts {
@@ -57,6 +61,7 @@ impl Default for EngineOpts {
             flight: true,
             inline_byte_limit: 16 * 1024 * 1024,
             flush_byte_threshold: i64::MAX,
+            orphan_sweep_grace: Duration::from_secs(24 * 3600),
         }
     }
 }
@@ -76,6 +81,19 @@ impl Drop for EngineGuard {
     fn drop(&mut self) {
         self.handle.abort();
     }
+}
+
+/// Build a writable `WriteStore` rooted at a local `warehouse` dir (test
+/// helper): the same `file://`-warehouse shape production uses, for standing
+/// up an `EngineControlService` in tests. Panics on a bad config — test-only.
+pub fn test_write_store(warehouse: &str) -> store_config::WriteStore {
+    let mut env = HashMap::new();
+    env.insert(
+        "LOOM_WAREHOUSE_URI".to_string(),
+        format!("file://{warehouse}"),
+    );
+    let store_cfg = ObjectStoreConfig::parse_from_env(&env).expect("store config");
+    build_write_store(&store_cfg).expect("write store")
 }
 
 /// Spawn an engine on a fresh UDS serving the services `opts` selects,
@@ -107,6 +125,7 @@ pub async fn spawn_engine_uds(
             opts.inline_byte_limit,
             opts.flush_byte_threshold,
         );
+        let write_store = test_write_store(warehouse);
         EngineControlServer::new(EngineControlService {
             cp,
             catalog: catalog.clone(),
@@ -114,6 +133,8 @@ pub async fn spawn_engine_uds(
             retention: Duration::from_secs(7 * 24 * 3600),
             writer,
             flush_byte_threshold: opts.flush_byte_threshold,
+            write_store,
+            orphan_sweep_grace: opts.orphan_sweep_grace,
             serving_store: None,
         })
     });

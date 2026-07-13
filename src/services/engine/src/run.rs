@@ -173,6 +173,7 @@ pub async fn run(
         tuning.flush_byte_threshold,
     )
     .with_consolidate_delta_threshold(tuning.consolidate_delta_threshold);
+    let write_store = service_runtime::build_write_store(&cfg.object_store)?;
 
     let serving_store = service_runtime::build_serving_object_store(&cfg.object_store)?;
     let control = EngineControlService {
@@ -182,6 +183,8 @@ pub async fn run(
         retention: cfg.gc_retention,
         writer,
         flush_byte_threshold: tuning.flush_byte_threshold,
+        write_store,
+        orphan_sweep_grace: cfg.orphan_sweep_grace,
         serving_store: serving_store.clone(),
     };
     let flight = FlightDataService {

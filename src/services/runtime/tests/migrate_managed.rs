@@ -48,6 +48,7 @@ fn external_config(db: DbConfig, migrate_on_boot: bool, data_path: &Path) -> Con
             .expect("local object store"),
         lock_timeout: Duration::from_millis(5000),
         gc_retention: Duration::from_secs(7 * 24 * 3600),
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
         embedded: None,
         migrate_on_boot,
     }

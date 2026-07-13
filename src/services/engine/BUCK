@@ -64,6 +64,7 @@ loom_fixture_test(
     crate_root = "tests/wire.rs",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -90,6 +91,7 @@ loom_fixture_test(
     crate_root = "tests/compact_wire.rs",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
@@ -117,6 +119,7 @@ loom_fixture_test(
     crate_root = "tests/write_wire.rs",
     deps = [
         "//src/testing:seed",
+        "//src/testing:flight",
         ":engine",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",

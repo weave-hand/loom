@@ -272,6 +272,24 @@ impl GrpcQueueClient {
         Ok((resp.data_file_rows, resp.inline_rows, resp.objects_deleted))
     }
 
+    /// Sweep orphaned warehouse objects (no mirror row references them and older
+    /// than the engine's grace window). Returns
+    /// `(objects_deleted, bytes_deleted, candidates_skipped_grace)`.
+    pub async fn sweep_orphans(&self) -> Result<(u64, u64, u64)> {
+        let resp = self
+            .inner
+            .clone()
+            .sweep_orphans(pb::SweepOrphansRequest {})
+            .await
+            .map_err(be)?
+            .into_inner();
+        Ok((
+            resp.objects_deleted,
+            resp.bytes_deleted,
+            resp.candidates_skipped_grace,
+        ))
+    }
+
     /// List a table's live files (path + counts) plus its declared schema, for
     /// worker-side small-file selection and transform input registration.
     pub async fn list_files(&self, schema: String, name: String) -> Result<TableFiles> {

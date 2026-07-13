@@ -382,6 +382,27 @@ horizon, and once fully reclaimed the physical `inline_<tid>` table and the
 `table`/`column` mirror rows are removed — gated on full reclaim so nothing
 time-travellable vanishes (#266).
 
+The **third GC source** is an **orphaned-object sweep** — the only path that
+reclaims bytes **no mirror row references**, the residue of write-then-commit
+crashes (Parquet is written pre-tx) and commit-then-delete degradations (a
+failed post-commit object delete). It ships as a warehouse-scoped, schedulable
+`sweep_orphans` job (`EngineControl::SweepOrphans`, drained by the zero-pool
+worker like `gc_table`): LIST the warehouse, keep only the **pattern-scoped**
+data objects (`*.parquet` + `*.puffin` — Iceberg metadata/manifests are excluded
+by scope, never diffed), diff them against every mirror-referenced path (**all**
+`data_file.path` regardless of `end_snapshot`, plus every
+`vector_index.puffin_path`), and delete the unreferenced remainder older than a
+write-race grace window (`LOOM_ORPHAN_SWEEP_GRACE_SECS`, default 24h). It never
+opens a Postgres transaction around the deletes. Safety is layered: pattern
+scoping makes metadata structurally unreachable; the reference set is
+over-approximated (every `data_file` row, any `end_snapshot`) so
+historical-in-window and dropped-in-window files stay protected; LIST-before-read
+ordering plus the grace window make concurrent writers/GC safe; and every
+deletion (plus a reference-path that fails to normalize against the warehouse
+root) is logged. No dry-run and no HTTP enqueue in v1 — schedules are the
+surface; `SweepSummary { objects_deleted, bytes_deleted, candidates_skipped_grace }`
+surfaces the counts on the RPC response and in logs.
+
 ## Scheduler loop: the engine's first background task
 
 The engine gains its first standing background task alongside the tonic
@@ -408,7 +429,7 @@ The same loop also fires **maintenance schedules** on the same
 `LOOM_SCHEDULER_TICK_SECS` cadence: beside the transform `tick`, a
 `maintenance_tick` calls `Queue::fire_due_job_schedules(now, 32)`, which advances
 each due `queue.schedule` row and enqueues its `(kind, payload)` maintenance job
-(`gc_table` / `compact_table`) in one transaction — exactly-once, dedup-suppressing
+(`gc_table` / `compact_table` / `sweep_orphans`) in one transaction — exactly-once, dedup-suppressing
 an identical still-`available` job (see [control-plane.md](control-plane.md)). It
 mirrors the transform tick's posture — a failed fire is logged and returns zero,
 never killing the loop — so one loop, one cadence, no new knob fires both transform
@@ -439,8 +460,6 @@ and maintenance schedules.
   per-query table registration.
 - `#fut-iceberg-stats-dedup` — unify the iceberg/datafusion parquet-footer
   stats readers.
-- `#fut-iceberg-gc-orphan-sweep` — object-store-listing sweep for orphaned
-  Parquet (write-then-commit failures, failed GC deletes).
 - `#fut-iceberg-retry-cap-tunable` — env-tunable CAS-commit retry cap.
 - `#fut-iceberg-s3-multipart` — S3 multipart upload for large data files.
 - `#fut-iceberg-s3-serving-e2e` — end-to-end serving read against S3.

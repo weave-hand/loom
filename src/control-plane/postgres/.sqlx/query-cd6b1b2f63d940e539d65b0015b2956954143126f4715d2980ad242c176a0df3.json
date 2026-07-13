@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select path from iceberg_mirror.data_file",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cd6b1b2f63d940e539d65b0015b2956954143126f4715d2980ad242c176a0df3"
+}

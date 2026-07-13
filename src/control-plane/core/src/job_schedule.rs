@@ -1,18 +1,20 @@
 //! The scheduled-maintenance-job contract, shared by the producer (operator
 //! HTTP endpoint) and the consumer (the worker/scheduler). Lives in core so a
 //! zero-pool worker can read it without depending on the postgres adapter.
-//! A `JobSchedule` binds a cron expression to a recurring `gc_table` or
-//! `compact_table` job; other queue kinds are not (yet) schedulable.
+//! A `JobSchedule` binds a cron expression to a recurring `gc_table`,
+//! `compact_table`, or `sweep_orphans` job; other queue kinds are not (yet)
+//! schedulable.
 
 use crate::compact_job::{COMPACT_JOB_KIND, CompactJob};
 use crate::error::{ControlPlaneError, Result};
 use crate::gc::{GC_JOB_KIND, GcJob};
+use crate::orphan_sweep::{ORPHAN_SWEEP_JOB_KIND, OrphanSweepJob};
 use crate::validate_cron;
 
 /// The job `kind`s that may be scheduled. Membership here, not in
 /// [`crate::KNOWN_JOB_KINDS`], gates [`validate_job_schedule`]: a kind can be a
 /// known queue job (e.g. `transform`) without being schedulable.
-pub const SCHEDULABLE_JOB_KINDS: &[&str] = &[GC_JOB_KIND, COMPACT_JOB_KIND];
+pub const SCHEDULABLE_JOB_KINDS: &[&str] = &[GC_JOB_KIND, COMPACT_JOB_KIND, ORPHAN_SWEEP_JOB_KIND];
 
 /// A named cron schedule for a recurring maintenance job. `kind` selects the
 /// job type (one of [`SCHEDULABLE_JOB_KINDS`]); `payload` is that kind's typed
@@ -52,6 +54,11 @@ pub fn validate_job_schedule(s: &JobSchedule) -> Result<()> {
         COMPACT_JOB_KIND => {
             serde_json::from_value::<CompactJob>(s.payload.clone()).map_err(|e| {
                 ControlPlaneError::Validation(format!("invalid compact_table payload: {e}"))
+            })?;
+        }
+        ORPHAN_SWEEP_JOB_KIND => {
+            serde_json::from_value::<OrphanSweepJob>(s.payload.clone()).map_err(|e| {
+                ControlPlaneError::Validation(format!("invalid sweep_orphans payload: {e}"))
             })?;
         }
         other => {

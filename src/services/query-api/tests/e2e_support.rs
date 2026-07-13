@@ -1331,6 +1331,7 @@ pub async fn spawn_engine(
             flight: false,
             inline_byte_limit,
             flush_byte_threshold,
+            ..Default::default()
         },
     )
     .await;
@@ -1356,6 +1357,7 @@ pub async fn spawn_engine_full(
             flight: true,
             inline_byte_limit,
             flush_byte_threshold,
+            ..Default::default()
         },
     )
     .await;

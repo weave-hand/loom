@@ -71,6 +71,7 @@ rust_library(
         "//src/services/engine:engine",
         "//src/services/engine-serving:engine-serving",
         "//src/services/engine-wire:engine-wire",
+        "//src/services/store-config:store-config",
         "//third-party:arrow-flight",
         "//third-party:tempfile",
         "//third-party:tokio",

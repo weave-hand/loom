@@ -245,6 +245,11 @@ pub struct Config {
     /// older than this are eligible for reclamation. From `LOOM_GC_RETENTION_SECS`
     /// (default 7 days). The `_SECS` unit suffix matches `LOOM_LOCK_TIMEOUT_MS`.
     pub gc_retention: Duration,
+    /// Grace window for the orphaned-object sweep: an unreferenced warehouse
+    /// object younger than this is held (guards the write-then-commit race). From
+    /// `LOOM_ORPHAN_SWEEP_GRACE_SECS` (default 24h). Mirrors `gc_retention`'s
+    /// `_SECS` unit convention.
+    pub orphan_sweep_grace: Duration,
     /// Present when running an embedded (loom-managed) Postgres cluster.
     pub embedded: Option<EmbeddedSettings>,
     /// When `true`, `build_pool_managed`'s external branch applies the embedded
@@ -279,6 +284,11 @@ impl Config {
             "LOOM_GC_RETENTION_SECS",
             7 * 24 * 3600_u64,
         )?);
+        let orphan_sweep_grace = Duration::from_secs(parse_var(
+            vars,
+            "LOOM_ORPHAN_SWEEP_GRACE_SECS",
+            24 * 3600_u64,
+        )?);
         let data_path = PathBuf::from(req_var(vars, "LOOM_DATA_PATH")?);
         let object_store = ObjectStoreConfig::parse(vars, &data_path)?;
         Ok(Config {
@@ -288,6 +298,7 @@ impl Config {
             object_store,
             lock_timeout,
             gc_retention,
+            orphan_sweep_grace,
             embedded: EmbeddedSettings::from_map(vars, &data_path)?,
             migrate_on_boot: parse_migrate_on_boot(vars)?,
         })

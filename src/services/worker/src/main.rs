@@ -4,16 +4,17 @@
 //! `LOOM_LOCK_TIMEOUT_MS` (default: 5000), and `LOOM_WAREHOUSE_URI` (required for
 //! compaction). Connects to the engine over a UDS and runs the generic
 //! `control_plane_worker::Worker<GrpcQueueClient>` loop, draining `flush_table`,
-//! `gc_table`, `compact_table`, `transform`, `typed-transform`, `stream_consolidate`,
-//! and `stream_mv` jobs (dispatched by kind). No Postgres in the dep closure — the
-//! engine owns PG.
+//! `gc_table`, `compact_table`, `sweep_orphans`, `transform`, `typed-transform`,
+//! `stream_consolidate`, and `stream_mv` jobs (dispatched by kind). No Postgres in
+//! the dep closure — the engine owns PG.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, COMPACT_JOB_KIND, FLUSH_JOB_KIND, GC_JOB_KIND, JobFailure,
-    STREAM_CONSOLIDATE_JOB_KIND, STREAM_MV_JOB_KIND, TRANSFORM_JOB_KIND, TYPED_TRANSFORM_JOB_KIND,
+    ORPHAN_SWEEP_JOB_KIND, STREAM_CONSOLIDATE_JOB_KIND, STREAM_MV_JOB_KIND, TRANSFORM_JOB_KIND,
+    TYPED_TRANSFORM_JOB_KIND,
 };
 use control_plane_worker::Worker;
 use engine_wire::client::GrpcQueueClient;
@@ -97,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 TYPED_TRANSFORM_JOB_KIND.to_string(),
                 STREAM_CONSOLIDATE_JOB_KIND.to_string(),
                 STREAM_MV_JOB_KIND.to_string(),
+                ORPHAN_SWEEP_JOB_KIND.to_string(),
             ],
             shutdown,
             move |job| {
@@ -111,6 +113,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         k if k == GC_JOB_KIND => {
                             worker::handler::handle_gc(flush, worker_tuning, job).await
+                        }
+                        k if k == ORPHAN_SWEEP_JOB_KIND => {
+                            worker::handler::handle_sweep_orphans(flush, worker_tuning, job).await
                         }
                         k if k == COMPACT_JOB_KIND => handle_compact(&cctx, job).await,
                         k if k == TRANSFORM_JOB_KIND => handle_transform(&tctx, job).await,

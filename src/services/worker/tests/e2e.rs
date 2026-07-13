@@ -26,6 +26,7 @@ use engine::service::EngineControlService;
 use engine_serving::IcebergActionWriter;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::pb::engine_control_server::EngineControlServer;
+use loom_test_flight::test_write_store;
 use tonic::transport::Server;
 use worker::handler::{handle_flush, handle_gc};
 
@@ -104,6 +105,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         16 * 1024 * 1024,
         i64::MAX,
     );
+    let write_store = test_write_store(&wh_str);
 
     let svc = EngineControlService {
         cp: cp.clone(),
@@ -112,6 +114,8 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         retention: Duration::from_secs(7 * 24 * 3600),
         writer,
         flush_byte_threshold: i64::MAX,
+        write_store,
+        orphan_sweep_grace: Duration::from_secs(24 * 3600),
         serving_store: None,
     };
     let flight_svc = FlightDataService {

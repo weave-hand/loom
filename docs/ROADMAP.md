@@ -27,7 +27,4 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## iceberg
 
-- [ ] **Orphaned-Parquet GC sweep** `{#road-iceberg-gc-orphan-sweep area:iceberg status:planned from:2026-06-30-iceberg-gc-dropped-table-design pr:- spec:2026-07-12-iceberg-gc-orphan-sweep-design}`
-  Promoted 2026-07-12 from `#fut-iceberg-gc-orphan-sweep` (entry removed). The third GC source: a warehouse-scoped, schedulable `sweep_orphans` job kind (an immediate consumer of the landed `/admin/schedules` surface) that LISTs the warehouse, diffs **pattern-scoped** objects (`*.parquet` + Puffin only — Iceberg metadata/manifests are excluded by scope, never diffed) against every mirror-referenced path (**all** `data_file` rows regardless of `end_snapshot`, plus `vector_index.puffin_path`), and deletes the unreferenced remainder older than a write-race grace (`LOOM_ORPHAN_SWEEP_GRACE_SECS`, default 24h). LIST-before-read ordering + the grace window make concurrent writers/GC safe; no dry-run in v1 (operator decision 2026-07-12).
-
 ## cross-cutting
