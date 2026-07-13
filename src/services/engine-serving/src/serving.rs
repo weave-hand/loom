@@ -292,31 +292,6 @@ enum Precedence {
     },
 }
 
-/// Build the identity-dedup merge view for an identity-bearing type. Each tier
-/// (file, inline — either may be absent) is projected to `[<data_cols>,
-/// _loom_prec, _loom_tomb]` per `precedence`'s column mapping, UNION-ALL'd, then
-/// deduped per identity keeping the greatest precedence; a tombstoned winner is
-/// dropped, and the result is projected back to EXACTLY the mirror data `schema`.
-///
-/// Equivalent to (the reference SQL): for identity column `<id>`,
-/// ```sql
-/// SELECT <data_cols> FROM (
-///   SELECT <data_cols>, _loom_tomb,
-///          ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC) AS _loom_rn
-///   FROM ( <file tier>  UNION ALL  <inline tier> )
-/// ) WHERE _loom_rn = 1 AND _loom_tomb = false
-/// ```
-/// `Precedence::Snapshot`'s file tier is `<0, false>`; its inline tier is
-/// `<begin_snapshot, loom_tombstone>`. `Precedence::Offset`'s file AND inline
-/// tiers are both `<loom_offset, loom_change_kind = '-D'>` — the same fold
-/// `consolidate.rs` uses to physically collapse a CDC base.
-///
-/// A `ROW_NUMBER()` window (not `DISTINCT ON`) is used deliberately: the window is a
-/// pass-through over the data columns, so they keep their mirror `DataType` AND
-/// nullability end to end (union coerces identical schemas to themselves; window /
-/// filter / final projection are pass-through). Thus the final projection needs no
-/// casts and the view's schema equals `schema` exactly — which the governed layer
-/// and callers require. (`DISTINCT ON` would widen the identity column to nullable.)
 /// Build the CDC `Precedence::Offset` from the table's stream meta, fetching the
 /// version column live for the Versioned engine.
 async fn offset_precedence(
@@ -348,6 +323,40 @@ async fn offset_precedence(
     })
 }
 
+/// Build the identity-dedup merge view for an identity-bearing type. Each tier
+/// (file, inline — either may be absent) is projected to `[<data_cols>,
+/// _loom_prec, _loom_tomb]` per `precedence`'s column mapping, UNION-ALL'd, then
+/// deduped per identity keeping the greatest precedence; a tombstoned winner is
+/// dropped, and the result is projected back to EXACTLY the mirror data `schema`.
+///
+/// Equivalent to (the reference SQL): for identity column `<id>`,
+/// ```sql
+/// SELECT <data_cols> FROM (
+///   SELECT <data_cols>, _loom_tomb,
+///          ROW_NUMBER() OVER (PARTITION BY <id> ORDER BY _loom_prec DESC) AS _loom_rn
+///   FROM ( <file tier>  UNION ALL  <inline tier> )
+/// ) WHERE _loom_rn = 1 AND _loom_tomb = false
+/// ```
+/// `Precedence::Snapshot`'s file tier is `<0, false>`; its inline tier is
+/// `<begin_snapshot, loom_tombstone>`. `Precedence::Offset`'s file AND inline
+/// tiers are both `<loom_offset, loom_change_kind = '-D'>` — the same fold
+/// `consolidate.rs` uses to physically collapse a CDC base.
+///
+/// A `ROW_NUMBER()` window (not `DISTINCT ON`) is used deliberately: the window is a
+/// pass-through over the data columns, so they keep their mirror `DataType` end to
+/// end (union coerces identical schemas to themselves; window / filter / final
+/// projection are pass-through). Thus the final projection needs no casts.
+///
+/// Nullability takes one extra step. The inline tier must DECLARE its non-identity
+/// data columns nullable (a non-CDC DELETE's inline row is id-only, so they really
+/// are NULL there — see [`build_inline_provider`]), and DataFusion's union widens
+/// nullability per position. The final projection therefore re-declares every
+/// mirror-REQUIRED column non-nullable via [`crate::not_null::not_null`] — legal
+/// because it sits above the `_loom_tomb = false` filter, which drops exactly the
+/// NULL-carrying rows. Net: the view's schema equals `schema` EXACTLY — names, types,
+/// order and nullability — which the governed layer, the Flight wire, and (critically)
+/// the worker's `infer_columns` -> `check_conformance` / `classify_schema_change` path
+/// require. (`DISTINCT ON` would additionally widen the identity column to nullable.)
 fn build_merge_view(
     ctx: &SessionContext,
     schema: &SchemaRef,
@@ -484,9 +493,39 @@ fn build_merge_view(
         .build()
         .map_err(to_serving)?
         .alias("_loom_rn");
-    // Keep the winner per identity, hide tombstoned winners, then project back to
-    // the mirror data schema — UNCHANGED (the version column is a user column
-    // already in data_cols; the _loom_* helpers are dropped).
+    // Final projection back to EXACTLY the mirror data schema (the version column is
+    // a user column already in data_cols; the _loom_* helpers are dropped).
+    //
+    // `_loom_tomb = false` (below) has already dropped every tombstone row — the ONLY
+    // rows whose non-identity data columns are physically NULL (a non-CDC DELETE's
+    // inline row is id-only; CDC's -D/-U/+U all carry full images). But the inline
+    // tier had to DECLARE those columns nullable to scan them, and DataFusion's union
+    // widens nullability per position (`nullable = any input nullable`), which a plain
+    // column projection copies verbatim.
+    //
+    // So: re-declare every column the MIRROR says is required as non-nullable, through
+    // `not_null` (an identity UDF whose return_field is non-nullable — honored by both
+    // the logical projection and `ScalarFunctionExpr::nullable`). The merged view's
+    // served schema is then byte-identical to the mirror's, which is load-bearing: the
+    // worker infers transform/MV output columns from it (`datafusion_io::infer_columns`
+    // copies `is_nullable()`), and a widened flag would make `check_conformance` reject
+    // a REQUIRED property and `classify_schema_change` reject an MV re-run.
+    //
+    // If a NULL ever did survive the filter, `ProjectionExec`'s `RecordBatch::try_new`
+    // fails loudly — never a silent wrong answer.
+    let final_projection: Vec<Expr> = schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let c = cref(f.name().as_str());
+            if f.is_nullable() {
+                c
+            } else {
+                crate::not_null::not_null(c).alias(f.name())
+            }
+        })
+        .collect();
+    // Keep the winner per identity, hide tombstoned winners, then project back.
     let merged = unioned
         .window(vec![ranked])
         .map_err(to_serving)?
@@ -494,12 +533,7 @@ fn build_merge_view(
         .map_err(to_serving)?
         .filter(cref("_loom_tomb").eq(lit(false)))
         .map_err(to_serving)?
-        .select(
-            data_cols
-                .iter()
-                .map(|n| cref(n.as_str()))
-                .collect::<Vec<_>>(),
-        )
+        .select(final_projection)
         .map_err(to_serving)?;
     Ok(merged.into_view())
 }
@@ -563,7 +597,14 @@ pub(crate) fn register_qualified(
 ///   - `loom_change_kind` (string non-null) / `loom_offset` (i64 nullable) — the
 ///     real per-identity framing a CDC table's merge uses instead.
 ///
-/// When `identity` is `None` the schema stays data-only.
+/// In merge mode the tier's NON-IDENTITY data columns are also declared NULLABLE,
+/// because a non-CDC DELETE's inline row is id-only (every other data column is
+/// physically NULL) and the fold needs that row. The widening is internal to this
+/// tier — [`build_merge_view`]'s final projection restores the mirror's declared
+/// nullability above the tombstone filter, so the SERVED schema never changes.
+///
+/// When `identity` is `None` the schema stays data-only (an identity-less type is
+/// never inline-shadowed, so its inline rows are always complete).
 async fn build_inline_provider(
     catalog: &IcebergCatalog,
     table: &TableRef,
@@ -609,13 +650,45 @@ async fn build_inline_provider(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    // Merge mode: append BOTH precedence pairs (physical names) so the dedup can
-    // rank rows and hide tombstoned identities under either `Precedence`. Data-only
-    // otherwise. Unused columns for a given mode are never selected (DataFusion
-    // projects only what the fold references), so this is a no-op cost for the
-    // mode not in play.
-    let (provider_schema, logical_types) = if identity.is_some() {
-        let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    // Merge mode. Two adjustments over the raw mirror schema:
+    //
+    //   1. Non-identity data columns are declared NULLABLE. This tier's rows include
+    //      a non-CDC DELETE's inline row, which is id-only — every other data column
+    //      is physically NULL (`write_inline_delta`'s tombstone arm) — and the merge
+    //      fold NEEDS that row (identity + loom_tombstone is what hides the file
+    //      row). Declaring the mirror's non-nullable schema over it makes
+    //      `PgTableProvider::fetch_batch` fail arrow's RecordBatch validation BEFORE
+    //      the fold can drop the tombstone (iss-search-vector-merge-view-nullable,
+    //      Defect B). The identity keeps its mirror nullability — a tombstone always
+    //      carries it (`extract_id_cell`).
+    //
+    //      This widening is INTERNAL to the tier. `build_merge_view`'s final
+    //      projection — which sits above the `_loom_tomb = false` filter that drops
+    //      exactly these rows — restores the mirror's declared nullability via
+    //      `not_null`, so the SERVED schema is unchanged. That matters: the worker
+    //      infers transform/MV output columns from the served schema
+    //      (`datafusion_io::infer_columns`), and a widened flag would break
+    //      `check_conformance` / `classify_schema_change`.
+    //
+    //   2. BOTH precedence pairs are appended (physical names) so the dedup can rank
+    //      rows and hide tombstoned identities under either `Precedence`. Unused
+    //      columns for a given mode are never selected (DataFusion projects only what
+    //      the fold references), so this is a no-op cost for the mode not in play.
+    //
+    // Data-only otherwise (identity-less types cannot be inline-shadowed).
+    let (provider_schema, logical_types) = if let Some(id) = identity {
+        let mut fields: Vec<Field> = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                let f = f.as_ref().clone();
+                if f.name() == id {
+                    f
+                } else {
+                    f.with_nullable(true)
+                }
+            })
+            .collect();
         fields.push(Field::new("begin_snapshot", DataType::Int64, false));
         fields.push(Field::new("loom_tombstone", DataType::Boolean, false));
         fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
@@ -643,7 +716,11 @@ async fn build_inline_provider(
 /// arrow `DataType`; an unrecognized logical type is a hard error (the mirror should
 /// never hold one). This schema — not the per-file Parquet footers — is what the
 /// provider presents, so an additively-evolved table reads as its superset.
-pub(crate) fn arrow_schema_from_mirror(
+///
+/// `pub` so the served-schema contract can be pinned against it directly
+/// (`tests/merge_view_schema.rs`): `build_serving_provider(...).schema()` MUST
+/// equal this, nullability included, in every tier combination.
+pub fn arrow_schema_from_mirror(
     cols: &[control_plane_core::ColumnDef],
 ) -> Result<SchemaRef, EngineServingError> {
     let fields = cols

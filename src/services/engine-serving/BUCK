@@ -101,6 +101,25 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "merge-view-schema",
+    crate = "merge_view_schema",
+    srcs = ["tests/merge_view_schema.rs"],
+    crate_root = "tests/merge_view_schema.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 rust_test(
     name = "row-filter-to-expr",
     crate = "row_filter_to_expr",
