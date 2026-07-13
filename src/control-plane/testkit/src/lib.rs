@@ -23,7 +23,7 @@ use control_plane_core::{
     Lineage, LineageEvent, LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount,
     NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef,
     Queue, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId,
-    TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef,
+    TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef, ViewDef,
 };
 use time::OffsetDateTime;
 
@@ -966,6 +966,216 @@ where
         .items;
     assert!(!listed.contains(&t), "dropped table no longer listed");
     assert!(listed.contains(&other), "unrelated table still listed");
+}
+
+/// Contract for the catalog view surface: define/get/list/drop, base
+/// delegation of the snapshot+schema reads, and every write-time rejection.
+pub async fn catalog_view_contract<C, S>(catalog: &C, seeder: &S)
+where
+    C: Catalog + Sync,
+    S: CatalogSeed,
+{
+    let base = TableRef {
+        schema: "main".into(),
+        name: "customers".into(),
+    };
+    let seeded = seeder
+        .seed(SeedSpec {
+            table: base.clone(),
+            columns: vec![
+                SeedColumn {
+                    name: "id".into(),
+                    ty: "long".into(),
+                    nullable: false,
+                },
+                SeedColumn {
+                    name: "region".into(),
+                    ty: "string".into(),
+                    nullable: true,
+                },
+                SeedColumn {
+                    name: "amount".into(),
+                    ty: "long".into(),
+                    nullable: true,
+                },
+            ],
+            row_batches: vec![10],
+        })
+        .await;
+    let base_snap = seeded[0].snapshot;
+
+    let view = TableRef {
+        schema: "gov".into(),
+        name: "customers_eu".into(),
+    };
+    let vdef = ViewDef {
+        view: view.clone(),
+        base: base.clone(),
+        predicate: Some(RowFilter::Compare {
+            property: "region".into(),
+            op: CompareOp::Eq,
+            value: ScalarValue::Text("EU".into()),
+        }),
+        columns: Some(vec!["id".into(), "region".into()]),
+    };
+    catalog
+        .define_view(vdef.clone())
+        .await
+        .expect("define_view");
+
+    // get_view round-trips; a physical ref is not a view.
+    assert_eq!(catalog.get_view(&view).await.unwrap(), Some(vdef.clone()));
+    assert_eq!(catalog.get_view(&base).await.unwrap(), None);
+
+    // list_views: (schema, name)-ordered single page containing the view.
+    let listed = catalog.list_views(PageReq::unbounded()).await.unwrap();
+    assert!(listed.next.is_none(), "single full page");
+    assert!(listed.items.contains(&vdef), "defined view listed");
+
+    // list_tables stays physical-only.
+    let tables = catalog.list_tables(PageReq::unbounded()).await.unwrap();
+    assert!(
+        !tables.items.contains(&view),
+        "views are not physical tables"
+    );
+
+    // Read delegation: snapshot reads resolve through the base...
+    assert_eq!(
+        catalog.current_snapshot(&view).await.unwrap().id,
+        catalog.current_snapshot(&base).await.unwrap().id,
+        "current_snapshot(view) delegates to base"
+    );
+    // ...and schema narrows to the projection, keeping base column order/types.
+    let vschema = catalog.schema(&view, base_snap).await.unwrap();
+    assert_eq!(
+        vschema
+            .columns
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["id", "region"],
+        "schema(view) is the projected base schema"
+    );
+    assert_eq!(vschema.columns[0].ty, "long");
+
+    // A projection-less view reads the full base schema.
+    let full = TableRef {
+        schema: "gov".into(),
+        name: "customers_all".into(),
+    };
+    catalog
+        .define_view(ViewDef {
+            view: full.clone(),
+            base: base.clone(),
+            predicate: None,
+            columns: None,
+        })
+        .await
+        .expect("define projection-less view");
+    assert_eq!(
+        catalog.schema(&full, base_snap).await.unwrap(),
+        catalog.schema(&base, base_snap).await.unwrap(),
+        "no projection = full base schema"
+    );
+
+    // Rejections. Create-only: redefining is Conflict.
+    assert!(matches!(
+        catalog.define_view(vdef.clone()).await,
+        Err(ControlPlaneError::Conflict(_))
+    ));
+    // Name collision with a physical table is Conflict.
+    assert!(matches!(
+        catalog
+            .define_view(ViewDef {
+                view: base.clone(),
+                base: base.clone(),
+                predicate: None,
+                columns: None,
+            })
+            .await,
+        Err(ControlPlaneError::Conflict(_) | ControlPlaneError::Validation(_))
+    ));
+    // Missing base is NotFound.
+    assert!(matches!(
+        catalog
+            .define_view(ViewDef {
+                view: TableRef {
+                    schema: "gov".into(),
+                    name: "orphan".into(),
+                },
+                base: TableRef {
+                    schema: "main".into(),
+                    name: "nope".into(),
+                },
+                predicate: None,
+                columns: None,
+            })
+            .await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    // View-over-view is Validation.
+    assert!(matches!(
+        catalog
+            .define_view(ViewDef {
+                view: TableRef {
+                    schema: "gov".into(),
+                    name: "nested".into(),
+                },
+                base: view.clone(),
+                predicate: None,
+                columns: None,
+            })
+            .await,
+        Err(ControlPlaneError::Validation(_))
+    ));
+    // Bad predicate column / bad projection column are Validation.
+    assert!(matches!(
+        catalog
+            .define_view(ViewDef {
+                view: TableRef {
+                    schema: "gov".into(),
+                    name: "badpred".into(),
+                },
+                base: base.clone(),
+                predicate: Some(RowFilter::Compare {
+                    property: "ghost".into(),
+                    op: CompareOp::Eq,
+                    value: ScalarValue::Text("x".into()),
+                }),
+                columns: None,
+            })
+            .await,
+        Err(ControlPlaneError::Validation(_))
+    ));
+    assert!(matches!(
+        catalog
+            .define_view(ViewDef {
+                view: TableRef {
+                    schema: "gov".into(),
+                    name: "badproj".into(),
+                },
+                base: base.clone(),
+                predicate: None,
+                columns: Some(vec!["ghost".into()]),
+            })
+            .await,
+        Err(ControlPlaneError::Validation(_))
+    ));
+
+    // drop_view removes it; unknown drop is NotFound.
+    catalog.drop_view(&full).await.expect("drop_view");
+    assert_eq!(catalog.get_view(&full).await.unwrap(), None);
+    assert!(matches!(
+        catalog.drop_view(&full).await,
+        Err(ControlPlaneError::NotFound(_))
+    ));
+    assert!(
+        matches!(
+            catalog.current_snapshot(&full).await,
+            Err(ControlPlaneError::NotFound(_)),
+        ),
+        "a dropped view no longer resolves"
+    );
 }
 
 /// Contract for the `Ontology` read+write surface. Self-seeds via `define_*`

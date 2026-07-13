@@ -56,7 +56,7 @@ pub use gc::{GC_JOB_KIND, GcJob};
 pub use governed::{GovernedCatalog, GovernedTable};
 pub use identity::{
     DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TYPE_TABLE_BINDING_KIND, TypeId,
-    type_table_binding_event,
+    VIEW_DEFINITION_KIND, type_table_binding_event, view_definition_event,
 };
 pub use job_schedule::{JobSchedule, SCHEDULABLE_JOB_KINDS, validate_job_schedule};
 pub use lineage::{

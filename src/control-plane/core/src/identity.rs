@@ -146,3 +146,20 @@ pub fn type_table_binding_event(ty: &ObjectType) -> LineageEvent {
         payload: serde_json::json!({ "loom.kind": TYPE_TABLE_BINDING_KIND }),
     }
 }
+
+/// Marker kind for the base→view definition edge.
+pub const VIEW_DEFINITION_KIND: &str = "view-definition";
+
+/// The lineage edge emitted when a view is defined: base table = upstream
+/// input, view = downstream output (same orientation as the type binding).
+#[must_use]
+pub fn view_definition_event(v: &crate::catalog::ViewDef) -> LineageEvent {
+    LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![DatasetId::from(&v.base).dataset_ref()],
+        outputs: vec![DatasetId::from(&v.view).dataset_ref()],
+        payload: serde_json::json!({ "loom.kind": VIEW_DEFINITION_KIND }),
+    }
+}
