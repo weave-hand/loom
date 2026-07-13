@@ -119,6 +119,20 @@ async fn get(app: &axum::Router, uri: &str) -> (StatusCode, serde_json::Value) {
     (status, json)
 }
 
+/// Like `get`, but returns the raw response body text instead of JSON-decoding it —
+/// needed for the 404-oracle tests below, which must assert byte-identical bodies
+/// rather than two bodies that both happen to fail JSON decoding to `Null`.
+async fn get_raw(app: &axum::Router, uri: &str) -> (StatusCode, String) {
+    let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId("analyst".into())));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(body.to_vec()).expect("404 body must be valid UTF-8");
+    (status, text)
+}
+
 /// Seed `main.events` (two columns, two append snapshots); returns the cp and the
 /// latest (second) snapshot id.
 fn seeded() -> (MemoryControlPlane, i64) {
@@ -211,33 +225,40 @@ async fn unknown_dataset_is_404() {
 #[tokio::test(flavor = "multi_thread")]
 async fn get_dataset_404_body_is_identical_for_unreadable_and_nonexistent() {
     // Ungranted `analyst`: an existing dataset and a nonexistent one must return the
-    // byte-identical 404 (no existence oracle).
+    // byte-identical 404 (no existence oracle). Compare raw body bytes/text — not
+    // JSON-decoded — since the plaintext 404 body decodes to `Value::Null` either way,
+    // which would mask two genuinely different bodies.
     let (cp1, _) = seeded();
     let app_existing = app(cp1);
-    let (s_existing, b_existing) = get(&app_existing, "/datasets/main/events").await;
+    let (s_existing, b_existing) = get_raw(&app_existing, "/datasets/main/events").await;
 
     let (cp2, _) = seeded();
     let app_missing = app(cp2);
-    let (s_missing, b_missing) = get(&app_missing, "/datasets/main/no-such-table").await;
+    let (s_missing, b_missing) = get_raw(&app_missing, "/datasets/main/no-such-table").await;
 
     assert_eq!(s_existing, StatusCode::NOT_FOUND);
     assert_eq!(s_missing, StatusCode::NOT_FOUND);
     assert_eq!(b_existing, b_missing);
+    assert_eq!(b_existing, "dataset not found");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn preview_404_body_is_identical_for_unreadable_and_nonexistent() {
+    // As above: compare raw body text, not JSON-decoded, so this genuinely proves
+    // byte-identical 404 bodies rather than two bodies that both fail to parse as JSON.
     let (cp1, _) = seeded();
     let app_existing = app_canned(cp1);
-    let (s_existing, b_existing) = get(&app_existing, "/datasets/main/events/preview").await;
+    let (s_existing, b_existing) = get_raw(&app_existing, "/datasets/main/events/preview").await;
 
     let (cp2, _) = seeded();
     let app_missing = app_canned(cp2);
-    let (s_missing, b_missing) = get(&app_missing, "/datasets/main/no-such-table/preview").await;
+    let (s_missing, b_missing) =
+        get_raw(&app_missing, "/datasets/main/no-such-table/preview").await;
 
     assert_eq!(s_existing, StatusCode::NOT_FOUND);
     assert_eq!(s_missing, StatusCode::NOT_FOUND);
     assert_eq!(b_existing, b_missing);
+    assert_eq!(b_existing, "dataset not found");
 }
 
 #[tokio::test(flavor = "multi_thread")]

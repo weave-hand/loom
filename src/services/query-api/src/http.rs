@@ -255,7 +255,7 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
         match vis.is_table_readable(&subject.0, t).await {
             Ok(true) => {}
             Ok(false) => continue,
-            Err(e) => return cp_read_error("catalog dataset acl fault", e),
+            Err(e) => return internal_error("catalog dataset acl fault", e),
         }
         // Best-effort updated-time: a table with no readable snapshot renders "".
         let updated = match catalog.current_snapshot(t).await {
