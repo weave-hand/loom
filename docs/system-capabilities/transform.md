@@ -197,7 +197,12 @@ is an upsert (redefining an existing name replaces its body), backed by
 `list_transforms`/`get_transform`/`delete_transform` (delete is idempotent and
 history-preserving: runs keep their frozen body and transform name as plain
 text with no FK, so deleting a definition never orphans or rewrites past
-runs). Typed bodies are validated at define time — unknown input or output
+runs). Deleting a **micro-batch MV** def additionally deletes that MV's
+`stream.mv_watermark` rows **in the same transaction** — a testkit contract
+certifies it against both the postgres adapter and the memory fake — so the
+deleted MV stops holding its source's GC read-position floor (see engine's
+**GC**); the floor is the only thing that made a stale registration costly, and
+dropping the registration is its documented escape hatch. Typed bodies are validated at define time — unknown input or output
 type names are a `Validation` rejection on both adapters, the same
 fail-at-define-not-at-read posture the rest of the ontology holds to.
 `TransformDef` also carries `schedule` and `on_input_commit` fields, both live:
