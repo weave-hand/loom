@@ -105,11 +105,6 @@ fn results(status: StatusCode, body: &serde_json::Value) -> Vec<serde_json::Valu
 /// solely on the post-filter now running unconditionally for an identity-bearing
 /// type.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked by iss-search-vector-merge-view-nullable: engine-serving build_merge_view \
-returns a nullability 500 on the FIRST merge-view query for a non-null vector column with a live \
-inline row (order-dependent, process-global). The handler fix is verified out-of-band (direct \
-vector_search call dedups correctly; the 11/11 vector_search_e2e suite stays green). Un-ignore \
-once the merge-view bug is fixed."]
 async fn cold_hits_suppressed_with_no_row_filter() {
     let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;
@@ -206,9 +201,6 @@ async fn cold_hits_suppressed_with_no_row_filter() {
 /// id=1 inline UPDATE — proving lifting the early `row_filters.is_empty()` return
 /// to an identity carve-out did not alter the existing row-filter path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked by iss-search-vector-merge-view-nullable: same engine-serving merge-view \
-nullability 500 — this case reads the merge view too (live inline row), so it is subject to the \
-same process-global first-query failure. Un-ignore with the sibling once the merge-view bug is fixed."]
 async fn cold_hit_suppressed_with_row_filter_regression() {
     let fx = PgFixture::shared();
     let (_init, db) = fx.fresh_db().await;

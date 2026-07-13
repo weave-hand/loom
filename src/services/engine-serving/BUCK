@@ -40,6 +40,20 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "not-null-udf",
+    crate = "not_null_udf",
+    srcs = ["tests/not_null_udf.rs"],
+    crate_root = "tests/not_null_udf.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "execute-query-e2e",
     crate = "execute_query_e2e",
@@ -82,6 +96,25 @@ loom_fixture_test(
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
         "//third-party:sqlx",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "merge-view-schema",
+    crate = "merge_view_schema",
+    srcs = ["tests/merge_view_schema.rs"],
+    crate_root = "tests/merge_view_schema.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
     ],

@@ -70,6 +70,11 @@ fn quote_ident(name: &str) -> String {
 /// predicate and each unparseable-free pushed filter are ANDed into one WHERE; a
 /// filter the unparser cannot render is skipped (the provider reports `Inexact`,
 /// so DataFusion re-applies it — correctness over completeness).
+///
+/// A filter referencing `loom_not_null` is skipped for the same reason: it is
+/// loom's own synthetic marker (the merge view's nullability restore), which the
+/// unparser WOULD happily render but Postgres cannot execute. See
+/// [`crate::not_null::contains_not_null`].
 pub fn build_scan_sql(
     relation: &str,
     schema: &Schema,
@@ -99,6 +104,9 @@ pub fn build_scan_sql(
         conds.push(bf.to_string());
     }
     for f in filters {
+        if crate::not_null::contains_not_null(f) {
+            continue;
+        }
         if let Ok(sql) = unparser.expr_to_sql(f) {
             conds.push(format!("({sql})"));
         }

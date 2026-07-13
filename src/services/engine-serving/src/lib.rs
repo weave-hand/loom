@@ -10,6 +10,7 @@ pub mod feed;
 pub mod governed;
 pub mod mv_delta;
 pub mod mv_enrich;
+pub mod not_null;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;
@@ -24,7 +25,8 @@ pub use mv_delta::mv_delta_scan;
 pub use mv_enrich::mv_enrich_scan;
 pub use provider::PgTableProvider;
 pub use serving::{
-    EngineServingError, IcebergMirrorTableProvider, build_serving_provider, execute_query,
-    execute_query_stream, prune_files, register_iceberg_table,
+    EngineServingError, IcebergMirrorTableProvider, arrow_schema_from_mirror,
+    build_serving_provider, execute_query, execute_query_stream, prune_files,
+    register_iceberg_table,
 };
 pub use vector_search::{VectorQuery, merge_topk, vector_search};
