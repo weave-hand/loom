@@ -5,14 +5,18 @@
 //!   1. an in-view insert lands in the BASE (never mints a mirror under the view name);
 //!   2. an insert escaping the view predicate is Forbidden (base unchanged);
 //!   3. a PATCH moving a row out of the view is denied; an in-view PATCH succeeds;
-//!   4. delete-by-identity only reaches in-view rows (an out-of-view identity is 404).
+//!   4. delete-by-identity only reaches in-view rows (an out-of-view identity is 404);
+//!   5. the MULTI-STEP mutate path (which reads the BASE, not the view, so it CAN locate
+//!      an out-of-view identity) surfaces that as `NotFound` too — not `WriteDenied` — so
+//!      it is not an existence oracle through the view; an in-view multi-step update
+//!      still succeeds.
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 //! Spec: docs/superpowers/specs/2026-07-11-catalog-views-design.md
 
 use control_plane_core::{
-    ActionDef, ActionKind, Catalog, CompareOp, ControlPlane, ObjectType, RowFilter, ScalarValue,
-    TypeName, ViewDef,
+    Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Catalog, CompareOp, ControlPlane,
+    Effect, ObjectType, ParamDef, PolicyTarget, RoleId, RowFilter, ScalarValue, TypeName, ViewDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -163,6 +167,24 @@ async fn base_ids(serving: &InProcessServingEngine) -> Vec<i64> {
         .collect();
     ids.sort_unstable();
     ids
+}
+
+/// The live `qty` for `id` in the physical BASE `main.widget` (a direct base scan,
+/// unaffected by any view). `None` if no live row matches. Used to prove an out-of-view
+/// multi-step mutate attempt left the base row untouched.
+async fn base_widget_qty(serving: &InProcessServingEngine, id: i64) -> Option<i64> {
+    let rows = serving
+        .fetch_rows(
+            &format!("SELECT \"qty\" FROM \"main\".\"widget\" WHERE \"id\" = {id}"),
+            &[],
+            None,
+        )
+        .await
+        .expect("base scan");
+    rows.rows.first().and_then(|r| match r.first() {
+        Some(SqlValue::Int(i)) => Some(*i),
+        _ => None,
+    })
 }
 
 /// Is there a physical mirror table under the view's own name? A correct view-aware
@@ -422,6 +444,161 @@ async fn delete_targets_only_in_view_rows() {
     assert!(
         read_widget(&cp, &pool, &subj, 10).await.is_none(),
         "the deleted EU row is gone from the view"
+    );
+
+    drop(warehouse);
+}
+
+/// Multi-step mutate must not become an existence oracle through a view. Unlike the
+/// single-object path (which locates its target through the VIEW name, so an out-of-view
+/// identity is simply invisible ⇒ 404), the multi-step path's Update/Delete step
+/// (`govern_and_build_mutate`) reads the physical BASE (its whole-table `Overwrite` would
+/// otherwise drop every out-of-view row) — so it CAN locate an out-of-view identity there.
+/// Before this fix that surfaced as `WriteDenied` (403) via the view-predicate leg-1 check
+/// in `mutate_governance`, which — unlike a 404 — confirms to the caller that a row exists.
+/// This test drives a genuine multi-step action (an Insert on an unrelated `Note` type
+/// alongside an Update on the view-bound `Widget` type) so the Update rides
+/// `govern_and_build_mutate`, not the single-object inline-delta path, and asserts:
+///   - an out-of-view identity ⇒ `NotFound` (404), not `WriteDenied` (403);
+///   - the base row is left untouched (the whole action is all-or-nothing);
+///   - an in-view identity through the same multi-step action still succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn multi_step_update_out_of_view_identity_is_not_found() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    // Seed one EU (in-view) + one US (out-of-view) row directly in the base.
+    let (subj, _writer) = setup_view_widget(
+        fx,
+        &cp,
+        &db,
+        &pool,
+        &[10, 20],
+        &["eu", "us"],
+        &[1, 2],
+        &["EU", "US"],
+    )
+    .await;
+
+    // An unrelated second type + action step, so the Update genuinely rides the
+    // multi-step file-tier path (`govern_and_build_mutate`) rather than being
+    // single-stepped down to `run_mutate`.
+    cp.ontology()
+        .define_type(
+            ObjectType::build("Note", ("main", "note"))
+                .prop_req("id", "Long")
+                .identity("id")
+                .done(),
+        )
+        .await
+        .expect("define_type Note");
+    cp.grant(
+        &RoleId("writers".into()),
+        Action::Write,
+        PolicyTarget::Type(TypeName("Note".into())),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant Note write");
+
+    cp.ontology()
+        .define_action(ActionDef {
+            name: ActionName("noteAndUpdateWidget".into()),
+            steps: vec![
+                ActionStep {
+                    target: TypeName("Note".into()),
+                    kind: ActionKind::Insert,
+                    parameters: vec![ParamDef {
+                        name: "noteId".into(),
+                        ty: "Long".into(),
+                        required: true,
+                        binds: Some("id".into()),
+                    }],
+                    assignments: vec![],
+                    bind: None,
+                },
+                ActionStep {
+                    target: TypeName("Widget".into()),
+                    kind: ActionKind::Update,
+                    parameters: vec![
+                        ParamDef {
+                            name: "wId".into(),
+                            ty: "Long".into(),
+                            required: true,
+                            binds: Some("id".into()),
+                        },
+                        ParamDef {
+                            name: "wQty".into(),
+                            ty: "Long".into(),
+                            required: false,
+                            binds: Some("qty".into()),
+                        },
+                    ],
+                    assignments: vec![],
+                    bind: None,
+                },
+            ],
+            downstream: Vec::new(),
+        })
+        .await
+        .expect("define noteAndUpdateWidget");
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // The out-of-view US row (id=20): the multi-step Update step reads the BASE and CAN
+    // locate it — must surface `NotFound`, never `WriteDenied` (no existence oracle).
+    let err = run_action(
+        "noteAndUpdateWidget",
+        json!({ "noteId": "501", "wId": "20", "wQty": "99" })
+            .as_object()
+            .unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect_err("an out-of-view identity in a multi-step update is not found");
+    assert!(
+        matches!(err, ActionError::NotFound),
+        "multi-step update targeting an out-of-view identity is NotFound (404), \
+         not WriteDenied (403) — no existence oracle through the view, got {err:?}"
+    );
+
+    // All-or-nothing: nothing was written (the base row is untouched by the refused step).
+    let base_serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    assert_eq!(
+        base_widget_qty(&base_serving, 20).await,
+        Some(2),
+        "the out-of-view row's qty is untouched by the refused multi-step update"
+    );
+
+    // The in-view EU row (id=10) through the SAME multi-step action still succeeds.
+    run_action(
+        "noteAndUpdateWidget",
+        json!({ "noteId": "502", "wId": "10", "wQty": "55" })
+            .as_object()
+            .unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("an in-view multi-step update succeeds");
+    let after = read_widget(&cp, &pool, &subj, 10)
+        .await
+        .expect("still in view");
+    assert_eq!(
+        after["qty"],
+        json!("55"),
+        "the in-view multi-step update applied"
     );
 
     drop(warehouse);

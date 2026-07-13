@@ -1069,6 +1069,21 @@ pub fn enforce_mutate_policy(
 /// constraint check on the SET values, returning the `ConstraintViolation` error on any
 /// violation. Returns the computed `new_row` (`None` for DELETE). Pure over its inputs; the
 /// single home for the PATCH + governance block both callers had verbatim.
+///
+/// `view_leg1_not_found`: how to surface a view-predicate leg-1 failure (the EXISTING row is
+/// outside the writer's view). The single-object path (`run_mutate`) locates its target
+/// through the VIEW name, so an out-of-view identity is already invisible there (0 rows ⇒
+/// `NotFound`, before this function ever runs) — this leg is pure belt-and-braces for that
+/// caller, so it keeps the ordinary `WriteDenied(RowFilter)` shape. The multi-step path
+/// (`govern_and_build_mutate`) must instead read the BASE table (its whole-table `Overwrite`
+/// would otherwise silently drop every out-of-view row), so it CAN and does locate an
+/// out-of-view identity here. Surfacing that as `WriteDenied` (403) would let a caller
+/// distinguish "row exists but is denied" from "row doesn't exist" for identities outside
+/// their view — an existence oracle through the view. Pass `true` from that caller so leg-1
+/// instead surfaces the same `NotFound` (404) the single-object path gives for an invisible
+/// row, keeping the two paths' observable behavior consistent. Leg 3 (the post-image escaping
+/// the view on UPDATE) is unaffected either way: the row was visibly the caller's, so moving
+/// it out of the view is a policy denial, not a missing row.
 #[expect(
     clippy::too_many_arguments,
     reason = "the view predicate joins the existing target/columns/policies/action inputs"
@@ -1082,6 +1097,7 @@ fn mutate_governance(
     view_predicate: Option<&RowFilter>,
     action_name: &str,
     is_update: bool,
+    view_leg1_not_found: bool,
 ) -> Result<Option<Vec<SqlValue>>, ActionError> {
     // UPDATE = existing with the SET columns overwritten; DELETE keeps `None`.
     let new_row: Option<Vec<SqlValue>> = is_update.then(|| {
@@ -1115,6 +1131,19 @@ fn mutate_governance(
     // a denial is the same caller-scoped `RowFilter` reason (the predicate stays here).
     if let Some(pred) = view_predicate {
         if !view_row_admits(pred, columns, existing) {
+            if view_leg1_not_found {
+                // Multi-step path: the base-table read CAN locate an out-of-view identity
+                // (unlike the single-object path's view-scoped read, which never returns it).
+                // Surface the same `NotFound` the single-object path gives for an invisible
+                // row — a `WriteDenied` here would let the caller distinguish "exists but
+                // denied" from "doesn't exist" for out-of-view identities, i.e. an existence
+                // oracle through the view.
+                tracing::info!(
+                    action = action_name,
+                    "mutate not found: existing row falls outside the target view (no existence oracle through a view)"
+                );
+                return Err(ActionError::NotFound);
+            }
             tracing::info!(
                 action = action_name,
                 "mutate denied: existing row falls outside the target view"
@@ -1294,6 +1323,10 @@ async fn run_mutate(
             view_predicate,
             action_name,
             is_update,
+            // Single-object path: the identity was already located through the VIEW name
+            // above (0 rows ⇒ `NotFound`), so this leg is belt-and-braces, not the primary
+            // gate — keep the ordinary `WriteDenied` shape.
+            false,
         )?;
 
         // 5. Commit ONE inline delta, guarded by the CAS on `v0`. UPDATE writes the full
@@ -1767,6 +1800,11 @@ async fn govern_and_build_mutate(
         view.and_then(|v| v.predicate.as_ref()),
         action_name,
         is_update,
+        // Multi-step path: the read above is over the BASE table (so the whole-table
+        // `Overwrite` doesn't drop out-of-view rows), so it CAN locate an out-of-view
+        // identity here — surface `NotFound`, not `WriteDenied`, so this path never becomes
+        // an existence oracle through the view (see `mutate_governance`'s doc comment).
+        true,
     )?;
 
     // The full post-image: patch (UPDATE) or drop (DELETE) the targeted row, keep the rest verbatim.
