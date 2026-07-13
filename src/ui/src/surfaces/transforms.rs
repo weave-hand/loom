@@ -225,6 +225,9 @@ pub struct TransformDrawerProps {
     pub on_tab: Callback<AttrValue>,
     pub runs: Vec<RunRow>,
     pub runs_status: LoadStatus,
+    /// A non-401 Run/Delete failure, rendered beside the action buttons
+    /// (mirrors `TransformEditorProps.server_error`). `None` = no error.
+    pub action_error: Option<AttrValue>,
     pub on_edit: Callback<()>,
     pub on_run: Callback<()>,
     pub on_delete: Callback<()>,
@@ -275,6 +278,9 @@ pub fn transform_drawer(props: &TransformDrawerProps) -> Html {
                     { def_metadata(&props.def) }
                     <SqlEditor key={key} value={props.def.body.sql.clone()}
                                on_change={no_op} read_only={true} />
+                    if let Some(msg) = &props.action_error {
+                        <p class="error">{ msg }</p>
+                    }
                     <div class="shell-drawer-actions">
                         <Button variant={ButtonVariant::Secondary}
                                 onclick={Callback::from(move |_| on_edit.emit(()))}>{ "Edit" }</Button>

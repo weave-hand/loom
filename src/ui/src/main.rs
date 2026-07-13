@@ -15,8 +15,9 @@ use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
     AuthError, BadgeTone, ButtonVariant, CompletionSchema, DatasetDetail, DatasetRow,
     FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef, TransformDefView,
-    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, form_to_body,
-    form_to_def, schema_from_dataset_details, schema_from_types,
+    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, bump_epoch,
+    delete_action_effect, form_to_body, form_to_def, run_action_effect,
+    schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::collections::HashMap;
@@ -119,6 +120,20 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let tf_def_gen = use_mut_ref(|| 0u64);
     let tf_runs_gen = use_mut_ref(|| 0u64);
     let tf_schema_gen = use_mut_ref(|| 0u64);
+    // Render-participating runs-fetch epoch: bumped on a successful Run so the runs
+    // effect refires even when (selection, tab) is unchanged — i.e. when the response
+    // lands with the Runs tab already active. (tf_runs_gen stays the in-flight
+    // staleness guard; this is the dep invalidator.)
+    //
+    // The `use_mut_ref` is the SOURCE OF TRUTH and the `use_state` only mirrors it for
+    // the dep tuple: a UseStateHandle derefs to the value captured at the render that
+    // built the callback, and the Run button is not disabled in-flight, so two clicks
+    // from the same render would both compute `E + 1` from the same snapshot — the
+    // second response would re-set the value the first already stored, the dep tuple
+    // would not change, and the Runs tab would sit empty with no refetch. Bumping the
+    // ref (see `bump_epoch`) keeps the counter authoritative.
+    let tf_runs_epoch = use_state(|| 0u64);
+    let tf_runs_epoch_ref = use_mut_ref(|| 0u64);
 
     // On mount: load the dataset list. Catalog is the default surface, so a
     // mount-keyed effect loads it exactly once (mirrors the ontology type list).
@@ -382,6 +397,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let tf_drawer_tab = tf_drawer_tab.clone();
         let tf_editing = tf_editing.clone();
         let tf_edit_name = tf_edit_name.clone();
+        let tf_server_error = tf_server_error.clone();
         let tf_runs = tf_runs.clone();
         let transforms = transforms.clone();
         let tf_def_gen = tf_def_gen.clone();
@@ -395,6 +411,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
             tf_def.set(None);
             tf_editing.set(None);
             tf_edit_name.set(None);
+            tf_server_error.set(None); // a stale action error never leaks onto a new selection
             tf_runs.set(Vec::new()); // force the runs tab to refetch for the new selection
             tf_drawer_tab.set(AttrValue::from("definition"));
             if let Some(idx) = *selected
@@ -433,8 +450,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let base = net::api_base();
         let on_logout = props.on_logout.clone();
         let already_loaded = !tf_runs.is_empty();
-        let dep = (*tf_selected, (*tf_drawer_tab).clone());
-        use_effect_with(dep, move |(sel, tab)| {
+        let dep = (*tf_selected, (*tf_drawer_tab).clone(), *tf_runs_epoch);
+        use_effect_with(dep, move |(sel, tab, _epoch)| {
             if tab.as_str() != "runs" || already_loaded {
                 return;
             }
@@ -737,9 +754,20 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         }
                     })
                 };
+                // Cancel must clear the editor's validation + server errors, not just close
+                // the editor: `tf_server_error` is SHARED with the drawer's action-error
+                // line, so a failed Save/Run-ad-hoc left in that slot would render beside
+                // the drawer's Run/Delete buttons as though a Run or Delete had failed.
+                // (Mirrors what on_edit/on_new already do on the way in.)
                 let on_cancel = {
                     let e = tf_editing.clone();
-                    Callback::from(move |()| e.set(None))
+                    let errors = tf_errors.clone();
+                    let server_error = tf_server_error.clone();
+                    Callback::from(move |()| {
+                        errors.set(Vec::new());
+                        server_error.set(None);
+                        e.set(None);
+                    })
                 };
                 html! {
                     <TransformEditor form={form} schema={(*tf_schema).clone()}
@@ -769,61 +797,85 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         editing.set(Some(form_from_def(&def)));
                     })
                 };
-                // Run saved now → refetch runs (clear tf_runs so the runs effect refires) + open Runs tab.
+                // Run saved now → on success clear tf_runs + bump the runs epoch (so the runs
+                // effect refires even if the Runs tab is already active) + open Runs tab; on a
+                // non-401 failure surface the message beside the buttons and stay on Definition.
                 let on_run = {
                     let name = def.name.clone();
                     let tf_runs = tf_runs.clone();
+                    let tf_runs_epoch = tf_runs_epoch.clone();
+                    let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
                     let tf_drawer_tab = tf_drawer_tab.clone();
+                    let server_error = tf_server_error.clone();
                     let on_logout = props.on_logout.clone();
                     let token = props.token.to_string();
                     let base = net::api_base();
                     Callback::from(move |()| {
-                        let (name, tf_runs, tf_drawer_tab, on_logout) = (
+                        server_error.set(None);
+                        let (name, tf_runs, tf_runs_epoch, tf_drawer_tab) = (
                             name.clone(),
                             tf_runs.clone(),
+                            tf_runs_epoch.clone(),
                             tf_drawer_tab.clone(),
-                            on_logout.clone(),
                         );
+                        let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
+                        let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
                         wasm_bindgen_futures::spawn_local(async move {
                             match net::run_transform(&base, &token, &name).await {
-                                Ok(_run_id) => {
-                                    tf_runs.set(Vec::new());
-                                    tf_drawer_tab.set(AttrValue::from("runs"));
-                                }
                                 Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                Err(_e) => tf_drawer_tab.set(AttrValue::from("runs")),
+                                other => {
+                                    let eff = run_action_effect(
+                                        other.map(|_run_id| ()).map_err(|e| e.to_string()),
+                                    );
+                                    server_error.set(eff.error.map(AttrValue::from));
+                                    if eff.refetch_runs {
+                                        tf_runs.set(Vec::new());
+                                        // Bump the authoritative ref, then mirror it into the
+                                        // dep-tuple state — never `*tf_runs_epoch + 1` (a stale
+                                        // render snapshot; see the declaration above).
+                                        let next = bump_epoch(&mut tf_runs_epoch_ref.borrow_mut());
+                                        tf_runs_epoch.set(next);
+                                    }
+                                    if eff.open_runs_tab {
+                                        tf_drawer_tab.set(AttrValue::from("runs"));
+                                    }
+                                }
                             }
                         });
                     })
                 };
-                // Delete → clear selection + refetch list.
+                // Delete → on success clear selection + refetch list; on a non-401 failure
+                // surface the message beside the buttons (row + drawer stay put).
                 let on_delete = {
                     let name = def.name.clone();
                     let tf_selected = tf_selected.clone();
                     let tf_def = tf_def.clone();
+                    let server_error = tf_server_error.clone();
                     let on_logout = props.on_logout.clone();
                     let token = props.token.to_string();
                     let base = net::api_base();
                     let reload_list = reload_list.clone();
                     Callback::from(move |()| {
-                        let (name, tf_selected, tf_def, on_logout) = (
-                            name.clone(),
-                            tf_selected.clone(),
-                            tf_def.clone(),
-                            on_logout.clone(),
-                        );
+                        server_error.set(None);
+                        let (name, tf_selected, tf_def) =
+                            (name.clone(), tf_selected.clone(), tf_def.clone());
+                        let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
                         let reload_list = reload_list.clone();
                         wasm_bindgen_futures::spawn_local(async move {
                             match net::delete_transform(&base, &token, &name).await {
-                                Ok(()) => {
-                                    tf_selected.set(None);
-                                    tf_def.set(None);
-                                    reload_list();
-                                }
                                 Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                Err(_e) => {}
+                                other => {
+                                    let eff =
+                                        delete_action_effect(other.map_err(|e| e.to_string()));
+                                    server_error.set(eff.error.map(AttrValue::from));
+                                    if eff.clear_selection {
+                                        tf_selected.set(None);
+                                        tf_def.set(None);
+                                        reload_list();
+                                    }
+                                }
                             }
                         });
                     })
@@ -832,6 +884,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     <TransformDrawer def={def} active_tab={(*tf_drawer_tab).clone()}
                         on_tab={on_tab}
                         runs={(*tf_runs).clone()} runs_status={(*tf_runs_status).clone()}
+                        action_error={(*tf_server_error).clone()}
                         on_edit={on_edit} on_run={on_run} on_delete={on_delete} />
                 }
             } else {

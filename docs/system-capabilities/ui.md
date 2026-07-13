@@ -53,7 +53,20 @@ so fresh completions take effect despite Monaco's mount-time prop capture. Admin
 gating reuses the login session's bearer token and renders a `403` as a "requires
 admin" empty-state (no separate admin login); the selection-keyed fetches are
 **epoch-guarded** (three per-stream generation counters) so a slow prior-selection
-fetch cannot stale the current view. The nav `Pipelines` stub was renamed to
+fetch cannot stale the current view.
+
+The drawer's **actions surface their failures** (#437). `TransformDrawer` carries an
+`action_error` slot rendered beside its buttons, so a 400/404/network failure on **Run
+saved** or **Delete** shows the rejection body — previously those arms swallowed
+everything that wasn't a `401`, which made a failed delete look like a no-op. A `401`
+still fails closed to logout, unchanged. The decision (logout / show this message /
+clear the error and bump the runs epoch) is a **pure function** in `:ui-core`
+(`run_action_effect` / `delete_action_effect` → `DrawerActionEffect`) that `main.rs`
+routes through, so it is unit-testable natively despite the UI having no component
+render harness (`#fut-ui-component-test-fixture`). The same change closes a related
+edge: the runs-history effect is keyed on a **runs epoch** alongside
+`(selection, tab)`, so a Run fired while the Runs tab is *already* active refetches
+rather than just clearing the list. The nav `Pipelines` stub was renamed to
 `Transforms`. Pure parse / form-to-request / completion-schema / display logic lives
 in `loom_ui_core` (`rust_test`'d — `transforms-parse`/`-form`/`-schema`/`-display`);
 the Yew view glue is browser-verified. The shared `Shell` also gained a **resizable,
@@ -127,9 +140,6 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   (link traversal, per-type property definitions).
 - `#fut-object-explorer-filtering` — filtering and search over the object table.
 - `#fut-object-explorer-routing` — URL routing and deep-linking (`yew-router`).
-- `#iss-ui-transforms-drawer-errors` — the Transforms drawer's Run/Delete actions
-  swallow non-401 errors (no error slot on `TransformDrawer`), and a Run fired while
-  already on the Runs tab does not refetch history.
 - `#fut-ui-sql-completion-polish` — the Transforms editor works *around* Monaco's
   mount-time prop capture with a schema-content remount key; the underlying
   multi-editor / dedup / live-prop-swap polish is still open.

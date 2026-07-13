@@ -11,10 +11,11 @@ pub use completion::{
 
 mod transforms;
 pub use transforms::{
-    FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView, TransformForm,
-    TransformIo, TransformKind, TransformSummary, clamp_drawer_width, form_to_body, form_to_def,
-    kind_badge_label, parse_runs, parse_transform_def, parse_transform_list, run_state_status,
-    run_state_tone, schema_from_dataset_details, schema_from_types, trigger_label,
+    DrawerActionEffect, FieldError, OutputMode, RunRow, TableRef, TransformBody, TransformDefView,
+    TransformForm, TransformIo, TransformKind, TransformSummary, bump_epoch, clamp_drawer_width,
+    delete_action_effect, form_to_body, form_to_def, kind_badge_label, parse_runs,
+    parse_transform_def, parse_transform_list, run_action_effect, run_state_status, run_state_tone,
+    schema_from_dataset_details, schema_from_types, trigger_label,
 };
 
 /// Design-token hex values that must be consumed *outside* the CSS layer and so

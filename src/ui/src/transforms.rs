@@ -481,3 +481,83 @@ pub fn kind_badge_label(kind: TransformKind) -> &'static str {
 pub fn clamp_drawer_width(px: i32, min: u32, max: u32) -> u32 {
     u32::try_from(px).unwrap_or(0).clamp(min, max)
 }
+
+/// Bump the runs-fetch epoch and return its new value.
+///
+/// Takes the **authoritative** counter cell, deliberately not a value snapshot.
+/// The epoch is a yew `use_state` that participates in the runs effect's dep
+/// tuple, but a `UseStateHandle` derefs to the value captured at the render
+/// that built the callback — so `epoch.set(*epoch + 1)` is snapshot-derived.
+/// The Run button is not disabled in-flight, so two clicks produce two callbacks
+/// from the same render, both computing `E + 1`: the second response re-sets the
+/// value the first already stored, the dep tuple does not change, the runs effect
+/// never refires, and the Runs tab is left empty with no refetch. Bumping through
+/// a `use_mut_ref` source of truth (mirrored into the `use_state` that feeds the
+/// deps) makes successive bumps strictly increasing regardless of stale snapshots.
+#[must_use]
+pub fn bump_epoch(epoch: &mut u64) -> u64 {
+    *epoch = epoch.wrapping_add(1);
+    *epoch
+}
+
+/// The `Workspace` state transition applied when a drawer action (Run saved /
+/// Delete) resolves. Pure and DOM-free so the drawer-action contract is
+/// `rust_test`-able (component rendering is not — see `src/ui/CLAUDE.md`).
+/// The caller routes `FetchError::Unauthorized` to logout BEFORE building the
+/// `Result<(), String>` — a 401 never reaches these helpers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawerActionEffect {
+    /// The surface's server-error line (`tf_server_error`): `Some(msg)` renders
+    /// beside the drawer's action buttons; `None` clears a previous error.
+    pub error: Option<String>,
+    /// Flip the drawer to the Runs tab.
+    pub open_runs_tab: bool,
+    /// Clear `tf_runs` and bump the runs-fetch epoch, so the runs effect
+    /// refires even when the Runs tab is already part of its dep tuple.
+    pub refetch_runs: bool,
+    /// Clear the selection + loaded def and reload the transform list (the
+    /// selected row no longer exists).
+    pub clear_selection: bool,
+}
+
+/// The transition for a **Run saved** response. Success opens the Runs tab and
+/// forces a refetch; failure surfaces the message and deliberately stays on
+/// the Definition tab, where the error line renders beside the Run button.
+#[must_use]
+pub fn run_action_effect(result: Result<(), String>) -> DrawerActionEffect {
+    match result {
+        Ok(()) => DrawerActionEffect {
+            error: None,
+            open_runs_tab: true,
+            refetch_runs: true,
+            clear_selection: false,
+        },
+        Err(msg) => DrawerActionEffect {
+            error: Some(msg),
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: false,
+        },
+    }
+}
+
+/// The transition for a **Delete** response. Success clears the selection
+/// (the row is gone); failure surfaces the message and otherwise changes
+/// nothing — the row and drawer remain.
+#[must_use]
+pub fn delete_action_effect(result: Result<(), String>) -> DrawerActionEffect {
+    match result {
+        Ok(()) => DrawerActionEffect {
+            error: None,
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: true,
+        },
+        Err(msg) => DrawerActionEffect {
+            error: Some(msg),
+            open_runs_tab: false,
+            refetch_runs: false,
+            clear_selection: false,
+        },
+    }
+}
