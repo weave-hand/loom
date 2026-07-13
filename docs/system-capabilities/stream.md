@@ -39,9 +39,15 @@ validated before any row is written:
 - Redeclaring an existing table with a different bucket count is a
   `Conflict`; converting a pre-existing **batch** table to `stream`/`cdc` is a
   `Validation` error (no retroactive conversion).
-- A `mode=cdc` request against a table already declared a **different kind**
-  (e.g. an existing `log` table) is rejected — but the converse is not: see
-  `#iss-stream-log-vs-cdc-declare` in Known gaps.
+- A request against a table already declared a **different kind** is rejected as
+  `Validation`, in **either** direction (#432): `mode=cdc` against an existing
+  `log` table, and `mode=stream` (log) against an existing `cdc` table — the
+  latter even when the bucket counts match, which is the only case where the
+  count check alone would have let it through. Because both HTTP surfaces and
+  the micro-batch MV commit path share this seam, the same guard also refuses an
+  MV whose declared **log** output names a pre-existing CDC table (a commit that
+  would otherwise stamp log-framing into CDC storage). A *different* bucket count
+  still reports the count `Conflict` first, in both directions.
 - A concurrent first-writer race is resolved by an `ON CONFLICT DO NOTHING`
   insert followed by a re-read; the loser's request is validated against
   whatever the winner actually recorded.
@@ -654,9 +660,11 @@ from the continuous-query slice.
   cannot be read as a delta **source** until then. A downstream MV chained onto a
   fresh MV output wedges until the upstream flushes — see **Stream joins** /
   **Continuous queries**.
-- `#iss-stream-log-vs-cdc-declare` — a `mode=stream` (log) declaration
-  against an already-CDC table is silently accepted (only the converse,
-  `mode=cdc` against an existing non-CDC kind, is rejected).
+- `#iss-stream-first-declare-race-kind` — the kind check is symmetric on the
+  count-equal redeclare arm, but the **first-declare** arm's post-`ON CONFLICT`
+  re-read compares only the bucket count, so two writers racing to declare a
+  brand-new table can still land a log request against a CDC winner's row (and
+  vice versa).
 - `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards GC only;
   the paths that **end-cap** unread source offsets do not consult `mv_floor`, so
   an MV can still be starved by an end-cap (byte-retention defense ≠
