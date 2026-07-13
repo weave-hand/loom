@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, ActionStep, ConstraintViolation, ControlPlane,
     ControlPlaneError, DatasetRef, Decision, EventType, LineageEvent, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyDef, PropertyValidator, RunId, SubjectId, resolve_logical,
+    PolicyTarget, PropertyDef, PropertyValidator, RowFilter, RunId, SubjectId, TableRef, ViewDef,
+    resolve_logical,
 };
 use serde_json::Value;
 use uuid::Uuid;
@@ -136,11 +137,15 @@ pub fn check_conformance(action: &ActionDef, target: &ObjectType) -> Result<(), 
 /// step runs the single-step conformance checks against its OWN target; a `StepRef { bind, prop }`
 /// assignment additionally requires `bind` to name a strictly-earlier bound step and `prop` to be
 /// a real property of that step's target. A step's own `bind` is added to the environment only
-/// AFTER its checks, so a self-reference is rejected. Pure. `Ok(())` if every step conforms, else
-/// the first non-conforming step's `ActionError::Misconfigured`.
+/// AFTER its checks, so a self-reference is rejected. `bases` is a parallel slice of each target's
+/// resolved physical base (a view lowered to its base, a plain table to itself) — the same-table
+/// Update/Delete clash guard compares these, so a view and its base (or two sibling views) clash.
+/// Pure. `Ok(())` if every step conforms, else the first non-conforming step's
+/// `ActionError::Misconfigured`.
 pub fn check_conformance_steps(
     action: &ActionDef,
     targets: &[ObjectType],
+    bases: &[TableRef],
 ) -> Result<(), ActionError> {
     if action.steps.len() != targets.len() {
         return Err(ActionError::Misconfigured(format!(
@@ -150,6 +155,14 @@ pub fn check_conformance_steps(
             targets.len()
         )));
     }
+    if targets.len() != bases.len() {
+        return Err(ActionError::Misconfigured(format!(
+            "action `{}` has {} resolved targets but {} resolved bases",
+            action.name.0,
+            targets.len(),
+            bases.len()
+        )));
+    }
 
     // Same-table multi-mutation guard: a multi-step Update/Delete stages an `Overwrite` built from
     // the table's CURRENT COMMITTED contents (nothing in the action has committed yet). So if ANY
@@ -157,20 +170,24 @@ pub fn check_conformance_steps(
     // a sibling Insert's row (a spurious NotFound) or clobbering another step's post-image (a silent
     // lost update). Reject it at define time. Insert+Insert to one table stays allowed (those
     // coalesce as appends); only an Update/Delete step sharing a table with another step is rejected.
-    for (i, (step, target)) in action.steps.iter().zip(targets).enumerate() {
+    // Compare RESOLVED BASE tables, not the steps' bound refs: two steps whose targets
+    // resolve to the same physical base clash even when their `TableRef`s differ (a view
+    // vs its base, or two sibling views over one base) — the multi-step Overwrite still
+    // reads that base's pre-action state.
+    for (i, (step, base_i)) in action.steps.iter().zip(bases).enumerate() {
         if !matches!(step.kind, ActionKind::Update | ActionKind::Delete) {
             continue;
         }
         let clashes = action
             .steps
             .iter()
-            .zip(targets)
+            .zip(bases)
             .enumerate()
-            .any(|(j, (_, t))| j != i && t.table == target.table);
+            .any(|(j, (_, base_j))| j != i && base_j == base_i);
         if clashes {
             return Err(ActionError::Misconfigured(format!(
                 "action `{}` cannot Update/Delete table `{}`.`{}` that another step writes",
-                action.name.0, target.table.schema, target.table.name
+                action.name.0, base_i.schema, base_i.name
             )));
         }
     }
@@ -681,6 +698,39 @@ pub enum ActionOutcome {
     Multi(Vec<StepResult>),
 }
 
+/// Resolve a step target's physical write BASE and its optional view definition.
+/// When `target.table` names a catalog view, the physical base is the view's `base`
+/// (every engine RPC must land there) and the view's predicate rides along to gate
+/// the write; otherwise the base is `target.table` itself and there is no view. The
+/// engine writer is purely physical — it mints a mirror table under whatever ref it
+/// is handed — so this lowering plus the predicate gates below are the ONLY thing
+/// keeping a view-bound write inside its own view.
+async fn resolve_write_base(
+    target: &ObjectType,
+    deps: &ActionDeps<'_>,
+) -> Result<(TableRef, Option<ViewDef>), ActionError> {
+    let view = deps.cp.catalog().get_view(&target.table).await?;
+    let base = view
+        .as_ref()
+        .map(|v| v.base.clone())
+        .unwrap_or_else(|| target.table.clone());
+    Ok((base, view))
+}
+
+/// Does a concrete row (parallel `columns`/`values`) satisfy a view's row `predicate`,
+/// SQL-faithfully? Three-valued and fail-closed: only `Some(true)` admits — a NULL or
+/// otherwise-UNKNOWN predicate truth rejects, mirroring the ACL row-filter posture and
+/// the engine's view-scoped read (an UNKNOWN `WHERE` row is out of the view). The
+/// write-side twin of the read path's view predicate pushdown.
+fn view_row_admits(predicate: &RowFilter, columns: &[String], values: &[SqlValue]) -> bool {
+    let row: BTreeMap<&str, &SqlValue> = columns
+        .iter()
+        .map(String::as_str)
+        .zip(values.iter())
+        .collect();
+    write_filter::eval(predicate, &row) == Some(true)
+}
+
 /// INSERT: parse the body into a new row, gate it through the fine-grained Write policy
 /// (deny-column over the set columns + row-filter on the inserted row), then atomically
 /// commit the row and its lineage event via `write_object`.
@@ -697,6 +747,9 @@ async fn run_insert(
         .first()
         .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
     let policy_target = PolicyTarget::Type(step.target.clone());
+    // View lowering: a type bound to a view writes into the view's physical BASE, gated
+    // by the view predicate below. A plain table binds to itself.
+    let (base, view) = resolve_write_base(target, deps).await?;
 
     // 4. Resolve the write row: parse+validate the typed params, remap each to its bound
     //    property, and append the action's constant assignments (property-keyed pairs). The
@@ -767,6 +820,20 @@ async fn run_insert(
     // 5. Expand to the target type's FULL property set (declared order).
     let (full_columns, full_values, full_logical) = expand_to_full_row(target, &pairs);
 
+    // 4d. View predicate gate: a view-bound insert whose FULL row falls outside the
+    //     view's predicate is Forbidden (a caller may not write a row into a view it
+    //     cannot then see). Fail-closed on NULL/UNKNOWN, matching the ACL row-filter
+    //     denial posture. A plain table (no view) admits everything.
+    if let Some(pred) = view.as_ref().and_then(|v| v.predicate.as_ref())
+        && !view_row_admits(pred, &full_columns, &full_values)
+    {
+        tracing::info!(
+            action = action_name,
+            "insert denied: row falls outside the target view's predicate"
+        );
+        return Err(ActionError::Forbidden);
+    }
+
     // 6. Mint the run id and build the lineage event UP FRONT, so the caller owns the
     //    run_id and hands it to the engine, which commits row + event atomically.
     //    inputs=[] (a create-from-params action has no upstream datasets). The old
@@ -784,7 +851,7 @@ async fn run_insert(
     //    The resolved downstream jobs ride this same write tx (commit-or-neither).
     deps.action_engine
         .write_object(
-            &target.table,
+            &base,
             &full_columns,
             &full_values,
             &full_logical,
@@ -823,24 +890,36 @@ fn ensure_cow_supported(target: &ObjectType) -> Result<(), ActionError> {
 /// single param is the resolved identity value. The read runs over the identity-aware
 /// merge view, so it returns the current merged version of exactly the targeted object.
 fn select_object_sql(target: &ObjectType, id_column: &str) -> String {
-    select_object_sql_where(target, Some(id_column))
+    // The VIEW name (target.table): the engine expands it to the predicate/projection-
+    // narrowed base, so an out-of-view identity reads as 0 rows (leg-1 NotFound for free).
+    select_object_sql_where(target, &target.table, Some(id_column))
 }
 
 /// The full-table read backing the multi-step Update/Delete copy-on-write overwrite:
 /// [`select_object_sql`] WITHOUT the identity `where` clause, so it returns EVERY live row of
 /// `target` (over the identity-aware merge view) in property order. The caller locates the
 /// targeted identity row, patches (Update) or drops (Delete) it, and writes the resulting row
-/// set back as an `Overwrite` — every OTHER row preserved verbatim.
-fn select_object_sql_all(target: &ObjectType) -> String {
-    select_object_sql_where(target, None)
+/// set back as an `Overwrite` — every OTHER row preserved verbatim. `table` is read
+/// explicitly (not `target.table`): the multi-step Overwrite path reads the physical
+/// BASE so its rewrite preserves out-of-view rows, while the view predicate gates the
+/// targeted row separately.
+fn select_object_sql_all(target: &ObjectType, table: &TableRef) -> String {
+    select_object_sql_where(target, table, None)
 }
 
 /// Shared builder for the targeted ([`select_object_sql`]) and full-table
 /// ([`select_object_sql_all`]) reads: `SELECT <all props> FROM "schema"."table"` with an
 /// optional `WHERE "<id>" = ?` predicate (identifiers double-quoted, embedded quotes doubled;
-/// column order = property order). The `?` placeholder is substituted by the serving seam via
-/// `inline_params` — a `$1` would never be bound.
-fn select_object_sql_where(target: &ObjectType, id_column: Option<&str>) -> String {
+/// column order = property order). The read `table` is passed explicitly — the targeted
+/// single-object read uses the VIEW name (so the engine narrows it), the whole-table
+/// Overwrite read uses the physical BASE (so out-of-view rows survive the rewrite). The
+/// `?` placeholder is substituted by the serving seam via `inline_params` — a `$1` would
+/// never be bound.
+fn select_object_sql_where(
+    target: &ObjectType,
+    table: &TableRef,
+    id_column: Option<&str>,
+) -> String {
     let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
     let cols = target
         .properties
@@ -854,8 +933,8 @@ fn select_object_sql_where(target: &ObjectType, id_column: Option<&str>) -> Stri
     };
     format!(
         "SELECT {cols} FROM {}.{}{predicate}",
-        q(&target.table.schema),
-        q(&target.table.name),
+        q(&table.schema),
+        q(&table.name),
     )
 }
 
@@ -990,12 +1069,17 @@ pub fn enforce_mutate_policy(
 /// constraint check on the SET values, returning the `ConstraintViolation` error on any
 /// violation. Returns the computed `new_row` (`None` for DELETE). Pure over its inputs; the
 /// single home for the PATCH + governance block both callers had verbatim.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view predicate joins the existing target/columns/policies/action inputs"
+)]
 fn mutate_governance(
     target: &ObjectType,
     columns: &[String],
     existing: &[SqlValue],
     set_pairs: &[(String, SqlValue)],
     write_policies: &[Policy],
+    view_predicate: Option<&RowFilter>,
     action_name: &str,
     is_update: bool,
 ) -> Result<Option<Vec<SqlValue>>, ActionError> {
@@ -1023,6 +1107,31 @@ fn mutate_governance(
         new_row.as_deref(),
         action_name,
     )?;
+
+    // View-bound mutate: the view predicate is an ADDITIONAL row filter. Leg 1 — the
+    // existing row must be in-view (belt-and-braces beside the view-scoped read; a lone
+    // `eval`); leg 3 — UPDATE's post-image must STILL be in-view (the load-bearing "no
+    // writing a row out of your own view" rule). Fail-closed, mirroring the policy legs;
+    // a denial is the same caller-scoped `RowFilter` reason (the predicate stays here).
+    if let Some(pred) = view_predicate {
+        if !view_row_admits(pred, columns, existing) {
+            tracing::info!(
+                action = action_name,
+                "mutate denied: existing row falls outside the target view"
+            );
+            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+        }
+        if let Some(row) = new_row.as_deref()
+            && !view_row_admits(pred, columns, row)
+        {
+            tracing::info!(
+                action = action_name,
+                "update denied: post-image falls outside the target view"
+            );
+            return Err(ActionError::WriteDenied(WriteDenialReason::RowFilter));
+        }
+    }
+
     let cviol = value_constraint_violations(target, set_pairs)?;
     if !cviol.is_empty() {
         tracing::info!(
@@ -1062,6 +1171,11 @@ async fn run_mutate(
         .first()
         .ok_or_else(|| ActionError::Misconfigured("action has no steps".into()))?;
     let policy_target = PolicyTarget::Type(step.target.clone());
+    // View lowering: every physical RPC (version probe + delta write) targets the BASE;
+    // only the targeted read (`select_object_sql`) keeps the view name so the engine
+    // narrows it. The view predicate gates the existing/post-image rows below.
+    let (base, view) = resolve_write_base(target, deps).await?;
+    let view_predicate = view.as_ref().and_then(|v| v.predicate.as_ref());
 
     // The identity property + the supplied identity value (parsed/typed via the params).
     let idprop = target.identity.clone().ok_or_else(|| {
@@ -1141,7 +1255,7 @@ async fn run_mutate(
         //    CAS in `write_delta` detects it and forces a retry (never a lost update).
         let v0 = deps
             .action_engine
-            .current_inline_version(&target.table, &idprop, &id_value, &id_logical)
+            .current_inline_version(&base, &idprop, &id_value, &id_logical)
             .await?;
 
         // 2. Targeted merged read of the current live object (single `?` bound to the
@@ -1177,6 +1291,7 @@ async fn run_mutate(
             &existing,
             &set_pairs,
             &write_policies.items,
+            view_predicate,
             action_name,
             is_update,
         )?;
@@ -1197,7 +1312,7 @@ async fn run_mutate(
             Some(row) => {
                 deps.action_engine
                     .write_delta(
-                        &target.table,
+                        &base,
                         &idprop,
                         false,
                         &columns,
@@ -1213,7 +1328,7 @@ async fn run_mutate(
             None => {
                 deps.action_engine
                     .write_delta(
-                        &target.table,
+                        &base,
                         &idprop,
                         true,
                         std::slice::from_ref(&idprop),
@@ -1314,6 +1429,17 @@ async fn run_multi_step(
     }
     let targets = targets.as_slice();
 
+    // Resolve each target's physical write BASE + optional view once, up front. `bases` is
+    // parallel to `targets` (a view lowered to its base, a plain table to itself); it drives
+    // the same-base clash guard, every engine RPC's target, and the post-coalesce lowering.
+    let mut bases: Vec<TableRef> = Vec::with_capacity(targets.len());
+    let mut views: Vec<Option<ViewDef>> = Vec::with_capacity(targets.len());
+    for target in targets {
+        let (base, view) = resolve_write_base(target, deps).await?;
+        bases.push(base);
+        views.push(view);
+    }
+
     // Coarse Write gate on the FIRST step BEFORE conformance, so a misconfigured ActionDef never
     // leaks its definition-validity to a caller unauthorized on the root target. The per-step loop
     // below re-gates every step (including this one — deliberately, so each target is checked).
@@ -1338,7 +1464,7 @@ async fn run_multi_step(
     // Conformance across every step: each step's parameters/assignments mirror ITS target's
     // properties, every `StepRef` references a strictly-earlier bound step's real property, and no
     // Update/Delete step shares a table with another step. Surfaced as a clear error before any write.
-    check_conformance_steps(action, targets)?;
+    check_conformance_steps(action, targets, &bases)?;
 
     // Action-level unknown-key guard: the shared body is projected per step (each step sees only
     // ITS param keys), so a per-step `parse_params` never rejects a sibling step's key. Enforce
@@ -1363,7 +1489,7 @@ async fn run_multi_step(
 
     // Resolve + govern each step in declared order, building its staged write. NOTHING is written
     // in this loop — `write_steps` runs once, after the whole action clears governance.
-    for (step, target) in action.steps.iter().zip(targets) {
+    for (((step, target), view), base) in action.steps.iter().zip(targets).zip(&views).zip(&bases) {
         // a. Coarse Write gate on THIS step's target (deny-by-default).
         let policy_target = PolicyTarget::Type(step.target.clone());
         if deps
@@ -1393,7 +1519,17 @@ async fn run_multi_step(
 
         // c/d/e. Fine governance (identical to the single-object gates, per step) + build the
         //        step's staged write. Any denial/violation returns here — before any write.
-        let write = govern_and_build_step(step, target, &pairs, subject, deps, action_name).await?;
+        let write = govern_and_build_step(
+            step,
+            target,
+            base,
+            view.as_ref(),
+            &pairs,
+            subject,
+            deps,
+            action_name,
+        )
+        .await?;
 
         // Response: capture EVERY step's affected object, in declared order.
         let cols: Vec<String> = pairs.iter().map(|(c, _)| c.clone()).collect();
@@ -1416,8 +1552,22 @@ async fn run_multi_step(
     }
 
     // Coalesce Append writes that share a target table into one multi-row write; distinct targets
-    // (and any Overwrite) stay distinct.
-    let writes = coalesce_appends(writes);
+    // (and any Overwrite) stay distinct. The coalesce KEY is each step's bound ref (`target.table`),
+    // NOT its base, so two DIFFERENT views over one base never coalesce — their predicates gated
+    // their rows independently. Only AFTER coalescing does each write's table lower to the physical
+    // base (a plain table maps to itself), so the engine — which enforces nothing — always writes
+    // the base.
+    let mut writes = coalesce_appends(writes);
+    // Bound ref -> physical base, parallel to the steps (small; a linear scan is fine and
+    // `TableRef` is not `Ord`). Every `StepWrite.table` is some step's bound ref, so this
+    // lowers each to its base (a plain table maps to itself — identity).
+    let base_of: Vec<(&TableRef, &TableRef)> =
+        targets.iter().map(|t| &t.table).zip(&bases).collect();
+    for w in &mut writes {
+        if let Some((_, base)) = base_of.iter().find(|(bound, _)| **bound == w.table) {
+            w.table = (*base).clone();
+        }
+    }
 
     // ONE lineage event listing every step's target dataset (inputs stay [] for a from-params
     // create). The caller owns the run_id; the engine commits every step + this event atomically.
@@ -1454,9 +1604,15 @@ async fn run_multi_step(
 /// Govern one step and build its staged [`StepWrite`], dispatching on the step's kind. Insert
 /// gates the row and stages an `Append`; Update/Delete read the table's full contents, gate the
 /// targeted row, and stage the full post-image as an `Overwrite`. Runs entirely before any write.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view lowering threads (base, view) alongside the existing step/target/deps"
+)]
 async fn govern_and_build_step(
     step: &ActionStep,
     target: &ObjectType,
+    base: &TableRef,
+    view: Option<&ViewDef>,
     pairs: &[(String, SqlValue)],
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
@@ -1464,13 +1620,15 @@ async fn govern_and_build_step(
 ) -> Result<StepWrite, ActionError> {
     match step.kind {
         ActionKind::Insert => {
-            govern_and_build_insert(target, pairs, subject, deps, action_name).await
+            govern_and_build_insert(target, view, pairs, subject, deps, action_name).await
         }
         ActionKind::Update => {
-            govern_and_build_mutate(target, pairs, subject, deps, action_name, true).await
+            govern_and_build_mutate(target, base, view, pairs, subject, deps, action_name, true)
+                .await
         }
         ActionKind::Delete => {
-            govern_and_build_mutate(target, pairs, subject, deps, action_name, false).await
+            govern_and_build_mutate(target, base, view, pairs, subject, deps, action_name, false)
+                .await
         }
     }
 }
@@ -1480,6 +1638,7 @@ async fn govern_and_build_step(
 /// set) as an `Append`. Mirrors `run_insert`'s governance exactly.
 async fn govern_and_build_insert(
     target: &ObjectType,
+    view: Option<&ViewDef>,
     pairs: &[(String, SqlValue)],
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
@@ -1513,6 +1672,18 @@ async fn govern_and_build_insert(
         return Err(ActionError::ConstraintViolation(cviol));
     }
     let (full_columns, full_values, full_logical) = expand_to_full_row(target, pairs);
+    // View predicate gate (same rule as `run_insert`): a view-bound insert whose FULL row
+    // escapes the view predicate is Forbidden. Fail-closed on NULL/UNKNOWN. The table stays
+    // the bound ref here — `run_multi_step` lowers it to the base after coalescing.
+    if let Some(pred) = view.and_then(|v| v.predicate.as_ref())
+        && !view_row_admits(pred, &full_columns, &full_values)
+    {
+        tracing::info!(
+            action = action_name,
+            "insert denied: row falls outside the target view's predicate"
+        );
+        return Err(ActionError::Forbidden);
+    }
     Ok(StepWrite {
         table: target.table.clone(),
         columns: full_columns,
@@ -1522,14 +1693,24 @@ async fn govern_and_build_insert(
     })
 }
 
-/// UPDATE/DELETE step: read the table's FULL current contents (the unfiltered merge view),
-/// locate the targeted identity row, govern it via the three ordered mutate legs + per-value
-/// constraints, then stage the full post-image (targeted row PATCHed for Update / dropped for
-/// Delete; every OTHER row preserved verbatim) as an `Overwrite`. `ensure_cow_supported` still
-/// rejects vector-typed targets. This is the file-tier copy-on-write (O(table) per mutating
-/// step), distinct from the single-object inline-delta path.
+/// UPDATE/DELETE step: read the physical BASE's FULL current contents (the unfiltered merge
+/// view), locate the targeted identity row, govern it via the three ordered mutate legs + the
+/// view predicate + per-value constraints, then stage the full post-image (targeted row PATCHed
+/// for Update / dropped for Delete; every OTHER row preserved verbatim) as an `Overwrite`.
+/// `ensure_cow_supported` still rejects vector-typed targets. This is the file-tier copy-on-write
+/// (O(table) per mutating step), distinct from the single-object inline-delta path.
+///
+/// The whole-table read is over `base`, NOT the view name: an `Overwrite` replaces the base's
+/// entire live set, so reading only in-view rows would delete every out-of-view row. Reading the
+/// base preserves them, and the view predicate (leg 1) instead gates the targeted row.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the view lowering threads (base, view) alongside the existing target/deps"
+)]
 async fn govern_and_build_mutate(
     target: &ObjectType,
+    base: &TableRef,
+    view: Option<&ViewDef>,
     pairs: &[(String, SqlValue)],
     subject: &SubjectId,
     deps: &ActionDeps<'_>,
@@ -1564,10 +1745,11 @@ async fn govern_and_build_mutate(
         .policies_for(subject, Action::Write, &policy_target, PageReq::unbounded())
         .await?;
 
-    // Full-table read of the current live contents (unfiltered merge view; no identity `where`).
+    // Full-table read of the current live contents (unfiltered merge view; no identity `where`),
+    // over the physical BASE so the `Overwrite` below preserves out-of-view rows.
     let live = deps
         .serving
-        .fetch_rows(&select_object_sql_all(target), &[], None)
+        .fetch_rows(&select_object_sql_all(target, base), &[], None)
         .await?;
     let id_idx = columns.iter().position(|c| c == &idprop).ok_or_else(|| {
         ActionError::Misconfigured(format!("identity `{idprop}` is not a property"))
@@ -1582,6 +1764,7 @@ async fn govern_and_build_mutate(
         &existing,
         &set_pairs,
         &write_policies.items,
+        view.and_then(|v| v.predicate.as_ref()),
         action_name,
         is_update,
     )?;

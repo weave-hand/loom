@@ -7,9 +7,16 @@
 //! test pins spec test-2's five rejection cases + the valid backward reference.
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, ActionStep, Assignment, ObjectType, ParamDef, TypeName,
+    ActionDef, ActionKind, ActionName, ActionStep, Assignment, ObjectType, ParamDef, TableRef,
+    TypeName,
 };
 use query_api::action::{ActionError, check_conformance_steps};
+
+/// The parallel physical-base slice `check_conformance_steps` now takes: with no views in
+/// play, each target's base IS its own bound table.
+fn bases(ts: &[ObjectType]) -> Vec<TableRef> {
+    ts.iter().map(|t| t.table.clone()).collect()
+}
 
 fn tn(s: &str) -> TypeName {
     TypeName(s.into())
@@ -97,7 +104,7 @@ fn err_msg(r: Result<(), ActionError>) -> String {
 fn valid_backward_ref_conforms() {
     let a = action(vec![], vec![Assignment::step_ref("orderId", "order", "id")]);
     assert!(
-        check_conformance_steps(&a, &targets()).is_ok(),
+        check_conformance_steps(&a, &targets(), &bases(&targets())).is_ok(),
         "backward @order.id ref should conform"
     );
 }
@@ -109,7 +116,7 @@ fn forward_ref_is_rejected() {
         vec![Assignment::step_ref("note", "li", "sku")],
         vec![Assignment::step_ref("orderId", "order", "id")],
     );
-    let m = err_msg(check_conformance_steps(&a, &targets()));
+    let m = err_msg(check_conformance_steps(&a, &targets(), &bases(&targets())));
     assert!(
         m.contains("li"),
         "forward ref to a later step's bind should be rejected, got: {m}"
@@ -124,7 +131,7 @@ fn self_ref_is_rejected() {
         vec![Assignment::step_ref("orderId", "li", "orderId")],
     );
     assert!(
-        is_misconfigured(check_conformance_steps(&a, &targets())),
+        is_misconfigured(check_conformance_steps(&a, &targets(), &bases(&targets()))),
         "self-reference should be rejected"
     );
 }
@@ -134,7 +141,7 @@ fn self_ref_is_rejected() {
 fn unbound_ref_is_rejected() {
     let a = action(vec![], vec![Assignment::step_ref("orderId", "ghost", "id")]);
     assert!(
-        is_misconfigured(check_conformance_steps(&a, &targets())),
+        is_misconfigured(check_conformance_steps(&a, &targets(), &bases(&targets()))),
         "reference to an unbound step should be rejected"
     );
 }
@@ -147,7 +154,7 @@ fn ref_to_unknown_property_is_rejected() {
         vec![],
         vec![Assignment::step_ref("orderId", "order", "nonesuch")],
     );
-    let m = err_msg(check_conformance_steps(&a, &targets()));
+    let m = err_msg(check_conformance_steps(&a, &targets(), &bases(&targets())));
     assert!(
         m.contains("nonesuch"),
         "reference to a non-property of the bound step should be rejected, got: {m}"
@@ -180,7 +187,11 @@ fn same_table_update_delete_alongside_another_step_is_rejected() {
         ],
         downstream: Vec::new(),
     };
-    let m = err_msg(check_conformance_steps(&a, &[order(), order()]));
+    let m = err_msg(check_conformance_steps(
+        &a,
+        &[order(), order()],
+        &bases(&[order(), order()]),
+    ));
     assert!(
         m.contains("Update/Delete"),
         "an Update/Delete step sharing a table with another step should be rejected, got: {m}"
@@ -212,7 +223,7 @@ fn same_table_two_inserts_is_allowed() {
         downstream: Vec::new(),
     };
     assert!(
-        check_conformance_steps(&a, &[order(), order()]).is_ok(),
+        check_conformance_steps(&a, &[order(), order()], &bases(&[order(), order()])).is_ok(),
         "two Insert steps to one table should be allowed (they coalesce as appends)"
     );
 }
@@ -226,7 +237,7 @@ fn intra_step_double_write_is_rejected() {
         vec![Assignment::constant("id", serde_json::json!("7"))],
         vec![Assignment::step_ref("orderId", "order", "id")],
     );
-    let m = err_msg(check_conformance_steps(&a, &targets()));
+    let m = err_msg(check_conformance_steps(&a, &targets(), &bases(&targets())));
     assert!(
         m.contains("more than one"),
         "property written by both a param and a constant should be rejected, got: {m}"
