@@ -650,7 +650,7 @@ async fn get_changes(
         Ok(None) => {
             return (
                 StatusCode::BAD_REQUEST,
-                "type is not backed by a declared CDC table",
+                "type is not backed by a declared stream table",
             )
                 .into_response();
         }

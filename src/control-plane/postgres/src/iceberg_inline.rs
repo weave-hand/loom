@@ -677,10 +677,16 @@ pub(crate) async fn inline_append_decl(
             q.execute(&mut *conn).await.map_err(backend)?;
         }
 
-        // Subscribe wakeup (road-stream-subscribe): one fire-and-forget notify
-        // per committed CDC write batch, buffered until this tx commits. Log
-        // tables don't notify (no changelog feed in this slice).
-        if matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc) {
+        // Subscribe wakeup (road-stream-subscribe / road-stream-log-table-subscribe):
+        // one fire-and-forget notify per committed STREAM write batch (CDC or log),
+        // buffered until this tx commits. Batch (non-stream) tables never notify.
+        if matches!(
+            &meta,
+            Some(m) if matches!(
+                m.kind,
+                control_plane_core::StreamKind::Cdc | control_plane_core::StreamKind::Log
+            )
+        ) {
             crate::stream::pg_notify_changelog(&mut *conn, tid).await?;
         }
     } else {

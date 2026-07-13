@@ -266,6 +266,42 @@ pub fn assert_knn(batch: &RecordBatch, nearest: i64, k: usize) {
     }
 }
 
+/// The `(id: Long, val: Long)` column specs the log-stream tests land.
+#[must_use]
+pub fn id_val_columns() -> Vec<ColumnSpec> {
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "val".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+    ]
+}
+
+/// An `(id, val)` Arrow batch for `land` seeding — one row per index of the
+/// two equal-length slices.
+#[must_use]
+pub fn id_val_batch(ids: &[i64], vals: &[i64]) -> (SchemaRef, Vec<RecordBatch>) {
+    let schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("val", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            Arc::new(Int64Array::from(vals.to_vec())),
+        ],
+    )
+    .expect("id_val_batch");
+    (schema, vec![batch])
+}
+
 /// `InlineLimits` forcing every landed row to Parquet (the "cold" seed shape).
 pub fn cold_limits() -> InlineLimits {
     InlineLimits {

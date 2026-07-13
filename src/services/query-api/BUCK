@@ -2169,6 +2169,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-log-subscribe-scan",
+    crate = "stream_log_subscribe_scan",
+    srcs = ["tests/stream_log_subscribe_scan.rs"],
+    crate_root = "tests/stream_log_subscribe_scan.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//src/testing:seed",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-subscribe-e2e",
     crate = "stream_subscribe_e2e",
     srcs = ["tests/stream_subscribe_e2e.rs"],
@@ -2207,6 +2227,26 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-log-subscribe-e2e",
+    crate = "stream_log_subscribe_e2e",
+    srcs = ["tests/stream_log_subscribe_e2e.rs"],
+    crate_root = "tests/stream_log_subscribe_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-subscribe-wire-e2e",
     crate = "stream_subscribe_wire_e2e",
     srcs = ["tests/stream_subscribe_wire_e2e.rs"],
@@ -2221,6 +2261,27 @@ loom_fixture_test(
         "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-log-subscribe-wire-e2e",
+    crate = "stream_log_subscribe_wire_e2e",
+    srcs = ["tests/stream_log_subscribe_wire_e2e.rs"],
+    crate_root = "tests/stream_log_subscribe_wire_e2e.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:flight",
+        "//src/testing:seed",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 
