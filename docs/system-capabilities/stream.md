@@ -348,6 +348,21 @@ newline-delimited JSON (NDJSON), one change event per line
   `iss-stream-feed-torn-read`): the file tier goes stale mid-page while inline
   advances past it, leaving a hole neither tier covers, and the per-event
   `next` fold silently skips it forever for that consumer.
+- **Log (append-only) tables subscribe too, via a kind-agnostic dispatch (#429).**
+  An append-only log table carries the same offset framing but has no changelog
+  sibling — the base rows *are* the log — so `changelog_feed_scan` keys off
+  `StreamMeta.kind` (resolved by `stream_meta_for`, `postgres/src/stream.rs`) and
+  routes a `Log` table to `log_feed_scan_at`, which reads the base table's **own**
+  files ∪ inline tail (`build_base_file_tier` mirroring the changelog
+  `build_file_tier`, `mv_delta_scan`'s union shape) with `change_kind` the stored
+  constant `'+I'`. A `Log` table pins a **single** base snapshot (no changelog
+  sibling to tear), while CDC keeps the pinned-pair path unchanged; both arms
+  share one `union_govern_read` tail (union → `GovernedTableProvider` → ordered
+  resume read → decode), so governance, framing exemption, cursor, and NDJSON
+  contract are identical. The positions probe (`changelog_positions_latest`) and
+  the inline-append `pg_notify` wakeup were relaxed from `Cdc`-only to `Cdc | Log`;
+  because the kind dispatch lives engine-side in the `ChangelogFeed` RPC, log
+  tables serve over the production wire with **no wire/client/handler change**.
 
 ## Continuous / standing queries (materialized views)
 
@@ -490,10 +505,10 @@ output is a plain declared log stream table, so it gets subscribability
 structurally: its inline rows carry `loom_change_kind = '+I'`, `loom_bucket`,
 and gapless `loom_offset` from `0`, and flushed Parquet keeps that framing via
 the existing `include_framing` derivation. **Subscribe / tail feed** (above)
-already serves CDC tables' changelogs today; a log-table tail feed (reading an
-MV output's offset-framed rows directly, no changelog union) is the small,
-already-tracked `#fut-stream-log-table-subscribe` follow-on, and would read an
-MV's output with zero additional work in this slice.
+serves both CDC tables' changelogs and log tables' offset-framed base rows
+(#429), so an MV output — a plain declared log stream table — is subscribable
+directly (reading its base rows, no changelog union) with zero additional work
+in this slice.
 
 **Retention caveat.** `gc_table` stays age-based and watermark-unaware: if a
 lagging MV's unread source tail is reclaimed before it runs, the next
@@ -607,9 +622,11 @@ from the continuous-query slice.
 - `#fut-stream-consumer-offsets` — the subscribe cursor is client-held and the
   server is stateless; a server-side `__consumer_offsets` checkpoint registry
   (and the durability-based flush watermark it enables) is deferred.
-- `#fut-stream-log-table-subscribe` — subscribe serves CDC tables; a log
-  (non-CDC) table's tail feed (reading its offset-framed base rows directly, no
-  changelog union) is a small follow-on.
+- `#fut-stream-bulk-append-notify` — the subscribe wakeup `pg_notify` fires
+  only on the **inline** append path (both CDC and log); a direct-to-Parquet
+  bulk landing (a batch over `inline_byte_limit`) commits no notify, so a
+  blocked `await_changelog` catches those writes only on its poll-fallback
+  timer, not sub-second.
 - `#iss-mv-delta-inline-source-unflushed` — `mv_delta_scan` /
   `read_files_as_batches` unconditionally calls `catalog.load_table`, which only
   succeeds for a table that has been flushed to Iceberg at least once; an
