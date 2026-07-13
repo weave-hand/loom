@@ -16,6 +16,7 @@ use control_plane_core::{
     TableRef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_inline;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::inline_delta_batch;
 
@@ -331,4 +332,86 @@ async fn integer_identity_delta_is_int32() {
         .downcast_ref::<arrow_array::Int32Array>()
         .expect("Int32 ids");
     assert_eq!(ids.value(0), 5);
+}
+
+/// A one-column id-only batch — the tombstone's carried batch (also the CAS
+/// lookup key), mirroring vector_search_cold_suppression_e2e.rs::id_batch.
+fn id_batch(id: i64) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![id]))]).expect("id_batch")
+}
+
+/// RED pre-fix: a live tombstone inline row in the delta window carries a NULL
+/// vector, and `inline_delta_batch` declares its vector field non-nullable, so
+/// arrow's `RecordBatch::try_new` validation fails ("Column 'embedding' is
+/// declared as non-nullable but contains null values") -> every `/search` over
+/// the type 500s (iss-search-vector-merge-view-nullable, Defect A). Desired:
+/// tombstoned, `-U`, and vector-less rows are EXCLUDED from the hot delta — they
+/// are unscoreable; suppressing their stale cold hits is the survivor
+/// post-filter's job (2026-07-07-search-cold-suppression-design).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tombstoned_rows_are_excluded_from_hot_delta() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "tdocs".into(),
+    };
+    let cold: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
+    let hot: &[(i64, [f32; 4])] = &[(5, [0.9, 0.1, 0.0, 0.0])];
+    let (pool, s_cold, _s_hot) = seed(
+        fx,
+        &db,
+        &table,
+        "TDocs",
+        "long",
+        "Long",
+        (ipc_long(cold), ipc_long(hot)),
+    )
+    .await;
+
+    // Tombstone id=2: an id-only inline delta row — every other data column
+    // (the vector) is NULL in inline_<tid>.
+    let cols = columns("long");
+    let v0 = iceberg_inline::current_inline_version(&pool, &table, &cols, "id", &id_batch(2))
+        .await
+        .expect("current version");
+    let s_del = iceberg_inline::write_inline_delta(
+        &pool,
+        &table,
+        &cols,
+        "id",
+        true, // tombstone
+        &id_batch(2),
+        None,
+        lineage_evt(&table),
+        v0,
+        None,
+        &[], // jobs — the 11th param
+    )
+    .await
+    .expect("tombstone delta");
+
+    // The window (s_cold, s_del] holds the id=5 row-version AND the id=2
+    // tombstone. Pre-fix this call is Err (arrow nullability validation).
+    let batch = inline_delta_batch(&pool, &table, s_cold, s_del.0)
+        .await
+        .expect("hot delta must not fail on a tombstone in the window")
+        .expect("Some: the id=5 row-version is still in the window");
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("Int64 ids");
+    let got: Vec<i64> = (0..batch.num_rows()).map(|i| ids.value(i)).collect();
+    assert_eq!(
+        got,
+        vec![5],
+        "only the scoreable row-version; tombstoned id=2 excluded"
+    );
+    assert_eq!(
+        batch.column(1).null_count(),
+        0,
+        "the hot delta never carries a NULL vector"
+    );
 }

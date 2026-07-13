@@ -272,10 +272,23 @@ fn extract_rows(
     Ok(out)
 }
 
-/// Read the live inline rows for `table` that were born AFTER `born_after` and
-/// are still alive at snapshot `at`, returning only the `identity_col` and
+/// Read the SCOREABLE inline delta for `table`: the rows born AFTER `born_after`
+/// that are still alive at snapshot `at`, returning only the `identity_col` and
 /// `vector_col` columns. Returns `None` if the inline table does not exist or
 /// has no matching rows.
+///
+/// "Scoreable" excludes three kinds of live inline row, none of which carries a
+/// current, scoreable vector for its identity:
+///   - **tombstones** (`loom_tombstone` — a non-CDC delete or a CDC `-D`): a
+///     deleted identity contributes no hot vector, and a non-CDC tombstone row is
+///     id-only (its vector column is physically NULL);
+///   - **CDC `-U` before-images**: audit rows, never current state;
+///   - **rows with a NULL vector**: unscoreable by construction.
+///
+/// A tombstoned identity's stale COLD hit is suppressed downstream by query-api's
+/// survivor post-filter (2026-07-07-search-cold-suppression-design), not here.
+/// The exclusion is what makes the output schema's non-nullable vector field
+/// truthful (iss-search-vector-merge-view-nullable).
 ///
 /// Used by Task 7/8 (hot-delta path) to fetch the rows appended between S and Q
 /// so the serving layer can score them alongside the cold Puffin index.
@@ -351,7 +364,14 @@ pub async fn inline_delta_batch(
             )
         })?;
 
-    // Runtime query: select only the identity + vector columns with the delta MVCC predicate.
+    // Runtime query: select only the identity + vector columns with the delta
+    // MVCC predicate. Tombstones (`loom_tombstone` — set by BOTH a non-CDC delete
+    // and a CDC `-D`), CDC `-U` before-images (audit rows, mirroring the inline
+    // provider's base predicate, serving.rs), and rows without a vector are
+    // EXCLUDED: none is scoreable, and a tombstone's NULL vector would fail the
+    // non-nullable output schema's `RecordBatch` validation (the `/search` 500 of
+    // iss-search-vector-merge-view-nullable). A tombstoned identity's stale COLD
+    // hit is suppressed by query-api's survivor post-filter, not here.
     let id_quoted = quote_ident(&identity_col);
     let vec_quoted = quote_ident(&vector_col);
     let rows = sqlx::query(AssertSqlSafe(format!(
@@ -359,6 +379,9 @@ pub async fn inline_delta_batch(
          from {} \
          where begin_snapshot > {born_after} \
            and {} \
+           and not loom_tombstone \
+           and (loom_change_kind is null or loom_change_kind <> '-U') \
+           and {vec_quoted} is not null \
          order by loom_row_id",
         inline_table_name(tid),
         mvcc_live_pred(at),
