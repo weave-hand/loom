@@ -92,6 +92,8 @@ async fn app_state(
             flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: pg.clone(),
+        pool: pool.clone(),
+        compact_small_file_bytes: 1 << 20,
     };
     (pg, pool, wh, state)
 }

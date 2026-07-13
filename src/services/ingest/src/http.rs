@@ -108,12 +108,21 @@ impl IngestError {
 }
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
-/// chosen at boot. Gate + schema resolution + lineage are backend-agnostic
-/// and happen in the handler before dispatch.
+/// chosen at boot, the control plane, and — for the operator maintenance
+/// surface — a raw pool handle plus the small-file cutoff the compaction guard
+/// needs. Gate + schema resolution + lineage are backend-agnostic and happen in
+/// the handler before dispatch. `ControlPlane` exposes no raw pool, and the
+/// compact endpoint is inherently a postgres-deployment surface (it enqueues a
+/// physical compaction job), so the concrete dependency is honest.
 #[derive(Clone)]
 pub struct AppState {
     pub materializer: Arc<dyn LandingMaterializer>,
     pub cp: Arc<dyn ControlPlane>,
+    /// Cloned from the pool the materializer owns; used only by `compact`.
+    pub pool: sqlx::PgPool,
+    /// `LOOM_COMPACT_THRESHOLD_BYTES` (routing config): files strictly smaller
+    /// than this count as "small" for the compaction guard.
+    pub compact_small_file_bytes: i64,
 }
 
 pub fn router(state: AppState) -> Router {

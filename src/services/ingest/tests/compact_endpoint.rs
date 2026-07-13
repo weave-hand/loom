@@ -28,12 +28,15 @@ fn stub_materializer() -> Arc<dyn LandingMaterializer> {
 #[tokio::test(flavor = "multi_thread")]
 async fn compact_endpoint_enqueues_job() {
     let fx = PgFixture::shared();
-    let (cp, _db) = fx.fresh_db().await;
+    let (cp, db) = fx.fresh_db().await;
     let cp = Arc::new(cp);
+    let pool = fx.pool_for(&db).await;
 
     let state = AppState {
         materializer: stub_materializer(),
         cp: cp.clone() as Arc<dyn ControlPlane>,
+        pool,
+        compact_small_file_bytes: 1 << 20,
     };
     let app = router(state);
 

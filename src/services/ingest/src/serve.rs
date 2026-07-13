@@ -30,6 +30,11 @@ pub async fn serve(
     let env = service_runtime::env_map();
     let app_cfg: crate::config::IngestConfig = service_runtime::load(&env)?;
 
+    let compact_small_file_bytes = app_cfg.routing.compact_small_file_bytes;
+    // The materializer takes ownership of the pool; the operator compact surface
+    // needs its own handle (`PgPool` is an Arc'd handle — cloning is cheap).
+    let state_pool = pool.clone();
+
     let materializer: Arc<dyn LandingMaterializer> = {
         let catalog = Arc::new(build_iceberg_catalog(cfg, &app_cfg.routing).await?);
         Arc::new(IcebergMaterializer {
@@ -41,7 +46,13 @@ pub async fn serve(
     };
 
     let sa_cp = cp.clone();
-    let app = service_runtime::protect(router(AppState { materializer, cp }), auth.clone())
+    let state = AppState {
+        materializer,
+        cp,
+        pool: state_pool,
+        compact_small_file_bytes,
+    };
+    let app = service_runtime::protect(router(state), auth.clone())
         .merge(service_runtime::login_routes(auth.clone()))
         .merge(service_runtime::session_routes(auth.clone()))
         .merge(service_runtime::service_account_routes(

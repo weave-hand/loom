@@ -80,6 +80,8 @@ async fn app_state(fx: &PgFixture, db: &str) -> (PgPool, tempfile::TempDir, AppS
             flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp,
+        pool: pool.clone(),
+        compact_small_file_bytes: 1 << 20,
     };
     (pool, wh, state)
 }

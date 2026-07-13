@@ -70,6 +70,8 @@ async fn small_iceberg_land_inlines_through_http() {
             flush_byte_threshold: 1, // tiny: any inline landing crosses it
         }),
         cp: cp_arc.clone(),
+        pool: pool.clone(),
+        compact_small_file_bytes: 1 << 20,
     };
 
     let run = uuid::Uuid::new_v4();

@@ -93,6 +93,8 @@ async fn lands_through_real_runtime_wiring() {
             flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: cp.clone(),
+        pool: pool.clone(),
+        compact_small_file_bytes: 1 << 20,
     })
     .oneshot(
         Request::builder()

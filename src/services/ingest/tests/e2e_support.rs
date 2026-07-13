@@ -106,6 +106,10 @@ pub async fn app_state(
             flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: pg.clone(),
+        pool: pool.clone(),
+        // 1 MiB: the fixture's Parquet files are a few hundred bytes, so every
+        // landed file counts as "small" for the compaction guard.
+        compact_small_file_bytes: 1 << 20,
     };
     (pg, pool, wh, state)
 }
