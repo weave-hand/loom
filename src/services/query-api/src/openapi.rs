@@ -144,11 +144,27 @@ pub struct TypeDetailResponse {
     pub links_to: Vec<LinkView>,
 }
 
+/// Documentation shape for one entry in the `GET /datasets` list. A physical table is
+/// `kind: "table"` (no `base`); a view is `kind: "view"` and carries its physical `base`.
+#[derive(ToSchema)]
+pub struct DatasetListEntry {
+    pub schema: String,
+    pub name: String,
+    /// The owning project (currently the schema).
+    pub project: String,
+    /// RFC3339 timestamp of the dataset's current snapshot (empty when none is readable).
+    pub updated: String,
+    /// `"table"` | `"view"`.
+    pub kind: String,
+    /// The view's physical base — present only for `kind: "view"`.
+    pub base: Option<TableRefView>,
+}
+
 /// Documentation shape for the `GET /datasets` response.
 #[derive(ToSchema)]
 pub struct DatasetsResponse {
-    /// Every table currently live in the mirror, `(schema, name)`-ordered.
-    pub datasets: Vec<TableRefView>,
+    /// Every table and view currently visible in the mirror, `(schema, name)`-ordered.
+    pub datasets: Vec<DatasetListEntry>,
 }
 
 /// Documentation shape for one column in a dataset-detail response.
@@ -174,6 +190,10 @@ pub struct DatasetDetailResponse {
     pub snapshot_time: String,
     /// The column schema at that snapshot, in column order.
     pub columns: Vec<DatasetColumnView>,
+    /// `"table"` | `"view"`.
+    pub kind: String,
+    /// The view's physical base — present only for `kind: "view"`.
+    pub base: Option<TableRefView>,
 }
 
 /// Documentation shape for the `GET /datasets/{schema}/{table}/preview` response.
@@ -228,6 +248,7 @@ pub struct DatasetPreviewResponse {
         LinkView,
         TypeDetailResponse,
         DatasetsResponse,
+        DatasetListEntry,
         DatasetColumnView,
         DatasetDetailResponse,
         DatasetPreviewResponse,
