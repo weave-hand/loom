@@ -139,50 +139,55 @@ async fn gc_locked(
     let file_guard: Option<i64> = floor.as_ref().map(MvFloor::min_offset);
     let stranded = stranded_readers(pool, table, live, &dropped).await?;
 
-    // 3. Collect the reclaimable Parquet paths (before deleting the rows that name
-    //    them), across the live incarnation (floor-guarded) and every dropped one
-    //    (unguarded — see `stranded_readers`).
-    let mut paths: Vec<String> = Vec::new();
-    if let Some(tid) = live {
-        paths.extend(reclaimable_paths(pool, tid, h, file_guard).await?);
-    }
-    for inc in &dropped {
-        paths.extend(reclaimable_paths(pool, inc.table_id, h, None).await?);
-        if inc.drop_snapshot <= h {
-            paths.extend(vector_index_paths(pool, inc.table_id).await?);
-        }
-    }
-
-    // 4. One transaction: delete the reclaimable mirror rows.
+    // 3. One transaction: materialize the victim set ONCE, then delete the mirror
+    //    rows it names. The victims' `path`s — collected inside the same transaction,
+    //    before any delete — are the ONLY source of the post-commit object deletions,
+    //    so the rows deleted from the mirror and the objects deleted from the store
+    //    can never disagree (they are literally the same set).
     let mut tx = pool.begin().await.map_err(backend)?;
+    let mut paths: Vec<String> = Vec::new();
     let mut data_file_rows = 0u64;
+    let mut dropped_file_rows = 0u64;
     let mut inline_rows = 0u64;
     let mut held_by_mv_floor = 0u64;
     if let Some(tid) = live {
+        // One `to_regclass` probe for the whole run: `inline_<tid>` exists or it does not.
+        let has_inline = inline_table_exists(&mut tx, tid).await?;
         // The denominator of `held_by_mv_floor` — what an unguarded run would have
         // taken. Only measured when a floor is active, so the fast path pays nothing.
         let candidates = if floor.is_some() {
-            count_candidates(&mut tx, tid, h).await?
+            count_candidates(&mut tx, tid, h, has_inline).await?
         } else {
             0
         };
-        let files = delete_data_files(&mut tx, tid, h, file_guard).await?;
-        let inline = delete_end_capped_inline_rows(&mut tx, tid, h, floor.as_ref()).await?;
+        let victims = victim_data_files(&mut tx, tid, h, file_guard).await?;
+        let files = delete_data_files(&mut tx, &victims.ids).await?;
+        let inline =
+            delete_end_capped_inline_rows(&mut tx, tid, h, floor.as_ref(), has_inline).await?;
+        paths.extend(victims.paths);
         data_file_rows += files;
         inline_rows += inline;
         held_by_mv_floor = candidates.saturating_sub(files.saturating_add(inline));
     }
 
-    // Dropped incarnations: always reclaim aged-out data files; drop the physical
-    // inline table + metadata rows only once the DROP snapshot itself ages past H
-    // (D <= h), so no in-window time-travel read as-of before the drop can reach it.
+    // Dropped incarnations: always reclaim aged-out data files (unguarded — see
+    // `stranded_readers`); drop the physical inline table + metadata rows only once the
+    // DROP snapshot itself ages past H (D <= h), so no in-window time-travel read as-of
+    // before the drop can reach it.
     for inc in &dropped {
-        data_file_rows += delete_data_files(&mut tx, inc.table_id, h, None).await?;
+        let victims = victim_data_files(&mut tx, inc.table_id, h, None).await?;
+        let files = delete_data_files(&mut tx, &victims.ids).await?;
+        paths.extend(victims.paths);
+        dropped_file_rows += files;
+        data_file_rows += files;
         if inc.drop_snapshot <= h {
             // Full reclaim: no in-window time-travel read can reach this incarnation.
             // Delete EVERY child of iceberg_mirror.table before the table row (FK order):
             //   data_file (above) → vector_index → column → table.
             // Then the no-FK inline_trigger orphan, and the physical inline table.
+            // The Puffin sidecars are read before their rows go, same commit-then-delete
+            // policy as the Parquet data files.
+            paths.extend(vector_index_paths(&mut tx, inc.table_id).await?);
             drop_inline_table(&mut tx, inc.table_id).await?;
             delete_vector_index_rows(&mut tx, inc.table_id).await?;
             delete_column_rows(&mut tx, inc.table_id).await?;
@@ -199,7 +204,7 @@ async fn gc_locked(
     // The dropped-source strand and the live hold are both operator-facing leads to a
     // wedged MV. Emitted AFTER the commit, and only when something actually happened —
     // a warning on a no-op run is noise.
-    if !stranded.is_empty() && data_file_rows > 0 {
+    if !stranded.is_empty() && dropped_file_rows > 0 {
         tracing::warn!(
             schema = %table.schema,
             name = %table.name,
@@ -269,10 +274,26 @@ async fn stranded_readers(
     stranded_mv_readers(pool, table, &tids, live.is_none()).await
 }
 
-/// Parquet paths of `tid`'s data files reclaimable at horizon `h`
+/// The data files one GC run reclaims for one incarnation: their ids (what the deletes
+/// key on) and their Parquet paths (what the post-commit object deletion uses).
+///
+/// Both come out of ONE evaluation of the reclaim predicate, so the mirror rows deleted
+/// and the objects deleted are the same set by construction.
+struct Victims {
+    ids: Vec<i64>,
+    paths: Vec<String>,
+}
+
+/// The data files of `tid` reclaimable at horizon `h`
 /// (`end_snapshot IS NOT NULL AND end_snapshot <= h`). `guard` is the MV floor's
 /// cross-bucket minimum (`MvFloor::min_offset`): when set, a file is reclaimable only
 /// if it carries a `loom_offset` max stat STRICTLY BELOW it.
+///
+/// Call this ONCE per incarnation, INSIDE the GC transaction, BEFORE any delete — it is
+/// the single source of truth for the run. Re-evaluating this predicate after the stats
+/// child has been deleted would silently invert it (the scalar subquery would find no
+/// row → NULL → nothing matches), which is how a run could once destroy a Parquet object
+/// while keeping the mirror row that names it.
 ///
 /// A file with NO `loom_offset` stat is HELD — the scalar subquery yields NULL, so the
 /// comparison is NULL and the row is not selected. That is the fail-safe direction, and
@@ -286,14 +307,15 @@ async fn stranded_readers(
 /// `WHERE`, so an inline `column_name = 'loom_offset' and max_value::bigint` can blow up
 /// with `invalid input syntax for type bigint` on a table with a string column. A
 /// subquery's own `WHERE` provably runs before its projection reaches the outer cast.
-async fn reclaimable_paths(
-    pool: &PgPool,
+/// (`tests/mv_floor.rs` seeds a string column precisely so this shape stays honest.)
+async fn victim_data_files(
+    conn: &mut sqlx::PgConnection,
     tid: i64,
     h: i64,
     guard: Option<i64>,
-) -> Result<Vec<String>> {
-    sqlx::query_scalar!(
-        "select df.path from iceberg_mirror.data_file df \
+) -> Result<Victims> {
+    let rows = sqlx::query!(
+        "select df.data_file_id, df.path from iceberg_mirror.data_file df \
          where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 \
            and ($3::bigint is null or ( \
                  select cs.max_value from iceberg_mirror.data_file_column_stat cs \
@@ -303,46 +325,36 @@ async fn reclaimable_paths(
         h,
         guard,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
-    .map_err(backend)
+    .map_err(backend)?;
+    let mut ids = Vec::with_capacity(rows.len());
+    let mut paths = Vec::with_capacity(rows.len());
+    for row in rows {
+        ids.push(row.data_file_id);
+        paths.push(row.path);
+    }
+    Ok(Victims { ids, paths })
 }
 
-/// Delete `tid`'s reclaimable data files (stats child first, then the rows), under the
-/// same floor `guard` as `reclaimable_paths` — repeated in BOTH statements so a held
-/// file never loses its stats. Returns the number of `data_file` rows deleted.
-async fn delete_data_files(
-    conn: &mut sqlx::PgConnection,
-    tid: i64,
-    h: i64,
-    guard: Option<i64>,
-) -> Result<u64> {
+/// Delete the `data_file` rows named by `ids` (stats child first, then the rows).
+/// Keyed on the victim ids from `victim_data_files` — never on a re-evaluated
+/// predicate, so deleting the stats cannot change what the second statement deletes.
+/// Returns the number of `data_file` rows deleted.
+async fn delete_data_files(conn: &mut sqlx::PgConnection, ids: &[i64]) -> Result<u64> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
     sqlx::query!(
-        "delete from iceberg_mirror.data_file_column_stat \
-         where data_file_id in ( \
-             select df.data_file_id from iceberg_mirror.data_file df \
-             where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 \
-               and ($3::bigint is null or ( \
-                     select cs.max_value from iceberg_mirror.data_file_column_stat cs \
-                     where cs.data_file_id = df.data_file_id \
-                       and cs.column_name = 'loom_offset')::bigint < $3::bigint))",
-        tid,
-        h,
-        guard,
+        "delete from iceberg_mirror.data_file_column_stat where data_file_id = any($1)",
+        ids,
     )
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
     let rows = sqlx::query!(
-        "delete from iceberg_mirror.data_file df \
-         where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 \
-           and ($3::bigint is null or ( \
-                 select cs.max_value from iceberg_mirror.data_file_column_stat cs \
-                 where cs.data_file_id = df.data_file_id \
-                   and cs.column_name = 'loom_offset')::bigint < $3::bigint)",
-        tid,
-        h,
-        guard,
+        "delete from iceberg_mirror.data_file where data_file_id = any($1)",
+        ids,
     )
     .execute(&mut *conn)
     .await
@@ -351,8 +363,21 @@ async fn delete_data_files(
     Ok(rows)
 }
 
-/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>`, if the
-/// physical table exists. With a floor, a row is reclaimable only strictly below ITS
+/// Does the physical `inline_<tid>` table exist? Probed ONCE per GC run and passed to
+/// the two callers that need it (`count_candidates`, `delete_end_capped_inline_rows`).
+async fn inline_table_exists(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool> {
+    let name = inline_table_name(tid);
+    let reg: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
+        .bind(&name)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+    Ok(reg.is_some())
+}
+
+/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>` (`has_inline`
+/// says whether that physical table exists — see `inline_table_exists`). With a floor, a
+/// row is reclaimable only strictly below ITS
 /// bucket's floor (inline rows carry `loom_bucket`/`loom_offset`, so this tier is
 /// per-bucket precise); a bucket at floor 0 contributes no clause (nothing in it is
 /// reclaimable); an unframed row (NULL bucket/offset — impossible on a stream table)
@@ -367,16 +392,12 @@ async fn delete_end_capped_inline_rows(
     tid: i64,
     h: i64,
     floor: Option<&MvFloor>,
+    has_inline: bool,
 ) -> Result<u64> {
-    let inline = inline_table_name(tid);
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
-        .bind(&inline)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-    if exists.is_none() {
+    if !has_inline {
         return Ok(0);
     }
+    let inline = inline_table_name(tid);
     let guard = match floor {
         None => String::new(),
         Some(f) => {
@@ -409,7 +430,12 @@ async fn delete_end_capped_inline_rows(
 /// Age-eligible reclaim candidates for `tid` IGNORING the floor: data-file rows +
 /// end-capped inline rows. The denominator of `held_by_mv_floor` (held = candidates −
 /// actually deleted). Only called when a floor is active, so the fast path pays nothing.
-async fn count_candidates(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> Result<u64> {
+async fn count_candidates(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    h: i64,
+    has_inline: bool,
+) -> Result<u64> {
     let files = sqlx::query_scalar!(
         "select count(*) as \"n!\" from iceberg_mirror.data_file \
          where table_id = $1 and end_snapshot is not null and end_snapshot <= $2",
@@ -419,13 +445,8 @@ async fn count_candidates(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> Re
     .fetch_one(&mut *conn)
     .await
     .map_err(backend)?;
-    let inline = inline_table_name(tid);
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
-        .bind(&inline)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-    let rows: i64 = if exists.is_some() {
+    let rows: i64 = if has_inline {
+        let inline = inline_table_name(tid);
         sqlx::query_scalar(AssertSqlSafe(format!(
             "select count(*) from {inline} where end_snapshot is not null and end_snapshot <= $1"
         )))
@@ -439,15 +460,16 @@ async fn count_candidates(conn: &mut sqlx::PgConnection, tid: i64, h: i64) -> Re
     Ok(u64::try_from(files.saturating_add(rows)).unwrap_or(0))
 }
 
-/// Puffin sidecar object paths of `tid`'s vector-index bindings. Collected before the
-/// rows are deleted so the objects reclaim post-commit (commit-then-delete, same policy
-/// as Parquet data files).
-async fn vector_index_paths(pool: &PgPool, tid: i64) -> Result<Vec<String>> {
+/// Puffin sidecar object paths of `tid`'s vector-index bindings. Read INSIDE the GC
+/// transaction, immediately before `delete_vector_index_rows` deletes the rows that name
+/// them, so the objects reclaim post-commit (commit-then-delete, same policy as Parquet
+/// data files) and the paths can never disagree with the rows.
+async fn vector_index_paths(conn: &mut sqlx::PgConnection, tid: i64) -> Result<Vec<String>> {
     sqlx::query_scalar!(
         "select puffin_path from iceberg_mirror.vector_index where table_id = $1",
         tid,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(backend)
 }

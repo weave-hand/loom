@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::{Int64Array, RecordBatch};
+use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, MvWatermarks, RunId,
@@ -37,20 +37,42 @@ fn tref(schema: &str, name: &str) -> TableRef {
     }
 }
 
+/// `(id: long, label: string)`. The STRING column is load-bearing, not decoration:
+/// it puts a non-numeric `max_value` into `iceberg_mirror.data_file_column_stat`,
+/// so the floor's file guard really runs against a stats table holding TEXT bounds.
+/// The guard's `::bigint` cast lives OUTSIDE its scalar subquery precisely because
+/// Postgres may reorder quals inside one `WHERE`; with only a `long` column, an
+/// inlined cast would pass, and the hazard would go untested. Any refactor that
+/// moves the cast back in now fails these tests instead of hard-erroring GC in prod.
 fn columns() -> Vec<ColumnSpec> {
-    vec![ColumnSpec {
-        name: "id".into(),
-        ty: "long".into(),
-        nullable: false,
-    }]
+    vec![
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "label".into(),
+            ty: "string".into(),
+            nullable: false,
+        },
+    ]
 }
 
-/// An `(id: long)` schema + batch of ids `0..rows`.
+/// An `(id: long, label: string)` schema + batch of ids `0..rows`.
 fn batch(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
     let b = RecordBatch::try_new(
         schema.clone(),
-        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
+        vec![
+            Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>())),
+            Arc::new(StringArray::from(
+                (0..rows).map(|i| format!("row-{i}")).collect::<Vec<_>>(),
+            )),
+        ],
     )
     .expect("batch");
     (schema, vec![b])
@@ -524,6 +546,66 @@ async fn unrun_mv_pins_every_end_capped_row_and_file() {
         data_file_count(&s.pool, s.tid).await,
         files_before,
         "the mirror rows survive"
+    );
+}
+
+/// The FILE tier's release case: once the MV has consumed past every offset a file
+/// carries, GC must reclaim BOTH the `data_file` mirror row AND its Parquet object.
+///
+/// This is the counterpart of `unrun_mv_pins_every_end_capped_row_and_file` (floor 0,
+/// nothing reclaimable) and the regression test for the defect where the floor guard
+/// was re-evaluated in the row-delete statement AFTER the stats it reads had already
+/// been deleted: the guard then went NULL, no `data_file` row was deleted, and the
+/// Parquet was destroyed anyway — a dangling mirror -> missing-file reference. The
+/// victim set is now materialized once, inside the tx, and drives both the row deletes
+/// and the post-commit object deletes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn caught_up_mv_releases_end_capped_files() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // 6 events landed straight to FILES (offsets 0..6) in one bucket, one MV.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+
+    // The MV has consumed everything: floor 6 > every offset in every file.
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 6).await;
+
+    let files_before = data_file_count(&s.pool, s.tid).await;
+    assert!(files_before > 0, "the source landed at least one file");
+    let snap = current_snapshot_id(&s.pool, &s.src).await;
+    end_cap_data_files(&s.pool, s.tid, snap).await;
+    age_all_snapshots(&s.pool).await;
+
+    let summary = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
+        .await
+        .expect("gc");
+    let expected = u64::try_from(files_before).expect("count fits u64");
+    assert_eq!(
+        summary.data_file_rows, expected,
+        "every end-capped file is strictly below the floor -> its mirror row is deleted"
+    );
+    assert_eq!(
+        summary.objects_deleted, expected,
+        "and its Parquet object is deleted — rows and objects must never disagree"
+    );
+    assert_eq!(
+        summary.held_by_mv_floor, 0,
+        "the caught-up MV holds nothing"
+    );
+    assert_eq!(
+        data_file_count(&s.pool, s.tid).await,
+        0,
+        "no data_file row survives naming a deleted object"
     );
 }
 
