@@ -139,6 +139,7 @@ async fn write_object_over_wire() {
         flush_byte_threshold: i64::MAX,
         write_store,
         orphan_sweep_grace: Duration::from_secs(24 * 3600),
+        serving_store: None,
     };
     let listener = tokio::net::UnixListener::bind(&sock).expect("bind");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);

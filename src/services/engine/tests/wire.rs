@@ -79,6 +79,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         flush_byte_threshold: i64::MAX,
         write_store,
         orphan_sweep_grace: Duration::from_secs(24 * 3600),
+        serving_store: None,
     };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
@@ -274,6 +275,7 @@ async fn flush_over_wire() {
             flush_byte_threshold: i64::MAX,
             write_store: write_store2,
             orphan_sweep_grace: Duration::from_secs(24 * 3600),
+            serving_store: None,
         };
         let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind");
         let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);

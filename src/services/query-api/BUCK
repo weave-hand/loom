@@ -597,6 +597,7 @@ loom_fixture_test(
     deps = [
         "//src/testing:flight",
         ":query-api",
+        "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/services/engine:engine",
         "//src/services/engine-wire:engine-wire",
@@ -2206,6 +2207,41 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-subscribe-wire-e2e",
+    crate = "stream_subscribe_wire_e2e",
+    srcs = ["tests/stream_subscribe_wire_e2e.rs"],
+    crate_root = "tests/stream_subscribe_wire_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:flight",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-feed-torn-read",
+    crate = "stream_feed_torn_read",
+    srcs = ["tests/stream_feed_torn_read.rs"],
+    crate_root = "tests/stream_feed_torn_read.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "stream-cdc-consolidate",
     crate = "stream_cdc_consolidate",
     srcs = ["tests/stream_cdc_consolidate.rs"],
@@ -2312,5 +2348,23 @@ rust_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "changelog-rpc-wire",
+    crate = "changelog_rpc_wire",
+    srcs = ["tests/changelog_rpc_wire.rs"],
+    crate_root = "tests/changelog_rpc_wire.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-wire:engine-wire",
+        "//src/testing:flight",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:tokio",
     ],
 )

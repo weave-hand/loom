@@ -135,6 +135,7 @@ pub async fn spawn_engine_uds(
             flush_byte_threshold: opts.flush_byte_threshold,
             write_store,
             orphan_sweep_grace: opts.orphan_sweep_grace,
+            serving_store: None,
         })
     });
     let flight = opts.flight.then(|| {

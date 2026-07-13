@@ -500,6 +500,18 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "snapshot-pair",
+    crate = "snapshot_pair",
+    srcs = ["tests/snapshot_pair.rs"],
+    crate_root = "tests/snapshot_pair.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-snapshot-seq",
     crate = "iceberg_snapshot_seq",
     srcs = ["tests/iceberg_snapshot_seq.rs"],

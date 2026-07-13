@@ -13,10 +13,33 @@ use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use engine_wire::convert;
 use engine_wire::pb;
+use service_runtime::ServingStore;
 use sqlx::PgPool;
 use tonic::{Request, Response, Status};
 
 use crate::flight::serving_status;
+
+/// Server-side ceiling on one changelog-feed page. query-api already clamps to
+/// `FEED_BATCH_LIMIT` (256) before calling, but this is a public engine RPC — an
+/// unbounded `limit` would mean an unbounded `page_json` in a unary message.
+const MAX_FEED_LIMIT: usize = 1024;
+
+/// Server-side ceiling on `await_changelog`'s long-poll timeout, mirroring
+/// `MAX_FEED_LIMIT`'s reasoning: query-api's own caller always passes a bounded
+/// `FEED_POLL_INTERVAL` (1s) plus its own +2s client deadline slack, but this is a
+/// public engine RPC — an unclamped `timeout_ms` (e.g. a caller-supplied
+/// `u64::MAX`) would pin an engine task + a Postgres `LISTEN` connection
+/// indefinitely.
+const MAX_AWAIT_MS: u64 = 30_000;
+
+/// A single-event page (never zero) is the byte budget's floor: a page bounded by
+/// bytes must still make forward progress on a poison-pill row, or a caught-up
+/// subscriber that hits one oversized event stalls forever re-requesting the same
+/// unservable page — the exact bug `MAX_FEED_PAGE_BYTES` truncation exists to fix.
+/// Comfortably under the engine-wire channel's `MAX_RPC_MESSAGE_BYTES` decode
+/// ceiling so a truncated `page_json` (plus its `ChangelogFeedResponse` framing)
+/// never itself risks tripping the channel limit.
+const MAX_FEED_PAGE_BYTES: usize = 8 * 1024 * 1024;
 
 fn status(e: control_plane_core::ControlPlaneError) -> Status {
     use control_plane_core::ControlPlaneError::*;
@@ -64,6 +87,86 @@ fn se_out<T: serde::Serialize>(v: &T) -> std::result::Result<String, Status> {
     serde_json::to_string(v).map_err(|e| Status::internal(format!("encode failed: {e}")))
 }
 
+/// The exact byte length `page`'s `page_json` wire field would carry.
+fn page_json_len(page: &control_plane_core::ChangeFeedPage) -> std::result::Result<usize, Status> {
+    serde_json::to_string(page)
+        .map(|s| s.len())
+        .map_err(|e| Status::internal(format!("page encode: {e}")))
+}
+
+/// Build a candidate page from the first `k` of `events` (in order) plus `next`
+/// recomputed from exactly those `k` events, seeded at `positions` — the same
+/// seed-and-fold `decode_page` (`feed.rs`) uses, so a `k == events.len()` prefix
+/// reproduces the untruncated page's `next` exactly. No slice indexing
+/// (`clippy::indexing_slicing` is enforced): walks via `Iterator::take`.
+fn prefix_page(
+    events: &[control_plane_core::ChangeEvent],
+    k: usize,
+    positions: &std::collections::BTreeMap<i32, i64>,
+) -> control_plane_core::ChangeFeedPage {
+    let kept: Vec<control_plane_core::ChangeEvent> = events.iter().take(k).cloned().collect();
+    let mut next = positions.clone();
+    for ev in &kept {
+        next.insert(ev.bucket, ev.offset + 1);
+    }
+    control_plane_core::ChangeFeedPage { events: kept, next }
+}
+
+/// If `page`'s serialized `page_json` would exceed [`MAX_FEED_PAGE_BYTES`], keep
+/// only the largest PREFIX of `page.events` (in emission order) that fits, and
+/// recompute `page.next` from the retained events only — seeded at `positions`
+/// (the caller's PRE-scan positions, not the untruncated page's `next`), so a
+/// bucket touched by NO retained event keeps its caller-supplied resume point
+/// rather than skipping ahead past events that were dropped. A short page is
+/// completely correct here: the feed is resumable by cursor, so the consumer
+/// just gets fewer events this round and resumes from the recomputed `next`.
+///
+/// CRITICAL: this NEVER truncates to zero events. If even the FIRST event alone
+/// exceeds the budget, that one event is returned anyway — an empty page would
+/// make a caught-up subscriber long-poll, reconnect, and re-request the
+/// identical unservable page forever. That deterministic stall is exactly the
+/// poison-pill bug this truncation exists to fix, so a wide-row page degrades to
+/// "slow" (one oversized event per round-trip), never to "stuck".
+fn truncate_feed_page_to_byte_budget(
+    page: &mut control_plane_core::ChangeFeedPage,
+    positions: &std::collections::BTreeMap<i32, i64>,
+) -> std::result::Result<(), Status> {
+    if page.events.is_empty() || page_json_len(page)? <= MAX_FEED_PAGE_BYTES {
+        return Ok(());
+    }
+    // Binary search the largest 1..=n prefix that fits. A prefix's serialized size
+    // is monotonically non-decreasing in its length (strictly appending events to
+    // a JSON array), so binary search over the prefix length is valid.
+    let n = page.events.len();
+    let mut lo = 1usize;
+    let mut hi = n;
+    let mut best = 1usize;
+    while lo <= hi {
+        #[expect(
+            clippy::integer_division,
+            reason = "integer midpoint is exactly what a prefix-length binary search wants; \
+                      a float would need re-truncating back to usize anyway"
+        )]
+        let mid = lo + (hi - lo) / 2;
+        let candidate = prefix_page(&page.events, mid, positions);
+        if page_json_len(&candidate)? <= MAX_FEED_PAGE_BYTES {
+            best = mid;
+            if mid == n {
+                break;
+            }
+            lo = mid + 1;
+        } else if mid == 1 {
+            // Even a single event exceeds the budget: return it anyway (see the
+            // CRITICAL note above) rather than shrinking `best` below 1.
+            break;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    *page = prefix_page(&page.events, best, positions);
+    Ok(())
+}
+
 /// The engine's gRPC service implementation.
 pub struct EngineControlService {
     pub cp: PgControlPlane,
@@ -81,6 +184,10 @@ pub struct EngineControlService {
     pub write_store: service_runtime::WriteStore,
     /// Grace window for the orphan sweep (from `LOOM_ORPHAN_SWEEP_GRACE_SECS`).
     pub orphan_sweep_grace: std::time::Duration,
+    /// `Some(ServingStore { bucket, store })` for an S3 warehouse; `None` => local FS.
+    /// The changelog feed's object store (the catalog is built inline from `pool`, as
+    /// `list_files` already does at `:190`).
+    pub serving_store: Option<ServingStore>,
 }
 
 #[tonic::async_trait]
@@ -139,6 +246,117 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             .await
             .map_err(status)?;
         Ok(Response::new(pb::AwaitJobsResponse {}))
+    }
+
+    async fn changelog_latest(
+        &self,
+        req: Request<pb::ChangelogLatestRequest>,
+    ) -> std::result::Result<Response<pb::ChangelogLatestResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let latest = control_plane_postgres::stream::changelog_positions_latest(&self.pool, &table)
+            .await
+            .map_err(status)?;
+        // `None` = not a declared CDC table: a legitimate answer, not an error.
+        Ok(Response::new(pb::ChangelogLatestResponse {
+            present: latest.is_some(),
+            positions: latest.unwrap_or_default().into_iter().collect(),
+        }))
+    }
+
+    async fn changelog_feed(
+        &self,
+        req: Request<pb::ChangelogFeedRequest>,
+    ) -> std::result::Result<Response<pb::ChangelogFeedResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        let wire: engine_wire::client::WirePolicy = serde_json::from_str(&r.policy_json)
+            .map_err(|e| Status::invalid_argument(format!("bad policy_json: {e}")))?;
+        // Governance is enforced HERE, engine-side, before the ordered read. The wire
+        // carried the resolved policy; the subject never crossed it.
+        let policy = engine_serving::TablePolicy {
+            row_filters: wire.row_filters,
+            denied: wire.denied.into_iter().collect(),
+            masked: wire.masked.into_iter().collect(),
+        };
+        let positions: std::collections::BTreeMap<i32, i64> = r.positions.into_iter().collect();
+        let limit = usize::try_from(r.limit)
+            .unwrap_or(MAX_FEED_LIMIT)
+            .min(MAX_FEED_LIMIT);
+
+        // Fast path: a cheap indexed Postgres probe BEFORE touching object storage.
+        // `GovernedTableProvider::scan` deliberately does not push the resume
+        // predicate down to the Parquet scan (see `governed.rs`), so an idle 1 Hz
+        // subscriber that is already caught up would otherwise re-read the WHOLE
+        // changelog file tier every poll to deliver zero events. If the caller is
+        // caught up in EVERY bucket, answer empty here and skip the scan entirely.
+        //
+        // Invariant: `positions[b]` is the next offset the caller wants to CONSUME;
+        // `latest[b]` (the `changelog_positions_latest` high-water) is one PAST the
+        // last committed offset for bucket `b`. Nothing is available in bucket `b`
+        // iff `positions[b] >= latest[b]`. A bucket present in `latest` but ABSENT
+        // from `positions` means the caller has never advanced past it — treated as
+        // position 0, i.e. always behind — so a caller behind in ANY bucket falls
+        // through to the real scan below. This must never suppress a real event: it
+        // only short-circuits when every bucket is provably exhausted.
+        if let Some(latest) =
+            control_plane_postgres::stream::changelog_positions_latest(&self.pool, &table)
+                .await
+                .map_err(status)?
+            && latest
+                .iter()
+                .all(|(b, hi)| positions.get(b).copied().unwrap_or(0) >= *hi)
+        {
+            let page_json = se_out(&control_plane_core::ChangeFeedPage {
+                events: vec![],
+                next: positions,
+            })?;
+            return Ok(Response::new(pb::ChangelogFeedResponse { page_json }));
+        }
+
+        let ice = control_plane_postgres::iceberg_catalog::IcebergCatalog::new(self.pool.clone());
+        let mut page = engine_serving::changelog_feed_scan(
+            &ice,
+            &table,
+            self.serving_store.as_ref(),
+            &positions,
+            limit,
+            &policy,
+        )
+        .await
+        .map_err(serving_status)?;
+        truncate_feed_page_to_byte_budget(&mut page, &positions)?;
+        let page_json = serde_json::to_string(&page)
+            .map_err(|e| Status::internal(format!("page encode: {e}")))?;
+        Ok(Response::new(pb::ChangelogFeedResponse { page_json }))
+    }
+
+    async fn await_changelog(
+        &self,
+        req: Request<pb::AwaitChangelogRequest>,
+    ) -> std::result::Result<Response<pb::AwaitChangelogResponse>, Status> {
+        let r = req.into_inner();
+        let table = TableRef {
+            schema: r.schema,
+            name: r.name,
+        };
+        // Clamp BEFORE building the Duration — an unclamped caller-supplied
+        // `timeout_ms` (e.g. `u64::MAX`) must not reach `Duration::from_millis`.
+        let timeout_ms = r.timeout_ms.min(MAX_AWAIT_MS);
+        control_plane_postgres::stream::await_changelog(
+            &self.pool,
+            &table,
+            std::time::Duration::from_millis(timeout_ms),
+        )
+        .await
+        .map_err(status)?;
+        Ok(Response::new(pb::AwaitChangelogResponse {}))
     }
 
     async fn flush_table(

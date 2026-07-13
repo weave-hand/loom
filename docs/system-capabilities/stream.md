@@ -10,7 +10,7 @@ micro-batch **standing queries** over a log source. It is distilled from the
 three shipped slices' design specs and their landed commits; open work is
 listed at the end.
 
-_As of 8610d15d._
+_As of 3cd6c37e._
 
 ## Declaration: log vs. CDC, and the shared registry
 
@@ -322,10 +322,32 @@ newline-delimited JSON (NDJSON), one change event per line
   notify), with a poll-fallback timer bounding a missed notify (`await_changelog`,
   mirroring `await_jobs`).
 - **Transport-agnostic contract.** The `ChangeEvent` record and cursor live in
-  `control-plane/core`; NDJSON is the HTTP framing. The feed is served today by
-  the **in-process engine only** — the three `ServingEngine` feed methods default
-  to `Unsupported`, so the route answers `501` on the production wire deployment
-  until the engine-wire hop lands (`#fut-stream-subscribe-wire`).
+  `control-plane/core`; NDJSON is the HTTP framing. The feed is served on the
+  production wire, not just in-process: three unary `EngineControl` RPCs —
+  `ChangelogLatest` (the subscribability probe), `ChangelogFeed` (one bounded
+  governed page), and `AwaitChangelog` (the long-poll wake) — implement the
+  three `ServingEngine` feed methods on `EngineServingClient`
+  (`src/services/query-api/src/engine_client.rs`), so `GET
+  /objects/{type}/changes` no longer answers `501` in production. A page
+  crosses the wire as `page_json` (a serialized `ChangeFeedPage`), the same
+  `*_json` convention the governance-read RPCs already use; the engine clamps
+  `limit` server-side (`MAX_FEED_LIMIT = 1024`,
+  `src/services/engine/src/service.rs`). Governance is enforced **engine-side**
+  from a caller-resolved `WirePolicy` (row filters + denied + masked,
+  `engine-wire/src/client.rs`) — the subject identity never crosses the wire,
+  only the already-resolved policy does.
+- **The consistency contract.** One feed page is read at ONE pinned pair of
+  snapshots: `current_snapshots_pair` (`postgres/src/iceberg_catalog.rs`) reads
+  the changelog snapshot and the base snapshot in a single SQL statement, so
+  both come from one Postgres MVCC snapshot. The inline tier is as-of by
+  construction (`mvcc_live_pred`, `postgres/src/iceberg_inline.rs`); the file
+  tier is pinned explicitly to the same pair before either tier is read
+  (`engine-serving/src/feed.rs`). **Do not refactor this back into two
+  independent `current_snapshot` calls** — that reintroduces the torn read a
+  flush landing between the two reads used to open (previously
+  `iss-stream-feed-torn-read`): the file tier goes stale mid-page while inline
+  advances past it, leaving a hole neither tier covers, and the per-event
+  `next` fold silently skips it forever for that consumer.
 
 ## Continuous / standing queries (materialized views)
 
@@ -578,10 +600,6 @@ from the continuous-query slice.
   richer/two-level sharding beyond a fixed `hash(identity) % bucket_count`.
 - `#fut-stream-arrow-log` — no Arrow log on object storage; the changelog is
   Iceberg/Parquet only.
-- `#fut-stream-subscribe-wire` — the subscribe feed (see **Subscribe / tail
-  feed**) is served by the in-process engine only; the production wire client
-  answers `501` until an engine-wire Flight `do_get` + long-poll RPC implement
-  the seam.
 - `#fut-stream-feed-pruning` — the feed's per-bucket resume predicate filters
   above `GovernedTableProvider`'s full-table inner scan; pushing it into the
   mirror provider's stat-pruning scan would skip already-consumed changelog

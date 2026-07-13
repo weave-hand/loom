@@ -16,14 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use control_plane_core::StreamTables;
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use e2e_support::{
-    EngineGuard, InProcessServingEngine, connect_gov_client, define_widget, get_ndjson,
-    grant_writer,
+    EngineGuard, InProcessServingEngine, connect_gov_client, declare_cdc_table, define_widget,
+    get_ndjson, grant_writer, seed_widget_create_then_update,
 };
 use query_api::action::{ActionDeps, run_action};
 use serde_json::json;
@@ -128,15 +126,7 @@ async fn setup(fx: &PgFixture) -> Harness {
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 
-    let mut tx = pool.begin().await.expect("begin");
-    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut tx, "main", "widget", at0)
-        .await
-        .expect("ensure_table");
-    tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
-        .await
-        .expect("declare_cdc");
+    declare_cdc_table(&cp, &pool, "main", "widget", 2).await;
 
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
@@ -153,26 +143,7 @@ async fn setup(fx: &PgFixture) -> Harness {
         };
 
         // +I(1), -U/+U(1: qty 1->9) — all inline.
-        run_action(
-            "createWidget",
-            json!({ "id": "1", "name": "a", "qty": "1" })
-                .as_object()
-                .expect("object body"),
-            &subj,
-            &deps,
-        )
-        .await
-        .expect("+I(1)");
-        run_action(
-            "updateWidget",
-            json!({ "id": "1", "qty": "9" })
-                .as_object()
-                .expect("object body"),
-            &subj,
-            &deps,
-        )
-        .await
-        .expect("-U/+U(1)");
+        seed_widget_create_then_update(&subj, &deps).await;
 
         // Flush: the 3 events above move to the changelog files tier.
         let gov = connect_gov_client(&eg.sock).await;

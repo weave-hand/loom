@@ -16,11 +16,12 @@
 
 use std::collections::BTreeMap;
 
-use control_plane_core::{ChangeEvent, StreamTables, TableRef};
+use control_plane_core::{ChangeEvent, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
-use e2e_support::{InProcessServingEngine, connect_gov_client, define_widget, grant_writer};
+use e2e_support::{
+    InProcessServingEngine, connect_gov_client, declare_cdc_table, define_widget, grant_writer,
+};
 use engine_serving::TablePolicy;
 use engine_serving::feed::changelog_feed_scan;
 use query_api::action::{ActionDeps, run_action};
@@ -54,15 +55,7 @@ async fn feed_scan_unions_files_and_inline_ordered_and_resumable() {
     let pool = fx.pool_for(&db).await;
     let warehouse = tempfile::tempdir().expect("warehouse");
 
-    let mut tx = pool.begin().await.expect("begin");
-    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut tx, "main", "widget", at0)
-        .await
-        .expect("ensure_table");
-    tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 2, "id", control_plane_core::MergeEngine::LastRow)
-        .await
-        .expect("declare_cdc");
+    declare_cdc_table(&cp, &pool, "main", "widget", 2).await;
     let widget = define_widget(&cp).await;
     let subj = grant_writer(&cp, &widget).await;
     let (engine, eg) =
