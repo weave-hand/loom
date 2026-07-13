@@ -95,6 +95,8 @@ async fn iceberg_backend(fx: &PgFixture) -> (WireBackend, Box<dyn Any + Send>) {
             flush_byte_threshold: i64::MAX,
         }),
         cp: cp.clone() as Arc<dyn ControlPlane>,
+        pool: pool.clone(),
+        compact_small_file_bytes: 1 << 20,
     });
 
     let (action_client, eg) =

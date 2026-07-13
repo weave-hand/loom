@@ -41,7 +41,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
 use http_body_util::BodyExt;
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
-use ingest::http::{AppState, router};
+use ingest::http::{AppState, compact_routes, router};
 use ingest::landing::IcebergMaterializer;
 use service_runtime::{AuthState, generate_session_token, protect, token_sha256};
 use sqlx::PgPool;
@@ -106,20 +106,47 @@ pub async fn app_state(
             flush_byte_threshold: 64 * 1024 * 1024,
         }),
         cp: pg.clone(),
+        pool: pool.clone(),
+        // 1 MiB: the fixture's Parquet files are a few hundred bytes, so every
+        // landed file counts as "small" for the compaction guard.
+        compact_small_file_bytes: 1 << 20,
     };
     (pg, pool, wh, state)
 }
 
+/// The `AuthState` the binary builds (session TTL + default lockout policy).
+fn auth_state(pg: Arc<PgControlPlane>) -> AuthState {
+    AuthState {
+        auth: pg,
+        session_ttl: Duration::from_secs(3600),
+        lockout: service_runtime::LockoutPolicy::default(),
+    }
+}
+
 /// Wrap the router with the auth gate, exactly as the binary does.
 pub fn protected(state: AppState, pg: Arc<PgControlPlane>) -> Router {
-    protect(
-        router(state),
-        AuthState {
-            auth: pg,
-            session_ttl: Duration::from_secs(3600),
-            lockout: service_runtime::LockoutPolicy::default(),
-        },
-    )
+    protect(router(state), auth_state(pg))
+}
+
+/// The WHOLE ingest app, composed exactly as `serve::serve` composes it: the
+/// authn-only data plane (`protect(router(state))`) `merge`d with the
+/// admin-gated operator sub-router (`compact_routes`) and the auth surfaces.
+/// Tests that drive `router` or `compact_routes` in isolation cannot see the
+/// composition — e.g. an admin gate bleeding onto `/datasets` — so the
+/// merged-router test drives this.
+pub fn merged_app(state: AppState, pg: Arc<PgControlPlane>) -> Router {
+    let auth = auth_state(pg.clone());
+    let app = protect(router(state.clone()), auth.clone())
+        .merge(compact_routes(state, auth.clone()))
+        .merge(service_runtime::login_routes(auth.clone()))
+        .merge(service_runtime::session_routes(auth.clone()))
+        .merge(service_runtime::service_account_routes(
+            auth,
+            pg,
+            Duration::from_secs(3600),
+        ));
+    let app = app.layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024));
+    service_runtime::with_openapi(app, ingest::build_openapi())
 }
 
 /// Create the user (ensures the ACL subject exists) and mint a live bearer token —
@@ -139,6 +166,24 @@ pub async fn session_token(pg: &PgControlPlane, subject: &str) -> String {
         .await
         .expect("create_session");
     token
+}
+
+/// A subject holding the reserved `admin` role, plus its session token — the
+/// caller the admin-gated operator surface (`compact_app`) requires.
+pub async fn admin_session_token(pg: &PgControlPlane, subject: &str) -> String {
+    let token = session_token(pg, subject).await;
+    let subj = SubjectId(subject.into());
+    let role = RoleId(control_plane_core::ADMIN_ROLE.to_string());
+    pg.define_subject(&subj).await.expect("define_subject");
+    pg.define_role(&role).await.expect("define_role");
+    pg.assign_role(&subj, &role).await.expect("assign_role");
+    token
+}
+
+/// The admin-gated operator maintenance router (`compact_routes`), wired exactly
+/// as the binary does: `require_auth` (401) outside, `require_admin` (403) inside.
+pub fn compact_app(state: AppState, pg: Arc<PgControlPlane>) -> Router {
+    compact_routes(state, auth_state(pg))
 }
 
 /// Seed a Write grant on a type that does NOT exist yet (the public `grant` API

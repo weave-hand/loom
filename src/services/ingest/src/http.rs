@@ -14,9 +14,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
-    Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
-    Decision, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
+    Action, ControlPlane, ControlPlaneError, DatasetId, DatasetRef, Decision, LineageEvent,
+    PolicyTarget, RunId, TableRef, TypeName,
 };
+use control_plane_postgres::iceberg_compact::{CompactTriggerCfg, maybe_enqueue_compact};
 use control_plane_postgres::iceberg_landing::CdcDecl;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -43,6 +44,10 @@ pub enum ApiError {
     BadRequest(Cow<'static, str>),
     /// ACL deny — 403 with an empty body (no existence leak).
     Forbidden,
+    /// The addressed resource does not exist — 404 with a safe, client-visible
+    /// message (the operator surface names the table; that is not a data leak,
+    /// the caller is already an authenticated admin).
+    NotFound(Cow<'static, str>),
     /// Model-gate / conformance failures — the 422 body listing the violations.
     Violations(Vec<crate::gate::Violation>),
     /// A backend/internal fault. `detail` is logged server-side (operator-only);
@@ -68,6 +73,7 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             ApiError::Forbidden => StatusCode::FORBIDDEN.into_response(),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
             ApiError::Violations(violations) => {
                 let body = ViolationsBody {
                     violations: violations.iter().map(WireViolation::from).collect(),
@@ -108,24 +114,71 @@ impl IngestError {
 }
 
 /// Shared, owned dependencies: the configured landing backend (Iceberg),
-/// chosen at boot. Gate + schema resolution + lineage are backend-agnostic
-/// and happen in the handler before dispatch.
+/// chosen at boot, the control plane, and — for the operator maintenance
+/// surface — a raw pool handle plus the small-file cutoff the compaction guard
+/// needs. Gate + schema resolution + lineage are backend-agnostic and happen in
+/// the handler before dispatch. `ControlPlane` exposes no raw pool, and the
+/// compact endpoint is inherently a postgres-deployment surface (it enqueues a
+/// physical compaction job), so the concrete dependency is honest.
 #[derive(Clone)]
 pub struct AppState {
     pub materializer: Arc<dyn LandingMaterializer>,
     pub cp: Arc<dyn ControlPlane>,
+    /// Cloned from the pool the materializer owns; used only by `compact`.
+    pub pool: sqlx::PgPool,
+    /// `LOOM_COMPACT_THRESHOLD_BYTES` (routing config): files strictly smaller
+    /// than this count as "small" for the compaction guard.
+    pub compact_small_file_bytes: i64,
 }
 
+/// The ingest data plane: landing routes, authentication-only (the binary wraps
+/// this in `service_runtime::protect`). The operator maintenance surface lives
+/// in [`compact_routes`], which additionally requires the reserved `admin` role.
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/datasets/:schema/:table", post(land))
         .route("/models/:type", post(land_model))
-        .route("/tables/:schema/:table/compact", post(compact))
         .with_state(state)
 }
 
-/// Operator action: enqueue a compaction job for `{schema}.{table}`. Returns the
-/// JobId; a zero-pool worker performs the compaction asynchronously.
+/// The operator maintenance surface: `POST /tables/{schema}/{table}/compact`,
+/// gated `require_auth` (401) THEN `require_admin` (403) — the `/admin/*`
+/// posture (`service_runtime::admin_routes`). Kept out of [`router`] because
+/// landing is a data-plane surface (authn only) while compaction is an operator
+/// cost lever.
+///
+/// Layer order is load-bearing: `require_admin` reads the `Subject` that
+/// `require_auth` injects into request extensions, so `protect` must wrap (i.e.
+/// run before) the admin `route_layer` — exactly as `admin_routes` composes
+/// them. Note `Router::route_layer` gates every route of *its* router, which is
+/// why the compact route gets its own sub-router rather than a layer on
+/// [`router`].
+pub fn compact_routes(state: AppState, auth: service_runtime::AuthState) -> Router {
+    // `require_admin` reads only `AdminState::cp` (the reserved-role ACL check);
+    // the `auth` field is required by the struct and unused by the gate.
+    let admin = service_runtime::AdminState {
+        auth: auth.auth.clone(),
+        cp: state.cp.clone(),
+    };
+    service_runtime::protect(
+        Router::new()
+            .route("/tables/:schema/:table/compact", post(compact))
+            .with_state(state)
+            .route_layer(axum::middleware::from_fn_with_state(
+                admin,
+                service_runtime::require_admin,
+            )),
+        auth,
+    )
+}
+
+/// Operator action: request compaction of `{schema}.{table}`. Admin-gated
+/// (`compact_routes`). Routes through the shared guard helper the auto-trigger
+/// uses, so operator and auto jobs dedup against each other and the same
+/// eligibility guards (declared stream tables, changelog tables, shadow-flagged
+/// tables) refuse. Eager policy: `min_small_files: 2` — the worker's own
+/// convergence floor — so an explicit request compacts any compactable pair
+/// without waiting for `LOOM_COMPACT_TRIGGER_FILES`.
 #[utoipa::path(
     post, path = "/tables/{schema}/{table}/compact",
     params(
@@ -134,6 +187,10 @@ pub fn router(state: AppState) -> Router {
     ),
     responses(
         (status = 202, description = "Compaction job enqueued", body = JobAck),
+        (status = 200, description = "Suppressed — the body is `{\"job_id\": null}`: the table is ineligible (declared stream / changelog / shadow-flagged), has nothing to compact (< 2 small files), or a compact_table job is already pending"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+        (status = 404, description = "Unknown table (never written)"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -143,29 +200,56 @@ pub(crate) async fn compact(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let payload = serde_json::to_value(CompactJob {
+    let table = TableRef {
         schema,
         name: table,
-    })
-    .map_err(|e| ApiError::internal("ingest compact: serialize job payload", e))?;
-    let job = NewJob {
-        kind: COMPACT_JOB_KIND.to_string(),
-        payload,
-        run_at: None,
-        priority: 0,
+    };
+    // 404 an unknown table rather than enqueueing a job that can never succeed
+    // (the `schedule_table_check` posture, service_runtime/admin.rs). Note
+    // `current_snapshot` matches any snapshot at which the table was live, so a
+    // *dropped* table is not NotFound here: it falls through to the guard, which
+    // finds nothing to compact and answers 200 `{job_id: null}` (suppressed).
+    // Only a never-written table is the 404 case.
+    match st.cp.catalog().current_snapshot(&table).await {
+        Ok(_) => {}
+        Err(ControlPlaneError::NotFound(_)) => {
+            return Err(ApiError::NotFound(Cow::Owned(format!(
+                "unknown table: {}.{}",
+                table.schema, table.name
+            ))));
+        }
+        Err(e) => return Err(ApiError::internal("ingest compact: current_snapshot", e)),
+    }
+
+    let mut conn = st
+        .pool
+        .acquire()
+        .await
+        .map_err(|e| ApiError::internal("ingest compact: acquire connection", e))?;
+    let cfg = CompactTriggerCfg {
+        small_file_bytes: st.compact_small_file_bytes,
+        // The worker's own no-op floor: fewer than 2 small files cannot coalesce.
+        min_small_files: 2,
     };
     // Opaque on backend faults (governance-fronted service), logged server-side.
-    let id = st
-        .cp
-        .queue()
-        .enqueue(job)
+    let job = maybe_enqueue_compact(&mut conn, &table, &cfg)
         .await
         .map_err(|e| ApiError::internal("ingest compact: enqueue job", e))?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "job_id": id.0.to_string() })),
-    )
-        .into_response())
+    // Back to the pool before we format the reply — the connection is not needed
+    // to build the response.
+    drop(conn);
+
+    match job {
+        Some(id) => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job_id": id.0.to_string() })),
+        )
+            .into_response()),
+        // Suppressed: ineligible (stream / changelog / shadow), nothing to do
+        // (< 2 small files), or deduped against a pending job. v1 deliberately
+        // does not distinguish the reasons — the guard returns no granularity.
+        None => Ok((StatusCode::OK, Json(serde_json::json!({ "job_id": null }))).into_response()),
+    }
 }
 
 /// Parse an optional request header via `parse`: absent → `Ok(None)`, present and

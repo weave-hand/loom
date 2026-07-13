@@ -35,6 +35,16 @@ fn violations_is_422() {
     );
 }
 
+/// The operator compact surface 404s an unknown table rather than enqueueing a
+/// job that can never succeed (iss-compact-endpoint-unguarded).
+#[test]
+fn not_found_is_404() {
+    assert_eq!(
+        status_of(ApiError::NotFound("unknown table: wh.orders".into())),
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[test]
 fn internal_is_500() {
     assert_eq!(

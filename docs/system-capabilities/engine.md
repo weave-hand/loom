@@ -247,8 +247,10 @@ and selection) and `LOOM_COMPACT_TRIGGER_FILES` (N — default 8; `0` disables,
 `Option<CompactTriggerCfg>` on the `SqlCatalog`, `None` by default, so every
 existing caller and fixture is byte-identical unless a service main opts in. The
 trigger is stateless — no trigger-state row, no arm/reset protocol; the queue
-itself is the debounce. The operator endpoint remains non-deduped and unguarded
-(`#iss-compact-endpoint-unguarded`); a stream small-file story
+itself is the debounce. The operator endpoint now routes through the same guard
+helper and `pg_insert_if_absent` dedup (#434), so operator and automatic jobs
+dedup against each other and the same eligibility guards refuse both; a stream
+small-file story
 (`#fut-stream-smallfile-compaction`) and a per-table override
 (`#fut-compact-trigger-pertable-override`) are deferred.
 
