@@ -6,7 +6,7 @@
 //! the byte-identical `{"sql", "input_tables", "output_table"}` payload), plus the
 //! Abandon taxonomy edges (non-conforming result commits nothing, unknown type).
 
-use loom_test_flight::{EngineOpts, spawn_engine_uds};
+use loom_test_flight::{EngineGuard, EngineOpts, spawn_engine_uds};
 use loom_test_seed::local_sql_catalog;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -18,9 +18,11 @@ use control_plane_core::{
     LineageEvent, NewJob, ObjectType, OutputMode, PropertyDef, Queue, RetryPolicy, RunId,
     SnapshotId, TYPED_TRANSFORM_JOB_KIND, TableRef, TypeName, TypedTransformJob,
 };
+use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient, FlightTicket};
 use store_config::{ObjectStoreConfig, build_write_store};
@@ -145,6 +147,90 @@ fn make_typed_job(inputs: &[&str], output: &str, sql: &str, output_mode: OutputM
     }
 }
 
+/// Everything a typed-transform test runs against: a fresh database on the shared
+/// fixture, a temp warehouse, and an engine serving control + Flight over a UDS.
+/// Held as ONE struct so the warehouse `TempDir` guard outlives the test body (it is
+/// dropped last — fields drop in declaration order, after the engine).
+struct Harness {
+    pg: PgControlPlane,
+    pool: sqlx::PgPool,
+    catalog: SqlCatalog,
+    eng: EngineGuard,
+    wh_str: String,
+    _wh: tempfile::TempDir,
+}
+
+/// Boot a [`Harness`]. The engine carries BOTH services because the worker needs the
+/// queue (control) and the SQL/table wire (Flight).
+async fn boot(fx: &PgFixture) -> Harness {
+    let (pg, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+
+    Harness {
+        pg,
+        pool,
+        catalog,
+        eng,
+        wh_str,
+        _wh: wh,
+    }
+}
+
+/// Seed the input type's backing table `main.customers` with two rows (real Iceberg
+/// Parquet, forced cold) and define the `Customer` type over it, so `resolve()` finds
+/// its table. The type is identity-less with an OPTIONAL `region` — the source seed
+/// the happy-path and non-conformance tests share. (The inline-shadow test seeds a
+/// deliberately different topology — identity + REQUIRED `region` — and stays local.)
+async fn seed_customer_source(h: &Harness) -> TableRef {
+    let customers = tref("main", "customers");
+    let (schema, batches) = customer_body();
+    land(
+        &h.pool,
+        &h.catalog,
+        &customers,
+        &customer_columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(&customers),
+        None,
+    )
+    .await
+    .expect("land");
+
+    h.pg.ontology()
+        .define_type(ObjectType {
+            name: TypeName("Customer".into()),
+            properties: vec![prop("id", "Long", true), prop("region", "String", false)],
+            derived: vec![],
+            table: customers.clone(),
+            identity: None,
+            version: None,
+        })
+        .await
+        .unwrap();
+    customers
+}
+
 /// Build a `TransformCtx` against the spawned engine's UDS, writing into the
 /// shared warehouse (same physical root the engine serves).
 async fn build_ctx(sock: &str, wh_str: &str) -> TransformCtx {
@@ -208,61 +294,12 @@ async fn read_i64s(
 /// byte-identical payload).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typed_transform_commits_with_type_named_lineage() {
-    let fx = PgFixture::shared();
-    let (pg, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
+    let h = boot(PgFixture::shared()).await;
+    seed_customer_source(&h).await;
 
-    let wh = tempfile::tempdir().expect("warehouse dir");
-    let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
-
-    let eng = spawn_engine_uds(
-        fx,
-        &db,
-        &wh_str,
-        EngineOpts {
-            control: true,
-            flight: true,
-            ..EngineOpts::default()
-        },
-    )
-    .await;
-
-    // Seed the input type's backing table with two rows (real Iceberg Parquet).
-    let customers = tref("main", "customers");
-    let (schema, batches) = customer_body();
-    land(
-        &pool,
-        &catalog,
-        &customers,
-        &customer_columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        seed_lineage(&customers),
-        None,
-    )
-    .await
-    .expect("land");
-
-    // Define the input type (so resolve() finds its table) and the OUTPUT type
-    // (its backing table main.customer_slim does NOT exist yet).
-    pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-            derived: vec![],
-            table: customers.clone(),
-            identity: None,
-            version: None,
-        })
-        .await
-        .unwrap();
+    // Define the OUTPUT type (its backing table main.customer_slim does NOT exist yet).
     let slim = tref("main", "customer_slim");
-    pg.ontology()
+    h.pg.ontology()
         .define_type(ObjectType {
             name: TypeName("CustomerSlim".into()),
             properties: vec![prop("id", "Long", false)],
@@ -277,7 +314,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
     // Enqueue through the fixture's Postgres queue (SQL is written in TYPE terms;
     // quoted so DataFusion does not lowercase the registered type name)...
     let sql = "SELECT \"Customer\".id AS id FROM \"Customer\" WHERE \"Customer\".id >= 2";
-    pg.queue()
+    h.pg.queue()
         .enqueue(NewJob {
             kind: TYPED_TRANSFORM_JOB_KIND.to_string(),
             payload: serde_json::to_value(TypedTransformJob {
@@ -295,7 +332,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
         .expect("enqueue");
 
     // ...and dequeue it over the wire, like the worker binary does.
-    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let ctx = build_ctx(&h.eng.sock, &h.wh_str).await;
     let job = ctx
         .control
         .dequeue(&[TYPED_TRANSFORM_JOB_KIND.to_string()], "e2e-worker")
@@ -312,9 +349,9 @@ async fn typed_transform_commits_with_type_named_lineage() {
         .expect("typed transform");
 
     // Rows land in the OUTPUT TYPE's backing table, readable over Flight.
-    let ice = IcebergCatalog::new(pool.clone());
+    let ice = IcebergCatalog::new(h.pool.clone());
     let snap = ice.current_snapshot(&slim).await.expect("output snapshot");
-    let ids = read_i64s(&eng.sock, &ice, &slim, snap.id).await;
+    let ids = read_i64s(&h.eng.sock, &ice, &slim, snap.id).await;
     assert_eq!(
         ids,
         HashSet::from([2]),
@@ -331,7 +368,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
          where d.name = $1 and d.namespace = 'loom:type' and e.payload->>'sql' is not null",
     )
     .bind("CustomerSlim")
-    .fetch_one(&pool)
+    .fetch_one(&h.pool)
     .await
     .expect("typed lineage payload");
     assert_eq!(
@@ -353,7 +390,7 @@ async fn typed_transform_commits_with_type_named_lineage() {
            and e.payload->>'sql' is not null",
     )
     .bind("CustomerSlim")
-    .fetch_all(&pool)
+    .fetch_all(&h.pool)
     .await
     .expect("typed lineage inputs");
     assert_eq!(
@@ -368,59 +405,12 @@ async fn typed_transform_commits_with_type_named_lineage() {
 /// no snapshot and no transform lineage event names the output type.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nonconforming_result_abandons_without_commit() {
-    let fx = PgFixture::shared();
-    let (pg, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
+    let h = boot(PgFixture::shared()).await;
+    seed_customer_source(&h).await;
 
-    let wh = tempfile::tempdir().expect("warehouse dir");
-    let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
-
-    let eng = spawn_engine_uds(
-        fx,
-        &db,
-        &wh_str,
-        EngineOpts {
-            control: true,
-            flight: true,
-            ..EngineOpts::default()
-        },
-    )
-    .await;
-
-    let customers = tref("main", "customers");
-    let (schema, batches) = customer_body();
-    land(
-        &pool,
-        &catalog,
-        &customers,
-        &customer_columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        seed_lineage(&customers),
-        None,
-    )
-    .await
-    .expect("land");
-
-    pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-            derived: vec![],
-            table: customers.clone(),
-            identity: None,
-            version: None,
-        })
-        .await
-        .unwrap();
     // The output type declares ONLY `id`; the SQL below also yields `region`.
     let bad = tref("main", "customer_bad");
-    pg.ontology()
+    h.pg.ontology()
         .define_type(ObjectType {
             name: TypeName("CustomerBad".into()),
             properties: vec![prop("id", "Long", false)],
@@ -432,7 +422,7 @@ async fn nonconforming_result_abandons_without_commit() {
         .await
         .unwrap();
 
-    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let ctx = build_ctx(&h.eng.sock, &h.wh_str).await;
     let job = make_typed_job(
         &["Customer"],
         "CustomerBad",
@@ -454,7 +444,7 @@ async fn nonconforming_result_abandons_without_commit() {
     );
 
     // NOTHING was committed: the output table has no snapshot...
-    let ice = IcebergCatalog::new(pool.clone());
+    let ice = IcebergCatalog::new(h.pool.clone());
     assert!(
         matches!(
             ice.current_snapshot(&bad).await,
@@ -471,7 +461,7 @@ async fn nonconforming_result_abandons_without_commit() {
          where d.name = $1 and e.payload->>'sql' is not null",
     )
     .bind("CustomerBad")
-    .fetch_one(&pool)
+    .fetch_one(&h.pool)
     .await
     .expect("lineage count");
     assert_eq!(
@@ -493,32 +483,15 @@ async fn nonconforming_result_abandons_without_commit() {
 /// so this stays green — and the merge fold still wins (id=1 serves the shadow).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
-    let fx = PgFixture::shared();
-    let (pg, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
+    let h = boot(PgFixture::shared()).await;
 
-    let wh = tempfile::tempdir().expect("warehouse dir");
-    let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
-
-    let eng = spawn_engine_uds(
-        fx,
-        &db,
-        &wh_str,
-        EngineOpts {
-            control: true,
-            flight: true,
-            ..EngineOpts::default()
-        },
-    )
-    .await;
-
-    // Cold tier: two rows, every column present.
+    // Cold tier: two rows, every column present. (A deliberately different seed from
+    // `seed_customer_source` — identity + a REQUIRED `region` — so it stays local.)
     let customers = tref("main", "customers");
     let cols = required_customer_columns();
     land(
-        &pool,
-        &catalog,
+        &h.pool,
+        &h.catalog,
         &customers,
         &cols,
         required_customer_schema(),
@@ -535,7 +508,7 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
 
     // The input type has an IDENTITY — that is what routes the source through
     // `build_merge_view` at all — and a REQUIRED non-identity property.
-    pg.ontology()
+    h.pg.ontology()
         .define_type(ObjectType {
             name: TypeName("Customer".into()),
             properties: vec![prop("id", "Long", true), prop("region", "String", true)],
@@ -549,7 +522,7 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
     // The OUTPUT type also declares `region` REQUIRED: a nullable `region` in the
     // result schema is exactly what `check_conformance` refuses.
     let slim = tref("main", "customer_regions");
-    pg.ontology()
+    h.pg.ontology()
         .define_type(ObjectType {
             name: TypeName("CustomerRegion".into()),
             properties: vec![prop("id", "Long", true), prop("region", "String", true)],
@@ -568,12 +541,12 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
     )
     .expect("id batch");
     let v = control_plane_postgres::iceberg_inline::current_inline_version(
-        &pool, &customers, &cols, "id", &id_only,
+        &h.pool, &customers, &cols, "id", &id_only,
     )
     .await
     .expect("current inline version");
     control_plane_postgres::iceberg_inline::write_inline_delta(
-        &pool,
+        &h.pool,
         &customers,
         &cols,
         "id",
@@ -589,7 +562,7 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
     .expect("inline update shadow");
 
     // The same typed transform as the happy path, over the now-shadowed source.
-    let ctx = build_ctx(&eng.sock, &wh_str).await;
+    let ctx = build_ctx(&h.eng.sock, &h.wh_str).await;
     let job = make_typed_job(
         &["Customer"],
         "CustomerRegion",
@@ -601,9 +574,9 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
         .expect("typed transform over a source with a live inline row must conform and commit");
 
     // Committed — and the merge fold picked the shadow for id=1.
-    let ice = IcebergCatalog::new(pool.clone());
+    let ice = IcebergCatalog::new(h.pool.clone());
     let snap = ice.current_snapshot(&slim).await.expect("output snapshot");
-    let flight = FlightTableClient::connect(&eng.sock)
+    let flight = FlightTableClient::connect(&h.eng.sock)
         .await
         .expect("connect flight");
     let files = ice.files_with_stats(&slim, snap.id).await.expect("files");

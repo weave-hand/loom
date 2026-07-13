@@ -663,23 +663,9 @@ async fn build_inline_provider(
 
     // Merge mode. Two adjustments over the raw mirror schema:
     //
-    //   1. Non-identity data columns are declared NULLABLE. This tier's rows include
-    //      a non-CDC DELETE's inline row, which is id-only — every other data column
-    //      is physically NULL (`write_inline_delta`'s tombstone arm) — and the merge
-    //      fold NEEDS that row (identity + loom_tombstone is what hides the file
-    //      row). Declaring the mirror's non-nullable schema over it makes
-    //      `PgTableProvider::fetch_batch` fail arrow's RecordBatch validation BEFORE
-    //      the fold can drop the tombstone (iss-search-vector-merge-view-nullable,
-    //      Defect B). The identity keeps its mirror nullability — a tombstone always
-    //      carries it (`extract_id_cell`).
-    //
-    //      This widening is INTERNAL to the tier. `build_merge_view`'s final
-    //      projection — which sits above the `_loom_tomb = false` filter that drops
-    //      exactly these rows — restores the mirror's declared nullability via
-    //      `not_null`, so the SERVED schema is unchanged. That matters: the worker
-    //      infers transform/MV output columns from the served schema
-    //      (`datafusion_io::infer_columns`), and a widened flag would break
-    //      `check_conformance` / `classify_schema_change`.
+    //   1. Non-identity data columns are declared NULLABLE — see
+    //      [`widen_non_identity_fields`] for why, and why the SERVED schema is
+    //      nonetheless unchanged.
     //
     //   2. BOTH precedence pairs are appended (physical names) so the dedup can rank
     //      rows and hide tombstoned identities under either `Precedence`. Unused
@@ -688,18 +674,7 @@ async fn build_inline_provider(
     //
     // Data-only otherwise (identity-less types cannot be inline-shadowed).
     let (provider_schema, logical_types) = if let Some(id) = identity {
-        let mut fields: Vec<Field> = schema
-            .fields()
-            .iter()
-            .map(|f| {
-                let f = f.as_ref().clone();
-                if f.name() == id {
-                    f
-                } else {
-                    f.with_nullable(true)
-                }
-            })
-            .collect();
+        let mut fields = widen_non_identity_fields(schema, id);
         fields.push(Field::new("begin_snapshot", DataType::Int64, false));
         fields.push(Field::new("loom_tombstone", DataType::Boolean, false));
         fields.push(Field::new("loom_change_kind", DataType::Utf8, false));
@@ -720,6 +695,41 @@ async fn build_inline_provider(
         logical_types,
         Some(base),
     )))
+}
+
+/// The mirror `schema`'s fields with every NON-identity column declared nullable
+/// (the identity column keeps its mirror nullability verbatim). Used by
+/// [`build_inline_provider`] to build the inline tier's provider schema in merge
+/// mode.
+///
+/// Why widen: this tier's rows include a non-CDC DELETE's inline row, which is
+/// id-only — every other data column is physically NULL
+/// (`iceberg_inline::write_inline_delta`'s tombstone arm) — and the merge fold NEEDS
+/// that row (identity + `loom_tombstone` is what hides the file row). Declaring the
+/// mirror's non-nullable schema over it makes `PgTableProvider::fetch_batch` fail
+/// arrow's RecordBatch validation BEFORE the fold can drop the tombstone
+/// (iss-search-vector-merge-view-nullable, Defect B). The identity is exempt because
+/// a tombstone always carries it (`extract_id_cell`).
+///
+/// The widening is INTERNAL to the tier. [`build_merge_view`]'s final projection —
+/// which sits above the `_loom_tomb = false` filter that drops exactly these rows —
+/// restores the mirror's declared nullability via [`crate::not_null::not_null`], so
+/// the SERVED schema is unchanged. That matters: the worker infers transform/MV
+/// output columns from the served schema (`datafusion_io::infer_columns`), and a
+/// widened flag would break `check_conformance` / `classify_schema_change`.
+fn widen_non_identity_fields(schema: &SchemaRef, identity: &str) -> Vec<Field> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let f = f.as_ref().clone();
+            if f.name() == identity {
+                f
+            } else {
+                f.with_nullable(true)
+            }
+        })
+        .collect()
 }
 
 /// Build the authoritative arrow schema for a table from the mirror's column

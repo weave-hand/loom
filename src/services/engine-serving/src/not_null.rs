@@ -25,7 +25,7 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::datatypes::{DataType, FieldRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::common::{Result, exec_err};
 use datafusion::logical_expr::{
@@ -68,10 +68,17 @@ impl ScalarUDFImpl for NotNull {
             _ => exec_err!("{NAME} takes exactly one argument"),
         }
     }
-    /// THE POINT: identical data type, nullability forced to `false`.
+    /// THE POINT: the input field VERBATIM — name, data type and metadata — with
+    /// nullability forced to `false`. A true identity on everything but the one flag
+    /// this UDF exists to set: cloning the field (rather than building a fresh one)
+    /// keeps any field metadata the mirror schema carries — Iceberg field-ids being
+    /// the obvious future candidate — so the served schema cannot silently diverge
+    /// from the mirror on exactly the REQUIRED columns this wrapper is applied to.
+    /// The name is safe to preserve: DataFusion derives a projection's output column
+    /// name from the expr/alias, not from `return_field.name()`.
     fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
         match args.arg_fields {
-            [f] => Ok(Arc::new(Field::new(NAME, f.data_type().clone(), false))),
+            [f] => Ok(Arc::new(f.as_ref().clone().with_nullable(false))),
             _ => exec_err!("{NAME} takes exactly one argument"),
         }
     }
@@ -103,7 +110,13 @@ pub fn not_null(expr: Expr) -> Expr {
 /// provider reports `Inexact`, so DataFusion re-applies the predicate itself. The
 /// physical (arrow) side needs no such guard: the UDF evaluates as the identity it
 /// is.
+///
+/// FAILS SAFE: a tree-walk error answers `true` ("assume the marker is there"). The
+/// two outcomes are not symmetric — a false negative renders `loom_not_null(...)`
+/// into Postgres SQL and FAILS the scan, while a false positive merely skips
+/// pushing one filter down, which is always sound because the PG provider reports
+/// `Inexact` and DataFusion re-applies every filter above the scan regardless.
 pub fn contains_not_null(expr: &Expr) -> bool {
     expr.exists(|e| Ok(matches!(e, Expr::ScalarFunction(f) if f.name() == NAME)))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
