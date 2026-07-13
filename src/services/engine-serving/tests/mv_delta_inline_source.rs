@@ -10,7 +10,13 @@
 //! Cases: (1) inline-only source -> the full framed delta; (2) flush, then more
 //! inline rows -> the file ∪ inline union still correct (the transition case);
 //! (3) inline-only source whose watermark has consumed everything -> an EMPTY
-//! delta over the mirror-derived framed schema, not an error.
+//! delta over the mirror-derived framed schema, not an error — note this case
+//! still has a live inline tier (`advance_mv_watermark` does not RETIRE inline
+//! rows), so it exercises the tier-registration path and lands on the zero-batch
+//! schema fallback (`mv_delta.rs`'s `batches.first()` -> `framed_schema`);
+//! (4) a source with NEITHER tier — declared and snapshotted, but zero rows ever
+//! appended -> the `paths.is_empty() && inline.is_none()` early return, the ONLY
+//! case that reaches it and the exact shape that used to die in `load_table`.
 //!
 //! loom_fixture_test (Postgres + a local `tempfile` warehouse), harness mirrored
 //! from `serving_empty_table.rs` (PgFixture + `local_sql_catalog`) and
@@ -95,6 +101,12 @@ fn lineage(table: &TableRef) -> LineageEvent {
 /// `inline_byte_limit: usize::MAX` forces `land`'s inline branch, so no Parquet
 /// file and no Iceberg SQL-catalog row is ever created; `flush_byte_threshold:
 /// i64::MAX` disarms the byte-trigger auto-flush.
+///
+/// Passing EMPTY `ids`/`vals` declares the table without appending a single row:
+/// `inline_append_decl` mints the snapshot, projects the mirror columns (user +
+/// framing) and reconciles the stream declaration BEFORE its per-row insert loop
+/// (`iceberg_inline.rs`), so the result is a live, declared, schema-bearing table
+/// with no file tier AND no live inline row — see case 4.
 async fn land_inline(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -309,5 +321,55 @@ async fn inline_only_source_with_consumed_watermark_reads_empty_delta() {
             "loom_offset"
         ],
         "an empty delta still carries the mirror-derived framed schema"
+    );
+}
+
+/// Case 4 (NEITHER tier — the early return): a declared, snapshotted source that
+/// has never had a row appended. `inline_append_decl` mints the snapshot and
+/// projects the mirror columns before its insert loop, so a zero-row land leaves
+/// the table live and schema-bearing with NO Parquet files (never flushed, no
+/// Iceberg SQL-catalog row) and NO live inline row (`inline_live_batch_full`
+/// returns `None` on an empty row set) — the one shape that reaches
+/// `mv_delta_locked`'s `paths.is_empty() && inline.is_none()` early return.
+/// Case 3 does NOT reach it: `advance_mv_watermark` moves the watermark but does
+/// not retire inline rows, so its inline tier is still live.
+///
+/// This is precisely the state that used to die inside `read_files_as_batches`'s
+/// unconditional `catalog.load_table` (pre-fix, this case errors `No such table:
+/// s.mv_out`). It is also the only case that PINS the early return itself: with
+/// just that branch removed — the rest of the fix left in place — cases 1-3 still
+/// pass and this one fails, since neither tier registers and the delta's UNION
+/// body is empty (`Plan(SQL(ParserError(...)))`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_with_neither_tier_reads_empty_delta() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let table = tref("s", "mv_out");
+
+    // Declare-only: zero rows => no file tier AND no inline tier, live snapshot.
+    land_inline(&pool, &catalog, &table, &[], &[]).await;
+
+    let (schema, batches) = mv_delta_scan(&cp, &catalog, &pool, &table, MV)
+        .await
+        .expect("a source with neither tier must read EMPTY, not error in load_table");
+
+    assert_eq!(
+        batches.iter().map(RecordBatch::num_rows).sum::<usize>(),
+        0,
+        "no files and no inline rows: the delta is empty"
+    );
+    assert_eq!(
+        names(&schema),
+        vec![
+            "id",
+            "val",
+            "loom_change_kind",
+            "loom_bucket",
+            "loom_offset"
+        ],
+        "the empty delta carries the SAME mirror-derived framed schema the other cases get"
     );
 }

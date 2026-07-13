@@ -5,10 +5,10 @@
 //! `schema` -> `user_cols` + `files_with_stats` -> `read_files_as_batches` (only
 //! when the mirror reports live files — an inline-only source has no Iceberg
 //! catalog row to load) + `inline_live_batch_full` read — but folds NOTHING: the
-//! output is every framed
-//! row at-or-beyond the watermark, `(bucket, offset)`-ordered, framing columns
-//! INCLUDED (the worker derives its watermark CAS bounds from them, then strips
-//! them before running user SQL — see `MvDeltaTicket`'s doc comment).
+//! output is every framed row at-or-beyond the watermark, `(bucket, offset)`-
+//! ordered, framing columns INCLUDED (the worker derives its watermark CAS bounds
+//! from them, then strips them before running user SQL — see `MvDeltaTicket`'s
+//! doc comment).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
