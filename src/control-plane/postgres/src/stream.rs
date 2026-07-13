@@ -631,10 +631,29 @@ impl control_plane_core::MvWatermarks for PgControlPlane {
     }
 }
 
+/// The stream declaration (kind + bucket count) for a table addressed by
+/// `TableRef` — the `TableRef`-keyed sibling of the `table_id`-keyed
+/// [`pg_stream_meta`]. `None` when the table has no live mirror row or no
+/// stream declaration. Used by the engine-serving feed dispatch (a different
+/// crate) to key the CDC-vs-log feed arm off `StreamMeta.kind`.
+pub async fn stream_meta_for(
+    pool: &sqlx::PgPool,
+    table: &TableRef,
+) -> Result<Option<control_plane_core::StreamMeta>> {
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name).await?
+    else {
+        return Ok(None);
+    };
+    pg_stream_meta(&mut *conn, tid).await
+}
+
 /// The per-bucket high-water offsets (`BucketOffsets::peek_offset` per bucket)
-/// for a declared CDC table — the `?cursor=latest` join-the-tail positions, and
-/// the feed handler's "is this subscribable + how many buckets" probe. `None`
-/// when `table` has no live mirror row, no stream declaration, or is not CDC.
+/// for a declared **stream** table (CDC or log) — the `?cursor=latest`
+/// join-the-tail positions, and the feed handler's "is this subscribable + how
+/// many buckets" probe. `None` when `table` has no live mirror row or no
+/// stream declaration.
 pub async fn changelog_positions_latest(
     pool: &sqlx::PgPool,
     table: &TableRef,
@@ -648,7 +667,10 @@ pub async fn changelog_positions_latest(
     let Some(meta) = pg_stream_meta(&mut *conn, tid).await? else {
         return Ok(None);
     };
-    if meta.kind != control_plane_core::StreamKind::Cdc {
+    if !matches!(
+        meta.kind,
+        control_plane_core::StreamKind::Cdc | control_plane_core::StreamKind::Log
+    ) {
         return Ok(None);
     }
     let mut out = std::collections::BTreeMap::new();

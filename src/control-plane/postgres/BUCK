@@ -512,6 +512,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-log-positions",
+    crate = "stream_log_positions",
+    srcs = ["tests/stream_log_positions.rs"],
+    crate_root = "tests/stream_log_positions.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/testing:seed",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-snapshot-seq",
     crate = "iceberg_snapshot_seq",
     srcs = ["tests/iceberg_snapshot_seq.rs"],
