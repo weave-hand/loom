@@ -127,9 +127,12 @@ async fn log_declare_matching_count_against_cdc_table_is_validation_error() {
         Some(2),
     )
     .await;
+    // Assert on the message too, not just the variant: the batch→stream-conversion
+    // guard also returns `Validation`, so `matches!` alone would not pin the KIND
+    // guard as the source of the rejection.
     assert!(
-        matches!(res, Err(ControlPlaneError::Validation(_))),
-        "log declare with a matching count against a cdc table must be Validation, got {res:?}"
+        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different stream kind")),
+        "log declare with a matching count against a cdc table must be a kind-mismatch Validation, got {res:?}"
     );
 
     // The registry row is untouched: still kind='cdc' with its bucket_key.

@@ -155,6 +155,9 @@ pub(crate) async fn reconcile_stream_mode(
             // valid log-declare target. Fires only when a `kind='cdc'` registry row
             // already exists, so the pure log/batch paths (no such row) stay
             // byte-identical.
+            // NOTE: the two kind guards opt in per `StreamDecl` variant, so a future
+            // third variant must add its own guard — nothing here fails to compile
+            // if it does not.
             if matches!(decl, StreamDecl::Log(_))
                 && existing_meta
                     .as_ref()

@@ -237,11 +237,16 @@ loom_fixture_test(
     ],
 )
 
-loom_fixture_test(
-    name = "model-cdc-declare",
-    crate = "model_cdc_declare",
-    srcs = ["tests/model_cdc_declare.rs"],
-    crate_root = "tests/model_cdc_declare.rs",
+# Shared HTTP/auth/readback harness for the ingest end-to-end tests (mirrors
+# //src/services/query-api:e2e-support). Not a rust_test, so it is NOT covered by
+# the loom_rust_test panic-lint exemption — tests/e2e_support.rs carries its own
+# crate-level #![allow(...)] instead.
+rust_library(
+    name = "e2e-support",
+    crate = "e2e_support",
+    srcs = ["tests/e2e_support.rs"],
+    crate_root = "tests/e2e_support.rs",
+    edition = "2024",
     deps = [
         ":ingest",
         "//src/services/runtime:runtime",
@@ -257,6 +262,21 @@ loom_fixture_test(
         "//third-party:tokio",
         "//third-party:tower",
     ],
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "model-cdc-declare",
+    crate = "model_cdc_declare",
+    srcs = ["tests/model_cdc_declare.rs"],
+    crate_root = "tests/model_cdc_declare.rs",
+    deps = [
+        ":ingest",
+        ":e2e-support",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(
@@ -266,18 +286,10 @@ loom_fixture_test(
     crate_root = "tests/stream_log_vs_cdc_http.rs",
     deps = [
         ":ingest",
-        "//src/services/runtime:runtime",
-        "//src/control-plane/core:core",
+        ":e2e-support",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
         "//third-party:axum",
-        "//third-party:http-body-util",
-        "//third-party:iceberg",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:tower",
     ],
 )
 
