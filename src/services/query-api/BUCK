@@ -2412,6 +2412,20 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "dataset-acl",
+    crate = "dataset_acl",
+    srcs = ["tests/dataset_acl.rs"],
+    crate_root = "tests/dataset_acl.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "changelog-rpc-wire",
     crate = "changelog_rpc_wire",

@@ -8,11 +8,10 @@
 //! docs/superpowers/specs/2026-07-01-lineage-acl-filtering-design.md.
 
 use control_plane_core::{
-    Acl, Action, ControlPlaneError, DatasetRef, Decision, Lineage, LineageEvent, Ontology, Page,
-    PageReq, PolicyTarget, SubjectId, TableRef, TypeName, check_depth, decode_dataset_cursor,
-    encode_dataset_cursor,
+    Acl, ControlPlaneError, DatasetRef, Lineage, LineageEvent, Ontology, Page, PageReq, SubjectId,
+    check_depth, decode_dataset_cursor, encode_dataset_cursor,
 };
-use lineage_naming::{LineageNaming, ResolvedDataset};
+use lineage_naming::LineageNaming;
 
 /// Hard bound on the number of distinct nodes the frontier BFS may examine per
 /// request. A subject that can read almost nothing cannot force an unbounded ACL
@@ -47,15 +46,9 @@ impl From<ControlPlaneError> for LineageVisibilityError {
 /// and the deployment naming bridge. Construct via `new` (production `scan_cap`) or
 /// `new(..).with_scan_cap(n)` (tests that drive the cap).
 pub struct LineageVisibility<'a> {
-    acl: &'a (dyn Acl + Send + Sync),
+    dv: crate::dataset_acl::DatasetVisibility<'a>,
     lineage: &'a (dyn Lineage + Send + Sync),
-    ontology: &'a (dyn Ontology + Send + Sync),
-    bridge: &'a LineageNaming,
     scan_cap: usize,
-    /// Per-request `(schema, table) → backing types` map for the Table→Type ACL
-    /// fallback, built lazily on the first Table-target Deny (see `types_backed_by`).
-    /// `TableRef` derives no `Ord`, so the key is its `(schema, name)` pair.
-    table_types: tokio::sync::OnceCell<std::collections::BTreeMap<(String, String), Vec<TypeName>>>,
 }
 
 impl<'a> LineageVisibility<'a> {
@@ -68,12 +61,9 @@ impl<'a> LineageVisibility<'a> {
         bridge: &'a LineageNaming,
     ) -> Self {
         LineageVisibility {
-            acl,
+            dv: crate::dataset_acl::DatasetVisibility::new(acl, ontology, bridge),
             lineage,
-            ontology,
-            bridge,
             scan_cap: LINEAGE_FILTER_SCAN_CAP,
-            table_types: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -83,89 +73,6 @@ impl<'a> LineageVisibility<'a> {
     pub fn with_scan_cap(mut self, cap: usize) -> Self {
         self.scan_cap = cap;
         self
-    }
-
-    /// Classify a ref's readability for `subject`. `Type` → readable iff
-    /// `Acl::check(Read)` allows. `Table` → readable iff the Table target allows OR a
-    /// Read grant allows any ontology type *backed by* that table: loom governs by
-    /// type, but lineage emitters key physical datasets by table ref, and `Acl::check`
-    /// is deliberately exact-match ("P4 never resolves a Type to its backing Table"),
-    /// so the resolution lives here in the governor. The widening is sound because a
-    /// type-Read grant already discloses the backing table's rows through the governed
-    /// object read — seeing the table's lineage *node* discloses strictly less. (The
-    /// fallback is allow-oriented: an explicit Table-target Deny does not veto a type
-    /// Allow, consistent with the object read, which consults only the Type target.)
-    /// `Unresolvable` (owned namespace, unparseable name) → **never readable**: it is
-    /// denied *and cut*, same as an ACL Deny, so a bridge/mapping gap can only narrow,
-    /// never widen, disclosure. The bridge now owns the namespace-ownership predicate
-    /// (it holds `site_namespace`), so query-api no longer re-derives "loom-owned"
-    /// here. `External` (a genuinely foreign datasource) → default-allow: it carries
-    /// no loom-ACL'd data and is a source leaf.
-    async fn is_readable(
-        &self,
-        subject: &SubjectId,
-        r: &DatasetRef,
-    ) -> Result<bool, LineageVisibilityError> {
-        let table = match self.bridge.resolve(r) {
-            ResolvedDataset::Table(t) => t,
-            ResolvedDataset::Type(ty) => {
-                return self.allows_read(subject, &PolicyTarget::Type(ty)).await;
-            }
-            ResolvedDataset::Unresolvable(_) => return Ok(false),
-            ResolvedDataset::External(_) => return Ok(true),
-        };
-        if self
-            .allows_read(subject, &PolicyTarget::Table(table.clone()))
-            .await?
-        {
-            return Ok(true);
-        }
-        for ty in self.types_backed_by(&table).await? {
-            if self
-                .allows_read(subject, &PolicyTarget::Type(ty.clone()))
-                .await?
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// One `Acl::check(Read)` folded to a bool. Errors propagate (never disclosed as
-    /// Allow).
-    async fn allows_read(
-        &self,
-        subject: &SubjectId,
-        target: &PolicyTarget,
-    ) -> Result<bool, LineageVisibilityError> {
-        Ok(self.acl.check(subject, Action::Read, target).await? == Decision::Allow)
-    }
-
-    /// The ontology types backed by `table`, from a per-request map built lazily on
-    /// the first Table-target Deny with one unbounded `list_types` read (ontology
-    /// metadata is deployment-sized — the same argument as `one_hop`'s unbounded
-    /// page). Requests whose Table checks all allow never pay for it.
-    async fn types_backed_by(
-        &self,
-        table: &TableRef,
-    ) -> Result<&[TypeName], LineageVisibilityError> {
-        let map = self
-            .table_types
-            .get_or_try_init(|| async {
-                let types = self.ontology.list_types(PageReq::unbounded()).await?;
-                let mut map: std::collections::BTreeMap<(String, String), Vec<TypeName>> =
-                    std::collections::BTreeMap::new();
-                for ty in types.items {
-                    map.entry((ty.table.schema, ty.table.name))
-                        .or_default()
-                        .push(ty.name);
-                }
-                Ok::<_, LineageVisibilityError>(map)
-            })
-            .await?;
-        Ok(map
-            .get(&(table.schema.clone(), table.name.clone()))
-            .map_or(&[], Vec::as_slice))
     }
 
     /// One hop of neighbours for `node` in `dir`, drained into a full vec. `depth==1`
@@ -208,7 +115,7 @@ impl<'a> LineageVisibility<'a> {
         check_depth(depth)?;
 
         // Seed gating.
-        if !self.is_readable(subject, seed).await? {
+        if !self.dv.is_readable(subject, seed).await? {
             return Ok(Page::from_full(Vec::new()));
         }
 
@@ -231,7 +138,7 @@ impl<'a> LineageVisibility<'a> {
                     if visited.len() > self.scan_cap {
                         return Err(LineageVisibilityError::ScanCapExceeded);
                     }
-                    if self.is_readable(subject, &nb).await? {
+                    if self.dv.is_readable(subject, &nb).await? {
                         visible.push(nb.clone());
                         next.push(nb);
                     }
@@ -309,7 +216,7 @@ impl<'a> LineageVisibility<'a> {
     ) -> Result<Vec<DatasetRef>, LineageVisibilityError> {
         let mut kept = Vec::with_capacity(refs.len());
         for r in refs {
-            if self.is_readable(subject, &r).await? {
+            if self.dv.is_readable(subject, &r).await? {
                 kept.push(r);
             }
         }
