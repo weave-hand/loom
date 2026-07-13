@@ -482,6 +482,24 @@ pub fn clamp_drawer_width(px: i32, min: u32, max: u32) -> u32 {
     u32::try_from(px).unwrap_or(0).clamp(min, max)
 }
 
+/// Bump the runs-fetch epoch and return its new value.
+///
+/// Takes the **authoritative** counter cell, deliberately not a value snapshot.
+/// The epoch is a yew `use_state` that participates in the runs effect's dep
+/// tuple, but a `UseStateHandle` derefs to the value captured at the render
+/// that built the callback — so `epoch.set(*epoch + 1)` is snapshot-derived.
+/// The Run button is not disabled in-flight, so two clicks produce two callbacks
+/// from the same render, both computing `E + 1`: the second response re-sets the
+/// value the first already stored, the dep tuple does not change, the runs effect
+/// never refires, and the Runs tab is left empty with no refetch. Bumping through
+/// a `use_mut_ref` source of truth (mirrored into the `use_state` that feeds the
+/// deps) makes successive bumps strictly increasing regardless of stale snapshots.
+#[must_use]
+pub fn bump_epoch(epoch: &mut u64) -> u64 {
+    *epoch = epoch.wrapping_add(1);
+    *epoch
+}
+
 /// The `Workspace` state transition applied when a drawer action (Run saved /
 /// Delete) resolves. Pure and DOM-free so the drawer-action contract is
 /// `rust_test`-able (component rendering is not — see `src/ui/CLAUDE.md`).

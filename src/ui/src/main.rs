@@ -15,8 +15,9 @@ use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
     AuthError, BadgeTone, ButtonVariant, CompletionSchema, DatasetDetail, DatasetRow,
     FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef, TransformDefView,
-    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, delete_action_effect,
-    form_to_body, form_to_def, run_action_effect, schema_from_dataset_details, schema_from_types,
+    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, bump_epoch,
+    delete_action_effect, form_to_body, form_to_def, run_action_effect,
+    schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::collections::HashMap;
@@ -123,7 +124,16 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // effect refires even when (selection, tab) is unchanged — i.e. when the response
     // lands with the Runs tab already active. (tf_runs_gen stays the in-flight
     // staleness guard; this is the dep invalidator.)
+    //
+    // The `use_mut_ref` is the SOURCE OF TRUTH and the `use_state` only mirrors it for
+    // the dep tuple: a UseStateHandle derefs to the value captured at the render that
+    // built the callback, and the Run button is not disabled in-flight, so two clicks
+    // from the same render would both compute `E + 1` from the same snapshot — the
+    // second response would re-set the value the first already stored, the dep tuple
+    // would not change, and the Runs tab would sit empty with no refetch. Bumping the
+    // ref (see `bump_epoch`) keeps the counter authoritative.
     let tf_runs_epoch = use_state(|| 0u64);
+    let tf_runs_epoch_ref = use_mut_ref(|| 0u64);
 
     // On mount: load the dataset list. Catalog is the default surface, so a
     // mount-keyed effect loads it exactly once (mirrors the ontology type list).
@@ -744,9 +754,20 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         }
                     })
                 };
+                // Cancel must clear the editor's validation + server errors, not just close
+                // the editor: `tf_server_error` is SHARED with the drawer's action-error
+                // line, so a failed Save/Run-ad-hoc left in that slot would render beside
+                // the drawer's Run/Delete buttons as though a Run or Delete had failed.
+                // (Mirrors what on_edit/on_new already do on the way in.)
                 let on_cancel = {
                     let e = tf_editing.clone();
-                    Callback::from(move |()| e.set(None))
+                    let errors = tf_errors.clone();
+                    let server_error = tf_server_error.clone();
+                    Callback::from(move |()| {
+                        errors.set(Vec::new());
+                        server_error.set(None);
+                        e.set(None);
+                    })
                 };
                 html! {
                     <TransformEditor form={form} schema={(*tf_schema).clone()}
@@ -783,6 +804,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     let name = def.name.clone();
                     let tf_runs = tf_runs.clone();
                     let tf_runs_epoch = tf_runs_epoch.clone();
+                    let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
                     let tf_drawer_tab = tf_drawer_tab.clone();
                     let server_error = tf_server_error.clone();
                     let on_logout = props.on_logout.clone();
@@ -796,6 +818,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             tf_runs_epoch.clone(),
                             tf_drawer_tab.clone(),
                         );
+                        let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
                         let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
                         wasm_bindgen_futures::spawn_local(async move {
@@ -808,7 +831,11 @@ fn workspace(props: &WorkspaceProps) -> Html {
                                     server_error.set(eff.error.map(AttrValue::from));
                                     if eff.refetch_runs {
                                         tf_runs.set(Vec::new());
-                                        tf_runs_epoch.set(*tf_runs_epoch + 1);
+                                        // Bump the authoritative ref, then mirror it into the
+                                        // dep-tuple state — never `*tf_runs_epoch + 1` (a stale
+                                        // render snapshot; see the declaration above).
+                                        let next = bump_epoch(&mut tf_runs_epoch_ref.borrow_mut());
+                                        tf_runs_epoch.set(next);
                                     }
                                     if eff.open_runs_tab {
                                         tf_drawer_tab.set(AttrValue::from("runs"));

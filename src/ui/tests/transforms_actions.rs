@@ -2,7 +2,7 @@
 //! — the DOM-free core of iss-ui-transforms-drawer-errors. External rust_test
 //! (no inline #[cfg(test)]) — see CLAUDE.md.
 
-use loom_ui_core::{DrawerActionEffect, delete_action_effect, run_action_effect};
+use loom_ui_core::{DrawerActionEffect, bump_epoch, delete_action_effect, run_action_effect};
 
 #[test]
 fn run_success_opens_runs_tab_and_refetches() {
@@ -67,4 +67,54 @@ fn delete_failure_is_loud_and_otherwise_a_no_op() {
         "a failed Delete keeps the row + drawer and surfaces the message \
          (behavior change vs the old silent no-op)"
     );
+}
+
+// --- The runs-fetch epoch (BUG: the bump must not be derived from a render snapshot) ---
+//
+// `tf_runs_epoch` is a yew `use_state` that participates in the runs effect's dep
+// tuple. A `UseStateHandle` derefs to the value captured at the render that built
+// the callback, so `epoch.set(*epoch + 1)` is snapshot-derived: two Run clicks from
+// the SAME render (the Run button is not disabled in-flight) both compute `E + 1`,
+// the dep tuple does not change on the second response, the runs effect never
+// refires, and the Runs tab is left empty with no refetch — i.e. exactly the edge
+// this issue fixed, back again.
+//
+// `bump_epoch` takes the AUTHORITATIVE counter cell (`&mut`), not a snapshot, so
+// the fix is encoded in the signature: successive bumps are strictly increasing
+// regardless of how many callers hold a stale copy of the rendered value.
+
+#[test]
+fn bump_epoch_returns_the_next_value_and_stores_it() {
+    let mut epoch = 0u64;
+    assert_eq!(bump_epoch(&mut epoch), 1, "the bumped value is returned");
+    assert_eq!(epoch, 1, "and written back to the authoritative counter");
+}
+
+#[test]
+fn two_bumps_from_the_same_render_snapshot_are_distinct() {
+    // Both callbacks were built at the render where the epoch read `7`; each Run
+    // response bumps the shared counter. A snapshot-derived `*handle + 1` would
+    // yield 8 twice — the dep tuple would not change and the runs effect would not
+    // refire. The authoritative counter must yield 8 then 9.
+    let mut epoch = 7u64;
+    let first = bump_epoch(&mut epoch);
+    let second = bump_epoch(&mut epoch);
+    assert_eq!((first, second), (8, 9));
+    assert_ne!(
+        first, second,
+        "a second Run must invalidate the runs-effect dep tuple, not repeat the \
+         value the first Run already set"
+    );
+}
+
+#[test]
+fn bump_epoch_is_monotonic_over_many_bumps() {
+    let mut epoch = 0u64;
+    let mut prev = epoch;
+    for _ in 0..1_000 {
+        let next = bump_epoch(&mut epoch);
+        assert!(next > prev, "each bump strictly increases the epoch");
+        assert_eq!(next, epoch, "the returned value is the stored value");
+        prev = next;
+    }
 }
