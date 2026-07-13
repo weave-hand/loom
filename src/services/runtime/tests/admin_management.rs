@@ -1590,3 +1590,124 @@ async fn schedule_routes_gated() {
     let (status, _) = send(app(cp), req_empty("GET", "/admin/schedules", &alice)).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// Seed a live `main.widget` base table (id + region columns, one data-file
+/// snapshot) for the view-definition tests.
+fn seed_widget_table(cp: &MemoryControlPlane) {
+    cp.seed_catalog(
+        &TableRef {
+            schema: "main".into(),
+            name: "widget".into(),
+        },
+        &[
+            ("id".to_string(), "Int".to_string(), false),
+            ("region".to_string(), "Text".to_string(), false),
+        ],
+        &[3],
+    );
+}
+
+const VIEW_BODY: &str = r#"{
+    "view": {"schema": "gov", "name": "widget_eu"},
+    "base": {"schema": "main", "name": "widget"},
+    "predicate": {"Compare": {"property": "region", "op": "Eq", "value": {"Text": "EU"}}},
+    "columns": ["id", "region"]
+}"#;
+
+/// Admin `POST /admin/views` / `DELETE /admin/views/{schema}/{name}`: define,
+/// conflict on redefine, 404 on unknown base, the shared mapper's 400 (NOT
+/// 422 — `status_for` maps `Validation` to `BAD_REQUEST`) on a predicate
+/// naming an unknown base column, then drop + idempotent-404 on re-drop.
+#[tokio::test]
+async fn admin_defines_and_drops_a_view() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_widget_table(&cp);
+    let view_ref = TableRef {
+        schema: "gov".into(),
+        name: "widget_eu".into(),
+    };
+
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/views", &token, VIEW_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(
+        cp.catalog().get_view(&view_ref).await.unwrap().is_some(),
+        "view defined and resolvable"
+    );
+
+    // Re-POST the same view -> Conflict (409).
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/views", &token, VIEW_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Missing base table -> NotFound (404).
+    let missing_base_body = r#"{
+        "view": {"schema": "gov", "name": "ghost_view"},
+        "base": {"schema": "main", "name": "ghost"}
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/views", &token, missing_base_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Predicate names an unknown base column -> Validation, mapped by the
+    // shared `status_for` to BAD_REQUEST (400), not 422.
+    let bad_pred_body = r#"{
+        "view": {"schema": "gov", "name": "bad_pred_view"},
+        "base": {"schema": "main", "name": "widget"},
+        "predicate": {"Compare": {"property": "nope", "op": "Eq", "value": {"Text": "x"}}}
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/views", &token, bad_pred_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Drop -> 200, then get_view resolves to None.
+    let (status, _) = send(
+        app(cp.clone()),
+        req_empty("DELETE", "/admin/views/gov/widget_eu", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cp.catalog().get_view(&view_ref).await.unwrap().is_none());
+
+    // Drop again -> NotFound (404).
+    let (status, _) = send(
+        app(cp),
+        req_empty("DELETE", "/admin/views/gov/widget_eu", &token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn non_admin_bearer_is_403_on_view_routes() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    seed_widget_table(&cp);
+    let alice = seed_session(&cp, "alice").await;
+
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/views", &alice, VIEW_BODY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = send(
+        app(cp),
+        req_empty("DELETE", "/admin/views/gov/widget_eu", &alice),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

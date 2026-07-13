@@ -98,6 +98,8 @@ async fn admin_fragment_documents_exactly_the_admin_routes() {
         ("post", "/admin/schedules"),
         ("get", "/admin/schedules"),
         ("delete", "/admin/schedules/{name}"),
+        ("post", "/admin/views"),
+        ("delete", "/admin/views/{schema}/{name}"),
     ]
     .into_iter()
     .map(|(m, p)| (m.to_string(), p.to_string()))

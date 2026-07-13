@@ -19,7 +19,7 @@ use control_plane_core::{
     JobScheduleStatus, LengthConstraint, LinkDef, Metric, NewUser, ObjectType, PageReq, Policy,
     PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
     RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
-    TypeName, UserSummary, VectorIndexDef,
+    TypeName, UserSummary, VectorIndexDef, ViewDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -1761,6 +1761,103 @@ async fn delete_schedule_route(State(st): State<AdminState>, Path(name): Path<St
     }
 }
 
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+struct DefineViewReq {
+    view: TableReq,
+    base: TableReq,
+    /// A `RowFilter` in its serde shape, e.g.
+    /// `{"Compare":{"property":"region","op":"Eq","value":{"Text":"EU"}}}`,
+    /// `{"And":[...]}`, `{"Not":{...}}`. Absent/null means no row filter (all
+    /// base rows are in the view).
+    #[serde(default)]
+    predicate: Option<serde_json::Value>,
+    /// Column subset (base-schema-order significant). Absent/null means all
+    /// base columns are projected.
+    #[serde(default)]
+    columns: Option<Vec<String>>,
+}
+
+/// `POST /admin/views` — define (create-only) a virtual dataset: a named
+/// row/column subset of one physical base table. Mirrors the
+/// `define_transform_route` open-body-decode-then-call pattern; unlike
+/// transforms, the request shape is fully typed (`RowFilter` alone lacks
+/// `ToSchema`, so its field stays `serde_json::Value` and is decoded inside
+/// the handler, matching `PolicyReq::row_filter`).
+#[utoipa::path(
+    post, path = "/admin/views",
+    request_body = DefineViewReq,
+    responses(
+        (status = 201, description = "View defined"),
+        (status = 400, description = "predicate does not decode as a RowFilter, or \
+            validate_view_shape fails (predicate/projection names an unknown base column, \
+            empty/duplicate projection, or view naming itself as base)"),
+        (status = 404, description = "base table does not exist"),
+        (status = 409, description = "view name already exists, or collides with a physical \
+            table"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn define_view_route(
+    State(st): State<AdminState>,
+    Json(req): Json<DefineViewReq>,
+) -> Response {
+    let predicate: Option<RowFilter> = match req.predicate {
+        Some(v) => match serde_json::from_value(v) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, format!("invalid RowFilter: {e}"))
+                    .into_response();
+            }
+        },
+        None => None,
+    };
+    let view = ViewDef {
+        view: TableRef {
+            schema: req.view.schema,
+            name: req.view.name,
+        },
+        base: TableRef {
+            schema: req.base.schema,
+            name: req.base.name,
+        },
+        predicate,
+        columns: req.columns,
+    };
+    match st.cp.catalog().define_view(view).await {
+        Ok(()) => (StatusCode::CREATED, "defined").into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
+/// `DELETE /admin/views/:schema/:name` — drop a view by its ref.
+#[utoipa::path(
+    delete, path = "/admin/views/{schema}/{name}",
+    params(
+        ("schema" = String, Path, description = "View schema"),
+        ("name" = String, Path, description = "View name"),
+    ),
+    responses(
+        (status = 200, description = "View dropped"),
+        (status = 404, description = "Unknown view"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "admin",
+)]
+async fn drop_view_route(
+    State(st): State<AdminState>,
+    Path((schema, name)): Path<(String, String)>,
+) -> Response {
+    let view = TableRef { schema, name };
+    match st.cp.catalog().drop_view(&view).await {
+        Ok(()) => Json(serde_json::json!({
+            "dropped": format!("{}.{}", view.schema, view.name)
+        }))
+        .into_response(),
+        Err(e) => status_for(&e).into_response(),
+    }
+}
+
 /// Admin routes, behind `require_auth` (401) then [`require_admin`] (403).
 pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
     let inner = Router::new()
@@ -1811,6 +1908,8 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
             post(define_schedule_route).get(list_schedules_route),
         )
         .route("/admin/schedules/:name", delete(delete_schedule_route))
+        .route("/admin/views", post(define_view_route))
+        .route("/admin/views/:schema/:name", delete(drop_view_route))
         .with_state(admin.clone())
         .route_layer(axum::middleware::from_fn_with_state(admin, require_admin));
     protect(inner, auth)
@@ -1853,7 +1952,9 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         get_run_route,
         define_schedule_route,
         list_schedules_route,
-        delete_schedule_route
+        delete_schedule_route,
+        define_view_route,
+        drop_view_route
     ),
     components(schemas(
         CreateUserReq,
@@ -1887,7 +1988,8 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         RunSubmittedResp,
         JobScheduleReq,
         JobScheduleView,
-        ListSchedulesResp
+        ListSchedulesResp,
+        DefineViewReq
     ))
 )]
 struct AdminApiDoc;
