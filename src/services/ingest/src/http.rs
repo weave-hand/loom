@@ -14,9 +14,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use control_plane_core::{
-    Action, COMPACT_JOB_KIND, CompactJob, ControlPlane, ControlPlaneError, DatasetId, DatasetRef,
-    Decision, LineageEvent, NewJob, PolicyTarget, RunId, TableRef, TypeName,
+    Action, ControlPlane, ControlPlaneError, DatasetId, DatasetRef, Decision, LineageEvent,
+    PolicyTarget, RunId, TableRef, TypeName,
 };
+use control_plane_postgres::iceberg_compact::{CompactTriggerCfg, maybe_enqueue_compact};
 use control_plane_postgres::iceberg_landing::CdcDecl;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -43,6 +44,10 @@ pub enum ApiError {
     BadRequest(Cow<'static, str>),
     /// ACL deny — 403 with an empty body (no existence leak).
     Forbidden,
+    /// The addressed resource does not exist — 404 with a safe, client-visible
+    /// message (the operator surface names the table; that is not a data leak,
+    /// the caller is already an authenticated admin).
+    NotFound(Cow<'static, str>),
     /// Model-gate / conformance failures — the 422 body listing the violations.
     Violations(Vec<crate::gate::Violation>),
     /// A backend/internal fault. `detail` is logged server-side (operator-only);
@@ -68,6 +73,7 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
             ApiError::Forbidden => StatusCode::FORBIDDEN.into_response(),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
             ApiError::Violations(violations) => {
                 let body = ViolationsBody {
                     violations: violations.iter().map(WireViolation::from).collect(),
@@ -166,8 +172,13 @@ pub fn compact_routes(state: AppState, auth: service_runtime::AuthState) -> Rout
     )
 }
 
-/// Operator action: enqueue a compaction job for `{schema}.{table}`. Returns the
-/// JobId; a zero-pool worker performs the compaction asynchronously.
+/// Operator action: request compaction of `{schema}.{table}`. Admin-gated
+/// (`compact_routes`). Routes through the shared guard helper the auto-trigger
+/// uses, so operator and auto jobs dedup against each other and the same
+/// eligibility guards (declared stream tables, changelog tables, shadow-flagged
+/// tables) refuse. Eager policy: `min_small_files: 2` — the worker's own
+/// convergence floor — so an explicit request compacts any compactable pair
+/// without waiting for `LOOM_COMPACT_TRIGGER_FILES`.
 #[utoipa::path(
     post, path = "/tables/{schema}/{table}/compact",
     params(
@@ -176,6 +187,10 @@ pub fn compact_routes(state: AppState, auth: service_runtime::AuthState) -> Rout
     ),
     responses(
         (status = 202, description = "Compaction job enqueued", body = JobAck),
+        (status = 200, description = "Suppressed — the body is `{\"job_id\": null}`: the table is ineligible (declared stream / changelog / shadow-flagged), has nothing to compact (< 2 small files), or a compact_table job is already pending"),
+        (status = 401, description = "Missing or invalid bearer token"),
+        (status = 403, description = "Caller does not hold the reserved admin role"),
+        (status = 404, description = "Unknown table (never written)"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -185,29 +200,49 @@ pub(crate) async fn compact(
     State(st): State<AppState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let payload = serde_json::to_value(CompactJob {
+    let table = TableRef {
         schema,
         name: table,
-    })
-    .map_err(|e| ApiError::internal("ingest compact: serialize job payload", e))?;
-    let job = NewJob {
-        kind: COMPACT_JOB_KIND.to_string(),
-        payload,
-        run_at: None,
-        priority: 0,
+    };
+    // 404 an unknown table rather than enqueueing a job that can never succeed
+    // (the `schedule_table_check` posture, service_runtime/admin.rs).
+    match st.cp.catalog().current_snapshot(&table).await {
+        Ok(_) => {}
+        Err(ControlPlaneError::NotFound(_)) => {
+            return Err(ApiError::NotFound(Cow::Owned(format!(
+                "unknown table: {}.{}",
+                table.schema, table.name
+            ))));
+        }
+        Err(e) => return Err(ApiError::internal("ingest compact: current_snapshot", e)),
+    }
+
+    let mut conn = st
+        .pool
+        .acquire()
+        .await
+        .map_err(|e| ApiError::internal("ingest compact: acquire connection", e))?;
+    let cfg = CompactTriggerCfg {
+        small_file_bytes: st.compact_small_file_bytes,
+        // The worker's own no-op floor: fewer than 2 small files cannot coalesce.
+        min_small_files: 2,
     };
     // Opaque on backend faults (governance-fronted service), logged server-side.
-    let id = st
-        .cp
-        .queue()
-        .enqueue(job)
+    let job = maybe_enqueue_compact(&mut conn, &table, &cfg)
         .await
         .map_err(|e| ApiError::internal("ingest compact: enqueue job", e))?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(serde_json::json!({ "job_id": id.0.to_string() })),
-    )
-        .into_response())
+
+    match job {
+        Some(id) => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "job_id": id.0.to_string() })),
+        )
+            .into_response()),
+        // Suppressed: ineligible (stream / changelog / shadow), nothing to do
+        // (< 2 small files), or deduped against a pending job. v1 deliberately
+        // does not distinguish the reasons — the guard returns no granularity.
+        None => Ok((StatusCode::OK, Json(serde_json::json!({ "job_id": null }))).into_response()),
+    }
 }
 
 /// Parse an optional request header via `parse`: absent → `Ok(None)`, present and
