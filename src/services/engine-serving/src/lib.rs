@@ -10,6 +10,7 @@ pub mod feed;
 pub mod governed;
 pub mod mv_delta;
 pub mod mv_enrich;
+pub mod not_null;
 pub mod provider;
 pub mod serving;
 pub mod vector_search;

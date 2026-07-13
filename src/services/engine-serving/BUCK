@@ -40,6 +40,20 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "not-null-udf",
+    crate = "not_null_udf",
+    srcs = ["tests/not_null_udf.rs"],
+    crate_root = "tests/not_null_udf.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "execute-query-e2e",
     crate = "execute_query_e2e",
