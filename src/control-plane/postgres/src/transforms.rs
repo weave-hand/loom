@@ -486,10 +486,47 @@ impl Transforms for PgControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_transform(&self, name: &TransformName) -> Result<()> {
+        // An MV's watermark rows are part of its registration: deleting the def is
+        // the documented escape hatch out of a GC floor held by a dead MV
+        // (`crate::mv_floor`), so the rows must go with it — atomically, or the
+        // floor would outlive the registration that justified it. The delete is
+        // keyed by `mv_key(output)` alone (not by source), which drops every cursor
+        // this MV holds — correct, because the MV itself is going away.
+        let mut tx = self.pool().begin().await.map_err(backend)?;
+        let existing = sqlx::query!(
+            "select body from transforms.transform where name = $1",
+            name.0,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(backend)?;
+        if let Some(row) = existing {
+            match de_body(row.body) {
+                Ok(
+                    TransformBody::MicroBatch { output, .. }
+                    | TransformBody::MicroBatchJoin { output, .. },
+                ) => {
+                    sqlx::query!(
+                        "delete from stream.mv_watermark where mv = $1",
+                        mv_key(&output),
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(backend)?;
+                }
+                Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
+                Err(e) => tracing::warn!(
+                    transform = %name.0,
+                    error = %e,
+                    "delete_transform: undecodable body; deleting the def without watermark cleanup"
+                ),
+            }
+        }
         sqlx::query!("delete from transforms.transform where name = $1", name.0)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        tx.commit().await.map_err(backend)?;
         Ok(())
     }
 

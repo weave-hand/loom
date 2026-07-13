@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     ControlPlaneError, JobId, NewJob, Page, PageReq, Result, RunOutcome, RunState, TableRef,
-    TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode,
+    TransformBody, TransformDef, TransformName, TransformRun, Transforms, TriggerNode, mv_key,
     next_cron_occurrence, validate_no_trigger_cycle, validate_transform_def,
 };
 use time::OffsetDateTime;
@@ -99,9 +99,22 @@ impl Transforms for MemoryControlPlane {
 
     #[tracing::instrument(skip(self), level = "debug")]
     async fn delete_transform(&self, name: &TransformName) -> Result<()> {
+        // Same semantic as the postgres adapter: an MV's watermarks are part of its
+        // registration and go with it (the GC floor's escape hatch — see
+        // `control_plane_postgres::mv_floor`). Keep the two backends in step; the
+        // testkit contract certifies it.
         let mut st = self.transforms.lock();
+        let mv = st.defs.get(&name.0).and_then(|def| match &def.body {
+            TransformBody::MicroBatch { output, .. }
+            | TransformBody::MicroBatchJoin { output, .. } => Some(mv_key(output)),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+        });
         st.defs.remove(&name.0);
         st.next_run_at.remove(&name.0);
+        drop(st);
+        if let Some(mv) = mv {
+            self.mv_watermarks.lock().retain(|(m, _, _), _| *m != mv);
+        }
         Ok(())
     }
 

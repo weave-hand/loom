@@ -731,3 +731,45 @@ async fn dropped_source_bypasses_the_floor() {
         "no data_file row of the dropped incarnation survives"
     );
 }
+
+/// Deleting the MV's registration releases the floor — the documented escape hatch
+/// out of a hold by a dead MV. Its watermark rows go with the def, so the held tail
+/// becomes reclaimable on the next GC.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deleting_the_mv_registration_releases_the_floor() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
+    flush_table(&s.catalog, &s.pool, &s.src, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("flush");
+    age_all_snapshots(&s.pool).await;
+    let first = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
+        .await
+        .expect("first gc");
+    assert_eq!(first.held_by_mv_floor, 3, "held while the MV lags");
+
+    cp.transforms()
+        .delete_transform(&TransformName("mv_a".into()))
+        .await
+        .expect("delete the mv registration");
+
+    let second = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
+        .await
+        .expect("second gc");
+    assert_eq!(second.inline_rows, 3, "the dead MV's hold is released");
+    assert_eq!(second.held_by_mv_floor, 0, "no reader, no floor");
+    assert_eq!(end_capped_inline_count(&s.pool, s.tid).await, 0);
+}

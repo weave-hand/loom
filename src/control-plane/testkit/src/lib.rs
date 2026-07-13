@@ -4981,11 +4981,11 @@ async fn seed_type<O: Ontology>(o: &O, name: &str, schema: &str, table: &str) {
 /// `Gadget`) for typed-body validation; callers pass a fresh plane.
 pub async fn transforms_contract<CP>(cp: &CP)
 where
-    CP: ControlPlane + Transforms + Ontology,
+    CP: ControlPlane + Transforms + Ontology + control_plane_core::MvWatermarks,
 {
     use control_plane_core::{
         OutputMode, RunOutcome, RunState, RunTrigger, TransformBody, TransformDef, TransformName,
-        TransformRun,
+        TransformRun, WatermarkAdvance, mv_key,
     };
 
     // Seed types for typed-body validation (mirror the ObjectType seeding the
@@ -5500,6 +5500,56 @@ where
         .await
         .unwrap();
     assert_eq!(named.items.len(), 5, "runs survive definition deletion");
+
+    // --- deleting an MV's registration releases its watermark rows
+    // (road-mv-watermark-aware-gc): an MV's watermarks are part of its
+    // registration and must go with it, atomically, when the def is deleted —
+    // the documented escape hatch out of a GC floor a dead MV would otherwise
+    // hold forever (`crate::mv_floor` in the postgres adapter). ---
+    let mv_output = tref("main", "mv_del_out");
+    let mv_def = TransformDef {
+        name: TransformName("mv_del".into()),
+        body: TransformBody::MicroBatch {
+            source: tref("main", "mv_del_src"),
+            output: mv_output.clone(),
+            buckets: 1,
+            sql: "select id from events".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    cp.define_transform(mv_def).await.unwrap();
+    let mv = mv_key(&mv_output);
+    let mv_source_table_id = 9000;
+    cp.advance_mv_watermark(
+        &mv,
+        mv_source_table_id,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 3,
+        }],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cp.mv_watermarks(&mv, mv_source_table_id)
+            .await
+            .unwrap()
+            .get(&0),
+        Some(&3),
+        "watermark recorded before delete"
+    );
+    cp.delete_transform(&TransformName("mv_del".into()))
+        .await
+        .unwrap();
+    assert!(
+        cp.mv_watermarks(&mv, mv_source_table_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "deleting the MV def releases its watermark rows — no reader, no floor"
+    );
 
     // --- rebind cycle: a define_type that re-points a binding into a trigger
     // cycle among data-triggered defs is rejected (not silently allowed) ---
