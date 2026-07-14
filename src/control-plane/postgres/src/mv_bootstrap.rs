@@ -34,6 +34,28 @@
 //! bucket's start, below that bucket's true min. A watermark strictly below the delta's first
 //! surviving offset is therefore NORMAL here — which is precisely why the CAS accepts
 //! `next_offset <= from` rather than demanding equality (`crate::stream`).
+//!
+//! ## The read ORDER is load-bearing: peek, then inline, then file
+//! [`earliest_surviving_offsets`] issues three reads — the allocator peek
+//! (`stream.bucket_offset.next`, the fallback for a bucket with no live data), the inline tier,
+//! and the file tier. Each is a separate statement on a plain connection under READ COMMITTED, so
+//! **each takes a fresh snapshot**: a concurrent flush, compaction, or land can commit BETWEEN
+//! them. Nothing here holds a lock that stops that — a land takes no advisory lock at all. So the
+//! order is chosen such that EVERY interleaving still rounds DOWN. Do not "tidy" it:
+//!
+//! 1. **Peek FIRST, for every bucket.** It is the fallback when neither tier yields a candidate,
+//!    and it is an upper bound — the only read here that can round a bucket UP. Reading it before
+//!    the tiers means any row that lands afterwards has an offset `>=` the value we captured, so
+//!    falling back to it can never skip a live row. Peek LAST loses: buckets empty at both tiers,
+//!    a land commits offsets 10..15, the late peek returns 16 and we skip all six rows.
+//! 2. **Inline BEFORE file.** Data only ever moves inline→file (flush) or file→file (compaction),
+//!    never file→inline. Reading inline first means a flush that commits mid-read still leaves us
+//!    holding the inline rows' minimum — a valid lower bound — and the later file read sees the
+//!    new file too. File first loses: the file read sees no live file, the flush then commits
+//!    (end-capping the inline rows AND publishing the file), the inline read matches nothing
+//!    (`end_snapshot` is now set), and we fall back to the peek — above every row in the file
+//!    we failed to see. A compaction interleaving is harmless in either order: it swaps live files
+//!    for live files covering the same offsets.
 
 use std::collections::BTreeMap;
 
@@ -75,7 +97,54 @@ pub async fn earliest_surviving_offsets(
     let mut exact: BTreeMap<i32, i64> = BTreeMap::new();
     let mut cross: Option<i64> = None;
 
-    // ---- file tier ---------------------------------------------------------
+    // ---- allocator peek, FIRST ---------------------------------------------
+    // The per-bucket fallback for "no live data anywhere", and the ONLY read here that can round a
+    // bucket UP — so it is taken BEFORE either tier, under an earlier snapshot. Anything that
+    // lands after this read carries an offset >= what we captured, so this fallback cannot skip it.
+    // See the module docs: reading it last is a silent data hole.
+    let mut peek: BTreeMap<i32, i64> = BTreeMap::new();
+    for bucket in 0..bucket_count {
+        let next = pg_peek_offset(&mut *conn, tid, bucket).await?;
+        peek.insert(bucket, next);
+    }
+
+    // ---- inline tier, BEFORE the file tier ---------------------------------
+    // Exact per bucket. The `inline_<tid>` identifier is dynamic (hence `AssertSqlSafe`); `tid`
+    // comes from our own mirror, never user input — the same pattern as `mv_floor::removal_blocked`.
+    // Inline is read first because data only ever moves inline→file: a flush that commits between
+    // the two reads has already been captured here as a lower bound (module docs).
+    if inline_table_exists(&mut *conn, tid).await? {
+        let inline = inline_table_name(tid);
+        let rows: Vec<(i32, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "select loom_bucket, min(loom_offset) from {inline} \
+             where end_snapshot is null \
+               and loom_bucket is not null and loom_offset is not null \
+             group by loom_bucket"
+        )))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(backend)?;
+        for (bucket, off) in rows {
+            lower_exact(&mut exact, bucket, off);
+        }
+
+        // An UNFRAMED live row — written before this table was declared a stream, so it carries
+        // no bucket/offset at all. We cannot place it, so we cannot prove any bucket starts above
+        // 0. Round down. (The read-side twin of `#iss-mv-floor-holds-pre-declaration-files`.)
+        let unframed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select exists(select 1 from {inline} \
+             where end_snapshot is null \
+               and (loom_bucket is null or loom_offset is null))"
+        )))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if unframed {
+            lower(&mut cross, 0);
+        }
+    }
+
+    // ---- file tier, LAST ---------------------------------------------------
     // Live files only: an end-capped file is already invisible to `mv_delta_scan`, which reads at
     // the current snapshot. Bounds are stored as text and re-typed here — the cast sits OUTSIDE
     // the scalar subquery for the same reason `iceberg_gc.rs` documents.
@@ -112,54 +181,18 @@ pub async fn earliest_surviving_offsets(
         }
     }
 
-    // ---- inline tier -------------------------------------------------------
-    // Exact per bucket. The `inline_<tid>` identifier is dynamic (hence `AssertSqlSafe`); `tid`
-    // comes from our own mirror, never user input — the same pattern as `mv_floor::removal_blocked`.
-    if inline_table_exists(&mut *conn, tid).await? {
-        let inline = inline_table_name(tid);
-        let rows: Vec<(i32, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "select loom_bucket, min(loom_offset) from {inline} \
-             where end_snapshot is null \
-               and loom_bucket is not null and loom_offset is not null \
-             group by loom_bucket"
-        )))
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(backend)?;
-        for (bucket, off) in rows {
-            lower_exact(&mut exact, bucket, off);
-        }
-
-        // An UNFRAMED live row — written before this table was declared a stream, so it carries
-        // no bucket/offset at all. We cannot place it, so we cannot prove any bucket starts above
-        // 0. Round down. (The read-side twin of `#iss-mv-floor-holds-pre-declaration-files`.)
-        let unframed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "select exists(select 1 from {inline} \
-             where end_snapshot is null \
-               and (loom_bucket is null or loom_offset is null))"
-        )))
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-        if unframed {
-            lower(&mut cross, 0);
-        }
-    }
-
     // ---- fold --------------------------------------------------------------
+    // `peek` holds exactly the buckets `0..bucket_count`, so iterating it covers every bucket. A
+    // bucket with no candidate from either tier takes its PRE-READ peek — never a fresh one.
     let mut out = BTreeMap::new();
-    for bucket in 0..bucket_count {
+    for (&bucket, &next) in &peek {
         let candidate = match (exact.get(&bucket).copied(), cross) {
             (Some(a), Some(c)) => Some(a.min(c)),
             (Some(a), None) => Some(a),
             (None, Some(c)) => Some(c),
             (None, None) => None,
         };
-        let start = match candidate {
-            Some(v) => v,
-            None => pg_peek_offset(&mut *conn, tid, bucket).await?,
-        };
-        out.insert(bucket, start);
+        out.insert(bucket, candidate.unwrap_or(next));
     }
     Ok(out)
 }

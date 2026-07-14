@@ -169,3 +169,48 @@ async fn file_tier_supplies_the_bound() {
         "the live file's loom_offset min stat is 0"
     );
 }
+
+/// The file tier is the SOLE source of a NON-ZERO bound: a prefix is physically gone and the
+/// survivors live only in a Parquet FILE — the inline tier holds nothing live, so the answer can
+/// come from nowhere but the file's `loom_offset` min stat.
+///
+/// This is the test that actually pins the file query. `file_tier_supplies_the_bound` cannot:
+/// its expected `0` is ALSO the value every file-tier failure mode fails safe to (a missing
+/// `loom_offset` stat rounds DOWN to 0), so breaking the file read leaves it green. Here a broken
+/// file read collapses the answer to 0 and the assertion catches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn file_tier_alone_supplies_a_nonzero_bound() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // One bucket keeps the arithmetic exact: offsets 0..6 inline, no MV (so GC is unguarded).
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[],
+    )
+    .await;
+
+    // Offsets 0..6 are now physically gone, and nothing is live in either tier.
+    reclaim_everything(&s).await;
+    // The survivors land STRAIGHT TO PARQUET (`inline: false`): offsets 6..12 in a live file,
+    // nothing live inline.
+    land_more(&s.pool, &s.catalog, &s.src, 6, Some(1), false).await;
+
+    let mut conn = s.pool.acquire().await.expect("conn");
+    let starts = earliest_surviving_offsets(&mut conn, s.tid, 1)
+        .await
+        .expect("starts");
+    assert_eq!(
+        starts.get(&0).copied(),
+        Some(6),
+        "the only live data is a Parquet file over offsets 6..12; its loom_offset min stat is the \
+         only thing that can prove the start is 6 — a 0 here means the file read produced nothing \
+         and the fail-safe rounded down, and a 12 means it skipped the file's live rows entirely"
+    );
+}
