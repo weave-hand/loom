@@ -202,7 +202,10 @@ the `dataset_view.view` insert — one Postgres transaction. Dropping the
 **base** table is guarded: `mark_dropped` refuses (`Conflict`, naming every
 dependent view) while any view still resolves to it, so a base can never be
 dropped out from under a live view — the caller must `drop_view` the
-dependents first.
+dependents first. The namespace is guarded in the create direction too:
+`ensure_table` refuses (`Conflict`) to mint a physical mirror table under a
+name that is a catalog view, so a land/write can never create a table that a
+view definition would immediately shadow.
 
 Every catalog read that takes a `TableRef` (`current_snapshot`,
 `snapshot_as_of`, `files`, `schema`) transparently delegates a view ref to its
