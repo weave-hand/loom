@@ -775,7 +775,8 @@ pub async fn pg_mv_watermarks<'e, E: sqlx::PgExecutor<'e>>(
 }
 
 /// CAS-advance one bucket's watermark. `from == 0` may insert (bootstrap);
-/// `from > 0` only updates an existing row at exactly `from`. Zero rows
+/// `from > 0` only updates an existing row whose `next_offset` is at or below
+/// `from` (see the `<=` note inline, and `WatermarkAdvance` in core). Zero rows
 /// affected => `Conflict` — inside a transaction the caller's rollback then
 /// discards the whole output commit (the exactly-once mechanism). `AssertSqlSafe`:
 /// static queries (branched on `adv.from == 0`), sqlx regen unavailable in-env;
@@ -792,8 +793,16 @@ pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
          on conflict (mv, source_table_id, bucket) do update set next_offset = $4 \
          where stream.mv_watermark.next_offset = 0"
     } else {
+        // `<=`, not `=`: a bootstrapped row (`crate::mv_bootstrap`) may sit BELOW the delta's
+        // observed minimum offset, because the bootstrap rounds down (a cross-bucket file stat
+        // bounds every bucket). Demanding equality would Conflict on that MV's every run,
+        // forever. Exactly-once is preserved: `to` = observed max + 1 > `from` >= `next_offset`,
+        // so an accepted advance is strictly monotone, and a replayed advance finds
+        // `next_offset = to`, for which `to <= from` is false. Nor can a run skip live rows:
+        // `mv_delta_scan` reads `loom_offset >= next_offset`, so an observed minimum above the
+        // watermark proves the offsets in between do not exist.
         "update stream.mv_watermark set next_offset = $4 \
-         where mv = $1 and source_table_id = $2 and bucket = $3 and next_offset = $5"
+         where mv = $1 and source_table_id = $2 and bucket = $3 and next_offset <= $5"
     };
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(mv)

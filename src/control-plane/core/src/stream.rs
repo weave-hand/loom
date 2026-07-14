@@ -167,8 +167,13 @@ pub fn mv_key(output: &crate::TableRef) -> String {
 }
 
 /// One bucket's watermark CAS: advance `bucket` from `from` to `to`. `from` is
-/// the offset the delta was read at (0 = no row yet); a mismatch means a
-/// concurrent run already covered the delta.
+/// the LOWEST offset the delta actually carried for this bucket (`framing_bounds`
+/// in the worker), which is at or above the committed watermark — equal to it when
+/// the delta is gapless from it, and strictly above it when the offsets in between
+/// no longer survive (a GC'd prefix, or a rounded-down bootstrap — `mv_bootstrap`
+/// in the postgres adapter). The CAS therefore accepts `next_offset <= from` and
+/// refuses anything above it: a watermark ahead of the delta means a concurrent run
+/// already covered it. `from == 0` is the bootstrap case (may insert the row).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatermarkAdvance {
     pub bucket: i32,

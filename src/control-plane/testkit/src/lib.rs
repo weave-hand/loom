@@ -6608,4 +6608,61 @@ pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks 
     let wm = cp.mv_watermarks("s.out", 1).await.expect("read");
     assert_eq!(wm.get(&0), Some(&9));
     assert_eq!(wm.get(&1), Some(&7));
+
+    // --- a watermark BELOW the delta's observed minimum still advances
+    // (iss-mv-register-below-reclaimed-floor). `define_transform` bootstraps a new MV to its
+    // source's earliest surviving offset ROUNDED DOWN — a file spanning buckets yields only a
+    // cross-bucket bound — so a bucket's row can legitimately sit below the first offset that
+    // actually survives in it. The CAS must accept that (`next_offset <= from`) or the MV can
+    // never make its first commit. Exactly-once is unaffected: the advance is still monotone,
+    // and a stale re-advance is still refused (asserted below). ---
+    let cas_mv = "main.cas_relax_out";
+    let cas_tid = 9100;
+    cp.advance_mv_watermark(
+        cas_mv,
+        cas_tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 1,
+        }],
+    )
+    .await
+    .unwrap(); // creates the row at next_offset = 1
+
+    // The delta's observed minimum is 7 — offsets 1..7 do not survive. The row sits at 1.
+    cp.advance_mv_watermark(
+        cas_mv,
+        cas_tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 7,
+            to: 12,
+        }],
+    )
+    .await
+    .expect("a watermark BELOW the delta's observed minimum must still advance");
+    assert_eq!(
+        cp.mv_watermarks(cas_mv, cas_tid).await.unwrap().get(&0),
+        Some(&12),
+        "the undershooting watermark advanced to the delta's upper bound"
+    );
+
+    // Exactly-once still holds: replaying the SAME advance is refused, because 12 <= 7 is false.
+    assert!(
+        matches!(
+            cp.advance_mv_watermark(
+                cas_mv,
+                cas_tid,
+                &[WatermarkAdvance {
+                    bucket: 0,
+                    from: 7,
+                    to: 12,
+                }],
+            )
+            .await,
+            Err(ControlPlaneError::Conflict(_))
+        ),
+        "a replayed advance is still a Conflict — relaxing to `<=` did not weaken exactly-once"
+    );
 }

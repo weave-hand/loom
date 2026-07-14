@@ -123,7 +123,11 @@ impl MvWatermarks for MemoryControlPlane {
         for adv in advances {
             let key = (mv.to_string(), source_table_id, adv.bucket);
             match map.get(&key).copied() {
-                Some(current) if current == adv.from => {
+                // `<=`, not `==` — see the postgres adapter's `pg_advance_mv_watermark`: a
+                // rounded-down bootstrap can leave the row BELOW the delta's observed minimum
+                // offset, and exactly-once survives because the advance is still monotone and a
+                // replay (whose `from` is below the now-committed `to`) is still refused.
+                Some(current) if current <= adv.from => {
                     map.insert(key, adv.to);
                 }
                 None if adv.from == 0 => {
