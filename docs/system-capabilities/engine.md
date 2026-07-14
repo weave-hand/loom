@@ -492,7 +492,7 @@ current-snapshot delta immediately, and no GC-tier guard can bring it back. That
 half now ships — see **The end-cap seam** below (#443). Two smaller gaps the floor
 exposed remain open: `#iss-mv-register-below-reclaimed-floor` (a newly registered
 MV floors at `0` over a source whose low offsets may already be gone, plus a
-floor-read/registration race that #442 narrowed but did not close) and
+floor-read/registration race that #443 narrowed but did not close) and
 `#iss-mv-floor-holds-pre-declaration-files` (files written before
 `declare_stream` carry no `loom_offset` stat and are held forever by the
 fail-safe).
@@ -708,7 +708,7 @@ and maintenance schedules.
   a cross-check oracle.
 - `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
   offset `0` over a source whose low offsets may already be reclaimed, and
-  registration is not serialized against GC's per-table lock (a race #442
+  registration is not serialized against GC's per-table lock (a race #443
   narrowed — the floor read now runs inside GC's transaction — but did not
   close: READ COMMITTED, no row locks, and `define_transform`'s advisory lock is
   a global constant disjoint from GC's per-table key).

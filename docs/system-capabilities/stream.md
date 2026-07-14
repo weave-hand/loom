@@ -790,7 +790,7 @@ from the continuous-query slice.
   Iceberg-create race is not.
 - `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
   offset `0` even if the source's low offsets are already gone, and registration
-  is not serialized against GC's per-table lock (a race #442 narrowed — GC's
+  is not serialized against GC's per-table lock (a race #443 narrowed — GC's
   floor read now runs inside its own transaction — but did not close).
 - `#iss-mv-cdc-declare-register-race` — the MV/CDC mutual exclusion is guarded
   from both sides, but the guards share no lock, so a concurrent `?mode=cdc`
