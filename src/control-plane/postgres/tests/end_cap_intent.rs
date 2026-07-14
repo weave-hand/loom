@@ -10,9 +10,15 @@
 use control_plane_core::{ControlPlaneError, RunId, mv_key};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_landing::overwrite_stream_base;
 use control_plane_postgres::iceberg_mirror::{end_cap_live_data_files, next_snapshot};
-use control_plane_postgres::mv_floor::{EndCapIntent, guard_end_cap, removal_blocked};
-use end_cap_seed::{advance, live_file_count, seed_floored_cdc, seed_source, tref};
+use control_plane_postgres::mv_floor::{
+    EndCapIntent, MV_FLOOR_REFUSAL_PREFIX, guard_end_cap, removal_blocked,
+};
+use end_cap_seed::{
+    advance, cdc_specs, framed_cdc_batch, lineage, live_file_count, seed_floored_cdc, seed_source,
+    tref,
+};
 
 /// The core block: files carrying offsets the MV has not read block a `Removing`
 /// end-cap, and `guard_end_cap` turns that into a `Validation` naming the laggard.
@@ -355,4 +361,39 @@ async fn cdc_flush_with_a_floored_source_still_succeeds() {
         .await
         .expect("a CDC flush is REFRAMING and must not be refused by the MV floor")
         .expect("flush produced a snapshot");
+}
+
+/// The refusal MESSAGE must survive the catalog commit wrap. `guard_end_cap` raises
+/// `ControlPlaneError::Validation` inside `write_mirror`, but `commit_mirror_in_tx`
+/// re-wraps it as `iceberg::Error{Unexpected}` and `append_parquet_snapshot` re-wraps
+/// THAT with `backend()` — so the VARIANT is destroyed on the way out and only the
+/// string survives. `consolidate_table`'s race arm (an MV floor appearing between its
+/// pre-check and its commit) therefore matches on [`MV_FLOOR_REFUSAL_PREFIX`], not on
+/// the variant. If this test ever fails, that arm is dead code and a raced CDC fold
+/// retries every 60 seconds forever (`RetryPolicy::Retry` has no max-attempts).
+///
+/// `overwrite_stream_base` is the CDC fold's framed door, driven here directly: same
+/// commit path, without needing the engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_floor_refusal_message_survives_the_commit_wrap() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let s = seed_floored_cdc(fx, &cp, &db).await;
+
+    let err = overwrite_stream_base(
+        &s.pool,
+        &s.catalog,
+        &s.table,
+        &cdc_specs(),
+        vec![framed_cdc_batch(1, 300, 0, 0)],
+        Some(&lineage(&s.table)),
+        None,
+    )
+    .await
+    .expect_err("a floored stream base must refuse the framed overwrite");
+
+    assert!(
+        err.to_string().contains(MV_FLOOR_REFUSAL_PREFIX),
+        "the refusal message must survive the catalog wrap; got: {err}"
+    );
 }

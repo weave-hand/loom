@@ -291,6 +291,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "consolidate-mv-floor",
+    crate = "consolidate_mv_floor",
+    srcs = ["tests/consolidate_mv_floor.rs"],
+    crate_root = "tests/consolidate_mv_floor.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/control-plane/postgres:end-cap-seed",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "cow-consolidate",
     crate = "cow_consolidate",
     srcs = ["tests/cow_consolidate.rs"],

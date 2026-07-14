@@ -48,6 +48,7 @@ use control_plane_postgres::iceberg_mirror::{
     clear_consolidate_trigger, live_table_id, reset_inline_trigger,
 };
 use control_plane_postgres::iceberg_sql_catalog::{InlineEndCap, SqlCatalog};
+use control_plane_postgres::mv_floor::{MV_FLOOR_REFUSAL_PREFIX, removal_blocked};
 use control_plane_postgres::ontology::identity_for_table;
 use control_plane_postgres::read_files_as_batches;
 use datafusion::execution::context::SessionContext;
@@ -303,6 +304,39 @@ async fn consolidate_locked(
     engine: control_plane_core::MergeEngine,
     version_col: Option<&str>,
 ) -> Result<i64, EngineServingError> {
+    // The fold is a `Removing` end-cap: it retires every live file and re-projects only
+    // the fold winners. If a micro-batch MV has not read some of those offsets, removing
+    // them leaves a hole in its delta — so decline, before reading a single file, and say
+    // which MV is the laggard.
+    //
+    // Decline, do NOT error: `RetryPolicy::Retry` has no max-attempts anywhere, so an
+    // `Err` here is a permanent 60-second failure drumbeat, and `Abandon` leaves the
+    // shadow tier unfolded forever. `clear_consolidate_trigger` re-arms instead: the next
+    // `threshold` deltas enqueue a fresh job — a write-proportional backoff with no
+    // timers. `has_shadow` stays SET (the shadow tier really IS still unfolded). Same
+    // posture `gc_locked` takes against the floor: hold, warn, succeed.
+    //
+    // This runs inside the per-table advisory lock the caller holds.
+    let mut conn = pool.acquire().await.map_err(to_serving)?;
+    if let Some(floor) = removal_blocked(&mut conn, table, tid)
+        .await
+        .map_err(to_serving)?
+    {
+        tracing::warn!(
+            schema = %table.schema,
+            name = %table.name,
+            tid,
+            floor = floor.min_offset(),
+            slowest = ?floor.slowest,
+            "consolidate skipped: the fold would remove offsets a micro-batch MV has not consumed",
+        );
+        clear_consolidate_trigger(&mut conn, tid)
+            .await
+            .map_err(to_serving)?;
+        return Ok(0);
+    }
+    drop(conn);
+
     // The base's physical framed rows: live Parquet files ...
     let Some(base) = fold_base(pool, table).await? else {
         // Declared but never written — nothing to fold.
@@ -416,7 +450,7 @@ async fn consolidate_locked(
     // `overwrite_stream_base` is the framed door: the public overwrite primitives now
     // REFUSE a declared stream table (they would destroy its offset range), so the fold —
     // the one caller that legitimately rewrites a framed base — has its own entrypoint.
-    let snap = overwrite_stream_base(
+    let snap = match overwrite_stream_base(
         pool,
         catalog,
         table,
@@ -429,7 +463,42 @@ async fn consolidate_locked(
         }),
     )
     .await
-    .map_err(to_serving)?;
+    {
+        Ok(s) => s,
+        // Raced: an MV floor appeared BETWEEN the pre-check above and this commit. The
+        // pre-check runs on a pooled connection outside the fold's commit transaction, and
+        // neither `advance_mv_watermark` nor `define_transform` takes the fold's advisory
+        // lock — so a new reader (or a fresh watermark row) can land in that window and the
+        // fold's own in-tx `guard_end_cap` then refuses. Same decline, same re-arm; never a
+        // retryable error.
+        //
+        // MATCH ON THE MESSAGE, NOT THE VARIANT. `guard_end_cap` raises
+        // `ControlPlaneError::Validation` inside `write_mirror`, but it does NOT survive the
+        // catalog boundary: `commit_mirror_in_tx` wraps it into `iceberg::Error{Unexpected}`
+        // and `append_parquet_snapshot` re-wraps THAT with `backend()`, so it arrives here as
+        // `Backend` — an `Err(ControlPlaneError::Validation(_))` arm would be dead code. The
+        // stable prefix is the contract (pinned by
+        // `postgres/tests/end_cap_intent.rs::the_floor_refusal_message_survives_the_commit_wrap`);
+        // it is the same message-sniffing idiom `worker/src/stream_mv.rs`'s `classify_*` uses
+        // over gRPC, where the status code is likewise flattened. It also covers the
+        // empty-batch `overwrite_truncate` branch, which never touches the catalog and so
+        // does return a real `Validation`.
+        Err(e) if e.to_string().contains(MV_FLOOR_REFUSAL_PREFIX) => {
+            tracing::warn!(
+                schema = %table.schema,
+                name = %table.name,
+                tid,
+                reason = %e,
+                "consolidate skipped: the MV floor moved under the fold",
+            );
+            let mut conn = pool.acquire().await.map_err(to_serving)?;
+            clear_consolidate_trigger(&mut conn, tid)
+                .await
+                .map_err(to_serving)?;
+            return Ok(0);
+        }
+        Err(e) => return Err(to_serving(e)),
+    };
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
     // Unconditional (unlike COW's `clear_has_shadow_if_quiescent`): `has_shadow` is

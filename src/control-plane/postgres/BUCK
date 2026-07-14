@@ -610,6 +610,10 @@ rust_library(
         "//third-party:tokio",
         "//third-party:uuid",
     ],
+    # PUBLIC so out-of-package fixture tests can reuse the seeds — the CDC consolidate
+    # fold's floor tests live in `//src/services/engine-serving`, exactly as query-api's
+    # e2e tests reuse `//src/services/query-api:e2e-support`.
+    visibility = ["PUBLIC"],
 )
 
 loom_fixture_test(
