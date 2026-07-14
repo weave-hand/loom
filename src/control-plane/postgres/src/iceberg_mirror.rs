@@ -455,10 +455,11 @@ pub async fn end_cap_live_data_files(
 /// still defined over `(ns, name)` — dropping the base out from under a live view would
 /// leave it resolving to nothing. Callers must `drop_view` the dependents first.
 ///
-/// `intent` is forwarded verbatim to the data-file end-cap below; the production caller
-/// (`SqlCatalog::drop_table`) passes `Destroying`, which bypasses the MV floor ON PURPOSE
-/// — the operator dropped the source, so its MVs are dead by definition (the reclaim
-/// warns about them via `mv_floor::stranded_mv_readers`).
+/// `intent` guards the table/column end-cap up front (before any write, mirroring the
+/// other four end-cap primitives) and is forwarded verbatim to the data-file end-cap
+/// below; the production caller (`SqlCatalog::drop_table`) passes `Destroying`, which
+/// bypasses the MV floor ON PURPOSE — the operator dropped the source, so its MVs are
+/// dead by definition (the reclaim warns about them via `mv_floor::stranded_mv_readers`).
 pub async fn mark_dropped(
     conn: &mut PgConnection,
     ns: &str,
@@ -485,6 +486,18 @@ pub async fn mark_dropped(
             names.join(", ")
         )));
     }
+    let table = TableRef {
+        schema: ns.to_owned(),
+        name: name.to_owned(),
+    };
+    // Guard BEFORE any write, like every other end-cap primitive. When there is no live
+    // mirror row, `live_table_id` returns `None` — nothing to guard and nothing to
+    // end-cap; the `update ... returning` below still runs and fails exactly as it did
+    // before this guard existed (same `RowNotFound` -> `backend()` path), so a caller
+    // that reaches `mark_dropped` without a live row sees no new error path.
+    if let Some(tid) = live_table_id(&mut *conn, ns, name).await? {
+        guard_end_cap(&mut *conn, &table, tid, intent).await?;
+    }
     let tid = sqlx::query_scalar!(
         "update iceberg_mirror.table set end_snapshot = $3 \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null \
@@ -504,10 +517,6 @@ pub async fn mark_dropped(
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
-    let table = TableRef {
-        schema: ns.to_owned(),
-        name: name.to_owned(),
-    };
     end_cap_live_data_files(conn, &table, tid, at, intent).await?;
     Ok(())
 }

@@ -202,22 +202,22 @@ async fn watermark_mvs(conn: &mut PgConnection, tid: i64) -> Result<Vec<String>>
 }
 
 /// The stable prefix of the seam's refusal message (`ControlPlaneError::Validation`,
-/// see [`guard_end_cap`]). Not yet matched on anywhere in the tree: no end-cap-issuing
-/// path calls `guard_end_cap` yet, so this refusal never fires in production today.
-/// The intended future consumer is `consolidate_table`, which should turn a refusal
-/// into a clean skip-and-re-arm rather than a queue-poisoning error (the gRPC status
-/// code does not survive the wire — `worker/src/stream_mv.rs`'s `classify_*` uses the
-/// same idiom) — that wiring is a later task, tracked outside this module.
+/// see [`guard_end_cap`]). All five end-cap primitives now require an [`EndCapIntent`]
+/// and call `guard_end_cap` before writing, across every end-cap-issuing call site in
+/// the tree, so a `Removing` end-cap that would take offsets a micro-batch MV has not
+/// read is refused in production today. `consolidate_table` does not yet turn that
+/// refusal into a clean skip-and-re-arm rather than a queue-poisoning error (the gRPC
+/// status code does not survive the wire — `worker/src/stream_mv.rs`'s `classify_*`
+/// uses the same idiom) — that wiring is a later task, tracked outside this module.
 pub const MV_FLOOR_REFUSAL_PREFIX: &str = "mv-floor refuses end-cap:";
 
 /// Why a caller is end-capping, for the [`guard_end_cap`]/[`removal_blocked`] seam
 /// below. Intent CANNOT be inferred from the SQL: flush and compaction end-cap offsets
 /// ABOVE the floor and re-project those same rows at the same `(bucket, offset)`, so a
 /// blanket "refuse any end-cap at or above the floor" would break them — the type
-/// forces a caller to say which case it is. Not yet threaded through every (or any)
-/// end-cap-issuing path in the tree; wiring each of them to call `guard_end_cap` with
-/// the right intent is later work, so today the type exists but nothing requires a
-/// caller to construct or pass it.
+/// forces a caller to say which case it is. Threaded through every end-cap-issuing path
+/// in the tree: all five end-cap primitives take an `&EndCapIntent` and call
+/// `guard_end_cap` with it before writing, so every caller must construct and pass one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndCapIntent<'a> {
     /// The offsets SURVIVE: the same rows are re-projected into the new live set at the

@@ -130,6 +130,9 @@ pub async fn end_cap_inline_rows_by_id(
     at: SnapshotId,
     intent: &crate::mv_floor::EndCapIntent<'_>,
 ) -> Result<()> {
+    if row_ids.is_empty() {
+        return Ok(());
+    }
     crate::mv_floor::guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let sql = format!(
         "update {} set end_snapshot = {} \
