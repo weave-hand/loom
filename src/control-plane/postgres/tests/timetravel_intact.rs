@@ -18,7 +18,7 @@ use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use gc_test_support::{
     SEVEN_DAYS, age_all_snapshots, age_snapshot, batch, columns, harness, inline_table_exists,
-    ipc_body, lineage, live_tid, reclaimed_through,
+    ipc_body, lineage, live_tid, mirror_row_counts, reclaimed_through,
 };
 use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
 
@@ -267,6 +267,16 @@ async fn truncate_is_not_quiet() {
     age_all_snapshots(&pool).await; // H = s2
     let tid = live_tid(&pool, "wh", "t").await;
     gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+
+    // The "quiet" illusion is now REAL, and this is what makes the trap a trap: after gc,
+    // `tid` has ZERO surviving data_file rows. Any predicate computed from SURVIVING mirror
+    // rows — which is all a quiet-table proxy can see — therefore reports "nothing was
+    // written since s1" and would serve the read. Only the watermark remembers otherwise.
+    assert_eq!(
+        mirror_row_counts(&pool, tid).await.2,
+        0,
+        "zero surviving data files: the state a 'surviving rows' proxy misreads as quiet"
+    );
 
     assert!(
         !ice.snapshot_intact(&t, s1, s2)
