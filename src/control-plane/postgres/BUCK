@@ -592,6 +592,26 @@ loom_fixture_test(
     ],
 )
 
+rust_library(
+    name = "end-cap-seed",
+    crate = "end_cap_seed",
+    srcs = ["tests/end_cap_seed.rs"],
+    crate_root = "tests/end_cap_seed.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
 loom_fixture_test(
     name = "mv-floor",
     crate = "mv_floor",
