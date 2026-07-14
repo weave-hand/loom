@@ -1154,6 +1154,10 @@ fn stamp_framing(batch: &RecordBatch, buckets: &[i32], offsets: &[i64]) -> Resul
 /// `build_vector_index` rebuild job per vector index declared on the table's
 /// ontology type (via the shared `rebuild_jobs_for`), atomically with the
 /// commit, so replaced rows can't leave a stale index serving silently.
+///
+/// **Refuses a declared stream/CDC target** (`pg_refuse_stream_target`): overwriting an
+/// offset-framed log is not a legitimate operation from any caller here — see
+/// [`overwrite_stream_base`], the CDC consolidate fold's private door.
 pub async fn overwrite_parquet_snapshot(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -1163,7 +1167,10 @@ pub async fn overwrite_parquet_snapshot(
     lineage: Option<&LineageEvent>,
     jobs: &[NewJob],
 ) -> Result<SnapshotId> {
-    overwrite_with_cap(pool, catalog, table, columns, batches, lineage, jobs, None).await
+    overwrite_with_cap(
+        pool, catalog, table, columns, batches, lineage, jobs, None, false,
+    )
+    .await
 }
 
 /// The **consuming** overwrite/replace commit primitive: identical to
@@ -1176,6 +1183,10 @@ pub async fn overwrite_parquet_snapshot(
 /// no downstream jobs of its own — consolidation has none; the vector-index
 /// rebuild jobs are still computed and enqueued internally, exactly as the plain
 /// overwrite does.
+///
+/// **Refuses a declared stream/CDC target**, exactly like [`overwrite_parquet_snapshot`]:
+/// the COW identity fold (its only caller) supplies user-columns-only batches and must
+/// never land on an offset-framed log.
 pub async fn overwrite_parquet_snapshot_consuming(
     pool: &PgPool,
     catalog: &SqlCatalog,
@@ -1194,21 +1205,58 @@ pub async fn overwrite_parquet_snapshot_consuming(
         lineage,
         &[],
         Some(consumed),
+        false,
     )
     .await
 }
 
-/// Shared body of [`overwrite_parquet_snapshot`] and
-/// [`overwrite_parquet_snapshot_consuming`] — everything is identical between
-/// the two (rebuild-job computation, the zero-file/real-file branch split, the
-/// `CommitExtras` shape) except whether the inline end-cap is blanket (`None`,
+/// The CDC consolidate fold's private door: the ONLY legitimate overwrite of a declared
+/// stream table. `batches` MUST carry the framing columns (`loom_change_kind` /
+/// `loom_bucket` / `loom_offset`).
+///
+/// This bypasses the `pg_refuse_stream_target` check the two public entrypoints carry, so
+/// it is the one path that can remove a stream table's offsets — and therefore the one
+/// overwrite whose end-cap can be blocked by the MV floor (`EndCapIntent::Removing` →
+/// `guard_end_cap`). `consolidate_table` pre-checks that with `mv_floor::removal_blocked`
+/// and skips cleanly rather than erroring.
+pub async fn overwrite_stream_base(
+    pool: &PgPool,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    columns: &[ColumnSpec],
+    batches: Vec<RecordBatch>,
+    lineage: Option<&LineageEvent>,
+    consumed: Option<InlineEndCap<'_>>,
+) -> Result<SnapshotId> {
+    overwrite_with_cap(
+        pool,
+        catalog,
+        table,
+        columns,
+        batches,
+        lineage,
+        &[],
+        consumed,
+        true,
+    )
+    .await
+}
+
+/// Shared body of [`overwrite_parquet_snapshot`],
+/// [`overwrite_parquet_snapshot_consuming`] and [`overwrite_stream_base`] — everything is
+/// identical between them (rebuild-job computation, the zero-file/real-file branch split,
+/// the `CommitExtras` shape) except whether the inline end-cap is blanket (`None`,
 /// plain overwrite — every live inline row retires) or targeted (`Some`,
-/// consuming overwrite — only the named rows retire, everything else survives).
+/// consuming overwrite — only the named rows retire, everything else survives), and
+/// whether the batches are already stream-FRAMED (`framed`, the CDC fold's door) or
+/// user-columns-only (every other caller, which is refused a stream target outright).
 #[expect(
     clippy::too_many_arguments,
     reason = "one cohesive commit call: routing target (pool/catalog/table/columns), payload \
-              (batches), behavior (lineage/jobs), and the blanket-vs-targeted inline cap \
-              (consumed) — the two public entrypoints differ only in the last two args"
+              (batches), behavior (lineage/jobs), the blanket-vs-targeted inline cap \
+              (consumed), and whether the payload carries stream framing (framed — the CDC \
+              fold's door, which is also what waives the stream-target refusal); the three \
+              public entrypoints differ only in the last three args"
 )]
 async fn overwrite_with_cap(
     pool: &PgPool,
@@ -1219,26 +1267,28 @@ async fn overwrite_with_cap(
     lineage: Option<&LineageEvent>,
     jobs: &[NewJob],
     consumed: Option<InlineEndCap<'_>>,
+    framed: bool,
 ) -> Result<SnapshotId> {
+    // Refuse a declared stream/CDC target. The framing-preserving overwrite exists for
+    // exactly ONE caller — the CDC consolidate fold, via `overwrite_stream_base`. Every
+    // other caller supplies user-columns-only batches; letting one land on a framed table
+    // either destroys the offset range (the truncate branch) or panics in
+    // `coerce_batch_to_ice` (the batch is three columns short of the framed schema).
+    //
+    // Pre-flight, on its own connection: the non-empty branch's commit tx is opened deep
+    // inside `append_parquet_snapshot`. A stream declaration is never removed, so the only
+    // window is "declared WHILE an overwrite is in flight". The truncate branch re-checks
+    // INSIDE its own tx, atomically.
+    if !framed {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        crate::stream::pg_refuse_stream_target(&mut conn, table).await?;
+    }
     let rebuild_jobs = crate::vector_index::rebuild_jobs_for(pool, table).await?;
     let mut all_jobs = rebuild_jobs;
     all_jobs.extend_from_slice(jobs); // action downstream jobs; pg_insert_if_absent dedups
     if batches.iter().all(|b| b.num_rows() == 0) {
-        return overwrite_truncate(pool, table, lineage, &all_jobs, consumed).await;
+        return overwrite_truncate(pool, table, lineage, &all_jobs, consumed, framed).await;
     }
-    // A declared stream table's physical schema carries framing; an overwrite must
-    // preserve it (else the replacement looks like a dropped-columns schema change
-    // against the live, framing-bearing mirror — see `classify_schema_change`).
-    // Batch tables stay framing-free — byte-identical to before.
-    let include_framing = {
-        let mut conn = pool.acquire().await.map_err(backend)?;
-        match live_table_id(&mut conn, &table.schema, &table.name).await? {
-            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid)
-                .await?
-                .is_some(),
-            None => false,
-        }
-    };
     append_parquet_snapshot(
         pool,
         catalog,
@@ -1251,9 +1301,15 @@ async fn overwrite_with_cap(
             end_cap: consumed,
             jobs: &all_jobs,
             data_trigger_tables: std::slice::from_ref(table),
+            // A stream base's fold REMOVES offsets from the live set; a plain overwrite
+            // removes rows from a table no MV can read. Either way: Removing.
+            intent: EndCapIntent::Removing,
             ..CommitExtras::default()
         },
-        include_framing,
+        // With the refusal above in place, `framed` IS "the target is a declared stream
+        // table" — a non-framed overwrite can no longer reach one, so the old
+        // `include_framing` registry lookup collapses into this flag.
+        framed,
     )
     .await
 }
@@ -1269,12 +1325,19 @@ async fn overwrite_with_cap(
 /// row — same targeted-vs-blanket rule as the non-empty branch, so a truncating
 /// consolidation fold (all input rows folded into nothing, e.g. a full delete)
 /// still leaves an unrelated concurrent mutation's inline row live.
+///
+/// `framed` is the CDC fold's waiver of the stream-target refusal (see
+/// [`overwrite_with_cap`]). When it is false this re-checks `pg_refuse_stream_target`
+/// **inside the truncate's own transaction**, so the refusal is atomic with the
+/// delete-all it prevents — this is the branch that, unguarded, end-caps every live file
+/// and every live inline row of an offset-framed log.
 async fn overwrite_truncate(
     pool: &PgPool,
     table: &TableRef,
     lineage: Option<&LineageEvent>,
     jobs: &[NewJob],
     consumed: Option<InlineEndCap<'_>>,
+    framed: bool,
 ) -> Result<SnapshotId> {
     use crate::iceberg_inline::{end_cap_inline_rows_by_id, end_cap_live_inline_rows};
     use crate::iceberg_mirror::{end_cap_live_data_files, ensure_table, next_snapshot};
@@ -1282,6 +1345,10 @@ async fn overwrite_truncate(
 
     let mut tx = pool.begin().await.map_err(backend)?;
     let conn = &mut *tx;
+    // In-tx, so the refusal is atomic with the truncate it prevents.
+    if !framed {
+        crate::stream::pg_refuse_stream_target(conn, table).await?;
+    }
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
     // REMOVING (all three caps): a truncating overwrite writes NO files back — every

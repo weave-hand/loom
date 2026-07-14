@@ -8,13 +8,13 @@
 //!   base's PHYSICAL framed rows (Parquet files + any still-live inline tail),
 //!   folds them so the greatest `loom_offset` per identity wins (dropping a `-D`
 //!   winner — the identity was deleted), and rewrites the base as that folded set,
-//!   preserving framing. When inline rows were folded in, the rewrite commits via
-//!   the CONSUMING overwrite ([`overwrite_parquet_snapshot_consuming`]), which
-//!   retires exactly those folded rows (an inline write that lands mid-fold
-//!   survives, instead of being end-capped unfolded); with no live inline rows
-//!   there is nothing to retire, so the plain [`overwrite_parquet_snapshot`]
-//!   commits instead. The durable changelog table (every event, `-U` included) is
-//!   never touched — it is the append-only log; its retention rides `gc_table`.
+//!   preserving framing. The rewrite commits via [`overwrite_stream_base`] — the ONLY
+//!   entrypoint permitted to overwrite a declared stream table (the two public overwrite
+//!   primitives refuse one outright); its `consumed` cap retires exactly the folded inline
+//!   rows when there were any (an inline write that lands mid-fold survives, instead of
+//!   being end-capped unfolded), and is `None` when there was no live inline tail to
+//!   retire. The durable changelog table (every event, `-U` included) is never touched —
+//!   it is the append-only log; its retention rides `gc_table`.
 //!
 //! - **COW arm** (non-CDC identity table with `has_shadow`, [`Precedence::Snapshot`]):
 //!   a shadow-bearing non-CDC identity table accumulates an inline tier — plain
@@ -42,7 +42,7 @@ use control_plane_postgres::iceberg_inline::{
     clear_has_shadow, clear_has_shadow_if_quiescent, has_shadow,
 };
 use control_plane_postgres::iceberg_landing::{
-    overwrite_parquet_snapshot, overwrite_parquet_snapshot_consuming,
+    overwrite_parquet_snapshot_consuming, overwrite_stream_base,
 };
 use control_plane_postgres::iceberg_mirror::{
     clear_consolidate_trigger, live_table_id, reset_inline_trigger,
@@ -380,33 +380,24 @@ async fn consolidate_locked(
     // lets it survive to the next flush/consolidate. When `inline` is `None`
     // there was nothing live to consume, so the blanket cap is vacuous and the
     // plain overwrite is equivalent.
-    let snap = match inline {
-        Some((_, row_ids, _)) => overwrite_parquet_snapshot_consuming(
-            pool,
-            catalog,
-            table,
-            &base.user_cols,
-            folded,
-            Some(&lineage),
-            InlineEndCap {
-                table_id: tid,
-                row_ids: &row_ids,
-            },
-        )
-        .await
-        .map_err(to_serving)?,
-        None => overwrite_parquet_snapshot(
-            pool,
-            catalog,
-            table,
-            &base.user_cols,
-            folded,
-            Some(&lineage),
-            &[],
-        )
-        .await
-        .map_err(to_serving)?,
-    };
+    //
+    // `overwrite_stream_base` is the framed door: the public overwrite primitives now
+    // REFUSE a declared stream table (they would destroy its offset range), so the fold —
+    // the one caller that legitimately rewrites a framed base — has its own entrypoint.
+    let snap = overwrite_stream_base(
+        pool,
+        catalog,
+        table,
+        &base.user_cols,
+        folded,
+        Some(&lineage),
+        inline.as_ref().map(|(_, row_ids, _)| InlineEndCap {
+            table_id: tid,
+            row_ids,
+        }),
+    )
+    .await
+    .map_err(to_serving)?;
 
     let mut conn = pool.acquire().await.map_err(to_serving)?;
     // Unconditional (unlike COW's `clear_has_shadow_if_quiescent`): `has_shadow` is
