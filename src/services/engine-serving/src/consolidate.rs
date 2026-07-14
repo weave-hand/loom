@@ -246,7 +246,7 @@ async fn consolidate_locked(
     // `has_files`: `read_files_as_batches` calls `catalog.load_table` before it
     // looks at the path list, and a CDC base that has never been flushed has no
     // `iceberg_tables` row at all (the CDC declare pre-creates only the CHANGELOG
-    // table) — so reading an EMPTY file list still errored. Same guard the COW arm
+    // table) — so even an EMPTY file list must not be read. Same guard the COW arm
     // below already carries (`iss-consolidate-inline-only-base`).
     let df_ctx = SessionContext::new();
     if has_files {
