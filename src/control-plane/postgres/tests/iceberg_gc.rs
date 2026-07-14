@@ -13,8 +13,10 @@ use arrow_schema::{DataType, Field, Schema};
 use std::time::Duration;
 
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
+    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, MvWatermarks, RunId,
+    TableRef, TransformBody, TransformDef, TransformName, WatermarkAdvance, mv_key,
 };
+use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -92,6 +94,36 @@ async fn age_all_snapshots(pool: &sqlx::PgPool) {
         .execute(pool)
         .await
         .expect("age all snapshots");
+}
+
+/// Register a micro-batch MV over `source` -> `s.<output>` WITHOUT a data trigger
+/// (`on_input_commit: false`), so landing into the source never auto-fires a run —
+/// the caller drives the watermark by hand via [`advance`]. Mirrors
+/// `tests/mv_floor.rs`'s `register_mv`, needed here to construct the per-bucket MV
+/// floor that lets a later GC run reclaim an OLDER straggler than an earlier run
+/// already reclaimed (the crux of `reclaim_watermark_is_monotone`).
+async fn register_mv(cp: &PgControlPlane, name: &str, source: &TableRef, output: &TableRef) {
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName(name.into()),
+            body: TransformBody::MicroBatch {
+                source: source.clone(),
+                output: output.clone(),
+                buckets: 1,
+                sql: "select id from events".into(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv");
+}
+
+/// CAS-advance `mv`'s watermark for `(source_tid, bucket)` from `from` to `to`.
+async fn advance(cp: &PgControlPlane, mv: &str, source_tid: i64, bucket: i32, from: i64, to: i64) {
+    cp.advance_mv_watermark(mv, source_tid, &[WatermarkAdvance { bucket, from, to }])
+        .await
+        .expect("advance watermark");
 }
 
 /// The currently-live `table_id` for `(ns, name)` (fixture-side, before a drop).
@@ -936,13 +968,27 @@ async fn gc_records_the_reclaim_watermark() {
     );
 }
 
-/// The watermark never regresses. A second GC run that reclaims nothing must leave it
-/// alone (the `greatest(...)` in `bump_reclaimed_through`, and the no-op on an empty
-/// victim set). The read guard's soundness argument leans on monotonicity.
+/// The watermark never regresses — even when a LATER run reclaims an OLDER straggler
+/// than an earlier run already reclaimed (the `greatest(...)` branch of
+/// `bump_reclaimed_through`), and even when a run reclaims nothing at all (the
+/// early-return no-op on an empty victim set). The read guard's soundness argument
+/// leans on monotonicity holding in BOTH cases.
+///
+/// Constructing the "older straggler" case needs the per-bucket MV floor
+/// (`crate::mv_floor`): within one bucket, offset order == chronological order ==
+/// `end_snapshot` order, so a single bucket alone can never surface an older
+/// straggler after a newer reclaim — the floor guard only ever releases higher
+/// offsets over time. Two INDEPENDENT buckets decouple that: bucket 0 races ahead
+/// (both its generations reclaimed run 1, pinning the watermark at the newer
+/// generation's `end_snapshot`) while bucket 1 lags completely behind (both its
+/// generations held); when bucket 1's floor then advances just enough to release
+/// ONLY its first (oldest, lowest-`end_snapshot`) generation, run 2 reclaims a row
+/// strictly older than what run 1 already recorded — the one shape a bare
+/// `set reclaimed_through = $2` would get wrong.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reclaim_watermark_is_monotone() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
+    let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
@@ -950,8 +996,16 @@ async fn reclaim_watermark_is_monotone() {
         schema: "wh".into(),
         name: "t".into(),
     };
+    let out = TableRef {
+        schema: "wh".into(),
+        name: "mv_out".into(),
+    };
 
-    let (schema, batches) = ipc_body(10);
+    // Generation 1 (bucket 0 offset 0, bucket 1 offset 0): land 2 rows into a
+    // declared 2-bucket stream table (round-robin row_index % 2), inline (small
+    // enough to stay under the byte limit), then flush — end-caps both rows at
+    // the flush's snapshot `s1` (the OLDER generation).
+    let (schema, batches) = ipc_body(2);
     land(
         &pool,
         &catalog,
@@ -960,43 +1014,109 @@ async fn reclaim_watermark_is_monotone() {
         schema,
         batches,
         InlineLimits {
-            inline_byte_limit: 0,
+            inline_byte_limit: 1 << 20,
             flush_byte_threshold: i64::MAX,
         },
         lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
+        Some(2),
     )
     .await
-    .expect("land");
+    .expect("land gen 1");
     let tid = live_tid(&pool, "wh", "t").await;
+    let s1 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("flush gen 1")
+        .expect("gen 1 had live rows to flush")
+        .0;
 
-    let s2 = overwrite_parquet_snapshot(
+    // Generation 2 (bucket 0 offset 1, bucket 1 offset 1): land 2 more rows,
+    // flush again — end-caps both at a NEWER snapshot `s2 > s1`.
+    let (schema2, batches2) = ipc_body(2);
+    land(
         &pool,
         &catalog,
         &t,
         &columns(),
-        vec![batch(4)],
-        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
-        &[],
+        schema2,
+        batches2,
+        InlineLimits {
+            inline_byte_limit: 1 << 20,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        Some(2),
     )
     .await
-    .expect("ow s2");
+    .expect("land gen 2");
+    let s2 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("flush gen 2")
+        .expect("gen 2 had live rows to flush")
+        .0;
+    assert!(s2 > s1, "generation 2 is strictly newer than generation 1");
+
+    // Register an MV over `t` (never run — the watermark is driven by hand) and set
+    // ITS floor so bucket 0 has consumed BOTH generations (offsets 0 and 1: floor 2)
+    // while bucket 1 has consumed NEITHER (no watermark row -> floors at 0).
+    register_mv(&cp, "mv_a", &t, &out).await;
+    let mv = mv_key(&out);
+    advance(&cp, &mv, tid, 0, 0, 2).await;
 
     age_all_snapshots(&pool).await;
-    gc_table(&catalog, &pool, &t, SEVEN_DAYS)
-        .await
-        .expect("gc 1");
-    let after_first = reclaimed_through(&pool, tid).await;
-    assert_eq!(after_first, s2.0, "first run records A's end_snapshot");
 
-    // Second run: nothing left to reclaim (the only live file is end-capped by nobody).
-    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+    // Run 1: bucket 0's both rows (offsets 0 and 1, end_snapshot s1 and s2) are
+    // strictly below its floor (2) and reclaimed; bucket 1's both rows (floor 0)
+    // are held. The watermark becomes s2 — the NEWER generation, because bucket 0's
+    // own second row supplied it, not because every older row was swept first.
+    let first = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
         .await
-        .expect("gc 2");
-    assert_eq!(summary.data_file_rows, 0, "second run reclaims nothing");
+        .expect("gc run 1");
+    assert_eq!(first.inline_rows, 2, "bucket 0's two generations reclaimed");
+    assert_eq!(first.held_by_mv_floor, 2, "bucket 1's two generations held");
+    let after_first = reclaimed_through(&pool, tid).await;
+    assert_eq!(
+        after_first, s2,
+        "run 1 records the newer generation's end_snapshot"
+    );
+
+    // Advance bucket 1's floor just enough to release ONLY its oldest row (offset 0,
+    // end_snapshot s1) — its offset-1 row (end_snapshot s2) stays held.
+    advance(&cp, &mv, tid, 1, 0, 1).await;
+
+    // Run 2 reclaims exactly that one row: end_snapshot s1, STRICTLY OLDER than the
+    // watermark run 1 already recorded (s2). The crux assertion: the watermark must
+    // not regress to s1.
+    let second = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc run 2");
+    assert_eq!(
+        second.inline_rows, 1,
+        "exactly bucket 1's oldest (offset 0) row is reclaimed this run"
+    );
+    assert_eq!(
+        second.held_by_mv_floor, 1,
+        "bucket 1's offset-1 row (end_snapshot s2) is still held"
+    );
     assert_eq!(
         reclaimed_through(&pool, tid).await,
-        after_first,
+        s2,
+        "run 2 reclaimed an OLDER straggler (end_snapshot s1 < s2) — the watermark \
+         must stay at s2, not regress to s1. A bare `set reclaimed_through = $2` \
+         (instead of `greatest(...)`) would fail this assertion."
+    );
+
+    // Run 3: nothing left to reclaim (bucket 1's last row is still held) — the
+    // early-return no-op path must also not disturb the watermark.
+    let third = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc run 3");
+    assert_eq!(
+        third.inline_rows, 0,
+        "nothing left below either bucket's floor"
+    );
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        s2,
         "a no-op run must not regress (or advance) the watermark"
     );
 }

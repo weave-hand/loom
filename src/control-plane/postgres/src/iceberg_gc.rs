@@ -70,7 +70,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use control_plane_core::{Result, TableRef};
-use sqlx::{AssertSqlSafe, PgPool, Row};
+use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 
 use crate::backend;
@@ -540,22 +540,23 @@ async fn delete_end_capped_inline_rows(
         None => String::new(),
         Some(f) => format!(" and {}", f.below_floor_pred()),
     };
-    // RETURNING (so `fetch_all`, not `execute`): the deleted rows' `end_snapshot`s are the
-    // watermark this tier contributes, and after the delete they are unrecoverable.
-    let rows = sqlx::query(AssertSqlSafe(format!(
-        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard} \
-         returning end_snapshot"
+    // RETURNING feeds a CTE that folds to one row server-side (count + max) rather than
+    // shipping/heap-allocating one `PgRow` per deleted row just to compute a max — the
+    // deleted rows' `end_snapshot`s are the watermark this tier contributes, and after the
+    // delete they are unrecoverable, so the aggregation must happen in the same statement.
+    let (n, max_end): (i64, Option<i64>) = sqlx::query_as(AssertSqlSafe(format!(
+        "with d as ( \
+             delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard} \
+             returning end_snapshot \
+         ) \
+         select count(*) as n, max(end_snapshot) as max_end from d"
     )))
     .bind(h)
-    .fetch_all(&mut *conn)
+    .fetch_one(&mut *conn)
     .await
     .map_err(backend)?;
-    let mut max_end: Option<i64> = None;
-    for row in &rows {
-        let e: i64 = row.try_get("end_snapshot").map_err(backend)?;
-        max_end = max_end.max(Some(e));
-    }
-    Ok((u64::try_from(rows.len()).unwrap_or(0), max_end))
+    // `n` is a `count(*)`, which is never negative, so this conversion is total.
+    Ok((u64::try_from(n).unwrap_or(0), max_end))
 }
 
 /// Age-eligible reclaim candidates for `tid` IGNORING the floor: data-file rows +
