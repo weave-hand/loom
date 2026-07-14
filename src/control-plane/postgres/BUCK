@@ -1783,6 +1783,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-declare-vs-concurrent-create",
+    crate = "stream_declare_vs_concurrent_create",
+    srcs = ["tests/stream_declare_vs_concurrent_create.rs"],
+    crate_root = "tests/stream_declare_vs_concurrent_create.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "define-transform-refuse",
     crate = "define_transform_refuse",
     srcs = ["tests/define_transform_refuse.rs"],

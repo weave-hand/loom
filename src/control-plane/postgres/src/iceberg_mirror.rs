@@ -89,12 +89,34 @@ pub async fn set_iceberg_snapshot_id(
 /// Must run inside an explicit transaction: the insert path opens a SAVEPOINT to
 /// absorb a concurrent first-write race (the loser resolves to the winner's
 /// `table_id`), and `SAVEPOINT` on a bare autocommit connection raises `25P01`.
+///
+/// See [`ensure_table_witnessed`] when the caller needs to know whether THIS call
+/// created the row (a read taken before this call cannot tell — see there).
 pub async fn ensure_table(
     conn: &mut PgConnection,
     ns: &str,
     name: &str,
     at: SnapshotId,
 ) -> Result<i64> {
+    Ok(ensure_table_witnessed(conn, ns, name, at).await?.0)
+}
+
+/// [`ensure_table`], plus an honest witness: `true` iff THIS call inserted the live
+/// row. `false` covers both "already live when we looked" and "we lost the
+/// unique-index race to a concurrent creator" — the two cases a caller must treat
+/// alike, because in both the table is somebody else's.
+///
+/// The witness exists because the batch→stream conversion guard
+/// ([`crate::stream::reconcile_stream_mode`]'s `pre_existing`) cannot be computed by
+/// a read taken before this call: the lost-race path below resolves to the WINNER's
+/// `table_id`, so a pre-read says "brand new" about a table another transaction just
+/// created, and a stream declare would silently convert it.
+pub async fn ensure_table_witnessed(
+    conn: &mut PgConnection,
+    ns: &str,
+    name: &str,
+    at: SnapshotId,
+) -> Result<(i64, bool)> {
     if let Some(tid) = sqlx::query_scalar!(
         "select table_id as \"id!\" from iceberg_mirror.table \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null",
@@ -105,7 +127,7 @@ pub async fn ensure_table(
     .await
     .map_err(backend)?
     {
-        return Ok(tid);
+        return Ok((tid, false));
     }
     // Refuse to create a physical table under a name already claimed by a catalog
     // view: a land at a view's (schema, name) would succeed and be permanently
@@ -150,7 +172,7 @@ pub async fn ensure_table(
                 .execute(&mut *conn)
                 .await
                 .map_err(backend)?;
-            Ok(tid)
+            Ok((tid, true))
         }
         // A concurrent first-writer won the unique-index race. Undo our aborted
         // INSERT, then re-SELECT the now-committed live row: under READ COMMITTED
@@ -174,7 +196,7 @@ pub async fn ensure_table(
             .fetch_one(&mut *conn)
             .await
             .map_err(backend)?;
-            Ok(tid)
+            Ok((tid, false))
         }
         // A genuinely different failure: restore the pre-INSERT state so the outer
         // transaction is usable, then surface it.
