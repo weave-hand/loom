@@ -36,7 +36,7 @@ The spec (`docs/superpowers/specs/2026-07-14-end-cap-mv-floor-seam-design.md`) e
 4. **Should `compact_table` carry the guard itself? — Yes, structurally, via the intent argument.** Compaction is `Reframing`, so the guard short-circuits and behavior is byte-identical — but it now *declares* that rather than relying on its enqueue producers to skip stream tables.
 5. **[Added after plan review] A micro-batch MV over a CDC source is refused — in BOTH directions.** `define_transform` happily registers one while `mv_delta_scan` accepts **log sources only** (`mv_delta.rs:72-82`), so its watermark can never advance, its floor is pinned at 0 forever, and the CDC fold would decline on every attempt — "skip and re-arm" would re-arm into the identical skip and **permanently disable that table's consolidation**. ⇒ Task 5 refuses it at **registration** (source already declared CDC) *and* at **declaration** (`reconcile_stream_mode`/`declare_cdc` on a table a micro-batch MV already sources). **Both are required.** A registration-only guard is trivially defeated by ordering — register the MV over a not-yet-existing source (which is legitimate and must stay allowed: an MV's source becomes a log stream on its first `?mode=stream` write), then write it with `?mode=cdc`. That reaches the identical wedge through a path the registration guard never sees.
 
-**Also decided:** `iss-mv-register-below-reclaimed-floor` stays **open**. Task 1's `&PgPool → &mut PgConnection` refactor closes that item's *race* half for free; its other half (bootstrapping a watermark at registration) is out of scope. Say so in the PR body; do not close it.
+**Also decided:** `iss-mv-register-below-reclaimed-floor` stays **open** — and, correcting an earlier draft of this plan, Task 1 does **NOT** close its race half. Moving the floor read inside GC's transaction is a prerequisite for a caller-side guard, but it does not serialize anything: loom sets no isolation level, so `pool.begin()` is READ COMMITTED (per-statement snapshots), none of these reads lock a row, and `define_transform`'s advisory lock is a single GLOBAL constant disjoint from GC's per-table key. The registration race is **narrowed, not closed**. Do not claim otherwise in the PR body or the registers.
 
 ## What this actually buys — state it honestly
 
@@ -186,11 +186,16 @@ Update the module doc (`mv_floor.rs:19-21`), which currently says wiring the flo
 In `gc_locked`, replace the block from `// 2. Resolve the (maybe) live incarnation` through the counter declarations (`iceberg_gc.rs:135-157`) with:
 
 ```rust
-    // 2. One transaction for the whole run. The floor is read INSIDE it (2b), so the
-    //    floor read and the reclaim cannot straddle a concurrent `define_transform` — a
-    //    brand-new MV either commits before this tx's snapshot (and floors us) or after
-    //    it (and finds its source intact). Reading it on the pool, as this once did, left
-    //    exactly that window open (`#iss-mv-register-below-reclaimed-floor`).
+    // 2. One transaction for the whole run. The floor is read INSIDE it (2b) rather than
+    //    on a separate pooled connection, which is what lets a CALLER-SIDE guard
+    //    (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
+    //
+    //    It does NOT close the registration race, and must not be described as if it did:
+    //    loom sets no isolation level, so this is READ COMMITTED — each statement takes a
+    //    fresh snapshot, none of these reads lock a row, and `define_transform`'s advisory
+    //    lock is a single GLOBAL constant, disjoint from GC's per-table key. Closing it
+    //    needs the registration to take the same per-table lock GC serializes under — that
+    //    is `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
     let mut tx = pool.begin().await.map_err(backend)?;
     let live = live_table_id(&mut tx, &table.schema, &table.name).await?;
     let dropped = dropped_table_ids(&mut tx, &table.schema, &table.name).await?;
@@ -2292,7 +2297,7 @@ One complexity finding is expected and justifiable rather than fixable: `overwri
 
 Run the `loom-docs-update` skill. It must:
 - **Remove** `iss-end-cap-ignores-mv-floor` from `docs/ISSUES.md` (registers carry open work only).
-- **Leave `iss-mv-register-below-reclaimed-floor` open**, amending its prose: its *race* half ("`mv_floor` is read on the pool, outside the GC transaction") is closed by Task 1; only the registration-bootstrap half remains. Name this PR there.
+- **Leave `iss-mv-register-below-reclaimed-floor` open, and do NOT claim its race half is closed.** Task 1 moved the floor read inside GC's transaction, but under READ COMMITTED with no row locks — and with `define_transform`'s advisory lock being a global constant disjoint from GC's per-table key — that narrows the window without serializing anything. Amend the entry's prose to say so precisely (the current text implies moving the read in-tx is the fix; it is not), and name this PR as having narrowed it.
 - Fold the landed capability into `docs/system-capabilities/`: the `EndCapIntent` seam and its three intents; the three refusals (overwrite of a declared stream table; typed UPDATE/DELETE against a declared log table; micro-batch MV over a CDC source) and the CDC fold's `overwrite_stream_base` door; consolidate's skip-and-re-arm; and the **manual repair** for a legacy log table already carrying `has_shadow` (it will neither fold nor flush until an operator clears the flag).
 - Record the CDC-source MV refusal against `fut-mv-cdc-source` in `docs/FUTURE.md`: when CDC sources become MV-readable, the Task 5 refusal must be lifted **and** the floor guard on the CDC fold becomes live for the first time.
 
@@ -2319,4 +2324,4 @@ Then push and open the PR with head `work/iss-end-cap-ignores-mv-floor` (this is
 - name the item id and the resolved open questions;
 - **state plainly that after the refusals no `Removing` end-cap is reachable on a declared log stream table, so the seam's runtime guard is future-proofing rather than a live fix** — do not overclaim it;
 - carry the metric-gate findings with justifications;
-- note that `iss-mv-register-below-reclaimed-floor`'s race half is closed here but the item stays open.
+- state that `iss-mv-register-below-reclaimed-floor` is **narrowed but NOT closed** (READ COMMITTED, no row locks, global-vs-per-table advisory keys) and stays open.

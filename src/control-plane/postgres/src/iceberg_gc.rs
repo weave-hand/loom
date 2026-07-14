@@ -132,11 +132,18 @@ async fn gc_locked(
         return Ok(GcSummary::default());
     };
 
-    // 2. One transaction for the whole run. The floor is read INSIDE it (2b), so the
-    //    floor read and the reclaim cannot straddle a concurrent `define_transform` — a
-    //    brand-new MV either commits before this tx's snapshot (and floors us) or after
-    //    it (and finds its source intact). Reading it on the pool, as this once did, left
-    //    exactly that window open (`#iss-mv-register-below-reclaimed-floor`).
+    // 2. One transaction for the whole run. The floor is read INSIDE it (2b) rather than
+    //    on a separate pooled connection, which is what lets a CALLER-SIDE guard
+    //    (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
+    //
+    //    It does NOT close the registration race, and must not be described as if it did:
+    //    loom sets no isolation level, so this is READ COMMITTED — each statement takes a
+    //    fresh snapshot, none of these reads lock a row, and `define_transform`'s advisory
+    //    lock is a single GLOBAL constant, disjoint from GC's per-table key. A
+    //    `define_transform` committing between the floor read and the reclaim is therefore
+    //    still possible; the window is narrower, not gone. Closing it needs the registration
+    //    to take the same per-table lock GC serializes under — that is
+    //    `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
     let mut tx = pool.begin().await.map_err(backend)?;
     let live = live_table_id(&mut tx, &table.schema, &table.name).await?;
     let dropped = dropped_table_ids(&mut tx, &table.schema, &table.name).await?;
