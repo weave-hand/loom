@@ -9,12 +9,17 @@ use crate::{PgControlPlane, backend};
 /// A write's REQUESTED stream-mode declaration, threaded from `LandRequest` down
 /// to [`reconcile_stream_mode`]. `Log`/`Cdc` carry the requested bucket count;
 /// `Cdc` additionally carries the identity column to bucket on (the "bucket
-/// key"). Confined to this crate — the ingest-facing boundary (`land`'s public
-/// signature / `LandRequest`) instead carries the plain `Option<i32>`/
-/// `Option<CdcDecl>` pair the brief specifies, combined into this enum once
-/// inside `land`.
+/// key"). The ingest-facing boundary (`land`'s public signature / `LandRequest`)
+/// instead carries the plain `Option<i32>`/`Option<CdcDecl>` pair the brief
+/// specifies, combined into this enum once inside `land`.
+///
+/// `pub` (not `pub(crate)`) only so the reconcile seam is drivable from a
+/// `tests/` target: loom forbids inline `#[cfg(test)]` tests, and the
+/// concurrent first-declare race
+/// (`postgres/tests/stream_first_declare_race.rs`) cannot be reproduced through
+/// the `land` API — it needs a caller-controlled `tid`/`pre_existing`.
 #[derive(Clone, Debug)]
-pub(crate) enum StreamDecl {
+pub enum StreamDecl {
     /// No stream intent requested this write (the common batch-table case).
     None,
     /// Declare (or confirm) a log table with this many buckets.
@@ -28,23 +33,192 @@ pub(crate) enum StreamDecl {
     },
 }
 
+/// Which recorded row a [`validate_against_recorded`] rejection is about — it
+/// selects the message family, and NOTHING else (the guards, their order and
+/// their error variants are identical for both).
+///
+/// The two families are deliberately worded differently: the count-equal arm
+/// says "already declared", the first-declare re-read says "declared
+/// concurrently". That difference is what lets a race test prove WHICH arm
+/// rejected it — collapsing the wording would destroy that discriminating power.
+#[derive(Clone, Copy)]
+enum Recorded {
+    /// The row was already committed when this write began (a plain redeclare).
+    Redeclare,
+    /// The row is a concurrent first-declarer's, observed by the post-declare
+    /// re-read after losing the `on conflict do nothing` race.
+    Race,
+}
+
+/// Validate a `decl` (`requested` buckets, `requested_kind`) against the stream
+/// metadata actually recorded for this table. Shared by BOTH arms of
+/// [`reconcile_stream_mode`]'s reconcile — the count-equal redeclare and the
+/// first-declare post-race re-read — so the two can never drift.
+///
+/// Guard PRECEDENCE is load-bearing: bucket_count (`Conflict`), then kind
+/// (`Validation`), then — CDC REQUESTS ONLY — merge_engine (`Conflict`) and
+/// bucket_key (`Validation`). A log declare must never evaluate the two CDC
+/// guards. `by` selects the message family only.
+fn validate_against_recorded(
+    decl: &StreamDecl,
+    requested: i32,
+    requested_kind: StreamKind,
+    meta: &StreamMeta,
+    table: &TableRef,
+    by: Recorded,
+) -> Result<()> {
+    if meta.bucket_count != requested {
+        return Err(ControlPlaneError::Conflict(format!(
+            "stream bucket count mismatch for {}.{}: requested {requested}, table has {}",
+            table.schema, table.name, meta.bucket_count
+        )));
+    }
+    if meta.kind != requested_kind {
+        return Err(ControlPlaneError::Validation(match by {
+            Recorded::Redeclare => {
+                let as_a = match requested_kind {
+                    StreamKind::Cdc => "cdc",
+                    StreamKind::Log => "log stream",
+                };
+                format!(
+                    "cannot declare {}.{} as a {as_a} table: already declared with a \
+                     different stream kind",
+                    table.schema, table.name
+                )
+            }
+            Recorded::Race => format!(
+                "cannot declare {}.{} as a {requested_kind:?} table: declared concurrently \
+                 with a different stream kind (recorded {:?})",
+                table.schema, table.name, meta.kind
+            ),
+        }));
+    }
+    // CDC-only from here: a log table's merge_engine/bucket_key are meaningless,
+    // so a `Log`/`None` declare must not evaluate these guards at all.
+    let StreamDecl::Cdc {
+        bucket_key,
+        merge_engine,
+        ..
+    } = decl
+    else {
+        return Ok(());
+    };
+    // Engine immutability: a declare may never adopt (nor silently inherit) a
+    // fold semantics it did not request.
+    if meta.merge_engine != *merge_engine {
+        let concurrently = match by {
+            Recorded::Redeclare => "",
+            Recorded::Race => " (declared concurrently)",
+        };
+        return Err(ControlPlaneError::Conflict(format!(
+            "stream merge_engine mismatch for {}.{}: requested {}, table has {}{concurrently}",
+            table.schema,
+            table.name,
+            merge_engine.as_str(),
+            meta.merge_engine.as_str(),
+        )));
+    }
+    // Bucket-key immutability: rows are bucketed by the RECORDED key
+    // (`inline_append` re-reads the registry), so a disagreeing declare's intent
+    // would otherwise be silently ignored.
+    if meta.bucket_key.as_deref() != Some(bucket_key.as_str()) {
+        return Err(ControlPlaneError::Validation(match by {
+            Recorded::Redeclare => {
+                let existing_key = meta.bucket_key.as_deref().unwrap_or("?");
+                format!(
+                    "stream bucket_key mismatch for {}.{}: requested '{bucket_key}', \
+                     table has a different bucket_key ('{existing_key}')",
+                    table.schema, table.name
+                )
+            }
+            Recorded::Race => format!(
+                "cannot declare {}.{} as a cdc table keyed on '{bucket_key}': \
+                 declared concurrently with a different bucket_key (recorded {:?})",
+                table.schema, table.name, meta.bucket_key
+            ),
+        }));
+    }
+    Ok(())
+}
+
+/// Precondition for a `merge_engine=versioned` declare: the bound type must
+/// declare a version property whose logical type is orderable
+/// (integer/long/timestamp). No-op for every other `decl`.
+///
+/// Sits on EVERY declarer's path (HTTP `/models/{type}?mode=cdc` and direct
+/// land_cdc) and runs before the first-declare/redeclare branching, so it gates
+/// both.
+async fn ensure_versioned_orderable(
+    conn: &mut sqlx::PgConnection,
+    decl: &StreamDecl,
+    table: &TableRef,
+) -> Result<()> {
+    if !matches!(
+        decl,
+        StreamDecl::Cdc {
+            merge_engine: control_plane_core::MergeEngine::Versioned,
+            ..
+        }
+    ) {
+        return Ok(());
+    }
+    let Some(vcol) = crate::ontology::version_for_table(&mut *conn, table).await? else {
+        return Err(ControlPlaneError::Validation(format!(
+            "merge_engine=versioned requires {}.{} to declare a version property",
+            table.schema, table.name
+        )));
+    };
+    // The version property's logical type (join object_type -> property).
+    let ty: Option<String> = sqlx::query_scalar!(
+        "select p.ty from ontology.property p \
+         join ontology.object_type o on o.name = p.type_name \
+         where o.table_schema = $1 and o.table_name = $2 and p.name = $3",
+        table.schema,
+        table.name,
+        vcol,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)?;
+    let orderable = ty
+        .as_deref()
+        .and_then(control_plane_core::resolve_logical)
+        .is_some_and(control_plane_core::BaseType::is_version_orderable);
+    if !orderable {
+        return Err(ControlPlaneError::Validation(format!(
+            "merge_engine=versioned requires an integer/long/timestamp version column; \
+             {}.{} version column '{vcol}' is {:?}",
+            table.schema, table.name, ty
+        )));
+    }
+    Ok(())
+}
+
 /// Reconcile a write's REQUESTED stream mode (`decl`) against the mode the
 /// mirror table `tid` already records, mirroring `inline_append`'s arms exactly
 /// so the inline and direct-write Parquet paths cannot diverge. Returns
 /// `Some(bucket_count)` iff this table is a (now-)declared stream table (log or
 /// cdc; offset stamping applies); `None` for a batch table (no stamping).
 ///
-/// Rejections (all raised BEFORE any `pg_declare_stream`/`pg_declare_cdc`, per
-/// the Plan 1a fix): a `< 1` requested count → `Validation`; a batch→stream
-/// conversion of a PRE-EXISTING table → `Validation`; a bucket-count mismatch
-/// against an existing stream table → `Conflict`; a request against an
-/// already-declared table of a DIFFERENT kind (cdc-vs-log in either direction)
-/// → `Validation`.
+/// Rejections, all raised BEFORE any `pg_declare_stream`/`pg_declare_cdc`: a
+/// `< 1` requested count → `Validation`; a `merge_engine=versioned` declare whose
+/// type has no orderable version property → `Validation`; a batch→stream
+/// conversion of a PRE-EXISTING table → `Validation`; and — against a recorded
+/// declaration, whether pre-existing or written by a concurrent first-declarer
+/// that won the race — the four [`validate_against_recorded`] guards.
+///
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
-/// it declares the stream (as a log or cdc table, per `decl`) and honours the
-/// recorded count (a concurrent first-writer may have won the declare with a
-/// different count — re-read and reject on mismatch). Runs entirely on the
-/// caller's transaction so the declare commits iff the write does.
+/// it declares the stream (as a log or cdc table, per `decl`), then re-reads what
+/// was ACTUALLY recorded — the declare is `on conflict (table_id) do nothing`, so
+/// a concurrent first-writer may have won it — and validates against that. The
+/// re-read's rejection MUST precede the CDC changelog writes below it: those are
+/// unconditional writes to the winner's registry row, so a rejected declare would
+/// otherwise mutate it. Runs entirely on the caller's transaction so the declare
+/// commits iff the write does. Because `ensure_table_witnessed` now serializes the
+/// mirror-row create via a partial unique index, no two production transactions
+/// can actually reach this contended `on conflict do nothing` path any more — it
+/// is defense-in-depth today, exercised only by tests driving this seam directly
+/// with a synthetic `tid`.
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
 /// (the batch→stream conversion guard). `tid`: the mirror table id (already
@@ -53,7 +227,11 @@ pub(crate) enum StreamDecl {
 /// CDC first-declare, as the changelog table's `iceberg_mirror.table` genesis
 /// snapshot, exactly as `write_steps` shares one snapshot across every table it
 /// touches in a transaction.
-pub(crate) async fn reconcile_stream_mode(
+///
+/// `pub` (not `pub(crate)`) only so a `tests/` target can drive this seam
+/// directly; production callers remain `iceberg_inline::inline_append` and
+/// `iceberg_landing::land_parquet_stream`.
+pub async fn reconcile_stream_mode(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     decl: &StreamDecl,
@@ -78,121 +256,24 @@ pub(crate) async fn reconcile_stream_mode(
         )));
     }
 
-    // merge_engine=versioned requires the bound type to declare a version
-    // property of an orderable type (integer/long/timestamp). Validated HERE —
-    // on every declarer's path (HTTP `/models/{type}?mode=cdc` and direct
-    // land_cdc), and reachable for Versioned (which is only ever created via a
-    // control-plane-defined versioned type + land_cdc, since the HTTP path
-    // infers types with version: None). Runs before existing/new branching so it
-    // gates both first-declare and redeclare.
-    if let StreamDecl::Cdc {
-        merge_engine: control_plane_core::MergeEngine::Versioned,
-        ..
-    } = decl
-    {
-        let version_col = crate::ontology::version_for_table(&mut *conn, table).await?;
-        let Some(vcol) = version_col else {
-            return Err(ControlPlaneError::Validation(format!(
-                "merge_engine=versioned requires {}.{} to declare a version property",
-                table.schema, table.name
-            )));
-        };
-        // The version property's logical type (join object_type -> property).
-        let ty: Option<String> = sqlx::query_scalar!(
-            "select p.ty from ontology.property p \
-             join ontology.object_type o on o.name = p.type_name \
-             where o.table_schema = $1 and o.table_name = $2 and p.name = $3",
-            table.schema,
-            table.name,
-            vcol,
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(backend)?;
-        let orderable = ty
-            .as_deref()
-            .and_then(control_plane_core::resolve_logical)
-            .is_some_and(control_plane_core::BaseType::is_version_orderable);
-        if !orderable {
-            return Err(ControlPlaneError::Validation(format!(
-                "merge_engine=versioned requires an integer/long/timestamp version column; \
-                 {}.{} version column '{vcol}' is {:?}",
-                table.schema, table.name, ty
-            )));
-        }
-    }
+    ensure_versioned_orderable(&mut *conn, decl, table).await?;
+
+    // The requested stream KIND (log vs cdc). Exhaustive (no `_` arm) so a future
+    // `StreamDecl` variant is a compile error, not a silently-wrong log declare.
+    let requested_kind = match decl {
+        StreamDecl::Cdc { .. } => StreamKind::Cdc,
+        // `None` cannot reach a declare (it has no `requested` count), so this is
+        // the Log case.
+        StreamDecl::Log(_) | StreamDecl::None => StreamKind::Log,
+    };
 
     let existing_meta = pg_stream_meta(&mut *conn, tid).await?;
-    let existing = existing_meta.as_ref().map(|m| m.bucket_count);
 
     // `effective` = Some(bucket_count) iff this table is a (now-)declared stream table.
-    let effective: Option<i32> = match (requested, existing) {
-        (Some(n), Some(m)) if n != m => {
-            return Err(ControlPlaneError::Conflict(format!(
-                "stream bucket count mismatch for {}.{}: requested {n}, table has {m}",
-                table.schema, table.name
-            )));
-        }
-        (Some(_), Some(m)) => {
-            // A `Cdc` request against an already-declared table must also match its
-            // KIND, not just its bucket count — a log table with the same bucket
-            // count is not a valid cdc target. (The symmetric Log-side guard follows
-            // below.)
-            if matches!(decl, StreamDecl::Cdc { .. })
-                && existing_meta
-                    .as_ref()
-                    .is_some_and(|meta| meta.kind != StreamKind::Cdc)
-            {
-                return Err(ControlPlaneError::Validation(format!(
-                    "cannot declare {}.{} as a cdc table: already declared with a \
-                     different stream kind",
-                    table.schema, table.name
-                )));
-            }
-            // Symmetric kind guard for the Log side (iss-stream-log-vs-cdc-declare):
-            // a `mode=stream` (log) request against an already-declared table must
-            // also match its KIND — a cdc table with the same bucket count is not a
-            // valid log-declare target. Fires only when a `kind='cdc'` registry row
-            // already exists, so the pure log/batch paths (no such row) stay
-            // byte-identical.
-            // NOTE: the two kind guards opt in per `StreamDecl` variant, so a future
-            // third variant must add its own guard — nothing here fails to compile
-            // if it does not.
-            if matches!(decl, StreamDecl::Log(_))
-                && existing_meta
-                    .as_ref()
-                    .is_some_and(|meta| meta.kind != StreamKind::Log)
-            {
-                return Err(ControlPlaneError::Validation(format!(
-                    "cannot declare {}.{} as a log stream table: already declared \
-                     with a different stream kind",
-                    table.schema, table.name
-                )));
-            }
-            // Engine immutability: a `Cdc` redeclare where the existing engine
-            // differs from the requested ⇒ `Conflict` (mirrors the bucket-count
-            // mismatch shape). A `Log` redeclare is unaffected (engine is unused
-            // for log tables).
-            if matches!(
-                decl,
-                StreamDecl::Cdc { merge_engine, .. }
-                    if existing_meta.as_ref().map(|m| m.merge_engine) != Some(*merge_engine)
-            ) {
-                let existing_engine = existing_meta
-                    .as_ref()
-                    .map(|m| m.merge_engine.as_str())
-                    .unwrap_or("?");
-                let requested_engine = match decl {
-                    StreamDecl::Cdc { merge_engine, .. } => merge_engine.as_str(),
-                    _ => existing_engine,
-                };
-                return Err(ControlPlaneError::Conflict(format!(
-                    "stream merge_engine mismatch for {}.{}: requested {requested_engine}, \
-                     table has {existing_engine}",
-                    table.schema, table.name
-                )));
-            }
-            Some(m)
+    let effective: Option<i32> = match (requested, existing_meta.as_ref()) {
+        (Some(n), Some(meta)) => {
+            validate_against_recorded(decl, n, requested_kind, meta, table, Recorded::Redeclare)?;
+            Some(meta.bucket_count)
         }
         (Some(n), None) => {
             if pre_existing {
@@ -201,54 +282,49 @@ pub(crate) async fn reconcile_stream_mode(
                     table.schema, table.name
                 )));
             }
+            // The declare itself is `insert … on conflict (table_id) do nothing`: it
+            // blocks against a concurrent uncommitted first-declare and no-ops if that
+            // writer won.
             match decl {
                 StreamDecl::Cdc {
                     bucket_key,
                     merge_engine,
                     ..
-                } => {
-                    pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?;
-                    // Register the changelog table's mirror row (its Iceberg metadata
-                    // was created by `land_cdc` before this tx, outside any commit) and
-                    // point the registry at it, reusing this write's `at` snapshot —
-                    // the changelog table's genesis shares the same snapshot as the
-                    // declaring write. Its columns are projected on first flush
-                    // append; an empty mirror row is a valid never-written table (no
-                    // user-facing changelog read in this slice).
-                    let clog = crate::iceberg_landing::changelog_table_ref(table);
-                    let clog_tid = crate::iceberg_mirror::ensure_table(
-                        &mut *conn,
-                        &clog.schema,
-                        &clog.name,
-                        at,
-                    )
-                    .await?;
-                    pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
-                }
-                _ => {
+                } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
+                // Spelled out (not `_`) so a future `StreamDecl` variant fails closed
+                // the same way `requested_kind` above does.
+                StreamDecl::Log(_) | StreamDecl::None => {
                     pg_declare_stream(&mut *conn, tid, n).await?;
                 }
             }
-            // A concurrent first-writer may have won the declare with a different
-            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
-            // count and honour it, so the rows we stamp always agree with
-            // stream_table.bucket_count.
-            let stored = pg_stream_bucket_count(&mut *conn, tid)
-                .await?
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        "stream_table row missing immediately after declare".into(),
-                    )
-                })?;
-            if stored != n {
-                return Err(ControlPlaneError::Conflict(format!(
-                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
-                    table.schema, table.name
-                )));
+            // Re-read what was ACTUALLY recorded (ours, or a concurrent winner's) and
+            // honour it, so the rows we stamp always agree with the registry. Same
+            // statement as the read above — no new SQL.
+            //
+            // Load-bearing isolation assumption: under READ COMMITTED (Postgres's
+            // default, and what this pool runs), each statement gets a fresh snapshot —
+            // so this re-read, issued after the loser's blocked insert is unblocked by
+            // the winner's commit, observes the just-committed winner's row rather than
+            // the pre-commit snapshot the top-of-function read saw.
+            let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    "stream_table row missing immediately after declare".into(),
+                )
+            })?;
+            validate_against_recorded(decl, n, requested_kind, &stored, table, Recorded::Race)?;
+            // CDC-only, and BELOW every guard above: both writes here are unconditional
+            // mutations of this table_id's rows, so a declare that lost the race to a
+            // different-kind winner must have been rejected before reaching them.
+            if matches!(decl, StreamDecl::Cdc { .. }) {
+                let clog = crate::iceberg_landing::changelog_table_ref(table);
+                let clog_tid =
+                    crate::iceberg_mirror::ensure_table(&mut *conn, &clog.schema, &clog.name, at)
+                        .await?;
+                pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
             }
-            Some(stored)
+            Some(stored.bucket_count)
         }
-        (None, existing) => existing,
+        (None, existing) => existing.map(|meta| meta.bucket_count),
     };
 
     // Defense in depth: a non-positive effective bucket count would otherwise

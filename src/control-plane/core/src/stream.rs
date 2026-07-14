@@ -119,6 +119,20 @@ pub trait BucketOffsets {
     async fn peek_offset(&self, table_id: i64, bucket: i32) -> Result<i64>;
 }
 
+/// Direct registry writes for `stream.stream_table`. **Setup/test surface only.**
+///
+/// These bypass `reconcile_stream_mode` (the postgres adapter's declare seam,
+/// which every production declare — HTTP `?mode=stream`/`?mode=cdc` and
+/// `land`/`land_cdc` — goes through): no batch→stream conversion guard, no
+/// bucket-count/kind/merge_engine/bucket_key reconciliation against a
+/// concurrent winner, and — for `declare_cdc` — no changelog table
+/// registration. They run standalone on the pool (autocommit), so a declare
+/// made through them is committed independently of any write. Production code
+/// declares by landing with a stream mode; these exist so tests and the
+/// testkit contracts can put a table into a declared state without landing
+/// data. (Verified: every `declare_stream`/`declare_cdc` caller in the tree is
+/// a `tests/` file or the testkit contract suite — grep
+/// `\.declare_stream(\|\.declare_cdc(` under `src/` to confirm.)
 #[async_trait]
 pub trait StreamTables {
     /// Declare table_id as a log table with bucket_count buckets. Idempotent: a

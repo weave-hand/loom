@@ -27,8 +27,8 @@ use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_inline::inline_append_decl;
 use crate::iceberg_mirror::{
     ProjectedColumn, ProjectedFile, end_cap_files_by_path, end_cap_live_data_files, ensure_table,
-    live_columns_for, live_table_id, next_snapshot, project_files, reconcile_and_project,
-    stamp_schema_version,
+    ensure_table_witnessed, live_columns_for, live_table_id, next_snapshot, project_files,
+    reconcile_and_project, stamp_schema_version,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
@@ -848,16 +848,17 @@ async fn land_parquet(
     decl: &StreamDecl,
     jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
-    // Read-only probe (no snapshot): does the table already exist, and is it already
-    // a declared stream table? Mirrors `inline_append`'s pre-`ensure_table` read.
-    let (pre_existing, existing_stream) = {
+    // Read-only probe (no snapshot): is this table ALREADY a declared stream table?
+    // That decides which write path we take. Deliberately does NOT witness
+    // `pre_existing` for the conversion guard — this probe runs on a separate pooled
+    // connection before the transaction, so it cannot see a concurrent creator, and
+    // `ensure_table` inside the tx resolves a lost create race to the winner's row.
+    // The honest witness comes from `ensure_table_witnessed` there.
+    let existing_stream = {
         let mut conn = pool.acquire().await.map_err(backend)?;
         match live_table_id(&mut conn, &table.schema, &table.name).await? {
-            Some(tid) => (
-                true,
-                crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?,
-            ),
-            None => (false, None),
+            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?,
+            None => None,
         }
     };
 
@@ -867,18 +868,8 @@ async fn land_parquet(
     // rejected with `Validation` by `reconcile_stream_mode` there, exactly as
     // `inline_append` does.)
     if existing_stream.is_some() || !matches!(decl, StreamDecl::None) {
-        return land_parquet_stream(
-            pool,
-            catalog,
-            table,
-            columns,
-            batches,
-            lineage,
-            decl,
-            pre_existing,
-            jobs,
-        )
-        .await;
+        return land_parquet_stream(pool, catalog, table, columns, batches, lineage, decl, jobs)
+            .await;
     }
 
     // BATCH path — unchanged.
@@ -912,8 +903,9 @@ async fn land_parquet(
 /// The common inline/flush path is untouched.
 #[expect(
     clippy::too_many_arguments,
-    reason = "same cohesive routing/payload/behavior params as `land`, plus the \
-              pre-resolved `pre_existing` reconcile witness threaded from the probe"
+    reason = "same cohesive routing/payload/behavior params as `land` (pool, catalog, table, \
+              columns, batches, lineage, stream decl) plus the downstream jobs threaded into \
+              the commit"
 )]
 async fn land_parquet_stream(
     pool: &PgPool,
@@ -923,7 +915,6 @@ async fn land_parquet_stream(
     batches: Vec<RecordBatch>,
     lineage: LineageEvent,
     decl: &StreamDecl,
-    pre_existing: bool,
     jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
     // Concatenate the write's batches: offsets are assigned in row order across the
@@ -956,18 +947,18 @@ async fn land_parquet_stream(
     loop {
         let mut tx = pool.begin().await.map_err(backend)?;
 
-        // ONE snapshot for the whole write: allocate it (and the mirror table row it
-        // keys offset allocation by) up front, and have the commit REUSE it
-        // (`CommitExtras.reuse_snapshot`) so the write is a single snapshot rather
-        // than a spurious empty seed plus the commit's.
+        // ONE snapshot for the whole write: allocated up front (offset allocation keys off
+        // the mirror row it seeds), then REUSEd by the commit (`CommitExtras.reuse_snapshot`).
         let at = next_snapshot(&mut tx, None).await?;
-        let tid = ensure_table(&mut tx, &table.schema, &table.name, at).await?;
+        // `pre_existing` = `!created`: only the ensure INSIDE this tx can witness it.
+        let (tid, created) =
+            ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
 
         // Reconcile stream mode on THIS tx (shared with `inline_append`). A rejected
         // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
         // back and return, never retry.
         let effective =
-            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table, at)
+            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, !created, table, at)
                 .await
             {
                 Ok(e) => e,

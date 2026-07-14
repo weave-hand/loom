@@ -29,7 +29,8 @@ use crate::backend;
 use crate::iceberg_catalog::IcebergCatalog;
 use crate::iceberg_mirror::{
     ProjectedColumn, arm_consolidate_trigger, arm_inline_trigger, bump_consolidate_trigger,
-    bump_inline_trigger, ensure_table, live_columns, live_table_id, next_snapshot, project_columns,
+    bump_inline_trigger, ensure_table_witnessed, live_columns, live_table_id, next_snapshot,
+    project_columns,
 };
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_type::{
@@ -462,15 +463,15 @@ pub(crate) async fn inline_append_decl(
     // Transaction derefs to PgConnection; the helpers take `&mut PgConnection`.
     let conn: &mut PgConnection = &mut tx;
 
-    // Detect whether the table already existed (for the batch->stream conversion
-    // guard below) BEFORE `ensure_table` creates the mirror row.
-    let pre_existing = live_table_id(&mut *conn, &table.schema, &table.name)
-        .await?
-        .is_some();
-
-    // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist.
+    // 1. Snapshot (no Iceberg backing) + ensure mirror table/columns exist. The
+    //    ensure's WITNESS — did THIS call create the row? — is the batch->stream
+    //    conversion guard's `pre_existing`. A read taken before the ensure cannot
+    //    serve: `ensure_table` resolves a lost create race to the winner's table_id,
+    //    so a pre-read would call a concurrent writer's brand-new table "not
+    //    existing" and let a stream declare convert it.
     let at = next_snapshot(conn, None).await?;
-    let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
+    let (tid, created) = ensure_table_witnessed(conn, &table.schema, &table.name, at).await?;
+    let pre_existing = !created;
 
     // Read whether this table is ALREADY a declared log table before building the
     // mirror column list below, so a stream table's reserved framing columns can be
