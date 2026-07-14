@@ -87,8 +87,8 @@ it is the harness the next two tasks put under a race.
   - `const TID: i64` — the synthetic mirror table id both racers declare against.
 
   The `pg_stat_activity` barrier (`await_declare_blocked`) is **not** written in this task —
-  it arrives in Task 2, where the first racing test needs it. Same for the `MergeEngine`
-  import. Writing them early would be dead code and trip the lint gate.
+  it arrives in Task 2, where the first racing test needs it. Writing it early would be dead
+  code and trip the lint gate.
 
 - [ ] **Step 1: Widen the two items to `pub`**
 
@@ -151,7 +151,9 @@ tasks 2 and 3; write it now with the helpers and the uncontended control test on
 //! parameters, so these tests need no mirror table and land no data.
 //! loom_fixture_test (Postgres).
 
-use control_plane_core::{ControlPlaneError, SnapshotId, TableRef};
+use control_plane_core::{
+    ControlPlaneError, MergeEngine, SnapshotId, StreamKind, StreamTables, TableRef,
+};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::stream::{StreamDecl, reconcile_stream_mode};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -221,10 +223,58 @@ async fn uncontended_first_declare_returns_its_bucket_count() {
     tx.commit().await.expect("commit");
 }
 
-/// Control / non-regression: the COUNT mismatch on the first-declare arm stays a
-/// `Conflict` (count precedence is unchanged by the kind guard).
+/// Control / non-regression: an uncontended CDC first-declare still registers its
+/// changelog table and points the registry at it. This is the path Task 3's
+/// reorder moves the changelog writes on, so it is pinned BEFORE that reorder.
+///
+/// Needs no real snapshot: `iceberg_mirror.table.begin_snapshot` is a bare
+/// `bigint not null` with NO foreign key (migrations/0012), exactly as
+/// `stream.stream_table.table_id` has no FK (migrations/0035) — so
+/// `ensure_table(clog, SnapshotId(1))` inserts cleanly against a snapshot id that
+/// does not exist. (That FK-freedom is what lets every test in this file drive the
+/// seam with synthetic ids and land no data.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn first_declare_losing_on_count_stays_conflict() {
+async fn uncontended_cdc_first_declare_registers_its_changelog() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let mut tx = pool.begin().await.expect("begin");
+    let effective = reconcile_stream_mode(
+        &mut tx,
+        TID,
+        &StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+        false,
+        &tref(),
+        SnapshotId(1),
+    )
+    .await
+    .expect("uncontended cdc first-declare");
+    assert_eq!(effective, Some(2));
+    tx.commit().await.expect("commit");
+
+    let meta = cp
+        .stream_meta(TID)
+        .await
+        .expect("stream_meta")
+        .expect("declared stream table");
+    assert_eq!(meta.kind, StreamKind::Cdc);
+    assert!(
+        meta.changelog_table_id.is_some(),
+        "a cdc winner still gets its changelog mirror row registered"
+    );
+}
+
+/// Control / non-regression: a COUNT mismatch against an existing registry row
+/// stays a `Conflict` — count precedence is unchanged by the kind guard. (This
+/// exercises the (Some, Some) count arm, not the first-declare arm; it is here as
+/// the precedence guard the kind check must not overtake.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn count_mismatch_against_an_existing_row_stays_conflict() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
@@ -255,8 +305,8 @@ async fn first_declare_losing_on_count_stays_conflict() {
 }
 ```
 
-That is the whole file for this task — two green tests, no barrier helper, no `MergeEngine`
-import (both arrive in Task 2 with the first test that uses them).
+That is the whole file for this task — three green tests and no barrier helper (it arrives in
+Task 2 with the first test that races).
 
 - [ ] **Step 3: Add the buck2 target**
 
@@ -281,7 +331,7 @@ loom_fixture_test(
 - [ ] **Step 4: Run the test — it must PASS**
 
 Run: `buck2 test --console none //src/control-plane/postgres:stream-first-declare-race`
-Expected: `Tests finished: Pass 2. Fail 0.`
+Expected: `Tests finished: Pass 3. Fail 0.`
 
 If it fails to compile with "private item", the visibility change in Step 1 was not applied.
 If `sqlx::query(...)` fails to compile, note the crate uses sqlx 0.9 — a `&'static str`
@@ -343,6 +393,13 @@ race is over — too late to be a barrier):
 /// the winner. Commit it any earlier and the loser's `pg_stream_meta` read at the
 /// top of `reconcile_stream_mode` sees the winner's row, routing it into the
 /// (already-guarded) count-equal arm — a green test for the wrong reason.
+///
+/// Reads another backend's `query` column, which Postgres exposes only to a
+/// superuser or a `pg_read_all_stats` member. The fixture connects as `postgres`
+/// (superuser — `fixture.rs:402`), so this holds; if that ever changes, the poll
+/// would spin and panic. The privilege-free equivalent, if it comes to that, is
+/// `where cardinality(pg_blocking_pids(pid)) > 0` (in these fresh single-purpose
+/// databases only the loser can be blocked, so it stays deterministic).
 async fn await_declare_blocked(pool: &PgPool) {
     for _ in 0..600 {
         let blocked: i64 = sqlx::query_scalar(
@@ -506,10 +563,19 @@ that checks count **and** kind. Leave `pg_stream_bucket_count` itself untouched.
 
 `StreamKind` is already imported at the top of `stream.rs` (line 3).
 
-- [ ] **Step 4: Run the tests — all four must PASS**
+Also correct the function's own doc comment (`stream.rs:43-47`), which still describes the
+old count-only re-read. Replace the sentence
+
+> "a concurrent first-writer may have won the declare with a different count — re-read and
+> reject on mismatch"
+
+with: "a concurrent first-writer may have won the declare — re-read what was recorded and
+reject a disagreeing bucket count (`Conflict`) or stream kind (`Validation`)."
+
+- [ ] **Step 4: Run the tests — all five must PASS**
 
 Run: `buck2 test --console none //src/control-plane/postgres:stream-first-declare-race`
-Expected: `Tests finished: Pass 4. Fail 0.`
+Expected: `Tests finished: Pass 5. Fail 0.`
 
 - [ ] **Step 5: Prove the `.sqlx` cache and the neighbours are untouched**
 
@@ -579,6 +645,11 @@ return the reconcile result **and** a tx-local read of the winner's `changelog_t
         // loser issued before bailing out is visible to itself here, and nowhere else
         // (the rollback below erases it). This is the only way to observe the
         // changelog stamp the pre-fix ordering performs.
+        //
+        // Two facts make this probe safe. (1) `reconcile_stream_mode`'s rejection is an
+        // APPLICATION error, not a DB error — no statement failed, so the transaction is
+        // not poisoned and still accepts queries. (2) `fetch_one` cannot hit RowNotFound:
+        // by this point the winner has committed its row.
         let stamped: Option<i64> = sqlx::query_scalar(
             "select changelog_table_id from stream.stream_table where table_id = $1",
         )
@@ -686,10 +757,12 @@ CDC-only changelog work:
         }
 ```
 
-- [ ] **Step 4: Run the tests — all four must PASS**
+- [ ] **Step 4: Run the tests — all five must PASS**
 
 Run: `buck2 test --console none //src/control-plane/postgres:stream-first-declare-race`
-Expected: `Tests finished: Pass 4. Fail 0.`
+Expected: `Tests finished: Pass 5. Fail 0.` In particular
+`uncontended_cdc_first_declare_registers_its_changelog` (Task 1) must still pass — it is the
+guard that the reorder did not lose the CDC winner's changelog registration.
 
 - [ ] **Step 5: Prove the CDC declare path still works end to end**
 
@@ -794,7 +867,10 @@ fn lineage() -> LineageEvent {
 
 /// Direct-write (Parquet) limits: never inline, so the write takes `land_parquet`
 /// — the path whose `pre_existing` probe runs on a separate connection before the
-/// transaction.
+/// transaction. `land` routes inline iff `bytes <= inline_byte_limit`
+/// (`iceberg_landing.rs:181`), so a limit of 0 forces Parquet — but ONLY because
+/// `batch()` is non-empty (an empty batch has `bytes == 0`, which would flip it
+/// back to the inline path). Keep the batch non-empty.
 fn never_inline() -> InlineLimits {
     InlineLimits {
         inline_byte_limit: 0,
@@ -805,8 +881,14 @@ fn never_inline() -> InlineLimits {
 /// Barrier: block until some backend is waiting on another transaction's lock
 /// inside an `iceberg_mirror.table` insert — i.e. the lander's `ensure_table` is
 /// blocked on our uncommitted row. Panics rather than hanging.
+///
+/// The bound is deliberately generous (30 s, not the 6 s the registry-level race
+/// tests use): before it reaches `ensure_table` the lander must create the Iceberg
+/// table and load its metadata through the object store, which is slow on a loaded
+/// CI box. Reads another backend's `query` column — superuser only; the fixture
+/// connects as `postgres`.
 async fn await_ensure_table_blocked(pool: &PgPool) {
-    for _ in 0..600 {
+    for _ in 0..3000 {
         let blocked: i64 = sqlx::query_scalar(
             "select count(*) from pg_stat_activity \
              where datname = current_database() \
@@ -830,7 +912,10 @@ async fn stream_declare_losing_the_create_race_cannot_convert_the_winners_table(
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    // `SqlCatalog` is NOT `Clone` (iceberg_sql_catalog/catalog.rs:219), so share it
+    // with the spawned lander through an `Arc` — `&Arc<SqlCatalog>` derefs to the
+    // `&SqlCatalog` that `land` wants.
+    let catalog = Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await);
 
     let table = TableRef {
         schema: "s".into(),
@@ -858,7 +943,7 @@ async fn stream_declare_losing_the_create_race_cannot_convert_the_winners_table(
     // uncommitted) => pre_existing = false. Its `ensure_table` then blocks on A.
     let (schema, batches) = batch();
     let pool_b = pool.clone();
-    let cat_b = catalog.clone();
+    let cat_b = Arc::clone(&catalog);
     let table_b = table.clone();
     let lander = tokio::spawn(async move {
         land(
@@ -890,10 +975,6 @@ async fn stream_declare_losing_the_create_race_cannot_convert_the_winners_table(
     drop(catalog);
 }
 ```
-
-**If `SqlCatalog` is not `Clone`,** build the catalog inside the spawned task from
-`fx.pg_dsn(&db)` + the warehouse path instead of cloning it (`local_sql_catalog(...)` is
-async and takes owned `String`s), and keep the `tempfile::TempDir` alive in the outer test.
 
 - [ ] **Step 2: Add the buck2 target**
 
@@ -960,18 +1041,34 @@ pub async fn ensure_table_witnessed(
     name: &str,
     at: SnapshotId,
 ) -> Result<(i64, bool)> {
-    // …the existing body, verbatim, with each `Ok(tid)` / `return Ok(tid)` becoming
-    // the corresponding `(tid, created)` pair:
-    //   * the opening "already live" SELECT hit          -> Ok((tid, false))
-    //   * the INSERT that succeeded                       -> Ok((tid, true))
-    //   * the 23505 lost-race re-SELECT                   -> Ok((tid, false))
-    // The catalog-view guard and the savepoint/rollback handling are unchanged.
+    // body: iceberg_mirror.rs:98-188, moved here UNCHANGED except for the three
+    // success returns — see the mechanical recipe below.
 }
 ```
 
-Copy the existing body across exactly — the view guard, the savepoint, the
-`is_duplicate_object_race` arm and its re-SELECT, and the "genuinely different failure" arm.
-Only the three success returns change shape.
+**This is a mechanical move, not a rewrite. Do exactly this and nothing else:**
+
+1. Take the **entire current body of `ensure_table`** (`iceberg_mirror.rs:98-188`) and move it
+   into `ensure_table_witnessed` **byte-for-byte**.
+2. Change **only these three expressions**, which are the function's only success returns:
+   - `:108` — the opening "already live" SELECT hit: `return Ok(tid);` → `return Ok((tid, false));`
+   - `:153` — the INSERT that succeeded (inside the `Ok(tid) =>` match arm, after the
+     `release savepoint`): `Ok(tid)` → `Ok((tid, true))`
+   - `:177` — the 23505 lost-race re-SELECT (inside the `is_duplicate_object_race` arm, after
+     the `rollback to savepoint` + `release savepoint` pair): `Ok(tid)` → `Ok((tid, false))`
+3. **Do not touch anything else.** In particular, leave byte-identical: the catalog-view guard
+   and its `Conflict` (`:110-127`), the `savepoint loom_ensure_table` / `release savepoint` /
+   `rollback to savepoint` sequence in **both** the duplicate-race arm and the
+   "genuinely different failure" arm (`:180-188`), and the `is_duplicate_object_race` predicate.
+   Dropping the `release savepoint` from the 23505 arm leaves a dangling savepoint that will
+   not fail any test here but corrupts the caller's transaction state — it is the single
+   easiest thing to get wrong in this task.
+4. `ensure_table` then becomes the four-line delegate shown above. Its 43 call sites are
+   untouched.
+
+Before moving on, diff the two bodies to prove only the three returns changed:
+`git diff src/control-plane/postgres/src/iceberg_mirror.rs` — every other line of the moved
+body must show as context or as a pure move.
 
 - [ ] **Step 5: Use the witness at the two reconcile call sites**
 
@@ -991,9 +1088,14 @@ Only the three success returns change shape.
 ```
 
 Everything downstream (`is_stream` at `:493`, the `reconcile_stream_mode` call at `:560`) is
-unchanged — both already run *after* the ensure. Fix the `use` to import
-`ensure_table_witnessed` (keep `ensure_table` imported only if still used elsewhere in the
-file; an unused import is a clippy failure).
+unchanged — both already run *after* the ensure.
+
+**Imports (stated as facts, both verified — an unused import is a clippy failure):**
+- `iceberg_inline.rs`: `ensure_table` is used at **exactly one** site — the one being replaced
+  — so **remove** it from the `use crate::iceberg_mirror::{…}` list at `:32` and put
+  `ensure_table_witnessed` there instead.
+- `iceberg_landing.rs`: `ensure_table` **is still used** at `:747` and `:1274`, so **keep** it
+  and **add** `ensure_table_witnessed` alongside.
 
 `src/control-plane/postgres/src/iceberg_landing.rs`:
 
@@ -1017,7 +1119,10 @@ file; an unused import is a clippy failure).
 ```
 
 - Drop the now-dead `pre_existing` argument from the `land_parquet_stream` call (`:878`) and
-  from its signature (`:926`), and remove the stale mention in its doc comment (`:916`).
+  from its signature (`:926`). The `#[expect(clippy::too_many_arguments, reason = …)]` at
+  `:913-917` names `pre_existing` in its reason text — **reword the reason** (the function
+  still has 8 args, over the 7 threshold, so the `#[expect]` stays fulfilled and must NOT be
+  deleted, or `unfulfilled_lint_expectation` fires).
 - Inside `land_parquet_stream`'s attempt loop (`:963`), take the witness:
 
 ```rust
@@ -1104,11 +1209,18 @@ they are.
 pub trait StreamTables {
 ```
 
-- [ ] **Step 2: Close the register item**
+- [ ] **Step 2: Close the register item — and file NOTHING**
 
 Remove the `iss-stream-first-declare-race-kind` entry from `docs/ISSUES.md` (registers carry
 **open work only**; the closing PR removes the entry). If it is the last item under
 `## ontology`, remove the now-empty heading too.
+
+**`docs/ISSUES.md` must gain no new entry.** The spec's "Out of scope — record as new issues"
+section named two items; both are resolved here, not filed: item 1 (the stale `pre_existing`
+witness) is **fixed** in Task 4, and item 2 (the unguarded trait declares) turned out to need
+no design decision at all — every caller is a test, so it is **documented** in Step 1. Net
+issue count for this PR: closes 1, files 0. Say that in the PR body so a reviewer does not go
+hunting for the issues the spec promised.
 
 Then validate: `bash tools/docs.sh validate`
 Expected: no errors.
