@@ -794,3 +794,374 @@ async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
         file_b.display()
     );
 }
+
+/// The linchpin (iss-mv-register-below-reclaimed-floor): an MV registered AFTER a
+/// source's prefix was physically GC'd reads EXACTLY the surviving range and its first
+/// run COMMITS — it is neither wedged (the CAS Conflict a rounded-down bootstrap once
+/// triggered) nor short (a first delta that skips the surviving tail).
+///
+/// The ORDERING is the whole point, and it is deliberately the INVERSE of
+/// `gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up` above (which
+/// registers the MV BEFORE the first land, so its floor keeps offset 0 alive and it
+/// never exercises the truncated-source path):
+///
+///   1. Land offsets 0,1,2 — with NO MV registered, so the MV floor is `None` and GC is
+///      unguarded.
+///   2. End-cap + age + `gc_table`: offsets 0,1,2 are PHYSICALLY GONE.
+///   3. Land offsets 3,4,5 — the surviving range.
+///   4. NOW `define_transform` the MV. Its bootstrap seeds the watermark to the source's
+///      earliest SURVIVING offset (3), not 0.
+///   5. Run one micro-batch and prove all three: the run SUCCEEDS, the watermark advanced
+///      to {0: 6} (the CAS moved it off the bootstrapped 3), and the output holds exactly
+///      the 3 surviving rows — not 6 (it did not re-read the reclaimed prefix) and not 0
+///      (the delta is not short).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mv_registered_over_a_gcd_source_reads_the_surviving_range_and_commits() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let ctx = build_ctx(&eng.sock).await;
+    let engine = GrpcQueueClient::connect(&eng.sock)
+        .await
+        .expect("connect control");
+    let sql_client = FlightSqlClient::connect(&eng.sock)
+        .await
+        .expect("connect sql");
+
+    let src = tref("s", "events");
+    let out = tref("s", "doubled");
+    let sql = "select id, val * 2 as dbl from events";
+
+    let land_events = async |ids: &[i64], vals: &[i64]| {
+        let (schema, batches) = events_batch(ids, vals);
+        land(
+            &pool,
+            &catalog,
+            &src,
+            &events_columns(),
+            schema,
+            batches,
+            InlineLimits {
+                inline_byte_limit: 0,
+                flush_byte_threshold: i64::MAX,
+            },
+            seed_lineage(&src),
+            Some(1),
+        )
+        .await
+        .expect("land events");
+    };
+
+    // 1. Land offsets 0,1,2 straight to a Parquet FILE. NO MV is registered, so the MV
+    //    floor is `None` and GC is unguarded.
+    land_events(&[1, 2, 3], &[10, 20, 30]).await;
+
+    let mut conn = pool.acquire().await.expect("conn");
+    let tid = live_table_id(&mut conn, &src.schema, &src.name)
+        .await
+        .expect("tid")
+        .expect("live tid");
+    drop(conn);
+
+    let before = data_files(&pool, tid).await;
+    assert_eq!(
+        before.iter().map(|f| f.1).collect::<Vec<_>>(),
+        vec![2],
+        "the first land wrote one file carrying offsets 0..2"
+    );
+    let file_a = before[0].0.clone();
+
+    // 2. End-cap that file, age the history, and GC it over the wire. With no MV floor,
+    //    GC really reclaims: offsets 0,1,2 are physically gone.
+    let snap = IcebergCatalog::new(pool.clone())
+        .current_snapshot(&src)
+        .await
+        .expect("current snapshot")
+        .id
+        .0;
+    end_cap_data_files(&pool, tid, snap).await;
+    age_all_snapshots(&pool).await;
+
+    let (file_rows, _inline_rows, objects) = engine
+        .gc_table(src.schema.clone(), src.name.clone())
+        .await
+        .expect("gc over the wire");
+    assert_eq!(file_rows, 1, "the unguarded prefix file is reclaimed");
+    assert_eq!(objects, 1, "and its Parquet object with it");
+    assert!(
+        data_files(&pool, tid).await.is_empty(),
+        "no live data_file survives: the prefix is physically gone"
+    );
+    assert!(
+        !file_a.exists(),
+        "the prefix's Parquet bytes are gone: {}",
+        file_a.display()
+    );
+
+    // 3. Land the surviving range — offsets 3,4,5 — into a fresh file. The per-bucket
+    //    offset allocator is persisted independently of GC, so these do NOT restart at 0.
+    land_events(&[4, 5, 6], &[40, 50, 60]).await;
+    let survivors = data_files(&pool, tid).await;
+    assert_eq!(
+        survivors.iter().map(|f| f.1).collect::<Vec<_>>(),
+        vec![5],
+        "the survivor file carries offsets 3..5"
+    );
+
+    // 4. NOW register the MV. Its bootstrap seeds the watermark to the source's earliest
+    //    SURVIVING offset — 3, not 0.
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("mv_doubled".into()),
+            body: TransformBody::MicroBatch {
+                source: src.clone(),
+                output: out.clone(),
+                buckets: 1,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv over the truncated source");
+
+    let mv = mv_key(&out);
+    assert_eq!(
+        cp.mv_watermarks(&mv, tid)
+            .await
+            .expect("bootstrap watermark"),
+        [(0, 3)].into_iter().collect(),
+        "the bootstrap seeded the watermark to the earliest surviving offset (3), not 0"
+    );
+
+    // 5. Run one micro-batch and prove the three acceptance criteria.
+    let (rid, result) = run_micro_batch(&cp, &ctx, &src, &out, 1, sql).await;
+    result.expect("first micro-batch over the truncated source");
+    let run = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(
+        run.state,
+        RunState::Succeeded,
+        "the run COMMITTED — not wedged: the CAS accepted the advance off the bootstrapped 3"
+    );
+
+    assert_eq!(
+        cp.mv_watermarks(&mv, tid)
+            .await
+            .expect("watermark after run"),
+        [(0, 6)].into_iter().collect(),
+        "the delta covered offsets 3..6 and the CAS advanced the watermark from 3 to 6"
+    );
+
+    assert_eq!(
+        doubled_rows(&sql_client).await,
+        HashSet::from([(4, 80), (5, 100), (6, 120)]),
+        "the output holds EXACTLY the 3 surviving rows — the delta is neither short (0 rows) \
+         nor re-reading the reclaimed prefix (6 rows)"
+    );
+}
+
+/// The production scenario, and the ONLY e2e that exercises the CAS relaxation
+/// (iss-mv-register-below-reclaimed-floor): a MULTI-bucket source whose survivor file
+/// spans buckets, so the bootstrap ROUNDS DOWN below one bucket's true surviving offset.
+///
+/// Why single-bucket (the test above) is not enough: a single-bucket survivor file gives
+/// `earliest_surviving_offsets` an EXACT per-bucket bound (`loom_bucket` min == max), so the
+/// bootstrap lands exactly at the delta's observed minimum and the strict `next_offset = from`
+/// CAS still matches — the `<=` relaxation is never exercised. In PRODUCTION a flush is not
+/// bucket-partitioned, so real survivor files ARE cross-bucket: the file carries only a
+/// CROSS-bucket `loom_offset` min, which bounds EVERY bucket down to the lowest bucket's offset
+/// (`mv_bootstrap.rs`). A bucket whose true surviving min sits above that cross bound is
+/// bootstrapped BELOW its first surviving offset — and the first micro-batch's advance can only
+/// commit because the CAS accepts `next_offset <= from`. This is the scenario the whole branch
+/// exists for; the Task-3 revert reds THIS test (proven in the branch report).
+///
+/// Construction (fully deterministic — log-stream bucketing is `row_index % buckets`, offsets
+/// from a persisted per-bucket cursor):
+///   - Advance bucket 0's cursor to 2 with two single-row lands (each 1 row -> bucket 0 only),
+///     then GC them: bucket 0 has NO live rows but its cursor stays at 2.
+///   - Land a 4-row survivor batch: rows 0,2 -> bucket 0 (offsets 2,3), rows 1,3 -> bucket 1
+///     (offsets 0,1), in ONE cross-bucket file whose `loom_offset` min is 0 (from bucket 1).
+///   - Register the MV: the cross bound (0) bootstraps BOTH buckets to 0 — undershooting
+///     bucket 0, whose first surviving offset is 2.
+///   - Run once: bucket 0's delta observes min 2, so its advance is `{from: 2, to: 4}` against a
+///     watermark row at 0 — the `next_offset <= from` case. The run must SUCCEED, the watermark
+///     must reach {0: 4, 1: 2}, and the output must hold exactly the 4 survivors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mv_over_a_gcd_cross_bucket_source_commits_from_an_undershooting_bootstrap() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let ctx = build_ctx(&eng.sock).await;
+    let engine = GrpcQueueClient::connect(&eng.sock)
+        .await
+        .expect("connect control");
+    let sql_client = FlightSqlClient::connect(&eng.sock)
+        .await
+        .expect("connect sql");
+
+    let src = tref("s", "events");
+    let out = tref("s", "doubled");
+    let sql = "select id, val * 2 as dbl from events";
+
+    // A 2-bucket log-stream land straight to a Parquet FILE.
+    let land_events = async |ids: &[i64], vals: &[i64]| {
+        let (schema, batches) = events_batch(ids, vals);
+        land(
+            &pool,
+            &catalog,
+            &src,
+            &events_columns(),
+            schema,
+            batches,
+            InlineLimits {
+                inline_byte_limit: 0,
+                flush_byte_threshold: i64::MAX,
+            },
+            seed_lineage(&src),
+            Some(2),
+        )
+        .await
+        .expect("land events");
+    };
+
+    // 1. Two SINGLE-row lands: each row 0 maps to bucket 0 (row_index % 2 == 0), so bucket 0's
+    //    cursor advances to 2 while bucket 1 is never touched (cursor stays 0). No MV yet.
+    land_events(&[1], &[10]).await;
+    land_events(&[2], &[20]).await;
+
+    let mut conn = pool.acquire().await.expect("conn");
+    let tid = live_table_id(&mut conn, &src.schema, &src.name)
+        .await
+        .expect("tid")
+        .expect("live tid");
+    drop(conn);
+
+    let prefix = data_files(&pool, tid).await;
+    assert_eq!(
+        prefix.len(),
+        2,
+        "two single-row lands wrote two bucket-0 files, got: {prefix:?}"
+    );
+
+    // 2. End-cap + age + GC the whole prefix. With no MV floor, GC reclaims both files: bucket 0
+    //    has no live rows, but its persisted offset cursor stays at 2.
+    let snap = IcebergCatalog::new(pool.clone())
+        .current_snapshot(&src)
+        .await
+        .expect("current snapshot")
+        .id
+        .0;
+    end_cap_data_files(&pool, tid, snap).await;
+    age_all_snapshots(&pool).await;
+
+    let (file_rows, _inline_rows, objects) = engine
+        .gc_table(src.schema.clone(), src.name.clone())
+        .await
+        .expect("gc over the wire");
+    assert_eq!(file_rows, 2, "both prefix files are reclaimed");
+    assert_eq!(objects, 2, "and both Parquet objects with them");
+    assert!(
+        data_files(&pool, tid).await.is_empty(),
+        "no live data_file survives the prefix GC"
+    );
+
+    // 3. Land the 4-row survivor batch into ONE cross-bucket file:
+    //      row 0 -> bucket 0 offset 2, row 1 -> bucket 1 offset 0,
+    //      row 2 -> bucket 0 offset 3, row 3 -> bucket 1 offset 1.
+    //    The file's `loom_offset` min is 0 (bucket 1); bucket 0's surviving min is 2.
+    land_events(&[10, 11, 12, 13], &[100, 110, 120, 130]).await;
+    let survivors = data_files(&pool, tid).await;
+    assert_eq!(
+        survivors.len(),
+        1,
+        "the survivor land wrote a single cross-bucket file, got: {survivors:?}"
+    );
+    assert_eq!(
+        survivors[0].1, 3,
+        "its max loom_offset is 3 (bucket 0's top)"
+    );
+
+    // 4. Register the MV. The cross-bucket file bounds EVERY bucket to the file's min offset (0),
+    //    so the bootstrap plants bucket 0 at 0 — BELOW its true surviving min of 2 (the undershoot
+    //    the `<=` CAS exists to accept).
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("mv_doubled".into()),
+            body: TransformBody::MicroBatch {
+                source: src.clone(),
+                output: out.clone(),
+                buckets: 2,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv over the truncated cross-bucket source");
+
+    let mv = mv_key(&out);
+    assert_eq!(
+        cp.mv_watermarks(&mv, tid)
+            .await
+            .expect("bootstrap watermark"),
+        [(0, 0), (1, 0)].into_iter().collect(),
+        "the cross-bucket file rounds both buckets down to 0 — bucket 0 UNDERSHOOTS its true min (2)"
+    );
+
+    // 5. Run one micro-batch. Bucket 0's delta observes min offset 2, so its advance is
+    //    {from: 2, to: 4} against a watermark row sitting at 0 — the `next_offset <= from` case
+    //    the CAS relaxation makes commit. Prove the three acceptance criteria.
+    let (rid, result) = run_micro_batch(&cp, &ctx, &src, &out, 2, sql).await;
+    result.expect("first micro-batch over the truncated cross-bucket source");
+    let run = cp.transforms().get_run(rid).await.expect("run");
+    assert_eq!(
+        run.state,
+        RunState::Succeeded,
+        "the run COMMITTED — the CAS accepted bucket 0's advance from a watermark BELOW its delta min"
+    );
+
+    assert_eq!(
+        cp.mv_watermarks(&mv, tid)
+            .await
+            .expect("watermark after run"),
+        [(0, 4), (1, 2)].into_iter().collect(),
+        "both buckets advanced past their surviving tail (bucket 0: 0 -> 4, bucket 1: 0 -> 2)"
+    );
+
+    assert_eq!(
+        doubled_rows(&sql_client).await,
+        HashSet::from([(10, 200), (11, 220), (12, 240), (13, 260)]),
+        "the output holds EXACTLY the 4 surviving rows across both buckets — not short, not \
+         re-reading the reclaimed prefix"
+    );
+}
