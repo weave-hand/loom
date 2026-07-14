@@ -221,6 +221,73 @@ async fn await_declare_blocked(pool: &PgPool) {
     panic!("the losing declare never blocked on the winner's transactionid lock");
 }
 
+/// What a race yields: the LOSING declarer's result, plus the two probes taken on
+/// its STILL-OPEN transaction (after `reconcile_stream_mode` returns, before the
+/// rollback) — the only place a write the loser performed and then rolled back is
+/// observable at all.
+struct RaceOutcome {
+    /// `reconcile_stream_mode`'s return for the loser.
+    res: control_plane_core::Result<Option<i32>>,
+    /// The winner row's `changelog_table_id` as the loser sees it. `Some` iff the
+    /// loser ran `pg_set_changelog_table_id` (no winner row here is inserted with
+    /// one), i.e. iff a rejected declare wrote to the winner's row anyway.
+    stamped: Option<i64>,
+    /// Mirror rows for the changelog table (`s.t__changelog`, per
+    /// `iceberg_landing::changelog_table_ref`). Non-zero iff the loser ran
+    /// `ensure_table` for it — the OTHER write of the CDC sub-branch, which the
+    /// `stamped` probe alone would not catch.
+    clog_rows: i64,
+}
+
+/// Drive the first-declare race deterministically. `winner` is an OPEN transaction
+/// holding the conflicting `stream.stream_table` row (from `insert_stream_row`);
+/// `decl` is the LOSER's declaration, run on its own connection: its
+/// `pg_stream_meta` read returns None (the winner is uncommitted), so it takes the
+/// (Some, None) first-declare arm and its declare insert BLOCKS on the winner's
+/// transactionid lock. Only once it is observably blocked is the winner committed
+/// (see `await_declare_blocked`), so the loser is guaranteed to reach the
+/// post-declare re-read — never the count-equal arm.
+///
+/// Two facts make the probes safe. (1) `reconcile_stream_mode`'s rejection is an
+/// APPLICATION error, not a DB error — no statement failed, so the loser's
+/// transaction is not poisoned and still accepts queries. (2) `fetch_one` cannot
+/// hit RowNotFound: by that point the winner has committed its row.
+async fn race_losing_declare(
+    pool: &PgPool,
+    winner: Transaction<'static, Postgres>,
+    decl: StreamDecl,
+) -> RaceOutcome {
+    let pool_b = pool.clone();
+    let loser = tokio::spawn(async move {
+        let mut tx = pool_b.begin().await.expect("begin loser tx");
+        let res = reconcile_stream_mode(&mut tx, TID, &decl, false, &tref(), SnapshotId(1)).await;
+        let stamped: Option<i64> = sqlx::query_scalar(
+            "select changelog_table_id from stream.stream_table where table_id = $1",
+        )
+        .bind(TID)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("read winner changelog_table_id on the loser tx");
+        let clog_rows: i64 = sqlx::query_scalar(
+            "select count(*) from iceberg_mirror.\"table\" \
+             where table_namespace = 's' and table_name = 't__changelog'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count changelog mirror rows on the loser tx");
+        drop(tx.rollback().await);
+        RaceOutcome {
+            res,
+            stamped,
+            clog_rows,
+        }
+    });
+
+    await_declare_blocked(pool).await;
+    winner.commit().await.expect("commit winner");
+    loser.await.expect("join loser")
+}
+
 /// THE DEFECT: a log first-declare that loses the `on conflict do nothing` race
 /// to a CDC first-declare with the SAME bucket count must be rejected. Before the
 /// fix the re-read compares only the count, so the log write proceeds against a
@@ -231,32 +298,11 @@ async fn log_first_declare_losing_to_cdc_winner_is_validation_error() {
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    // A: the CDC winner, held UNCOMMITTED.
+    // A: the CDC winner, held UNCOMMITTED. B: the log loser.
     let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id"), None).await;
+    let out = race_losing_declare(&pool, winner, StreamDecl::Log(2)).await;
 
-    // B: the log loser. Its `pg_stream_meta` read returns None (A is uncommitted), so
-    // it takes the (Some, None) first-declare arm, and its `pg_declare_stream` insert
-    // then BLOCKS on A's transactionid lock.
-    let pool_b = pool.clone();
-    let loser = tokio::spawn(async move {
-        let mut tx = pool_b.begin().await.expect("begin loser tx");
-        let res = reconcile_stream_mode(
-            &mut tx,
-            TID,
-            &StreamDecl::Log(2),
-            false,
-            &tref(),
-            SnapshotId(1),
-        )
-        .await;
-        drop(tx.rollback().await);
-        res
-    });
-
-    await_declare_blocked(&pool).await;
-    winner.commit().await.expect("commit winner");
-
-    let res = loser.await.expect("join loser");
+    let res = out.res;
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg))
                  if msg.contains("declared concurrently with a different stream kind")),
@@ -266,6 +312,8 @@ async fn log_first_declare_losing_to_cdc_winner_is_validation_error() {
 }
 
 /// Symmetric: a CDC first-declare losing to a LOG winner with the same count.
+/// Also the ORDERING test: the loser's still-open-tx probes pin that neither CDC
+/// changelog write ran before the guards rejected it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
     let fx = PgFixture::shared();
@@ -273,62 +321,18 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
     let pool = fx.pool_for(&db).await;
 
     let winner = insert_stream_row(&pool, TID, 2, "log", None, None).await;
+    let out = race_losing_declare(
+        &pool,
+        winner,
+        StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+    )
+    .await;
 
-    let pool_b = pool.clone();
-    let loser = tokio::spawn(async move {
-        let mut tx = pool_b.begin().await.expect("begin loser tx");
-        let res = reconcile_stream_mode(
-            &mut tx,
-            TID,
-            &StreamDecl::Cdc {
-                buckets: 2,
-                bucket_key: "id".into(),
-                merge_engine: MergeEngine::LastRow,
-            },
-            false,
-            &tref(),
-            SnapshotId(1),
-        )
-        .await;
-        // Read the winner's row on the LOSER's still-open transaction: any UPDATE the
-        // loser issued before bailing out is visible to itself here, and nowhere else
-        // (the rollback below erases it). This is the only way to observe the
-        // changelog stamp the pre-fix ordering performs.
-        //
-        // Two facts make this probe safe. (1) `reconcile_stream_mode`'s rejection is an
-        // APPLICATION error, not a DB error — no statement failed, so the transaction is
-        // not poisoned and still accepts queries. (2) `fetch_one` cannot hit RowNotFound:
-        // by this point the winner has committed its row.
-        let stamped: Option<i64> = sqlx::query_scalar(
-            "select changelog_table_id from stream.stream_table where table_id = $1",
-        )
-        .bind(TID)
-        .fetch_one(&mut *tx)
-        .await
-        .expect("read winner changelog_table_id on the loser tx");
-        // Second probe, same still-open tx: `pg_set_changelog_table_id` stamping
-        // `None` above only pins a regression in THAT write. It says nothing about
-        // `ensure_table`, the OTHER write the CDC sub-branch performs — a future edit
-        // that moved only the pointer stamp below the guards, leaving `ensure_table`
-        // above them, would still pass the assertion above while the loser silently
-        // inserted an orphan changelog mirror row inside its tx. Count the changelog
-        // table's mirror rows directly (`s.t__changelog`, per
-        // `iceberg_landing::changelog_table_ref`) to pin that write too.
-        let clog_rows: i64 = sqlx::query_scalar(
-            "select count(*) from iceberg_mirror.\"table\" \
-             where table_namespace = 's' and table_name = 't__changelog'",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .expect("count changelog mirror rows on the loser tx");
-        drop(tx.rollback().await);
-        (res, stamped, clog_rows)
-    });
-
-    await_declare_blocked(&pool).await;
-    winner.commit().await.expect("commit winner");
-
-    let (res, stamped, clog_rows) = loser.await.expect("join loser");
+    let res = out.res;
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg))
                  if msg.contains("declared concurrently with a different stream kind")),
@@ -336,12 +340,12 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
          by the FIRST-DECLARE arm, got {res:?}"
     );
     assert_eq!(
-        stamped, None,
+        out.stamped, None,
         "a losing cdc declare must bail out BEFORE writing changelog_table_id onto the \
          winner's log row — the kind check has to precede the changelog writes"
     );
     assert_eq!(
-        clog_rows, 0,
+        out.clog_rows, 0,
         "a rejected declare must not have created the changelog mirror row either — \
          ensure_table must run only after every guard above has passed"
     );
@@ -365,30 +369,18 @@ async fn cdc_first_declare_losing_to_different_merge_engine_winner_is_conflict()
     let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id"), Some("versioned")).await;
 
     // B: the LastRow loser.
-    let pool_b = pool.clone();
-    let loser = tokio::spawn(async move {
-        let mut tx = pool_b.begin().await.expect("begin loser tx");
-        let res = reconcile_stream_mode(
-            &mut tx,
-            TID,
-            &StreamDecl::Cdc {
-                buckets: 2,
-                bucket_key: "id".into(),
-                merge_engine: MergeEngine::LastRow,
-            },
-            false,
-            &tref(),
-            SnapshotId(1),
-        )
-        .await;
-        drop(tx.rollback().await);
-        res
-    });
+    let out = race_losing_declare(
+        &pool,
+        winner,
+        StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+    )
+    .await;
 
-    await_declare_blocked(&pool).await;
-    winner.commit().await.expect("commit winner");
-
-    let res = loser.await.expect("join loser");
+    let res = out.res;
     assert!(
         matches!(&res, Err(ControlPlaneError::Conflict(msg)) if msg.contains("declared concurrently")),
         "a cdc first-declare losing to a winner with a DIFFERENT merge_engine and the \
@@ -412,30 +404,18 @@ async fn cdc_first_declare_losing_to_different_bucket_key_winner_is_validation_e
     let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("user_id"), None).await;
 
     // B: the loser, keyed on "id".
-    let pool_b = pool.clone();
-    let loser = tokio::spawn(async move {
-        let mut tx = pool_b.begin().await.expect("begin loser tx");
-        let res = reconcile_stream_mode(
-            &mut tx,
-            TID,
-            &StreamDecl::Cdc {
-                buckets: 2,
-                bucket_key: "id".into(),
-                merge_engine: MergeEngine::LastRow,
-            },
-            false,
-            &tref(),
-            SnapshotId(1),
-        )
-        .await;
-        drop(tx.rollback().await);
-        res
-    });
+    let out = race_losing_declare(
+        &pool,
+        winner,
+        StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+    )
+    .await;
 
-    await_declare_blocked(&pool).await;
-    winner.commit().await.expect("commit winner");
-
-    let res = loser.await.expect("join loser");
+    let res = out.res;
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different bucket_key")),
         "a cdc first-declare losing to a winner with a DIFFERENT bucket_key and the \

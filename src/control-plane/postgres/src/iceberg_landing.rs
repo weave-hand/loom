@@ -947,25 +947,18 @@ async fn land_parquet_stream(
     loop {
         let mut tx = pool.begin().await.map_err(backend)?;
 
-        // ONE snapshot for the whole write: allocate it (and the mirror table row it
-        // keys offset allocation by) up front, and have the commit REUSE it
-        // (`CommitExtras.reuse_snapshot`) so the write is a single snapshot rather
-        // than a spurious empty seed plus the commit's.
+        // ONE snapshot for the whole write: allocated up front (offset allocation keys off
+        // the mirror row it seeds), then REUSEd by the commit (`CommitExtras.reuse_snapshot`).
         let at = next_snapshot(&mut tx, None).await?;
-        // The ensure's witness is the conversion guard's `pre_existing` (see
-        // `ensure_table_witnessed`): `created == false` means this table is somebody
-        // else's — either long-lived, or created by a writer that just won the race we
-        // lost inside the ensure. This sits INSIDE the retry loop, so a retried attempt
-        // re-witnesses — correct, because attempt 1's row was rolled back with its tx.
+        // `pre_existing` = `!created`: only the ensure INSIDE this tx can witness it.
         let (tid, created) =
             ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
-        let pre_existing = !created;
 
         // Reconcile stream mode on THIS tx (shared with `inline_append`). A rejected
         // convert (`Validation`) or bucket mismatch (`Conflict`) is terminal — roll
         // back and return, never retry.
         let effective =
-            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, pre_existing, table, at)
+            match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, !created, table, at)
                 .await
             {
                 Ok(e) => e,
