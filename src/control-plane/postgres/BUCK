@@ -702,6 +702,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "mv-bootstrap",
+    crate = "mv_bootstrap",
+    srcs = ["tests/mv_bootstrap.rs"],
+    crate_root = "tests/mv_bootstrap.rs",
+    deps = [
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "iceberg-gc",
     crate = "iceberg_gc",
     srcs = ["tests/iceberg_gc.rs"],

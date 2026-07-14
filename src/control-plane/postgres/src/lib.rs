@@ -35,6 +35,7 @@ pub mod iceberg_sql_catalog;
 pub mod iceberg_stats;
 pub mod iceberg_type;
 pub mod iceberg_writer;
+pub mod mv_bootstrap;
 pub mod mv_floor;
 pub mod orphan_sweep;
 pub mod puffin;
