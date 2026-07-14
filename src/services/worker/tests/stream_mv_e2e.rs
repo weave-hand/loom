@@ -21,9 +21,10 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_mirror::live_table_id;
+use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient};
-use loom_test_flight::{EngineOpts, spawn_engine_uds};
+use loom_test_flight::{EngineGuard, EngineOpts, spawn_engine_uds};
 use loom_test_seed::local_sql_catalog;
 use worker::stream_mv::{StreamMvCtx, handle_stream_mv};
 
@@ -79,6 +80,36 @@ fn seed_lineage(table: &TableRef) -> LineageEvent {
     }
 }
 
+/// Land one `(id, val)` batch to `src` straight to a Parquet FILE (`inline_byte_limit: 0`),
+/// bucketed into `buckets` log-stream buckets. The shared land step for the
+/// register-after-land tests; `buckets` is the only thing that varies between them.
+async fn land_events(
+    pool: &sqlx::PgPool,
+    catalog: &SqlCatalog,
+    src: &TableRef,
+    ids: &[i64],
+    vals: &[i64],
+    buckets: i32,
+) {
+    let (schema, batches) = events_batch(ids, vals);
+    land(
+        pool,
+        catalog,
+        src,
+        &events_columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        seed_lineage(src),
+        Some(buckets),
+    )
+    .await
+    .expect("land events");
+}
+
 async fn build_ctx(sock: &str) -> StreamMvCtx {
     let control = GrpcQueueClient::connect(sock)
         .await
@@ -90,6 +121,65 @@ async fn build_ctx(sock: &str) -> StreamMvCtx {
         control,
         table,
         worker_tuning: loom_config::WorkerTuning::default(),
+    }
+}
+
+/// Handles shared by the register-after-land e2e tests below. The keep-alive fields (fixture,
+/// db name, engine guard, warehouse tempdir) must outlive the test body — dropping any of them
+/// tears down the DB / engine / warehouse — so tests bind them to `_`-prefixed locals.
+struct MvEnv {
+    cp: PgControlPlane,
+    pool: sqlx::PgPool,
+    catalog: SqlCatalog,
+    ctx: StreamMvCtx,
+    engine: GrpcQueueClient,
+    sql_client: FlightSqlClient,
+    fx: &'static PgFixture,
+    db: String,
+    eng: EngineGuard,
+    wh: tempfile::TempDir,
+}
+
+/// Boot a fresh fixture DB + a local SQL catalog over a temp warehouse, spawn a control+flight
+/// engine over a UDS, and wire the stream-MV ctx and the control/SQL clients. The common
+/// preamble for the register-after-land tests.
+async fn setup_mv_env() -> MvEnv {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse dir");
+    let wh_str = wh.path().display().to_string();
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
+
+    let eng = spawn_engine_uds(
+        fx,
+        &db,
+        &wh_str,
+        EngineOpts {
+            control: true,
+            flight: true,
+            ..EngineOpts::default()
+        },
+    )
+    .await;
+    let ctx = build_ctx(&eng.sock).await;
+    let engine = GrpcQueueClient::connect(&eng.sock)
+        .await
+        .expect("connect control");
+    let sql_client = FlightSqlClient::connect(&eng.sock)
+        .await
+        .expect("connect sql");
+    MvEnv {
+        cp,
+        pool,
+        catalog,
+        ctx,
+        engine,
+        sql_client,
+        fx,
+        db,
+        eng,
+        wh,
     }
 }
 
@@ -817,59 +907,26 @@ async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
 ///      (the delta is not short).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mv_registered_over_a_gcd_source_reads_the_surviving_range_and_commits() {
-    let fx = PgFixture::shared();
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let wh = tempfile::tempdir().expect("warehouse dir");
-    let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
-
-    let eng = spawn_engine_uds(
-        fx,
-        &db,
-        &wh_str,
-        EngineOpts {
-            control: true,
-            flight: true,
-            ..EngineOpts::default()
-        },
-    )
-    .await;
-    let ctx = build_ctx(&eng.sock).await;
-    let engine = GrpcQueueClient::connect(&eng.sock)
-        .await
-        .expect("connect control");
-    let sql_client = FlightSqlClient::connect(&eng.sock)
-        .await
-        .expect("connect sql");
+    let MvEnv {
+        cp,
+        pool,
+        catalog,
+        ctx,
+        engine,
+        sql_client,
+        fx: _fx,
+        db: _db,
+        eng: _eng,
+        wh: _wh,
+    } = setup_mv_env().await;
 
     let src = tref("s", "events");
     let out = tref("s", "doubled");
     let sql = "select id, val * 2 as dbl from events";
 
-    let land_events = async |ids: &[i64], vals: &[i64]| {
-        let (schema, batches) = events_batch(ids, vals);
-        land(
-            &pool,
-            &catalog,
-            &src,
-            &events_columns(),
-            schema,
-            batches,
-            InlineLimits {
-                inline_byte_limit: 0,
-                flush_byte_threshold: i64::MAX,
-            },
-            seed_lineage(&src),
-            Some(1),
-        )
-        .await
-        .expect("land events");
-    };
-
     // 1. Land offsets 0,1,2 straight to a Parquet FILE. NO MV is registered, so the MV
     //    floor is `None` and GC is unguarded.
-    land_events(&[1, 2, 3], &[10, 20, 30]).await;
+    land_events(&pool, &catalog, &src, &[1, 2, 3], &[10, 20, 30], 1).await;
 
     let mut conn = pool.acquire().await.expect("conn");
     let tid = live_table_id(&mut conn, &src.schema, &src.name)
@@ -915,7 +972,7 @@ async fn mv_registered_over_a_gcd_source_reads_the_surviving_range_and_commits()
 
     // 3. Land the surviving range — offsets 3,4,5 — into a fresh file. The per-bucket
     //    offset allocator is persisted independently of GC, so these do NOT restart at 0.
-    land_events(&[4, 5, 6], &[40, 50, 60]).await;
+    land_events(&pool, &catalog, &src, &[4, 5, 6], &[40, 50, 60], 1).await;
     let survivors = data_files(&pool, tid).await;
     assert_eq!(
         survivors.iter().map(|f| f.1).collect::<Vec<_>>(),
@@ -1003,61 +1060,28 @@ async fn mv_registered_over_a_gcd_source_reads_the_surviving_range_and_commits()
 ///     must reach {0: 4, 1: 2}, and the output must hold exactly the 4 survivors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mv_over_a_gcd_cross_bucket_source_commits_from_an_undershooting_bootstrap() {
-    let fx = PgFixture::shared();
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let wh = tempfile::tempdir().expect("warehouse dir");
-    let wh_str = wh.path().display().to_string();
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh_str).await;
-
-    let eng = spawn_engine_uds(
-        fx,
-        &db,
-        &wh_str,
-        EngineOpts {
-            control: true,
-            flight: true,
-            ..EngineOpts::default()
-        },
-    )
-    .await;
-    let ctx = build_ctx(&eng.sock).await;
-    let engine = GrpcQueueClient::connect(&eng.sock)
-        .await
-        .expect("connect control");
-    let sql_client = FlightSqlClient::connect(&eng.sock)
-        .await
-        .expect("connect sql");
+    let MvEnv {
+        cp,
+        pool,
+        catalog,
+        ctx,
+        engine,
+        sql_client,
+        fx: _fx,
+        db: _db,
+        eng: _eng,
+        wh: _wh,
+    } = setup_mv_env().await;
 
     let src = tref("s", "events");
     let out = tref("s", "doubled");
     let sql = "select id, val * 2 as dbl from events";
 
-    // A 2-bucket log-stream land straight to a Parquet FILE.
-    let land_events = async |ids: &[i64], vals: &[i64]| {
-        let (schema, batches) = events_batch(ids, vals);
-        land(
-            &pool,
-            &catalog,
-            &src,
-            &events_columns(),
-            schema,
-            batches,
-            InlineLimits {
-                inline_byte_limit: 0,
-                flush_byte_threshold: i64::MAX,
-            },
-            seed_lineage(&src),
-            Some(2),
-        )
-        .await
-        .expect("land events");
-    };
-
-    // 1. Two SINGLE-row lands: each row 0 maps to bucket 0 (row_index % 2 == 0), so bucket 0's
-    //    cursor advances to 2 while bucket 1 is never touched (cursor stays 0). No MV yet.
-    land_events(&[1], &[10]).await;
-    land_events(&[2], &[20]).await;
+    // 1. Two SINGLE-row lands into a 2-bucket log stream, straight to Parquet FILEs: each row 0
+    //    maps to bucket 0 (row_index % 2 == 0), so bucket 0's cursor advances to 2 while bucket 1
+    //    is never touched (cursor stays 0). No MV yet.
+    land_events(&pool, &catalog, &src, &[1], &[10], 2).await;
+    land_events(&pool, &catalog, &src, &[2], &[20], 2).await;
 
     let mut conn = pool.acquire().await.expect("conn");
     let tid = live_table_id(&mut conn, &src.schema, &src.name)
@@ -1099,7 +1123,15 @@ async fn mv_over_a_gcd_cross_bucket_source_commits_from_an_undershooting_bootstr
     //      row 0 -> bucket 0 offset 2, row 1 -> bucket 1 offset 0,
     //      row 2 -> bucket 0 offset 3, row 3 -> bucket 1 offset 1.
     //    The file's `loom_offset` min is 0 (bucket 1); bucket 0's surviving min is 2.
-    land_events(&[10, 11, 12, 13], &[100, 110, 120, 130]).await;
+    land_events(
+        &pool,
+        &catalog,
+        &src,
+        &[10, 11, 12, 13],
+        &[100, 110, 120, 130],
+        2,
+    )
+    .await;
     let survivors = data_files(&pool, tid).await;
     assert_eq!(
         survivors.len(),
