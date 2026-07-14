@@ -8,7 +8,7 @@ use control_plane_core::{
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_mirror::{mark_dropped, next_snapshot};
+use control_plane_postgres::iceberg_mirror::{ensure_table, mark_dropped, next_snapshot};
 use control_plane_testkit::{CatalogSeed, SeedSpec, SeededSnapshot, catalog_view_contract};
 
 struct IcebergSeeder {
@@ -127,6 +127,71 @@ async fn dropping_a_base_with_dependent_views_is_refused() {
     assert!(
         !tables.items.contains(&base),
         "dropped base no longer listed as a live table"
+    );
+}
+
+#[tokio::test]
+async fn landing_a_table_under_a_view_name_is_refused() {
+    let fixture = PgFixture::shared();
+    let (cp, db) = fixture.fresh_db().await;
+    let catalog = IcebergCatalog::new(cp.pool().clone());
+    let writer = IcebergWriter::new(cp.pool().clone(), fixture.pg_dsn(&db));
+
+    // A real physical base + a view over it.
+    let base = TableRef {
+        schema: "gov".into(),
+        name: "widgets".into(),
+    };
+    writer
+        .seed(
+            &base.schema,
+            &base.name,
+            &[("id".into(), "long".into(), false)],
+            &[2],
+        )
+        .await;
+    let view = TableRef {
+        schema: "gov".into(),
+        name: "widgets_eu".into(),
+    };
+    catalog
+        .define_view(ViewDef {
+            view: view.clone(),
+            base: base.clone(),
+            predicate: None,
+            columns: None,
+        })
+        .await
+        .expect("define_view");
+
+    // Drive `ensure_table` directly — the seam EVERY production land/write path runs
+    // through — under the view's own (schema, name). It must refuse (rather than mint a
+    // physical table the view would then permanently shadow). Called directly rather
+    // than via `IcebergWriter::seed` because that `.expect()`s and would panic on the
+    // refusal instead of letting us assert it (same posture as the `mark_dropped` test).
+    let mut tx = cp.pool().begin().await.expect("begin tx");
+    let at = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let err = ensure_table(&mut tx, &view.schema, &view.name, at)
+        .await
+        .expect_err("landing a table under a view name is refused");
+    assert!(
+        matches!(err, ControlPlaneError::Conflict(_)),
+        "expected Conflict, got {err:?}"
+    );
+    assert!(
+        err.to_string().contains("gov.widgets_eu"),
+        "conflict message should name the colliding view: {err}"
+    );
+    tx.rollback().await.expect("rollback");
+
+    // The view name never became a live physical table.
+    let mut conn = cp.pool().acquire().await.expect("acquire");
+    assert!(
+        control_plane_postgres::iceberg_mirror::live_table_id(&mut conn, "gov", "widgets_eu")
+            .await
+            .expect("live_table_id")
+            .is_none(),
+        "no physical table was minted under the view name"
     );
 }
 

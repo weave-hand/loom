@@ -107,6 +107,25 @@ pub async fn ensure_table(
     {
         return Ok(tid);
     }
+    // Refuse to create a physical table under a name already claimed by a catalog
+    // view: a land at a view's (schema, name) would succeed and be permanently
+    // shadowed by the view. Mirrors `mark_dropped`'s dependent-view guard on the
+    // reverse edge (`define_view` blocks the other direction). Only on the create
+    // path — an append to an already-live table returned above without this check.
+    let name_is_view = sqlx::query_scalar!(
+        "select exists(select 1 from dataset_view.view \
+         where view_schema = $1 and view_name = $2) as \"e!\"",
+        ns,
+        name,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if name_is_view {
+        return Err(ControlPlaneError::Conflict(format!(
+            "name is a catalog view: {ns}.{name}"
+        )));
+    }
     // No live row yet: insert one, guarded by a savepoint so a lost first-write
     // race (a concurrent writer inserted the live row for (ns, name) between our
     // SELECT and INSERT) resolves to the winner's table_id instead of surfacing a
