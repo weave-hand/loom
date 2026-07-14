@@ -16,9 +16,9 @@
 //! doing the copy-paste-then-extract round trip: see the controller note on
 //! Task 3 of `iss-timetravel-quiet-table-overconservative`.
 //!
-//! Deliberately NOT included: anything specific to one test's topology (e.g.
-//! `reclaim_watermark_is_monotone`'s two-bucket MV setup stays local to
-//! `iceberg_gc.rs` — it is a one-off arrangement, not a repeated shape).
+//! Also hosts [`two_generation_bucketed_stream_table`], the arrangement behind
+//! `reclaim_watermark_is_monotone` — it was a one-off shape when this file was
+//! written, but grew into its own SLOC hotspot, so its setup moved here too.
 
 use std::sync::Arc;
 
@@ -26,11 +26,14 @@ use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 
 use control_plane_core::{
-    ColumnSpec, ControlPlane, LineageEvent, MvWatermarks, RunId, TableRef, TransformBody,
-    TransformDef, TransformName, WatermarkAdvance,
+    ColumnSpec, ControlPlane, LineageEvent, MvWatermarks, RunId, SnapshotId, TableRef,
+    TransformBody, TransformDef, TransformName, WatermarkAdvance, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use loom_test_seed::local_sql_catalog;
 
@@ -57,6 +60,50 @@ pub async fn harness(
     let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
     let pool = fx.pool_for(&db).await;
     (cp, db, wh, catalog, pool)
+}
+
+/// `harness` plus landing ONE `ipc_body(rows)` batch into `wh.t` — the ~20-line
+/// arrangement `iceberg_gc.rs` and `timetravel_intact.rs` each repeated per test body
+/// (harness, a read-side `IcebergCatalog`, the table ref, and the first landed
+/// snapshot). Keep the returned `TempDir` alive in the caller's scope (dropping it
+/// removes the warehouse directory). Each test's DISTINCT continuation — a second
+/// land/overwrite, aging, gc, assertions — stays local to the test body.
+pub async fn land_first_batch(
+    fx: &PgFixture,
+    rows: i64,
+) -> (
+    tempfile::TempDir,
+    SqlCatalog,
+    IcebergCatalog,
+    sqlx::PgPool,
+    TableRef,
+    SnapshotId,
+) {
+    let (_cp, _db, wh, catalog, pool) = harness(fx).await;
+    let ice = IcebergCatalog::new(pool.clone());
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let (schema, batches) = ipc_body(rows);
+    let s1 = land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
+    )
+    .await
+    .expect("land s1");
+    (wh, catalog, ice, pool, t, s1)
 }
 
 /// A single `id: long` (non-null) column spec, for `land`/`overwrite_parquet_snapshot`.
@@ -230,4 +277,95 @@ pub async fn advance(
     cp.advance_mv_watermark(mv, source_tid, &[WatermarkAdvance { bucket, from, to }])
         .await
         .expect("advance watermark");
+}
+
+/// Arrange `wh.t` as a 2-bucket declared stream table with TWO generations already
+/// landed-and-flushed — the setup behind `reclaim_watermark_is_monotone`. Generation 1
+/// (2 rows landed inline, round-robin: bucket 0 offset 0, bucket 1 offset 0) flushes at
+/// the OLDER snapshot `s1`; generation 2 (2 more rows, both buckets' offset 1) flushes at
+/// the NEWER `s2 > s1`. Registers an MV `mv_a` over `t -> wh.mv_out` (never run — the
+/// caller drives its per-bucket floor by hand via [`advance`]) with bucket 0's floor
+/// already advanced to 2 (both its generations consumed) while bucket 1 is left at 0
+/// (neither consumed), then ages the whole history so H = s2. Returns the control plane,
+/// pool, catalog, `t`, the live `table_id`, `s1`, `s2`, and the MV's `mv_key` — everything
+/// the watermark-monotonicity test's three `gc_table` runs need.
+pub async fn two_generation_bucketed_stream_table(
+    fx: &PgFixture,
+) -> (
+    PgControlPlane,
+    sqlx::PgPool,
+    SqlCatalog,
+    TableRef,
+    i64,
+    i64,
+    i64,
+    String,
+) {
+    let (cp, _db, _wh, catalog, pool) = harness(fx).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+    let out = TableRef {
+        schema: "wh".into(),
+        name: "mv_out".into(),
+    };
+
+    // Generation 1.
+    let (schema, batches) = ipc_body(2);
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 1 << 20,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        Some(2),
+    )
+    .await
+    .expect("land gen 1");
+    let tid = live_tid(&pool, "wh", "t").await;
+    let s1 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("flush gen 1")
+        .expect("gen 1 had live rows to flush")
+        .0;
+
+    // Generation 2.
+    let (schema2, batches2) = ipc_body(2);
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema2,
+        batches2,
+        InlineLimits {
+            inline_byte_limit: 1 << 20,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        Some(2),
+    )
+    .await
+    .expect("land gen 2");
+    let s2 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("flush gen 2")
+        .expect("gen 2 had live rows to flush")
+        .0;
+    assert!(s2 > s1, "generation 2 is strictly newer than generation 1");
+
+    register_mv(&cp, "mv_a", &t, &out).await;
+    let mv = mv_key(&out);
+    advance(&cp, &mv, tid, 0, 0, 2).await;
+
+    age_all_snapshots(&pool).await;
+
+    (cp, pool, catalog, t, tid, s1, s2, mv)
 }

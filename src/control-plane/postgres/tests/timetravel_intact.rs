@@ -18,7 +18,7 @@ use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use gc_test_support::{
     SEVEN_DAYS, age_all_snapshots, age_snapshot, batch, columns, harness, inline_table_exists,
-    ipc_body, lineage, live_tid, mirror_row_counts, reclaimed_through,
+    ipc_body, land_first_batch, lineage, live_tid, mirror_row_counts, reclaimed_through,
 };
 use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
 
@@ -27,31 +27,7 @@ use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn append_only_below_horizon_is_intact() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    // s1: land 10 rows.
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land s1");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
 
     // s2: append 10 more rows via a SECOND `land` — nothing end-capped, s1's file stays live.
     let (schema2, batches2) = ipc_body(10);
@@ -94,30 +70,7 @@ async fn append_only_below_horizon_is_intact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reclaimed_below_horizon_is_not_intact() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land s1");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
 
     // Overwrite at s2 — end-caps s1's file at s2.
     let s2 = overwrite_parquet_snapshot(
@@ -155,30 +108,7 @@ async fn reclaimed_below_horizon_is_not_intact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn eligible_but_ungced_is_not_intact() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land s1");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
 
     let s2 = overwrite_parquet_snapshot(
         &pool,
@@ -219,30 +149,7 @@ async fn eligible_but_ungced_is_not_intact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn truncate_is_not_quiet() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land s1");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
 
     // A governed delete-all: an all-zero-row batch routes `overwrite_with_cap` to
     // `overwrite_truncate`, which end-caps every live file and writes no replacement.
@@ -306,30 +213,7 @@ async fn truncate_is_not_quiet() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dropped_incarnation_serves_then_404s_once_fully_reclaimed() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land s1");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
 
     // Capture the tid BEFORE the drop (`live_tid` only finds the still-live incarnation).
     let tid = live_tid(&pool, "wh", "t").await;

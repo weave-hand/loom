@@ -5,7 +5,7 @@
 //! inline rows are physically reclaimed, in-window rows are protected, an
 //! unaged table is a no-op, and GC serializes with a concurrent flush.
 
-use control_plane_core::{Catalog, RunId, TableRef, mv_key};
+use control_plane_core::{Catalog, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -15,8 +15,8 @@ use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parq
 use control_plane_postgres::vector_index::{VectorIndexRow, insert_vector_index};
 use gc_test_support::{
     SEVEN_DAYS, advance, age_all_snapshots, age_snapshot, batch, columns, harness,
-    inline_table_exists, inline_trigger_count, ipc_body, lineage, live_tid, local_path,
-    mirror_row_counts, reclaimed_through, register_mv,
+    inline_table_exists, inline_trigger_count, ipc_body, land_first_batch, lineage, live_tid,
+    local_path, mirror_row_counts, reclaimed_through, two_generation_bucketed_stream_table,
 };
 use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
 use loom_test_seed::local_sql_catalog;
@@ -50,30 +50,7 @@ async fn delete_file_removes_object_and_is_idempotent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
     let fx = PgFixture::shared();
-    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
     let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
 
     let s2 = overwrite_parquet_snapshot(
@@ -779,78 +756,12 @@ async fn gc_records_the_reclaim_watermark() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reclaim_watermark_is_monotone() {
     let fx = PgFixture::shared();
-    let (cp, _db, _wh, catalog, pool) = harness(fx).await;
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-    let out = TableRef {
-        schema: "wh".into(),
-        name: "mv_out".into(),
-    };
-
-    // Generation 1 (bucket 0 offset 0, bucket 1 offset 0): land 2 rows into a
-    // declared 2-bucket stream table (round-robin row_index % 2), inline (small
-    // enough to stay under the byte limit), then flush — end-caps both rows at
-    // the flush's snapshot `s1` (the OLDER generation).
-    let (schema, batches) = ipc_body(2);
-    land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 1 << 20,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        Some(2),
-    )
-    .await
-    .expect("land gen 1");
-    let tid = live_tid(&pool, "wh", "t").await;
-    let s1 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
-        .await
-        .expect("flush gen 1")
-        .expect("gen 1 had live rows to flush")
-        .0;
-
-    // Generation 2 (bucket 0 offset 1, bucket 1 offset 1): land 2 more rows,
-    // flush again — end-caps both at a NEWER snapshot `s2 > s1`.
-    let (schema2, batches2) = ipc_body(2);
-    land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema2,
-        batches2,
-        InlineLimits {
-            inline_byte_limit: 1 << 20,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        Some(2),
-    )
-    .await
-    .expect("land gen 2");
-    let s2 = flush_table(&catalog, &pool, &t, RunId(uuid::Uuid::new_v4()))
-        .await
-        .expect("flush gen 2")
-        .expect("gen 2 had live rows to flush")
-        .0;
-    assert!(s2 > s1, "generation 2 is strictly newer than generation 1");
-
-    // Register an MV over `t` (never run — the watermark is driven by hand) and set
-    // ITS floor so bucket 0 has consumed BOTH generations (offsets 0 and 1: floor 2)
-    // while bucket 1 has consumed NEITHER (no watermark row -> floors at 0).
-    register_mv(&cp, "mv_a", &t, &out).await;
-    let mv = mv_key(&out);
-    advance(&cp, &mv, tid, 0, 0, 2).await;
-
-    age_all_snapshots(&pool).await;
+    // Arrangement: `wh.t` as a 2-bucket declared stream table with two generations
+    // already landed-and-flushed (gen 1 -> older `s1`, gen 2 -> newer `s2`), an MV
+    // `mv_a` registered over it with bucket 0's floor pre-advanced past both
+    // generations and bucket 1's left untouched, and the whole history aged (H = s2).
+    // See `two_generation_bucketed_stream_table`'s own doc comment for the full shape.
+    let (cp, pool, catalog, t, tid, _s1, s2, mv) = two_generation_bucketed_stream_table(fx).await;
 
     // Run 1: bucket 0's both rows (offsets 0 and 1, end_snapshot s1 and s2) are
     // strictly below its floor (2) and reclaimed; bucket 1's both rows (floor 0)

@@ -784,29 +784,48 @@ where
     assert_eq!(listed.items, sorted, "(schema, name)-ordered");
     assert!(listed.items.contains(&t), "seeded table listed");
 
-    // snapshot_intact(at, horizon): the precise retention predicate. `s0` and `s1` are the
-    // two seeded batches; seeding APPENDS, so nothing is end-capped and every read is
-    // complete — this is exactly the case the old `at < H` proxy got wrong.
+    // snapshot_intact(at, horizon): the precise retention predicate, checked last because
+    // it drops the table (see the helper's own doc comment).
+    catalog_contract_snapshot_intact(catalog, seeder, &t, s0.id, s1.id).await;
+}
+
+/// `snapshot_intact(at, horizon)` assertions for `catalog_contract`, factored out because
+/// this block ends by dropping the table — it must stay the LAST thing `catalog_contract`
+/// does, since every other assertion above depends on the table still being live. `s0`/`s1`
+/// are the two seeded batches' snapshot ids, already resolved by the caller.
+async fn catalog_contract_snapshot_intact<C, S>(
+    catalog: &C,
+    seeder: &S,
+    t: &TableRef,
+    s0: SnapshotId,
+    s1: SnapshotId,
+) where
+    C: Catalog,
+    S: CatalogSeed,
+{
+    // `s0` and `s1` are the two seeded batches; seeding APPENDS, so nothing is end-capped
+    // and every read is complete — this is exactly the case the old `at < H` proxy got
+    // wrong.
     assert!(
-        catalog.snapshot_intact(&t, s0.id, s1.id).await.unwrap(),
+        catalog.snapshot_intact(t, s0, s1).await.unwrap(),
         "append-only: no row visible at s0 is end-capped at all, so s0 is intact even \
          though s0 < horizon (this is the whole point of the fix)"
     );
     assert!(
-        catalog.snapshot_intact(&t, s1.id, s1.id).await.unwrap(),
+        catalog.snapshot_intact(t, s1, s1).await.unwrap(),
         "at == horizon is trivially intact"
     );
 
     // Now end-cap: dropping the table end-caps every file at D. A read at s0 is then
     // exposed the moment D falls at or below the horizon.
-    let d = seeder.drop_table(&t).await;
+    let d = seeder.drop_table(t).await;
     assert!(
-        !catalog.snapshot_intact(&t, s0.id, d).await.unwrap(),
+        !catalog.snapshot_intact(t, s0, d).await.unwrap(),
         "the drop end-capped s0's files at D; with horizon == D they are reclaim-eligible, \
          so s0 is NOT intact"
     );
     assert!(
-        catalog.snapshot_intact(&t, s0.id, s1.id).await.unwrap(),
+        catalog.snapshot_intact(t, s0, s1).await.unwrap(),
         "same end-cap, but horizon == s1 < D: the files are end-capped ABOVE the horizon, \
          so nothing may be reclaimed and s0 is still intact"
     );

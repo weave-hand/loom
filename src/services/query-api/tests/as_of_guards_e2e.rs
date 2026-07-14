@@ -37,86 +37,62 @@
 //! (`no writes since S`) exemption is UNSOUND and was never the fix here.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use axum::http::StatusCode;
-use control_plane_core::{ColumnSpec, ControlPlane, ObjectType, Ontology, PageReq, TypeName};
+use control_plane_core::{ColumnSpec, ControlPlane, PageReq};
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
 use e2e_support::{
-    InProcessServingEngine, get, get_with_retention, grant_read, ids_i64 as ids, prop,
-    subject_with_role, tref,
+    InProcessServingEngine, TEST_GC_RETENTION, get_with_retention, grant_read, ids_i64 as ids,
+    subject_with_role, tref, two_batch_thing_setup,
 };
 
-/// Seed `Thing(id Long identity, name String)` in `main.thing` via two appends:
-/// S1 lands ids {1,2}, S2 appends ids {3,4} (cumulative -> live set {1,2,3,4}).
-/// Returns the wired control plane + serving engine + (S1, S2) snapshot ids; the
-/// caller MUST keep the `IcebergWriter` alive (its TempDir holds the Parquet
-/// read). Mirrors `as_of_objects_e2e::setup` exactly.
-async fn setup(
-    fx: &PgFixture,
-) -> (
-    PgControlPlane,
-    InProcessServingEngine,
-    IcebergWriter,
-    i64,
-    i64,
-    sqlx::PgPool,
+/// Drive a `GET /objects/Thing...` (or `/datasets/...`) read at `retention` and assert its
+/// status. When `want_status` is 200, also assert the returned object-set id list; callers
+/// checking a dataset-detail body instead read `body` themselves.
+async fn assert_status_and_ids(
+    cp: &Arc<PgControlPlane>,
+    eng: &Arc<InProcessServingEngine>,
+    uri: &str,
+    retention: Duration,
+    want_status: StatusCode,
+    want_ids: &[i64],
+    label: &str,
 ) {
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
+    let (status, body) = get_with_retention(cp.clone(), eng.clone(), uri, "alice", retention).await;
+    assert_eq!(status, want_status, "{label}: {body}");
+    if want_status == StatusCode::OK {
+        assert_eq!(ids(&body), want_ids, "{label}: {body}");
+    }
+}
 
-    let writer = IcebergWriter::new(pool.clone(), dsn);
-    let thing = tref("main", "thing");
-    let cols = vec![
-        ("id".to_string(), "long".to_string(), false),
-        ("name".to_string(), "string".to_string(), true),
-    ];
-
-    // S1: ids {1,2}.
-    let s1 = writer
-        .seed_arrays(
-            "main",
-            "thing",
-            &cols,
-            &[SeedCol::Long(vec![1, 2]), SeedCol::Str(vec!["a", "b"])],
-        )
-        .await;
-
-    // S2: append ids {3,4} -> live set is now {1,2,3,4}.
-    let s2 = writer
-        .seed_arrays(
-            "main",
-            "thing",
-            &cols,
-            &[SeedCol::Long(vec![3, 4]), SeedCol::Str(vec!["c", "d"])],
-        )
-        .await;
-
-    cp.define_type(ObjectType {
-        name: TypeName("Thing".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: thing,
-        identity: Some("id".into()),
-        version: None,
-    })
-    .await
-    .unwrap();
-
-    let catalog = IcebergCatalog::new(pool.clone());
-    let eng = InProcessServingEngine::new(catalog);
-    (cp, eng, writer, s1, s2, pool)
+/// Drive a `GET /datasets/main/thing...` read at `retention` and assert its status is 200
+/// with the given `snapshot_id`.
+async fn assert_dataset_snapshot(
+    cp: &Arc<PgControlPlane>,
+    eng: &Arc<InProcessServingEngine>,
+    uri: &str,
+    retention: Duration,
+    want_snapshot: i64,
+    label: &str,
+) {
+    let (status, body) = get_with_retention(cp.clone(), eng.clone(), uri, "alice", retention).await;
+    assert_eq!(status, StatusCode::OK, "{label}: {body}");
+    assert_eq!(
+        body["snapshot_id"].as_i64(),
+        Some(want_snapshot),
+        "{label}: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn retention_horizon_guards_time_travel_selectors() {
     let fx = PgFixture::shared();
-    let (cp, eng, writer, s1, s2, pool) = setup(fx).await;
+    let (cp, eng, writer, s1, s2, pool) = two_batch_thing_setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 
@@ -141,120 +117,92 @@ async fn retention_horizon_guards_time_travel_selectors() {
         .expect("format S1 time as RFC3339");
 
     // -- Duration::ZERO retention: every committed snapshot has aged out --
+    let zero = Duration::ZERO;
 
     // 1. `?as_of_snapshot={S1}` -> 200 ids {1,2}: S1 < H, but S1 is APPEND-ONLY --
     //    nothing visible at S1 was ever end-capped, so the read is provably complete
     //    forever. This is the case the OLD `at < H` proxy wrongly refused.
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         &format!("/objects/Thing?as_of_snapshot={s1}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        StatusCode::OK,
+        &[1, 2],
+        "as_of_snapshot=S1 (ZERO)",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "as_of_snapshot=S1 (ZERO): {body}");
-    assert_eq!(ids(&body), vec![1, 2], "as_of_snapshot=S1 (ZERO): {body}");
 
     // 2. `?as_of={S1 time}` -> 200: the guard covers the Time selector arm identically.
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         &format!("/objects/Thing?as_of={s1_time}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        StatusCode::OK,
+        &[1, 2],
+        "as_of=S1 time (ZERO)",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "as_of=S1 time (ZERO): {body}");
-    assert_eq!(ids(&body), vec![1, 2], "as_of=S1 time (ZERO): {body}");
 
     // 3. `?as_of_snapshot={S2}` -> 200 ids {1,2,3,4}: S2 is thing's own live/tip
     //    snapshot, so `at >= H` holds even under ZERO retention (a resolved
     //    selector can never exceed the tip, and H is bounded by it).
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         &format!("/objects/Thing?as_of_snapshot={s2}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        StatusCode::OK,
+        &[1, 2, 3, 4],
+        "as_of_snapshot=S2 (ZERO)",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "as_of_snapshot=S2 (ZERO): {body}");
-    assert_eq!(
-        ids(&body),
-        vec![1, 2, 3, 4],
-        "as_of_snapshot=S2 (ZERO): {body}"
-    );
 
     // 4. No selector -> 200: the live path never runs the horizon guard.
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         "/objects/Thing",
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        StatusCode::OK,
+        &[1, 2, 3, 4],
+        "live read (ZERO)",
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "live read (ZERO): {body}");
-    assert_eq!(ids(&body), vec![1, 2, 3, 4], "live read (ZERO): {body}");
 
-    // 5. Dataset detail mirrors the object-read guard: S1 is append-only -> 200.
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    // 5. Dataset detail mirrors the object-read guard: S1 and S2 are both append-only ->
+    //    200, each reporting its own snapshot_id.
+    assert_dataset_snapshot(
+        &cp,
+        &eng,
         &format!("/datasets/main/thing?as_of_snapshot={s1}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        s1,
+        "dataset as_of_snapshot=S1 (ZERO)",
     )
     .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "dataset as_of_snapshot=S1 (ZERO): {body}"
-    );
-    assert_eq!(
-        body["snapshot_id"].as_i64(),
-        Some(s1),
-        "dataset as_of_snapshot=S1 (ZERO): {body}"
-    );
-
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_dataset_snapshot(
+        &cp,
+        &eng,
         &format!("/datasets/main/thing?as_of_snapshot={s2}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        s2,
+        "dataset as_of_snapshot=S2 (ZERO)",
     )
     .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "dataset as_of_snapshot=S2 (ZERO): {body}"
-    );
-    assert_eq!(
-        body["snapshot_id"].as_i64(),
-        Some(s2),
-        "dataset as_of_snapshot=S2 (ZERO): {body}"
-    );
 
     // 6. Default (7-day) retention: the same S1 selector stays in-window -> 200.
-    let (status, body) = get(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         &format!("/objects/Thing?as_of_snapshot={s1}"),
-        "alice",
+        TEST_GC_RETENTION,
+        StatusCode::OK,
+        &[1, 2],
+        "as_of_snapshot=S1 (default)",
     )
     .await;
-    assert_eq!(
-        status,
-        StatusCode::OK,
-        "as_of_snapshot=S1 (default): {body}"
-    );
-    assert_eq!(
-        ids(&body),
-        vec![1, 2],
-        "as_of_snapshot=S1 (default): {body}"
-    );
 
     // 7. A genuinely end-capped read still 410s. Overwrite `main.thing` (this REPLACES the
     //    live set, end-capping S1's and S2's files at S3) and read at S1 under ZERO
@@ -298,17 +246,14 @@ async fn retention_horizon_guards_time_travel_selectors() {
     .await
     .expect("overwrite");
 
-    let (status, body) = get_with_retention(
-        cp.clone(),
-        eng.clone(),
+    assert_status_and_ids(
+        &cp,
+        &eng,
         &format!("/objects/Thing?as_of_snapshot={s1}"),
-        "alice",
-        std::time::Duration::ZERO,
+        zero,
+        StatusCode::GONE,
+        &[],
+        "as_of_snapshot=S1 after a REAL rewrite (ZERO)",
     )
     .await;
-    assert_eq!(
-        status,
-        StatusCode::GONE,
-        "as_of_snapshot=S1 after a REAL rewrite (ZERO): {body}"
-    );
 }

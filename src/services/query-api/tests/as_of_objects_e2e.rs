@@ -24,78 +24,16 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{ControlPlane, ObjectType, Ontology, PageReq, TypeName};
-use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
+use control_plane_core::{ControlPlane, PageReq};
+use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{
-    InProcessServingEngine, get, grant_read, ids_i64 as ids, prop, subject_with_role, tref,
+    get, grant_read, ids_i64 as ids, subject_with_role, tref, two_batch_thing_setup,
 };
-
-/// Seed `Thing(id Long identity, name String)` in `main.thing` via two appends:
-/// S1 lands ids {1,2}, S2 appends ids {3,4} (cumulative -> live set {1,2,3,4}).
-/// Returns the wired control plane + serving engine + (S1, S2) snapshot ids; the
-/// caller MUST keep the `IcebergWriter` alive (its TempDir holds the Parquet read).
-async fn setup(
-    fx: &PgFixture,
-) -> (
-    PgControlPlane,
-    InProcessServingEngine,
-    IcebergWriter,
-    i64,
-    i64,
-) {
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let dsn = fx.pg_dsn(&db);
-
-    let writer = IcebergWriter::new(pool.clone(), dsn);
-    let thing = tref("main", "thing");
-    let cols = vec![
-        ("id".to_string(), "long".to_string(), false),
-        ("name".to_string(), "string".to_string(), true),
-    ];
-
-    // S1: ids {1,2}.
-    let s1 = writer
-        .seed_arrays(
-            "main",
-            "thing",
-            &cols,
-            &[SeedCol::Long(vec![1, 2]), SeedCol::Str(vec!["a", "b"])],
-        )
-        .await;
-
-    // S2: append ids {3,4} -> live set is now {1,2,3,4}.
-    let s2 = writer
-        .seed_arrays(
-            "main",
-            "thing",
-            &cols,
-            &[SeedCol::Long(vec![3, 4]), SeedCol::Str(vec!["c", "d"])],
-        )
-        .await;
-
-    cp.define_type(ObjectType {
-        name: TypeName("Thing".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: thing,
-        identity: Some("id".into()),
-        version: None,
-    })
-    .await
-    .unwrap();
-
-    let catalog = IcebergCatalog::new(pool.clone());
-    let eng = InProcessServingEngine::new(catalog);
-    (cp, eng, writer, s1, s2)
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn as_of_selectors_resolve_and_apply() {
     let fx = PgFixture::shared();
-    let (cp, eng, _writer, s1, s2) = setup(fx).await;
+    let (cp, eng, _writer, s1, s2, _pool) = two_batch_thing_setup(fx).await;
     let cp = Arc::new(cp);
     let eng = Arc::new(eng);
 

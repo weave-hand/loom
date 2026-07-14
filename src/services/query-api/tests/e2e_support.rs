@@ -717,6 +717,71 @@ pub async fn setup_iceberg(
     (cp, eng, writer)
 }
 
+/// Seed `Thing(id Long identity, name String)` in `main.thing` via two appends:
+/// S1 lands ids {1,2}, S2 appends ids {3,4} (cumulative -> live set {1,2,3,4}).
+/// Returns the wired control plane + serving engine + (S1, S2) snapshot ids + the
+/// underlying pool (needed by callers that go on to overwrite/end-cap the table
+/// directly, e.g. `as_of_guards_e2e`'s retention-horizon assertions); the caller
+/// MUST keep the `IcebergWriter` alive (its TempDir holds the Parquet read).
+/// Shared by `as_of_objects_e2e` and `as_of_guards_e2e` — both seed the identical
+/// `Thing` graph, just asserting different selector behavior against it.
+pub async fn two_batch_thing_setup(
+    fx: &PgFixture,
+) -> (
+    PgControlPlane,
+    InProcessServingEngine,
+    IcebergWriter,
+    i64,
+    i64,
+    sqlx::PgPool,
+) {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let thing = tref("main", "thing");
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("name".to_string(), "string".to_string(), true),
+    ];
+
+    // S1: ids {1,2}.
+    let s1 = writer
+        .seed_arrays(
+            "main",
+            "thing",
+            &cols,
+            &[SeedCol::Long(vec![1, 2]), SeedCol::Str(vec!["a", "b"])],
+        )
+        .await;
+
+    // S2: append ids {3,4} -> live set is now {1,2,3,4}.
+    let s2 = writer
+        .seed_arrays(
+            "main",
+            "thing",
+            &cols,
+            &[SeedCol::Long(vec![3, 4]), SeedCol::Str(vec!["c", "d"])],
+        )
+        .await;
+
+    cp.define_type(ObjectType {
+        name: TypeName("Thing".into()),
+        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
+        derived: vec![],
+        table: thing,
+        identity: Some("id".into()),
+        version: None,
+    })
+    .await
+    .unwrap();
+
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    (cp, eng, writer, s1, s2, pool)
+}
+
 /// Extract sorted `id` values from a served object set.
 ///
 /// loom renders a `Long` property as a JSON *string* (not a number), so `id`

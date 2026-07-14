@@ -303,6 +303,75 @@ impl IcebergCatalog {
     }
 }
 
+/// `snapshot_intact` clause 2, data-file tier: is anything visible at `at` ELIGIBLE for
+/// reclaim? `begin <= at` (visible) and `at < end <= horizon` (end-capped above the read
+/// but at or below the horizon, i.e. GC may take it at any moment).
+async fn data_file_eligible(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    horizon: SnapshotId,
+) -> Result<bool> {
+    sqlx::query_scalar!(
+        "select exists(select 1 from iceberg_mirror.data_file \
+         where table_id = $1 and begin_snapshot <= $2 \
+           and end_snapshot is not null and end_snapshot > $2 and end_snapshot <= $3) \
+         as \"eligible!\"",
+        tid,
+        at.0,
+        horizon.0,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
+/// `snapshot_intact` clause 2, inline tier. `inline_<tid>` is a DYNAMIC relation, so this
+/// one cannot be a compile-time `query!` — probe for it, then splice the (trusted,
+/// i64-derived) identifier and bind the values, exactly as `iceberg_gc` does. `false` when
+/// the table has no inline tier at all.
+async fn inline_eligible(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    horizon: SnapshotId,
+) -> Result<bool> {
+    if !crate::iceberg_inline::inline_table_exists(conn, tid).await? {
+        return Ok(false);
+    }
+    let inline = crate::iceberg_inline::inline_table_name(tid);
+    sqlx::query_scalar(AssertSqlSafe(format!(
+        "select exists(select 1 from {inline} \
+         where begin_snapshot <= $1 \
+           and end_snapshot is not null and end_snapshot > $1 and end_snapshot <= $2)"
+    )))
+    .bind(at.0)
+    .bind(horizon.0)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
+/// `snapshot_intact` clause 1: the GC reclaim watermark for `tid`, or `None` if the table
+/// row itself is gone.
+///
+/// `fetch_optional`, not `fetch_one`: between `resolve_table` (a separate connection) and
+/// this read, GC can fully reclaim a dropped-and-unreclaimed incarnation, deleting its
+/// `iceberg_mirror.table` row. That degrades this read to the same `NotFound`
+/// `resolve_table` would have produced had GC won the race a moment earlier — an honest
+/// 404, not a `RowNotFound`-mapped-to-`Backend` 500. Both outcomes are fail-closed (neither
+/// serves data), so this is a contract fix, not a soundness one.
+async fn reclaimed_through(conn: &mut sqlx::PgConnection, tid: i64) -> Result<Option<i64>> {
+    sqlx::query_scalar!(
+        "select reclaimed_through as \"reclaimed_through!\" \
+         from iceberg_mirror.table where table_id = $1",
+        tid,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
 #[async_trait]
 impl Catalog for IcebergCatalog {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -452,70 +521,27 @@ impl Catalog for IcebergCatalog {
         //     or below the horizon, when we looked -> clause 2 fires.
         // There is no third case. (A `REPEATABLE READ` transaction would also close it, at
         // the cost of an isolation change; ordering is cheaper and needs no new machinery.)
+        //
+        // The three reads below are split into helpers for readability, but they all take
+        // this SAME `&mut conn` and must stay called in THIS order — data-file eligibility,
+        // then inline eligibility, then the watermark — to preserve the evidence-before-
+        // watermark ordering argued above.
         let mut conn = self.pool.acquire().await.map_err(backend)?;
 
-        // Clause 2, data-file tier: is anything visible at `at` ELIGIBLE for reclaim?
-        // `begin <= at` (visible) and `at < end <= horizon` (end-capped above the read but
-        // at or below the horizon, i.e. GC may take it at any moment).
-        let file_eligible = sqlx::query_scalar!(
-            "select exists(select 1 from iceberg_mirror.data_file \
-             where table_id = $1 and begin_snapshot <= $2 \
-               and end_snapshot is not null and end_snapshot > $2 and end_snapshot <= $3) \
-             as \"eligible!\"",
-            tid,
-            at.0,
-            horizon.0,
-        )
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-        if file_eligible {
+        if data_file_eligible(&mut conn, tid, at, horizon).await? {
             return Ok(false);
         }
 
-        // Clause 2, inline tier. `inline_<tid>` is a DYNAMIC relation, so this one cannot
-        // be a compile-time `query!` — probe for it, then splice the (trusted, i64-derived)
-        // identifier and bind the values, exactly as `iceberg_gc` does.
-        if crate::iceberg_inline::inline_table_exists(&mut conn, tid).await? {
-            let inline = crate::iceberg_inline::inline_table_name(tid);
-            let inline_eligible: bool = sqlx::query_scalar(AssertSqlSafe(format!(
-                "select exists(select 1 from {inline} \
-                 where begin_snapshot <= $1 \
-                   and end_snapshot is not null and end_snapshot > $1 and end_snapshot <= $2)"
-            )))
-            .bind(at.0)
-            .bind(horizon.0)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(backend)?;
-            if inline_eligible {
-                return Ok(false);
-            }
+        if inline_eligible(&mut conn, tid, at, horizon).await? {
+            return Ok(false);
         }
 
-        // Clause 1, read LAST (see the ordering note above): has anything visible at `at`
-        // ALREADY been destroyed? Every reclaimed row had `end <= reclaimed_through`, and
-        // was visible at `at` iff `at < end`. So `at >= watermark` proves none of them was.
-        //
-        // `fetch_optional`, not `fetch_one`: between the `resolve_table` above (a separate
-        // connection) and this read, GC can fully reclaim a dropped-and-unreclaimed
-        // incarnation, deleting its `iceberg_mirror.table` row. That degrades this read to
-        // the same `NotFound` `resolve_table` would have produced had GC won the race a
-        // moment earlier — an honest 404, not a `RowNotFound`-mapped-to-`Backend` 500. Both
-        // outcomes are fail-closed (neither serves data), so this is a contract fix, not a
-        // soundness one.
-        sqlx::query_scalar!(
-            "select reclaimed_through as \"reclaimed_through!\" \
-             from iceberg_mirror.table where table_id = $1",
-            tid,
-        )
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(backend)?
-        .map(|watermark| at.0 >= watermark)
-        .ok_or_else(|| {
-            ControlPlaneError::NotFound(format!("{}.{} @ {}", table.schema, table.name, at.0))
-        })
+        reclaimed_through(&mut conn, tid)
+            .await?
+            .map(|watermark| at.0 >= watermark)
+            .ok_or_else(|| {
+                ControlPlaneError::NotFound(format!("{}.{} @ {}", table.schema, table.name, at.0))
+            })
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
