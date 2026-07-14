@@ -676,12 +676,32 @@ impl Ontology for PgControlPlane {
 /// Reverse-lookup: the identity column name for the object type stored at `table`,
 /// or None if it has no declared identity / does not exist. Used by the engine
 /// serving read to make merge-on-read identity-aware without a wire round-trip.
-// AssertSqlSafe: static query against ontology.object_type; sqlx regen unavailable
-// in this env (initdb-as-root). Convert to query! when regenerating locally.
+///
+/// The engine always scans the physical BASE ref (a view is expanded to
+/// `SELECT … FROM base`), so a type bound to a catalog VIEW over `table` would
+/// never match on the view's `(table_schema, table_name)`. Identity therefore
+/// resolves from a type bound EITHER directly to `table` OR to a
+/// `dataset_view.view` whose base is `table` — otherwise a view-bound-only type's
+/// merge-on-read would neither dedup a PATCH's inline delta against the old file
+/// row nor let a DELETE tombstone hide it. A declared identity is preferred over a
+/// NULL one (`order by … desc`), and `limit 1` keeps the pre-existing single-value
+/// semantics (the N:1 no-uniqueness posture) when both a base- and a view-bound
+/// type exist.
+// AssertSqlSafe: static query against ontology.object_type + dataset_view.view;
+// sqlx regen unavailable in this env (initdb-as-root). Convert to query! when
+// regenerating locally.
 pub async fn identity_for_table(pool: &PgPool, table: &TableRef) -> Result<Option<String>> {
     let row: Option<Option<String>> = sqlx::query_scalar(AssertSqlSafe(
-        "select identity from ontology.object_type \
-         where table_schema = $1 and table_name = $2",
+        "select identity from ontology.object_type ot \
+         where (ot.table_schema = $1 and ot.table_name = $2) \
+            or exists ( \
+                 select 1 from dataset_view.view v \
+                 where v.base_schema = $1 and v.base_name = $2 \
+                   and v.view_schema = ot.table_schema \
+                   and v.view_name = ot.table_name \
+               ) \
+         order by (identity is not null) desc \
+         limit 1",
     ))
     .bind(&table.schema)
     .bind(&table.name)

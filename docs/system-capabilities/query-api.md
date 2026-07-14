@@ -113,6 +113,18 @@ row that then falls outside the view it wrote through:
   sibling views over one base, clash exactly as two steps naming the same
   table would.
 
+Because the engine always scans the physical **base** (a view expands to
+`SELECT … FROM base`), the base's merge-on-read must know its identity column even
+when the ONLY type is bound to the view. `identity_for_table` therefore resolves
+identity from a type bound directly to the scanned ref **or** to a
+`dataset_view.view` whose base is that ref, so a view-bound-only type's UPDATE
+inline delta still shadows the old base file row and its DELETE tombstone still
+hides it — no base-bound "crutch" type is required. (`stream_meta_for_table` /
+`version_for_table` are left keyed on the physical base's own live `table_id`,
+which is already correct: CDC-ness is a property of the base table, not the view
+binding, and views over CDC bases are out of scope for this slice — see
+`#fut-view-stream-subscribe`.)
+
 The admin surface (`src/services/runtime/src/admin.rs`, both OpenAPI drift
 guards): `POST /admin/views` defines a view (create-only, 201; the request
 body carries the base ref, an optional `RowFilter` predicate, and an optional

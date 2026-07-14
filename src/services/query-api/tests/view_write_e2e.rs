@@ -83,23 +83,11 @@ async fn setup_view_widget(
         .await
         .expect("define_view");
 
-    // Bind a type DIRECTLY to the physical base, identity `id`. This gives `main.widget`
-    // an ontology identity, so every scan of it (the raw base oracle below AND the engine's
-    // view expansion) applies the identity-dedup merge — which is what makes a COW
-    // tombstone/`+U` inline shadow actually supersede a base file row. Without it a
-    // view-bound-only base would have no dedup key and the shadow would never merge.
-    cp.ontology()
-        .define_type(
-            ObjectType::build("WidgetBase", ("main", "widget"))
-                .prop_req("id", "Long")
-                .prop("name", "String")
-                .prop("qty", "Long")
-                .prop_req("region", "String")
-                .identity("id")
-                .done(),
-        )
-        .await
-        .expect("define_type base");
+    // NO base-bound type: identity for `main.widget`'s merge-on-read must resolve
+    // purely through the VIEW-bound `Widget` type below (`identity_for_table` matches
+    // a type bound to a view whose base is the scanned ref). This is the I-1 regression
+    // guard — with only a view-bound type present, a PATCH's inline delta must still
+    // shadow the old base file row and a DELETE tombstone must still hide it.
 
     // Bind the action type to the VIEW ref (not the base). Every type property is in the
     // base schema, so the projectionless view exposes them all.
@@ -185,6 +173,29 @@ async fn base_widget_qty(serving: &InProcessServingEngine, id: i64) -> Option<i6
         Some(SqlValue::Int(i)) => Some(*i),
         _ => None,
     })
+}
+
+/// EVERY live `qty` for `id` in the physical BASE `main.widget` (a direct base scan).
+/// Unlike [`base_widget_qty`] this returns the whole set, so a caller can assert the
+/// merge-on-read collapsed a PATCH's inline delta and the old file row to ONE row: if
+/// identity dedup were not resolving through the view, an id would surface twice (the
+/// stale file value AND the delta).
+async fn base_widget_qtys(serving: &InProcessServingEngine, id: i64) -> Vec<i64> {
+    let rows = serving
+        .fetch_rows(
+            &format!("SELECT \"qty\" FROM \"main\".\"widget\" WHERE \"id\" = {id}"),
+            &[],
+            None,
+        )
+        .await
+        .expect("base scan");
+    rows.rows
+        .iter()
+        .filter_map(|r| match r.first() {
+            Some(SqlValue::Int(i)) => Some(*i),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Is there a physical mirror table under the view's own name? A correct view-aware
@@ -599,6 +610,82 @@ async fn multi_step_update_out_of_view_identity_is_not_found() {
         after["qty"],
         json!("55"),
         "the in-view multi-step update applied"
+    );
+
+    drop(warehouse);
+}
+
+/// I-1 regression: with ONLY a view-bound type present (no base-bound crutch type),
+/// merge-on-read identity must still resolve for the physical base — so a PATCH's
+/// inline `+U` delta SHADOWS the old base file row (one row survives, the new value)
+/// and a DELETE tombstone HIDES the row entirely. `setup_view_widget` deliberately
+/// binds no type to `main.widget`; `identity_for_table` resolves `id` for the base via
+/// the `dataset_view.view` whose base is `main.widget`. If that resolution regressed,
+/// the PATCH would serve TWO base rows for the id and the DELETE would not hide it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn view_bound_patch_shadows_and_delete_hides_on_base() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let warehouse = tempfile::tempdir().expect("warehouse");
+
+    // Seed one in-view EU row directly in the base (id=7, qty=3).
+    let (subj, _writer) =
+        setup_view_widget(fx, &cp, &db, &pool, &[7], &["gadget"], &[3], &["EU"]).await;
+
+    let (engine, _eg) =
+        e2e_support::spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX)
+            .await;
+    let serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    let deps = ActionDeps {
+        cp: &cp,
+        action_engine: &engine,
+        serving: &serving,
+    };
+
+    // In-view PATCH qty 3 -> 5. The inline delta must shadow the qty=3 file row.
+    run_action(
+        "updateWidget",
+        json!({ "id": "7", "qty": "5" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("in-view PATCH");
+
+    // The raw physical base scan sees id=7 EXACTLY ONCE, with the patched value —
+    // proof the merge deduped the old file row against the inline delta with no
+    // base-bound type present (view-resolved identity).
+    let base_serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    assert_eq!(
+        base_widget_qtys(&base_serving, 7).await,
+        vec![5],
+        "PATCH's inline delta shadows the old base row (identity resolved through the view)"
+    );
+    assert_eq!(
+        read_widget(&cp, &pool, &subj, 7).await.expect("in view")["qty"],
+        json!("5"),
+        "the patched value reads back through the view-bound type"
+    );
+
+    // DELETE id=7 — the tombstone must hide the row from the physical base entirely.
+    run_action(
+        "deleteWidget",
+        json!({ "id": "7" }).as_object().unwrap(),
+        &subj,
+        &deps,
+    )
+    .await
+    .expect("in-view delete");
+
+    let base_serving = InProcessServingEngine::new(IcebergCatalog::new(pool.clone()));
+    assert!(
+        base_ids(&base_serving).await.is_empty(),
+        "DELETE tombstone hides the base row (identity resolved through the view)"
+    );
+    assert!(
+        read_widget(&cp, &pool, &subj, 7).await.is_none(),
+        "the deleted row is gone from the view too"
     );
 
     drop(warehouse);
