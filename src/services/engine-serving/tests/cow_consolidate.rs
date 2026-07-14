@@ -23,7 +23,9 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_inline::{has_shadow, write_inline_delta};
+use control_plane_postgres::iceberg_inline::{
+    current_inline_version, has_shadow, write_inline_delta,
+};
 use control_plane_postgres::iceberg_mirror::live_table_id;
 use control_plane_postgres::read_files_as_batches;
 use datafusion::execution::context::SessionContext;
@@ -510,5 +512,81 @@ async fn residual_delta_keeps_the_flag() {
     assert!(
         !has_shadow(&mut conn, tid).await.expect("has_shadow"),
         "the second consolidation quiesces the flag"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Case 8 — inline-only COW base: a shadow-bearing identity table that has never
+//          been flushed (no Parquet file, no `iceberg_tables` row) folds through
+//          the `has_files` guard. The CDC arm's sibling defect
+//          (`iss-consolidate-inline-only-base`) was exactly this branch missing.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_only_cow_base_folds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let writer = IcebergWriter::new(pool.clone(), dsn);
+    let table = TableRef {
+        schema: "wh".into(),
+        name: "inline_only".into(),
+    };
+
+    // NO `seed_arrays` — the table is minted by an inline append alone, so it has
+    // no Parquet file and no Iceberg SQL-catalog row.
+    writer
+        .inline(
+            "wh",
+            "inline_only",
+            &cols(),
+            &[(1, "one"), (2, "two")],
+            Uuid::new_v4(),
+        )
+        .await;
+    define_type(&cp, "wh", "inline_only", Some("id")).await;
+
+    // A `+U` on id=2 sets `has_shadow`, which is what arms the COW arm. id=2 was
+    // created INLINE above, so it already has a live inline row: its CAS witness is
+    // its `begin_snapshot`, not 0 (unlike this file's file-seeded `seed()`).
+    let witness = current_inline_version(&pool, &table, &id_specs(), "id", &id_batch(2))
+        .await
+        .expect("CAS witness for the live inline id=2");
+    write_inline_delta(
+        &pool,
+        &table,
+        &full_specs(),
+        "id",
+        false,
+        &version_batch(2, "two-v2"),
+        None,
+        lineage(),
+        witness,
+        None,
+        &[],
+    )
+    .await
+    .expect("update id=2");
+
+    let sql_catalog = writer.sql_catalog().await;
+    let catalog = IcebergCatalog::new(pool.clone());
+
+    let snap = engine_serving::consolidate_table(&cp, &sql_catalog, &pool, &table)
+        .await
+        .expect("an inline-only COW base folds through the has_files guard");
+    assert!(snap > 0, "the fold committed a real snapshot, got {snap}");
+
+    let files = catalog
+        .files_with_stats(&table, SnapshotId(snap))
+        .await
+        .expect("files_with_stats");
+    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+    let (_schema, batches) = read_files_as_batches(&sql_catalog, &table, &paths)
+        .await
+        .expect("the fold created the base's Iceberg table");
+    assert_eq!(
+        rows_sorted(&batches),
+        vec![(1, "one".to_string()), (2, "two-v2".to_string())],
+        "the inline-only fold materializes the merge view: id=2 takes its +U image"
     );
 }
