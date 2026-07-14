@@ -32,8 +32,8 @@
 //! been written) is a no-op, reported as snapshot id `0`.
 
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, StreamKind, StreamTables,
-    TableRef,
+    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, SnapshotId, StreamKind,
+    StreamTables, TableRef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -76,6 +76,91 @@ fn consolidate_event(table: &TableRef, source: &str) -> LineageEvent {
         outputs: vec![dr],
         payload: serde_json::json!({ "source": source }),
     }
+}
+
+/// The read preamble both arms share: the catalog handle, the snapshot they fold
+/// AT, its logical schema, and its live Parquet paths. Both arms then read their
+/// OWN inline tier at `snapshot` (`_full` for CDC, `_shadow` for COW).
+struct FoldBase {
+    ice: IcebergCatalog,
+    snapshot: SnapshotId,
+    /// Plain (framing-free) user columns — the logical schema. The overwrite
+    /// helpers re-derive the physical (user + framing) column list from these.
+    user_cols: Vec<ColumnSpec>,
+    /// Live Parquet file paths at `snapshot`; empty for a never-flushed base.
+    paths: Vec<String>,
+}
+
+/// Resolve [`FoldBase`] for `table`. `None` ⇒ no snapshot yet (the table was
+/// declared but never written), so there is nothing to fold.
+async fn fold_base(
+    pool: &PgPool,
+    table: &TableRef,
+) -> Result<Option<FoldBase>, EngineServingError> {
+    let ice = IcebergCatalog::new(pool.clone());
+    let current = match ice.current_snapshot(table).await {
+        Ok(snap) => snap,
+        Err(control_plane_core::ControlPlaneError::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(to_serving(e)),
+    };
+
+    let user_cols: Vec<ColumnSpec> = ice
+        .schema(table, current.id)
+        .await
+        .map_err(to_serving)?
+        .columns
+        .into_iter()
+        .map(|c| ColumnSpec {
+            name: c.name,
+            ty: c.ty,
+            nullable: c.nullable,
+        })
+        .collect();
+
+    let files = ice
+        .files_with_stats(table, current.id)
+        .await
+        .map_err(to_serving)?;
+    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+
+    Ok(Some(FoldBase {
+        ice,
+        snapshot: current.id,
+        user_cols,
+        paths,
+    }))
+}
+
+/// Register the file tier as `base_files`, and report whether it did — the
+/// `has_files` both arms branch their union SQL on.
+///
+/// The emptiness guard is load-bearing, not an optimization: `read_files_as_batches`
+/// calls `catalog.load_table` BEFORE it looks at the path list, and a base that has
+/// never been flushed has no `iceberg_tables` row at all — so an EMPTY path list must
+/// not be read either (`iss-consolidate-inline-only-base`).
+async fn register_file_tier(
+    df_ctx: &SessionContext,
+    catalog: &SqlCatalog,
+    table: &TableRef,
+    paths: &[String],
+) -> Result<bool, EngineServingError> {
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    let (file_schema, file_batches) = read_files_as_batches(catalog, table, paths)
+        .await
+        .map_err(to_serving)?;
+    register_batches(df_ctx, "base_files", file_schema, file_batches).map_err(to_serving)?;
+    Ok(true)
+}
+
+/// The quoted, comma-joined user-column projection both folds select.
+fn quoted_col_list(user_cols: &[ColumnSpec]) -> String {
+    user_cols
+        .iter()
+        .map(|c| quote_ident(&c.name))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Fold `table` down to one row per identity and re-enable its suppressed flush,
@@ -186,52 +271,40 @@ async fn consolidate_locked(
     engine: control_plane_core::MergeEngine,
     version_col: Option<&str>,
 ) -> Result<i64, EngineServingError> {
-    let ice = IcebergCatalog::new(pool.clone());
-    let current = match ice.current_snapshot(table).await {
-        Ok(snap) => snap,
-        // No snapshot yet — the CDC table was declared but never written to, so
-        // there is nothing to fold.
-        Err(control_plane_core::ControlPlaneError::NotFound(_)) => return Ok(0),
-        Err(e) => return Err(to_serving(e)),
-    };
-
-    // Plain (framing-free) user columns — the logical schema. `overwrite_parquet_snapshot`
-    // re-derives the physical (user + framing) column list itself from these.
-    let user_cols: Vec<ColumnSpec> = ice
-        .schema(table, current.id)
-        .await
-        .map_err(to_serving)?
-        .columns
-        .into_iter()
-        .map(|c| ColumnSpec {
-            name: c.name,
-            ty: c.ty,
-            nullable: c.nullable,
-        })
-        .collect();
-
     // The base's physical framed rows: live Parquet files ...
-    let files = ice
-        .files_with_stats(table, current.id)
-        .await
-        .map_err(to_serving)?;
-    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
-    let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
-        .await
-        .map_err(to_serving)?;
+    let Some(base) = fold_base(pool, table).await? else {
+        // Declared but never written — nothing to fold.
+        return Ok(0);
+    };
 
     // ... UNION any still-live inline tail (un-flushed changes), so a consolidate
     // that runs without a preceding flush still folds correctly. `_full` keeps
     // `-U` before-images in the read, but they never win the fold (the adjacent
     // `+U` always carries a greater `loom_offset`) and are excluded from the
     // output projection like every other non-winning row.
-    let inline = ice
-        .inline_live_batch_full(table, current.id)
+    let inline = base
+        .ice
+        .inline_live_batch_full(table, base.snapshot)
         .await
         .map_err(to_serving)?;
 
+    // Neither tier: nothing to fold. NOT a bare `return Ok(0)` — the consolidate
+    // trigger is armed (`enqueued = true`) by the enqueue that scheduled this job
+    // and only a completed consolidate clears it, so an early return that skipped
+    // the clear would latch the trigger forever and this table could never enqueue
+    // another `stream_consolidate`. Mirrors the COW arm's stale-flag self-heal.
+    if base.paths.is_empty() && inline.is_none() {
+        let mut conn = pool.acquire().await.map_err(to_serving)?;
+        clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
+        clear_consolidate_trigger(&mut conn, tid)
+            .await
+            .map_err(to_serving)?;
+        return Ok(0);
+    }
+
+    // Register only the tiers that exist.
     let df_ctx = SessionContext::new();
-    register_batches(&df_ctx, "base_files", file_schema, file_batches).map_err(to_serving)?;
+    let has_files = register_file_tier(&df_ctx, catalog, table, &base.paths).await?;
     let has_inline = if let Some((_, _, inline_batch)) = &inline {
         register_batches(
             &df_ctx,
@@ -245,21 +318,23 @@ async fn consolidate_locked(
         false
     };
 
-    let col_list = user_cols
-        .iter()
-        .map(|c| quote_ident(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let col_list = quoted_col_list(&base.user_cols);
     let id_quoted = quote_ident(identity);
-    let union_sql = if has_inline {
-        format!(
-            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files \
-             union all \
-             select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
-        )
-    } else {
-        format!("select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files")
-    };
+    // One leg per registered tier — a base can legitimately be files-only (the
+    // post-flush fold), inline-only (never flushed), or both. The neither-tier case
+    // returned above, so `legs` is never empty here.
+    let mut legs: Vec<String> = Vec::new();
+    if has_files {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files"
+        ));
+    }
+    if has_inline {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
+        ));
+    }
+    let union_sql = legs.join(" union all ");
     // Per-engine winner ordering (winner = ROW_NUMBER rank 1). LastRow is the
     // unchanged default (byte-identical). Versioned orders by the quoted domain
     // version column desc, tie-broken by loom_offset desc (highest version wins;
@@ -310,7 +385,7 @@ async fn consolidate_locked(
             pool,
             catalog,
             table,
-            &user_cols,
+            &base.user_cols,
             folded,
             Some(&lineage),
             InlineEndCap {
@@ -324,7 +399,7 @@ async fn consolidate_locked(
             pool,
             catalog,
             table,
-            &user_cols,
+            &base.user_cols,
             folded,
             Some(&lineage),
             &[],
@@ -360,44 +435,18 @@ async fn consolidate_cow_locked(
     tid: i64,
     identity: &str,
 ) -> Result<i64, EngineServingError> {
-    let ice = IcebergCatalog::new(pool.clone());
-    let current = match ice.current_snapshot(table).await {
-        Ok(snap) => snap,
-        // No snapshot yet — declared but never written, so nothing to fold.
-        Err(control_plane_core::ControlPlaneError::NotFound(_)) => return Ok(0),
-        Err(e) => return Err(to_serving(e)),
+    let Some(base) = fold_base(pool, table).await? else {
+        // Declared but never written — nothing to fold.
+        return Ok(0);
     };
-
-    // Plain (framing-free) user columns — the logical schema.
-    // `overwrite_parquet_snapshot_consuming` re-derives the physical column list
-    // from these (a non-CDC table has no framing to re-add).
-    let user_cols: Vec<ColumnSpec> = ice
-        .schema(table, current.id)
-        .await
-        .map_err(to_serving)?
-        .columns
-        .into_iter()
-        .map(|c| ColumnSpec {
-            name: c.name,
-            ty: c.ty,
-            nullable: c.nullable,
-        })
-        .collect();
-
-    // The base's file tier: live Parquet paths at the fold snapshot.
-    let files = ice
-        .files_with_stats(table, current.id)
-        .await
-        .map_err(to_serving)?;
-    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
-    let has_files = !paths.is_empty();
 
     // The inline shadow tier: EVERY live inline row (appends, `+U`, `-D`), with
     // its `begin_snapshot` precedence and `loom_tombstone`. `None` means the
     // `has_shadow` flag was stale (nothing live) — self-heal by clearing the flag
     // + triggers and no-op, the flush-style crash recovery.
-    let Some((_shadow_tid, row_ids, inline_batch)) = ice
-        .inline_live_batch_shadow(table, current.id)
+    let Some((_shadow_tid, row_ids, inline_batch)) = base
+        .ice
+        .inline_live_batch_shadow(table, base.snapshot)
         .await
         .map_err(to_serving)?
     else {
@@ -415,15 +464,9 @@ async fn consolidate_cow_locked(
     };
 
     // Register the tiers. The inline tier is always present here (we early-returned
-    // on `None`); a shadowed table CAN be inline-only, so `base_files` is registered
-    // only when the file tier has rows.
+    // on `None`); a shadowed table CAN be inline-only.
     let df_ctx = SessionContext::new();
-    if has_files {
-        let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
-            .await
-            .map_err(to_serving)?;
-        register_batches(&df_ctx, "base_files", file_schema, file_batches).map_err(to_serving)?;
-    }
+    let has_files = register_file_tier(&df_ctx, catalog, table, &base.paths).await?;
     register_batches(
         &df_ctx,
         "base_inline",
@@ -432,11 +475,7 @@ async fn consolidate_cow_locked(
     )
     .map_err(to_serving)?;
 
-    let col_list = user_cols
-        .iter()
-        .map(|c| quote_ident(&c.name))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let col_list = quoted_col_list(&base.user_cols);
     let id_quoted = quote_ident(identity);
     // File tier synthesizes precedence 0 + a false tombstone; the inline tier uses
     // `begin_snapshot` / `loom_tombstone` — exactly `Precedence::Snapshot`'s column
@@ -480,7 +519,7 @@ async fn consolidate_cow_locked(
         pool,
         catalog,
         table,
-        &user_cols,
+        &base.user_cols,
         folded,
         Some(&lineage),
         InlineEndCap {

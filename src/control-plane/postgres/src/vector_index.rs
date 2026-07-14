@@ -461,7 +461,17 @@ async fn collect_vectors(
 ) -> Result<Vec<(VectorKey, Vec<f32>)>> {
     let files = ice.files_with_stats(table, at).await?;
     let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
-    let (_, cold_batches) = crate::read_files_as_batches(catalog, table, &paths).await?;
+    // The cold tier is read only when it has files: `read_files_as_batches` calls
+    // `catalog.load_table` before it looks at the path list, and a table that has
+    // only ever been inline-appended has no `iceberg_tables` row at all — so an
+    // empty path list must not be read. The hot tier below carries such a table.
+    let cold_batches = if paths.is_empty() {
+        Vec::new()
+    } else {
+        crate::read_files_as_batches(catalog, table, &paths)
+            .await?
+            .1
+    };
     let hot_batch: Option<RecordBatch> = ice.inline_live_batch(table, at).await?.map(|(_, _, b)| b);
 
     let mut all_rows: Vec<(VectorKey, Vec<f32>)> = Vec::new();
@@ -488,6 +498,54 @@ pub fn declared_dim(schema: &TableSchema, column: &str) -> u32 {
                 .and_then(|s| s.parse::<u32>().ok())
         })
         .unwrap_or(0)
+}
+
+/// Ensure the Iceberg catalog table backing `table` exists, so the sidecar write
+/// below has a metadata location and a `FileIO` to write through. A table that has
+/// only ever been inline-appended has NO `iceberg_tables` row — that row is minted
+/// by the first Parquet write (flush/landing) — yet its inline rows are indexable,
+/// so the build must materialize the table itself (the same thing the consolidate
+/// fold's overwrite does).
+///
+/// `include_framing` MUST match what the table's eventual first flush would pass:
+/// `ensure_iceberg_table` no-ops on an existing table, so the schema created HERE is
+/// the one a later `append_parquet_snapshot` writes into — an unframed schema under a
+/// declared stream table would take framed Parquet against a framing-free Iceberg
+/// schema. It is therefore resolved exactly as the write paths resolve it (`flush_locked`,
+/// `overwrite_with_cap`): true iff the table is a declared stream table. `columns` are
+/// the LOGICAL (framing-free) columns — `ensure_iceberg_table` appends the framing.
+async fn ensure_sidecar_table(
+    catalog: &crate::iceberg_sql_catalog::SqlCatalog,
+    ice: &crate::iceberg_catalog::IcebergCatalog,
+    pool: &PgPool,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<()> {
+    use control_plane_core::ColumnSpec;
+
+    let mut conn = pool.acquire().await.map_err(backend)?;
+    let include_framing =
+        match crate::iceberg_mirror::live_table_id(&mut conn, &table.schema, &table.name).await? {
+            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid)
+                .await?
+                .is_some(),
+            None => false,
+        };
+    drop(conn);
+
+    let columns: Vec<ColumnSpec> = ice
+        .schema(table, at)
+        .await?
+        .columns
+        .into_iter()
+        .map(|c| ColumnSpec {
+            name: c.name,
+            ty: c.ty,
+            nullable: c.nullable,
+        })
+        .collect();
+
+    crate::iceberg_landing::ensure_iceberg_table(catalog, table, &columns, include_framing).await
 }
 
 /// Jobs 8-9: resolve the vector column's Iceberg field id (informational),
@@ -674,7 +732,11 @@ pub async fn build_vector_index(
     // dim may have been inferred as 0 for empty tables; prefer index's own dim.
     let dim = if index.dim() > 0 { index.dim() } else { dim };
 
-    // 8-9. Puffin sidecar (object-store write BEFORE the Postgres tx).
+    // 8-9. Puffin sidecar (object-store write BEFORE the Postgres tx). The Iceberg
+    //      table is materialized first: an inline-only table has no catalog row yet,
+    //      and the sidecar path/FileIO come from the loaded table. Idempotent — a
+    //      no-op for every already-flushed table.
+    ensure_sidecar_table(catalog, &ice, pool, table, at).await?;
     let puffin_path = write_sidecar(
         catalog,
         table,

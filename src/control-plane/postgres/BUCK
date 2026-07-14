@@ -1393,6 +1393,20 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "vector-index-inline-only",
+    crate = "vector_index_inline_only",
+    srcs = ["tests/vector_index_inline_only.rs"],
+    crate_root = "tests/vector_index_inline_only.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
     name = "vector-index-hnsw",
     crate = "vector_index_hnsw",
     srcs = ["tests/vector_index_hnsw.rs"],

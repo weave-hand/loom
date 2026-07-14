@@ -182,6 +182,26 @@ The CDC fold itself:
   still folds correctly; `inline_live_batch_full` keeps `−U` rows in the read
   but they never win the fold, since their adjacent `+U` always carries a
   greater `loom_offset`).
+- Reads **only the tiers that exist** (#440). The file leg is taken only when
+  the base actually has live Parquet files, and the fold's `union all` is
+  assembled from the registered tiers — because `read_files_as_batches` calls
+  `catalog.load_table` *before* it looks at its path list, and a CDC base has
+  no `iceberg_tables` row until its first Parquet write (a CDC declare
+  pre-creates only the *changelog* table). Since the enqueue trigger is the
+  inline delta-row count, which needs no flush, a base that has only ever been
+  inline-appended reaches the fold with an empty file list: it now consolidates
+  on the inline tier alone, and the fold's own overwrite creates the base's
+  Iceberg table (`append_parquet_snapshot` → `ensure_iceberg_table`). A base
+  whose every identity folds to a `−D` yields zero rows and short-circuits to
+  the mirror-only `overwrite_truncate`, which is likewise safe with no
+  `iceberg_tables` row.
+- A base with **neither** tier is a no-op that still clears `has_shadow` **and
+  the consolidate trigger** (#440). The trigger is armed by the enqueue and
+  cleared only by a completed consolidate, and the enqueue condition is
+  `delta_count >= effective && !enqueued` — so a consolidate that errored or
+  returned early without clearing latched `enqueued = true` permanently, and
+  that table could never enqueue another `stream_consolidate` even after a
+  later flush would have made it succeed.
 - Folds by **`loom_offset` descending per identity** (`row_number() over
   (partition by <identity> order by loom_offset desc)`, `_rn = 1`), dropping
   a `−D`-tombstoned winner so a deleted identity does not resurrect.
@@ -664,11 +684,6 @@ from the continuous-query slice.
   bulk landing (a batch over `inline_byte_limit`) commits no notify, so a
   blocked `await_changelog` catches those writes only on its poll-fallback
   timer, not sub-second.
-- `#iss-consolidate-inline-only-base` — `consolidate_locked`'s CDC arm still calls
-  `read_files_as_batches` unconditionally, so it dies on `load_table` for a base
-  table that has only ever been inline-appended. Same bug, different trigger, from
-  the `#iss-mv-delta-inline-source-unflushed` fix; the shadow arm beside it is
-  already guarded, which is the shape of the fix.
 - `#iss-stream-first-declare-race-kind` — the kind check is symmetric on the
   count-equal redeclare arm, but the **first-declare** arm's post-`ON CONFLICT`
   re-read compares only the bucket count, so two writers racing to declare a
