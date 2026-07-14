@@ -1963,9 +1963,10 @@ Create `tests/consolidate_mv_floor.rs`. The seed is `end_cap_seed::seed_floored_
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
-use control_plane_core::{MvWatermarks, WatermarkAdvance, mv_key};
+use control_plane_core::RunId;
 use control_plane_postgres::fixture::PgFixture;
-use end_cap_seed::{live_file_count, seed_floored_cdc, tref};
+use control_plane_postgres::iceberg_flush::flush_table;
+use end_cap_seed::{live_file_count, seed_floored_cdc};
 
 /// A watermark row against the CDC source floors it: the fold returns `Ok(0)`, the live
 /// files are untouched, and the trigger is cleared so a later write can re-enqueue.
@@ -2030,7 +2031,9 @@ async fn an_unfloored_cdc_source_folds_unchanged() {
 }
 ```
 
-BUCK: a **`loom_fixture_test`** (already loaded at `src/services/engine-serving/BUCK:2`), named `consolidate-mv-floor` / crate `consolidate_mv_floor`, deps: `":engine-serving"`, `"//src/control-plane/core:core"`, `"//src/control-plane/postgres:postgres"`, `"//src/control-plane/postgres:end-cap-seed"`, `"//third-party:sqlx"`, `"//third-party:tokio"`.
+BUCK: a **`loom_fixture_test`** (already loaded at `src/services/engine-serving/BUCK:2`), named `consolidate-mv-floor` / crate `consolidate_mv_floor`, deps: `":engine-serving"`, `"//src/control-plane/core:core"`, `"//src/control-plane/postgres:postgres"`, `"//src/control-plane/postgres:end-cap-seed"`, `"//third-party:sqlx"`, `"//third-party:tokio"`, `"//third-party:uuid"`.
+
+**`seed_floored_cdc` does NOT flush** — deliberately, because Task 2b's `cdc_flush_with_a_floored_source_still_succeeds` needs an unflushed table to flush. The CDC fold reads framed Parquet from the base, so **this test must call `flush_table` itself** after seeding (shown above). Without it there are no live data files and `before > 0` fails.
 
 - [ ] **Step 2: Run to verify it fails**
 
