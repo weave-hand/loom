@@ -6,184 +6,19 @@
 //! (a registered-but-never-run MV, or one that has never touched that bucket)
 //! floors it at 0, exactly as `mv_delta_scan` reads it.
 
-use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{
-    Catalog, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, MvWatermarks, RunId,
-    TableRef, TransformBody, TransformDef, TransformName, WatermarkAdvance, mv_key,
-};
-use control_plane_postgres::PgControlPlane;
+use control_plane_core::{ControlPlane, RunId, SnapshotId, TableRef, TransformName, mv_key};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
-use control_plane_postgres::iceberg_inline::inline_table_name;
-use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::live_table_id;
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use control_plane_postgres::mv_floor::mv_floor;
+use control_plane_postgres::iceberg_mirror::end_cap_live_data_files;
+use control_plane_postgres::mv_floor::{EndCapIntent, mv_floor};
+use end_cap_seed::{
+    advance, age_all_snapshots, current_snapshot_id, data_file_count, end_capped_inline_count,
+    seed_source, tref,
+};
 use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
-use loom_test_seed::local_sql_catalog;
-use sqlx::AssertSqlSafe;
-use time::OffsetDateTime;
-
-fn tref(schema: &str, name: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: name.into(),
-    }
-}
-
-/// `(id: long, label: string)`. The STRING column is load-bearing, not decoration:
-/// it puts a non-numeric `max_value` into `iceberg_mirror.data_file_column_stat`,
-/// so the floor's file guard really runs against a stats table holding TEXT bounds.
-/// The guard's `::bigint` cast lives OUTSIDE its scalar subquery precisely because
-/// Postgres may reorder quals inside one `WHERE`; with only a `long` column, an
-/// inlined cast would pass, and the hazard would go untested. Any refactor that
-/// moves the cast back in now fails these tests instead of hard-erroring GC in prod.
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "label".into(),
-            ty: "string".into(),
-            nullable: false,
-        },
-    ]
-}
-
-/// An `(id: long, label: string)` schema + batch of ids `0..rows`.
-fn batch(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, false),
-    ]));
-    let b = RecordBatch::try_new(
-        schema.clone(),
-        vec![
-            Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>())),
-            Arc::new(StringArray::from(
-                (0..rows).map(|i| format!("row-{i}")).collect::<Vec<_>>(),
-            )),
-        ],
-    )
-    .expect("batch");
-    (schema, vec![b])
-}
-
-fn lineage(table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "mv-floor-test" }),
-    }
-}
-
-/// Register a micro-batch MV over `source` -> `s.<output>` WITHOUT a data trigger
-/// (`on_input_commit: false`), so landing into the source never auto-fires a run:
-/// these tests drive the watermark by hand. Registration alone is what the floor
-/// keys off — an MV that never runs must pin its source at 0.
-async fn register_mv(cp: &PgControlPlane, name: &str, source: &TableRef, output: &TableRef) {
-    cp.transforms()
-        .define_transform(TransformDef {
-            name: TransformName(name.into()),
-            body: TransformBody::MicroBatch {
-                source: source.clone(),
-                output: output.clone(),
-                buckets: 1,
-                sql: "select id from events".into(),
-            },
-            schedule: None,
-            on_input_commit: false,
-        })
-        .await
-        .expect("register mv");
-}
-
-/// CAS-advance `mv`'s watermark for `(source_tid, bucket)` from `from` to `to` —
-/// what a completed micro-batch commit does (`pg_advance_mv_watermark`).
-async fn advance(cp: &PgControlPlane, mv: &str, source_tid: i64, bucket: i32, from: i64, to: i64) {
-    cp.advance_mv_watermark(mv, source_tid, &[WatermarkAdvance { bucket, from, to }])
-        .await
-        .expect("advance watermark");
-}
-
-/// The seeded world every test in this file starts from.
-struct Seeded {
-    pool: sqlx::PgPool,
-    catalog: SqlCatalog,
-    src: TableRef,
-    tid: i64,
-}
-
-/// Seed `s.events` with `rows` events: a declared log stream table of
-/// `buckets` buckets (`None` = a plain, non-stream table), landed INLINE when
-/// `inline` is true and straight into Parquet FILES when false, with one MV
-/// registered per `(transform name, output name)` in `mvs`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "this is the ONE shared seed shape six tests across Tasks 1-3 reuse; \
-              splitting it would fragment that shared shape, which is exactly the \
-              duplication this helper exists to avoid"
-)]
-async fn seed_source(
-    fx: &PgFixture,
-    cp: &PgControlPlane,
-    db: &str,
-    wh: &str,
-    rows: i64,
-    buckets: Option<i32>,
-    inline: bool,
-    mvs: &[(&str, &str)],
-) -> Seeded {
-    let pool = fx.pool_for(db).await;
-    let catalog = local_sql_catalog(fx.pg_dsn(db), wh).await;
-    let src = tref("s", "events");
-    let (schema, batches) = batch(rows);
-    land(
-        &pool,
-        &catalog,
-        &src,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            // A 0 byte limit forces the write straight to Parquet; a large one
-            // keeps every row inline until an explicit flush.
-            inline_byte_limit: if inline { 1 << 20 } else { 0 },
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(&src),
-        buckets,
-    )
-    .await
-    .expect("land source");
-    for (name, output) in mvs {
-        register_mv(cp, name, &src, &tref("s", output)).await;
-    }
-    let mut conn = pool.acquire().await.expect("conn");
-    let tid = live_table_id(&mut conn, &src.schema, &src.name)
-        .await
-        .expect("tid")
-        .expect("live tid");
-    drop(conn);
-    Seeded {
-        pool,
-        catalog,
-        src,
-        tid,
-    }
-}
 
 // ---- floor semantics -------------------------------------------------------
 
@@ -349,64 +184,16 @@ async fn caught_up_mv_floors_at_its_watermark() {
 
 const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// Backdate EVERY snapshot so the whole history is aged out (H = max snapshot id).
-async fn age_all_snapshots(pool: &sqlx::PgPool) {
-    let old = OffsetDateTime::now_utc() - time::Duration::days(365);
-    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1")
-        .bind(old)
-        .execute(pool)
+/// End-cap every live data file of `tid` at `snap` through the REAL guarded primitive.
+/// Declared `Reframing` — which is what plain-coalesce compaction is: the same rows are
+/// re-projected at the same offsets, so the floor is (correctly) not consulted. Before
+/// the end-cap seam existed this was raw SQL, because no guarded API did.
+async fn end_cap_data_files(pool: &sqlx::PgPool, table: &TableRef, tid: i64, snap: i64) {
+    let mut tx = pool.begin().await.expect("tx");
+    end_cap_live_data_files(&mut tx, table, tid, SnapshotId(snap), &EndCapIntent::Reframing)
         .await
-        .expect("age all snapshots");
-}
-
-/// End-cap every live data file of `tid` at snapshot `snap`. This is the mirror
-/// state EVERY file-retiring path leaves behind (compaction, a future small-file
-/// merge, stream retention) — the class the floor exists to guard. It is done in
-/// SQL because the real writers of that state live ABOVE this crate (they must
-/// write replacement Parquet with DataFusion first).
-async fn end_cap_data_files(pool: &sqlx::PgPool, tid: i64, snap: i64) {
-    sqlx::query(
-        "update iceberg_mirror.data_file set end_snapshot = $1 \
-         where table_id = $2 and end_snapshot is null",
-    )
-    .bind(snap)
-    .bind(tid)
-    .execute(pool)
-    .await
-    .expect("end-cap data files");
-}
-
-/// End-capped (GC-candidate) rows still physically present in `inline_<tid>`.
-/// The physical name comes from `inline_table_name` (schema-qualified), and the
-/// formatted SQL needs `AssertSqlSafe` — sqlx 0.9 only accepts a literal otherwise.
-async fn end_capped_inline_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    let inline = inline_table_name(tid);
-    sqlx::query_scalar(AssertSqlSafe(format!(
-        "select count(*) from {inline} where end_snapshot is not null"
-    )))
-    .fetch_one(pool)
-    .await
-    .expect("count end-capped inline rows")
-}
-
-/// `iceberg_mirror.data_file` rows for `tid` (any `end_snapshot`).
-async fn data_file_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    sqlx::query_scalar("select count(*) from iceberg_mirror.data_file where table_id = $1")
-        .bind(tid)
-        .fetch_one(pool)
-        .await
-        .expect("count data files")
-}
-
-/// The table's current snapshot id. NOTE `Snapshot::id` is the `SnapshotId(i64)`
-/// newtype (`core/src/catalog.rs:16`) — unwrap it with `.0`.
-async fn current_snapshot_id(pool: &sqlx::PgPool, table: &TableRef) -> i64 {
-    IcebergCatalog::new(pool.clone())
-        .current_snapshot(table)
-        .await
-        .expect("current snapshot")
-        .id
-        .0
+        .expect("end-cap data files");
+    tx.commit().await.expect("commit");
 }
 
 // ---- GC under the floor ----------------------------------------------------
@@ -531,7 +318,7 @@ async fn unrun_mv_pins_every_end_capped_row_and_file() {
     let files_before = data_file_count(&s.pool, s.tid).await;
     assert!(files_before > 0, "the source landed at least one file");
     let snap = current_snapshot_id(&s.pool, &s.src).await;
-    end_cap_data_files(&s.pool, s.tid, snap).await;
+    end_cap_data_files(&s.pool, &s.src, s.tid, snap).await;
     age_all_snapshots(&s.pool).await;
 
     let summary = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
@@ -588,7 +375,7 @@ async fn caught_up_mv_releases_end_capped_files() {
     let files_before = data_file_count(&s.pool, s.tid).await;
     assert!(files_before > 0, "the source landed at least one file");
     let snap = current_snapshot_id(&s.pool, &s.src).await;
-    end_cap_data_files(&s.pool, s.tid, snap).await;
+    end_cap_data_files(&s.pool, &s.src, s.tid, snap).await;
     age_all_snapshots(&s.pool).await;
 
     let summary = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
@@ -777,4 +564,39 @@ async fn deleting_the_mv_registration_releases_the_floor() {
     assert_eq!(second.inline_rows, 3, "the dead MV's hold is released");
     assert_eq!(second.held_by_mv_floor, 0, "no reader, no floor");
     assert_eq!(end_capped_inline_count(&s.pool, s.tid).await, 0);
+}
+
+/// The over-refusal guard, on the REAL path: a flush with an MV still at 3 of 6 must
+/// SUCCEED. Flush end-caps inline rows above the floor by design and re-projects those
+/// SAME rows into live Parquet at the SAME `(bucket, offset)` — the rows never leave the
+/// live set, so no MV can miss one. A seam that refused any end-cap at or above the floor
+/// would break flush entirely; this test is what fails when someone writes that seam.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flush_with_a_lagging_mv_still_succeeds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // inline = true, so the flush has rows to move.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
+
+    flush_table(&s.catalog, &s.pool, &s.src, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("a flush is REFRAMING: it must not be refused by the MV floor")
+        .expect("flush produced a snapshot");
+
+    assert!(
+        data_file_count(&s.pool, s.tid).await > 0,
+        "flush re-projected the inline rows into live files"
+    );
 }

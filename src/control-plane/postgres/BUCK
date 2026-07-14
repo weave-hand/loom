@@ -671,17 +671,13 @@ loom_fixture_test(
     srcs = ["tests/mv_floor.rs"],
     crate_root = "tests/mv_floor.rs",
     deps = [
-        "//src/testing:seed",
+        ":end-cap-seed",
         ":postgres",
         "//src/control-plane/core:core",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
         # The dropped-source test (Task 2) drops through the iceberg Catalog trait.
         "//third-party:iceberg",
-        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
-        "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
     ],
