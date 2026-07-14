@@ -7,14 +7,16 @@
 
 use std::time::Duration;
 
-use control_plane_core::{RunId, SnapshotId};
+use control_plane_core::{MvWatermarks, RunId, SnapshotId, mv_key};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
 use control_plane_postgres::iceberg_mirror::end_cap_live_data_files;
 use control_plane_postgres::mv_bootstrap::earliest_surviving_offsets;
-use control_plane_postgres::mv_floor::EndCapIntent;
-use end_cap_seed::{age_all_snapshots, current_snapshot_id, land_more, seed_source};
+use control_plane_postgres::mv_floor::{EndCapIntent, mv_floor};
+use end_cap_seed::{
+    advance, age_all_snapshots, current_snapshot_id, land_more, register_mv, seed_source, tref,
+};
 
 const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
 
@@ -212,5 +214,160 @@ async fn file_tier_alone_supplies_a_nonzero_bound() {
         "the only live data is a Parquet file over offsets 6..12; its loom_offset min stat is the \
          only thing that can prove the start is 6 — a 0 here means the file read produced nothing \
          and the fail-safe rounded down, and a 12 means it skipped the file's live rows entirely"
+    );
+}
+
+/// The item's acceptance test. Registering an MV against a source whose prefix is GONE
+/// bootstraps its watermarks to the surviving range — and therefore does NOT reset the source's
+/// GC floor to 0. Covers both the mis-read and the over-hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registering_against_a_reclaimed_source_bootstraps_the_watermark() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[],
+    )
+    .await;
+
+    reclaim_everything(&s).await;
+    land_more(&s.pool, &s.catalog, &s.src, 6, Some(1), true).await;
+
+    // NOW register. The MV can never read offsets 0..6 — they do not exist.
+    register_mv(&cp, "mv_a", &s.src, &tref("s", "out_a")).await;
+    let mv = mv_key(&tref("s", "out_a"));
+
+    let wm = cp.mv_watermarks(&mv, s.tid).await.expect("watermarks");
+    assert_eq!(
+        wm.get(&0).copied(),
+        Some(6),
+        "the MV is bootstrapped to the surviving range, not to 0"
+    );
+
+    let start: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
+        "select start_offset from stream.mv_watermark where mv = $1 and bucket = 0",
+    ))
+    .bind(mv.as_str())
+    .fetch_one(&s.pool)
+    .await
+    .expect("start_offset");
+    assert_eq!(
+        start, 6,
+        "the bootstrap is RECORDED: 'this MV never saw offsets 0..6' is an auditable fact"
+    );
+
+    let mut conn = s.pool.acquire().await.expect("conn");
+    let floor = mv_floor(&mut conn, &s.src, s.tid)
+        .await
+        .expect("floor")
+        .expect("a registered MV reads this source");
+    assert_eq!(
+        floor.per_bucket.get(&0).copied(),
+        Some(6),
+        "registering no longer drops the source's GC floor to 0 — the over-hold is gone"
+    );
+}
+
+/// Registering against a never-reclaimed source bootstraps to 0 — today's behavior, unchanged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registering_against_an_untouched_source_starts_at_zero() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(2),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+
+    let wm = cp
+        .mv_watermarks(&mv_key(&tref("s", "out_a")), s.tid)
+        .await
+        .expect("watermarks");
+    assert_eq!(
+        wm,
+        [(0, 0), (1, 0)].into_iter().collect(),
+        "nothing was reclaimed: the MV starts at 0, exactly as before"
+    );
+}
+
+/// Define-before-land stays legal: registering against a source that does not exist yet is not
+/// an error, and bootstraps nothing (nothing can have been lost).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn define_before_land_is_still_legal() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        2,
+        Some(1),
+        true,
+        &[],
+    )
+    .await;
+
+    register_mv(
+        &cp,
+        "mv_future",
+        &tref("s", "nonexistent"),
+        &tref("s", "out_f"),
+    )
+    .await;
+
+    let wm = cp
+        .mv_watermarks(&mv_key(&tref("s", "out_f")), s.tid)
+        .await
+        .expect("watermarks");
+    assert!(
+        wm.is_empty(),
+        "no source, nothing to bootstrap — and no error"
+    );
+}
+
+/// A redefinition that keeps the same output RESUMES: the bootstrap must never clobber a
+/// watermark a run has already advanced (`on conflict do nothing`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redefining_the_same_output_does_not_reset_progress() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        8,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    let mv = mv_key(&tref("s", "out_a"));
+    advance(&cp, &mv, s.tid, 0, 0, 5).await;
+
+    register_mv(&cp, "mv_a", &s.src, &tref("s", "out_a")).await; // same name, source, output
+
+    let wm = cp.mv_watermarks(&mv, s.tid).await.expect("watermarks");
+    assert_eq!(
+        wm.get(&0).copied(),
+        Some(5),
+        "the MV resumes where it left off — the bootstrap did not reset it"
     );
 }

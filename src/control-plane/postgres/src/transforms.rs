@@ -460,6 +460,17 @@ impl Transforms for PgControlPlane {
         if let Some(src) = mv_source(&def.body) {
             crate::stream::pg_refuse_mv_over_cdc_source(&mut tx, src).await?;
         }
+        // A brand-new MV has no watermark rows, so `mv_floor` would default it to 0 in every
+        // bucket and `mv_delta_scan` would define its first delta as "the source from 0" —
+        // pinning the source's GC floor at 0 until the MV first runs, and (worse) leaving the
+        // watermark CAS no row to advance, so the first run Conflicts and rolls back forever.
+        // Seed its start explicitly instead, in THIS transaction: the registration and the
+        // position it implies commit together, under the source's table lock taken at the top.
+        if let Some(src) = mv_source(&def.body)
+            && let Some(out) = mv_output(&def.body)
+        {
+            crate::mv_bootstrap::bootstrap_mv_watermarks(&mut tx, &mv_key(out), src).await?;
+        }
         // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
         // (`mv_key`), not by this def's name. So a redefinition that changes the
         // output — or drops the micro-batch body altogether — leaves the PRIOR

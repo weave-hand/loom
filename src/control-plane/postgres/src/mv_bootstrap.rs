@@ -59,12 +59,12 @@
 
 use std::collections::BTreeMap;
 
-use control_plane_core::Result;
+use control_plane_core::{Result, TableRef};
 use sqlx::PgConnection;
 
 use crate::backend;
 use crate::iceberg_inline::{inline_table_exists, inline_table_name};
-use crate::stream::pg_peek_offset;
+use crate::stream::{pg_peek_offset, pg_stream_bucket_count};
 
 /// Lower `slot` to `v` (or seed it) — the only way a cross-bucket candidate is recorded, so the
 /// bound can only ever move DOWN.
@@ -195,4 +195,62 @@ pub async fn earliest_surviving_offsets(
         out.insert(bucket, candidate.unwrap_or(next));
     }
     Ok(out)
+}
+
+/// Seed `mv`'s `stream.mv_watermark` rows for `source` at the source's earliest surviving
+/// offsets, recording each as the MV's `start_offset`. Called by `define_transform` inside its
+/// transaction, so the registration and the start it implies commit as one unit.
+///
+/// A source that is not (yet) a declared stream table — or does not exist at all — is a no-op:
+/// define-before-land is a legal, common flow, and a source with no offsets can have lost none.
+///
+/// `on conflict do nothing` is load-bearing: a redefinition that keeps the same output keeps its
+/// watermarks (the MV resumes where it left off), and the bootstrap must never drag a live MV's
+/// position backwards.
+///
+/// # Errors
+/// Propagates any backend error from the mirror/stream reads or the watermark insert.
+pub async fn bootstrap_mv_watermarks(
+    conn: &mut PgConnection,
+    mv: &str,
+    source: &TableRef,
+) -> Result<()> {
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut *conn, &source.schema, &source.name).await?
+    else {
+        return Ok(());
+    };
+    let Some(bucket_count) = pg_stream_bucket_count(&mut *conn, tid).await? else {
+        return Ok(());
+    };
+    let starts = earliest_surviving_offsets(&mut *conn, tid, bucket_count).await?;
+
+    for (bucket, start) in &starts {
+        // Deref: `query!` already takes its args by reference, so passing `&i32` would make `&&i32`,
+        // which does not implement `Encode`.
+        sqlx::query!(
+            "insert into stream.mv_watermark \
+                 (mv, source_table_id, bucket, next_offset, start_offset) \
+             values ($1, $2, $3, $4, $4) \
+             on conflict (mv, source_table_id, bucket) do nothing",
+            mv,
+            tid,
+            *bucket,
+            *start,
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(backend)?;
+    }
+
+    if starts.values().any(|s| *s > 0) {
+        tracing::info!(
+            mv,
+            source = %format!("{}.{}", source.schema, source.name),
+            ?starts,
+            "MV registered against a source whose prefix is already gone: bootstrapped its \
+             watermarks to the earliest surviving offsets. It will never see the offsets below."
+        );
+    }
+    Ok(())
 }
