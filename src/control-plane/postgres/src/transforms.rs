@@ -111,6 +111,58 @@ pub(crate) async fn pg_micro_batch_readers<'e, E: sqlx::PgExecutor<'e>>(
     Ok(out)
 }
 
+/// The stream table a micro-batch MV (`MicroBatch` / `MicroBatchJoin`) READS; `None` for
+/// any other body. The registration-side input to the CDC/MV guard
+/// ([`crate::stream::pg_refuse_mv_over_cdc_source`]).
+fn mv_source(body: &TransformBody) -> Option<&TableRef> {
+    match body {
+        TransformBody::MicroBatch { source, .. } | TransformBody::MicroBatchJoin { source, .. } => {
+            Some(source)
+        }
+        TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+    }
+}
+
+/// The table a micro-batch MV WRITES — the table its watermarks are keyed by (`mv_key`);
+/// `None` for any other body.
+fn mv_output(body: &TransformBody) -> Option<&TableRef> {
+    match body {
+        TransformBody::MicroBatch { output, .. } | TransformBody::MicroBatchJoin { output, .. } => {
+            Some(output)
+        }
+        TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+    }
+}
+
+/// The table `def`'s output resolves to for the define-time stream-target guard
+/// ([`crate::stream::pg_refuse_stream_target`]) — `None` when there is nothing to check.
+/// A `Physical` output is the literal `TableRef`; a `Typed` output resolves via its bound
+/// backing table (an output that does not exist yet has no binding, and passes).
+///
+/// A `MicroBatch` (or `MicroBatchJoin`) MV legitimately owns its declared log-stream output
+/// and writes to it via the sanctioned `CommitMicroBatch` path — so both are EXEMPT from
+/// that guard, which exists to stop physical/typed transforms from targeting streams via the
+/// legacy write paths. Without the exemption, re-defining a running MV (whose output IS a
+/// declared stream after its first commit) would be refused.
+///
+/// Runs on the caller's transaction, so it sees the bindings the define will commit against.
+async fn refuse_target_table(
+    tx: &mut sqlx::PgConnection,
+    def: &TransformDef,
+) -> Result<Option<TableRef>> {
+    match &def.body {
+        TransformBody::Physical { output, .. } => Ok(Some(output.clone())),
+        TransformBody::MicroBatch { .. } | TransformBody::MicroBatchJoin { .. } => Ok(None),
+        TransformBody::Typed { output, .. } => {
+            let bodies = [(def.name.clone(), def.body.clone())];
+            Ok(pg_type_tables(&mut *tx, &bodies)
+                .await?
+                .get(output)
+                .cloned())
+        }
+    }
+}
+
 /// Re-validate the data-triggered trigger DAG against the CURRENT ontology
 /// bindings, rejecting only a MULTI-DEF cycle (self-loops stay runtime-handled).
 /// Called by `define_type` after a binding change. Runs in the caller's tx so it
@@ -398,29 +450,15 @@ impl Transforms for PgControlPlane {
             validate_no_trigger_cycle(&nodes)?;
         }
         // Define-time UX guard (not the authority — the commit-time guards are the hard
-        // gate): resolve the def's output table and refuse if it is already a declared
-        // stream/CDC table. A Physical output is the literal `TableRef`; a Typed output
-        // resolves via its bound backing table. An output that does not exist yet passes.
-        let output_table: Option<TableRef> = match &def.body {
-            TransformBody::Physical { output, .. } => Some(output.clone()),
-            // A MicroBatch (or MicroBatchJoin) MV legitimately owns its declared
-            // log-stream output and writes to it via the sanctioned
-            // `CommitMicroBatch` path — so both are EXEMPT from the legacy-write
-            // refuse guard (which exists to stop physical/typed transforms from
-            // targeting streams via the legacy write paths). Without this
-            // exemption, re-defining a running MV (its output is a declared
-            // stream after the first commit) would be refused.
-            TransformBody::MicroBatch { .. } | TransformBody::MicroBatchJoin { .. } => None,
-            TransformBody::Typed { output, .. } => {
-                let bodies = [(def.name.clone(), def.body.clone())];
-                pg_type_tables(&mut *tx, &bodies)
-                    .await?
-                    .get(output)
-                    .cloned()
-            }
-        };
-        if let Some(t) = &output_table {
+        // gate): refuse an output that is already a declared stream/CDC table.
+        if let Some(t) = &refuse_target_table(&mut tx, &def).await? {
             crate::stream::pg_refuse_stream_target(&mut tx, t).await?;
+        }
+        // A micro-batch MV's SOURCE must be a log stream, never a declared CDC table — see
+        // `crate::stream::pg_refuse_mv_over_cdc_source` (and its mirror half in
+        // `reconcile_stream_mode`). In-tx, so the refusal is atomic with the upsert.
+        if let Some(src) = mv_source(&def.body) {
+            crate::stream::pg_refuse_mv_over_cdc_source(&mut tx, src).await?;
         }
         // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
         // (`mv_key`), not by this def's name. So a redefinition that changes the
@@ -432,11 +470,7 @@ impl Transforms for PgControlPlane {
         // Release them here, in the same transaction as the upsert — the exact
         // mirror of what `delete_transform` does. Redefining with the SAME output
         // is deliberately untouched: the MV resumes where it left off.
-        let new_mv = match &def.body {
-            TransformBody::MicroBatch { output, .. }
-            | TransformBody::MicroBatchJoin { output, .. } => Some(mv_key(output)),
-            TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
-        };
+        let new_mv = mv_output(&def.body).map(mv_key);
         let prior = sqlx::query!(
             "select body from transforms.transform where name = $1 for update",
             def.name.0,

@@ -74,15 +74,26 @@ pub(crate) async fn inline_table_exists(conn: &mut PgConnection, table_id: i64) 
 /// where `end_snapshot is null`). Used by the overwrite/replace commit so a replace
 /// supersedes the inline tier as well as the file tier. No-op if the inline table was
 /// never created. Runs in the caller's transaction.
-pub(crate) async fn end_cap_live_inline_rows(
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written:
+/// a `Removing` end-cap of offsets a micro-batch MV has not read is REFUSED. The CDC
+/// flush passes `Reframing` — see `iceberg_flush::flush_locked_cdc` for why the `-U`
+/// rows it drops from the BASE cannot cost an MV a delta row.
+///
+/// `pub` (not `pub(crate)`) so the fixture tests can drive the guarded primitive itself.
+pub async fn end_cap_live_inline_rows(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     at: control_plane_core::SnapshotId,
+    intent: &crate::mv_floor::EndCapIntent<'_>,
 ) -> control_plane_core::Result<()> {
     // to_regclass returns NULL for a non-existent relation -> skip.
     if !inline_table_exists(conn, table_id).await? {
         return Ok(());
     }
+    crate::mv_floor::guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let sql = format!(
         "update {} set end_snapshot = {} where end_snapshot is null",
         inline_table_name(table_id),
@@ -104,12 +115,25 @@ pub(crate) async fn end_cap_live_inline_rows(
 /// Runtime sqlx (not a compile-time `query!`): the `inline_<table_id>` table
 /// name is a dynamic identifier and `any($1)` binds a row-id array — neither is
 /// expressible in a literal, schema-checked macro. Spliced via `AssertSqlSafe`.
-pub(crate) async fn end_cap_inline_rows_by_id(
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written.
+/// The flush (both branches) passes `Reframing`: the rows it retires here are exactly the
+/// rows it re-projects into the new Parquet at the SAME `(loom_bucket, loom_offset)`.
+///
+/// `pub` (not `pub(crate)`) so the fixture tests can drive the guarded primitive itself.
+pub async fn end_cap_inline_rows_by_id(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     row_ids: &[i64],
     at: SnapshotId,
+    intent: &crate::mv_floor::EndCapIntent<'_>,
 ) -> Result<()> {
+    if row_ids.is_empty() {
+        return Ok(());
+    }
+    crate::mv_floor::guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let sql = format!(
         "update {} set end_snapshot = {} \
          where loom_row_id = any($1) and end_snapshot is null",
@@ -1156,13 +1180,29 @@ pub async fn current_inline_version(
     read_max_version(&mut conn, tid, id_column, &id_cell).await
 }
 
-/// The table's FULL live column set from the mirror, as `ColumnSpec`s — the
+/// The table's full live **data** column set from the mirror, as `ColumnSpec`s — the
 /// authoritative inline-table shape, independent of the (possibly one-column)
 /// `columns` a given mutation passes. Selects the currently-live
 /// `iceberg_mirror.column` rows (`end_snapshot is null`), so no snapshot bound is
 /// needed. The stored `column_type` is the Iceberg physical name (e.g. `int`);
 /// convert it back to the canonical loom logical name the inline DDL / cell codec
 /// understand, exactly as `IcebergCatalog::schema` does.
+///
+/// RESERVED columns are EXCLUDED (`iceberg_catalog::is_reserved`). A declared stream
+/// table registers the three log-framing columns
+/// (`loom_change_kind`/`loom_bucket`/`loom_offset`) in `iceberg_mirror.column` too —
+/// that mirror set is the table's Iceberg *physical* schema. But `inline_ddl` emits
+/// those framing columns (and the MVCC bounds, `loom_row_id`, `loom_tombstone`) ITSELF,
+/// so handing them back to `ensure_inline_schema` would emit each one twice and the
+/// CREATE TABLE would die with `column "loom_change_kind" specified more than once`
+/// (SQLSTATE 42701 — which `is_duplicate_object_race` then swallows as a benign
+/// concurrent-create, leaving the caller with a misleading
+/// `relation "iceberg_mirror.inline_<tid>" does not exist` from the next ALTER).
+/// Reachable for a CDC table whose first land went straight to Parquet
+/// (`land_parquet_stream` registers framing but never provisions inline storage), so the
+/// first typed UPDATE/DELETE is what CREATEs `inline_<tid>`. Filtering here restores the
+/// invariant `inline_append_decl` already holds: `ensure_inline_schema` is given the DATA
+/// columns, and owns the reserved ones.
 ///
 /// AssertSqlSafe: static query against a fixed mirror table; the `.sqlx` cache
 /// cannot be regenerated in this env (initdb refuses to run as root).
@@ -1175,24 +1215,26 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
     .fetch_all(&mut *conn)
     .await
     .map_err(backend)?;
-    rows.into_iter()
-        .map(|r| {
-            let name: String = r.try_get("column_name").map_err(backend)?;
-            let column_type: String = r.try_get("column_type").map_err(backend)?;
-            let nullable: bool = r.try_get("nulls_allowed").map_err(backend)?;
-            let ty = logical_from_iceberg(&column_type)
-                .map(BaseType::canonical_name)
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        format!(
-                            "inline: mirror column type {column_type:?} has no loom logical type"
-                        )
+    let mut specs = Vec::with_capacity(rows.len());
+    for r in rows {
+        let name: String = r.try_get("column_name").map_err(backend)?;
+        // Reserved physical columns belong to `inline_ddl`, not to the data schema.
+        if crate::iceberg_catalog::is_reserved(&name) {
+            continue;
+        }
+        let column_type: String = r.try_get("column_type").map_err(backend)?;
+        let nullable: bool = r.try_get("nulls_allowed").map_err(backend)?;
+        let ty = logical_from_iceberg(&column_type)
+            .map(BaseType::canonical_name)
+            .ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    format!("inline: mirror column type {column_type:?} has no loom logical type")
                         .into(),
-                    )
-                })?;
-            Ok(ColumnSpec { name, ty, nullable })
-        })
-        .collect()
+                )
+            })?;
+        specs.push(ColumnSpec { name, ty, nullable });
+    }
+    Ok(specs)
 }
 
 /// Write ONE inline delta row (a row-version or a tombstone) for a single identity,
@@ -1241,6 +1283,13 @@ pub async fn write_inline_delta(
             )
         })?;
 
+    // The target's stream declaration — read BEFORE the inline DDL below, because a declared
+    // LOG target is REFUSED outright (a typed UPDATE/DELETE would hand its offset-framed log
+    // to the identity fold). See `crate::stream::pg_stream_meta_for_typed_write` for why the
+    // refusal must precede `ensure_inline_schema`, and for the four routes it closes. `meta`
+    // is reused below to dispatch the CDC emit.
+    let meta = crate::stream::pg_stream_meta_for_typed_write(&mut tx, table, tid).await?;
+
     // Provision inline storage (+ loom_tombstone) with the table's FULL live column
     // set, NOT the possibly-one-column `columns` arg. A tombstone passes only
     // `[id spec]`; since `create table if not exists` never adds columns later, a
@@ -1278,7 +1327,7 @@ pub async fn write_inline_delta(
     // adjacent (-U before-image, +U after-image) pair, a delete writes a -D carrying
     // the full prior image — each stamped with a hash-on-identity bucket and gapless
     // per-bucket offsets. Non-CDC tables fall through to the existing single-row inserts.
-    let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
+    // `meta` was read (and a declared LOG target refused) above, before the inline DDL.
     let cdc = matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc);
 
     // Emit the delta row(s). Every row carries the identity value so merge-on-read
@@ -1294,60 +1343,10 @@ pub async fn write_inline_delta(
         let m = meta
             .as_ref()
             .ok_or_else(|| ControlPlaneError::Backend("cdc meta vanished after check".into()))?;
-        let bucket = cdc_bucket(&id_cell, m.bucket_count)?;
-        // The before-image carries its OWN columns (positionally aligned with its
-        // batch) — never `full_cols`, whose order need not match.
-        let (before_cols, before_batch) = before.ok_or_else(|| {
-            ControlPlaneError::Backend("cdc mutation requires a before-image".into())
-        })?;
-        if tombstone {
-            // Delete → one -D carrying the FULL prior image, so the changelog event is
-            // complete. loom_tombstone=true still hides the base row in merge-on-read.
-            let off = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 1).await?;
-            write_cdc_row(
-                &mut tx,
-                tid,
-                at,
-                "-D",
-                true,
-                bucket,
-                off,
-                before_cols,
-                before_batch,
-            )
-            .await?;
-            emitted_rows = 1;
-        } else {
-            // Update → adjacent (-U before-image, +U after-image), -U first, at
-            // consecutive offsets in the identity's single bucket. -U uses the
-            // before-image (its own cols+batch); +U uses the caller's after-image.
-            let first = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 2).await?;
-            write_cdc_row(
-                &mut tx,
-                tid,
-                at,
-                "-U",
-                false,
-                bucket,
-                first,
-                before_cols,
-                before_batch,
-            )
-            .await?;
-            write_cdc_row(
-                &mut tx,
-                tid,
-                at,
-                "+U",
-                false,
-                bucket,
-                first + 1,
-                columns,
-                batch,
-            )
-            .await?;
-            emitted_rows = 2;
-        }
+        emitted_rows = emit_cdc_delta(
+            &mut tx, tid, at, m, tombstone, &id_cell, columns, batch, before,
+        )
+        .await?;
     } else if tombstone {
         // Tombstone: begin_snapshot, loom_tombstone=true, loom_change_kind='-D',
         // "<id_col>"=id; data NULL.
@@ -1443,6 +1442,81 @@ pub async fn write_inline_delta(
 
     tx.commit().await.map_err(backend)?;
     Ok(at)
+}
+
+/// Emit a CDC table's FULL change sequence for one typed mutation, returning the number of
+/// changelog rows written (accrued by the caller's consolidate trigger).
+///
+/// - **Delete** → one `-D` carrying the FULL prior image, so the changelog event is
+///   complete. `loom_tombstone = true` still hides the base row in merge-on-read.
+/// - **Update** → an adjacent (`-U` before-image, `+U` after-image) pair, `-U` first, at
+///   consecutive offsets in the identity's single bucket. `-U` uses the before-image (its own
+///   cols+batch); `+U` uses the caller's after-image.
+///
+/// Every row is stamped with a hash-on-identity bucket and gapless per-bucket offsets. The
+/// before-image carries its OWN columns (positionally aligned with its batch) — never the
+/// table's `full_cols`, whose order need not match — so a CDC mutation without one is a
+/// caller bug (`Backend`, never silently emitted).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the CDC emit needs the tx, the table's mirror id + snapshot + stream meta, the delete-vs-update discriminant, the identity cell, and BOTH images (each with its own positionally-aligned columns); a params struct would only obscure the single call site"
+)]
+async fn emit_cdc_delta(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    meta: &control_plane_core::StreamMeta,
+    tombstone: bool,
+    id_cell: &Cell,
+    columns: &[ColumnSpec],
+    batch: &RecordBatch,
+    before: Option<(&[ColumnSpec], &RecordBatch)>,
+) -> Result<i64> {
+    let bucket = cdc_bucket(id_cell, meta.bucket_count)?;
+    let (before_cols, before_batch) = before
+        .ok_or_else(|| ControlPlaneError::Backend("cdc mutation requires a before-image".into()))?;
+    if tombstone {
+        let off = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 1).await?;
+        write_cdc_row(
+            &mut *tx,
+            tid,
+            at,
+            "-D",
+            true,
+            bucket,
+            off,
+            before_cols,
+            before_batch,
+        )
+        .await?;
+        return Ok(1);
+    }
+    let first = crate::stream::pg_allocate_offset(&mut *tx, tid, bucket, 2).await?;
+    write_cdc_row(
+        &mut *tx,
+        tid,
+        at,
+        "-U",
+        false,
+        bucket,
+        first,
+        before_cols,
+        before_batch,
+    )
+    .await?;
+    write_cdc_row(
+        &mut *tx,
+        tid,
+        at,
+        "+U",
+        false,
+        bucket,
+        first + 1,
+        columns,
+        batch,
+    )
+    .await?;
+    Ok(2)
 }
 
 /// Insert one framed CDC inline row for the given change kind: `begin_snapshot`,

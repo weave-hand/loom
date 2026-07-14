@@ -810,9 +810,21 @@ impl Catalog for SqlCatalog {
             let at = crate::iceberg_mirror::next_snapshot(&mut tx, None)
                 .await
                 .map_err(unexpected)?;
-            crate::iceberg_mirror::mark_dropped(&mut tx, &ns, identifier.name(), at)
-                .await
-                .map_err(unexpected)?;
+            // DESTROYING: the operator dropped the table, so the MV floor is bypassed on
+            // purpose — any MV still reading it is dead by definition, and wedging a drop
+            // on a dead MV forever is strictly worse than stranding it (the reclaim warns
+            // about the stranded readers via `mv_floor::stranded_mv_readers`).
+            crate::iceberg_mirror::mark_dropped(
+                &mut tx,
+                &ns,
+                identifier.name(),
+                at,
+                &crate::mv_floor::EndCapIntent::Destroying {
+                    reason: "catalog drop",
+                },
+            )
+            .await
+            .map_err(unexpected)?;
         }
 
         tx.commit().await.map_err(from_sqlx_error)?;

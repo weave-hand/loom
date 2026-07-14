@@ -36,14 +36,18 @@
 //! defense** — a lagging MV's end-capped bytes are not physically destroyed while
 //! it is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged
 //! with the laggard's name — plus `mv_floor` itself as a reusable primitive.
-//! It is NOT what stands between an MV and a data hole, and must not be described
-//! as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`) while an
-//! MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped row is
-//! already invisible to the MV before GC touches it — `gc_table` could never have
-//! removed a row an MV was still able to read. The hole is created at END-CAP
-//! time, by whichever path end-caps offsets an MV has not consumed; making those
-//! paths consult `mv_floor` first is the real fix, tracked as
-//! `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md) and not built here.
+//! This tier is NOT what stands between an MV and a data hole, and must not be
+//! described as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`)
+//! while an MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped
+//! row is already invisible to the MV before GC touches it — `gc_table` could
+//! never have removed a row an MV was still able to read. The hole is created at
+//! END-CAP time, by whichever path end-caps offsets an MV has not consumed. That
+//! guard now EXISTS, on the end-cap side where it belongs: every end-cap primitive
+//! requires an `EndCapIntent` and calls `crate::mv_floor::guard_end_cap`, which
+//! refuses a `Removing` end-cap the floor blocks (and three write-path refusals —
+//! stream-table overwrite, typed UPDATE/DELETE on a declared log table, and a
+//! micro-batch MV over a CDC source — remove the lossy paths outright). What this
+//! module's floor keeps doing is the byte-retention half above.
 //! For the overwhelming majority of tables — anything no micro-batch MV reads —
 //! the floor is `None` and every predicate below is byte-identical to the
 //! pre-floor behavior. A DROPPED incarnation's reclaim deliberately bypasses the
@@ -118,6 +122,19 @@ pub async fn gc_table(
     result
 }
 
+/// One GC run, under the caller's per-table advisory lock.
+///
+/// **One transaction for the whole run** (step 2). The MV floor is read INSIDE it (2b)
+/// rather than on a separate pooled connection, which is what lets a CALLER-SIDE guard
+/// (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
+///
+/// It does NOT close the registration race, and must not be described as if it did: loom
+/// sets no isolation level, so this is READ COMMITTED — each statement takes a fresh
+/// snapshot, none of these reads lock a row, and `define_transform`'s advisory lock is a
+/// single GLOBAL constant, disjoint from GC's per-table key. A `define_transform` committing
+/// between the floor read and the reclaim is therefore still possible; the window is
+/// narrower, not gone. Closing it needs the registration to take the same per-table lock GC
+/// serializes under — that is `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
 async fn gc_locked(
     catalog: &SqlCatalog,
     pool: &PgPool,
@@ -132,25 +149,24 @@ async fn gc_locked(
         return Ok(GcSummary::default());
     };
 
-    // 2. Resolve the (maybe) live incarnation AND every dropped incarnation.
-    let mut conn = pool.acquire().await.map_err(backend)?;
-    let live = live_table_id(&mut conn, &table.schema, &table.name).await?;
-    let dropped = dropped_table_ids(&mut conn, &table.schema, &table.name).await?;
-    drop(conn);
+    // 2. Resolve the (maybe) live incarnation AND every dropped incarnation, on the run's
+    //    ONE transaction — see the fn doc for what that buys (an in-tx floor read) and for
+    //    the registration race it narrows but does NOT close.
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let live = live_table_id(&mut tx, &table.schema, &table.name).await?;
+    let dropped = dropped_table_ids(&mut tx, &table.schema, &table.name).await?;
 
     // 2b. The MV read-position floor of the LIVE incarnation (`None` for a table no
     //     micro-batch MV reads — the guard then goes NULL, a pre-floor no-op).
     let floor = match live {
-        Some(tid) => mv_floor(pool, table, tid).await?,
+        Some(tid) => mv_floor(&mut tx, table, tid).await?,
         None => None,
     };
     let file_guard: Option<i64> = floor.as_ref().map(MvFloor::min_offset);
-    let stranded = stranded_readers(pool, table, live, &dropped).await?;
+    let stranded = stranded_readers(&mut tx, table, live, &dropped).await?;
 
-    // 3. One transaction: reclaim the live incarnation (floor-guarded, see
-    //    `reclaim_live`), then every dropped incarnation (unguarded, see
-    //    `reclaim_dropped`), collecting every object path to delete post-commit.
-    let mut tx = pool.begin().await.map_err(backend)?;
+    // 3. Reclaim the live incarnation (floor-guarded), then every dropped incarnation
+    //    (unguarded), collecting every object path to delete post-commit.
     let mut paths: Vec<String> = Vec::new();
     let mut data_file_rows = 0u64;
     let mut inline_rows = 0u64;
@@ -324,7 +340,7 @@ async fn reclaim_dropped(
 /// readers therefore count only when there is no live incarnation (`live.is_none()`);
 /// a reader holding watermarks against a DROPPED tid is a real strand either way.
 async fn stranded_readers(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     table: &TableRef,
     live: Option<i64>,
     dropped: &[DroppedIncarnation],
@@ -333,7 +349,7 @@ async fn stranded_readers(
         return Ok(BTreeSet::new());
     }
     let tids: Vec<i64> = dropped.iter().map(|d| d.table_id).collect();
-    stranded_mv_readers(pool, table, &tids, live.is_none()).await
+    stranded_mv_readers(&mut *conn, table, &tids, live.is_none()).await
 }
 
 /// The data files one GC run reclaims for one incarnation: their ids (what the deletes
@@ -462,21 +478,7 @@ async fn delete_end_capped_inline_rows(
     let inline = inline_table_name(tid);
     let guard = match floor {
         None => String::new(),
-        Some(f) => {
-            let clauses: Vec<String> = f
-                .per_bucket
-                .iter()
-                .filter(|(_, offset)| **offset > 0)
-                .map(|(bucket, offset)| {
-                    format!("(loom_bucket = {bucket} and loom_offset < {offset})")
-                })
-                .collect();
-            if clauses.is_empty() {
-                " and false".to_owned()
-            } else {
-                format!(" and ({})", clauses.join(" or "))
-            }
-        }
+        Some(f) => format!(" and {}", f.below_floor_pred()),
     };
     let rows = sqlx::query(AssertSqlSafe(format!(
         "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard}"

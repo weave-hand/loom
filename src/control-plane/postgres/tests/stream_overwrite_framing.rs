@@ -1,9 +1,12 @@
-//! `overwrite_parquet_snapshot` must preserve framing when overwriting a declared
-//! stream table: today it hardcodes `include_framing=false`, so an overwrite of a
-//! CDC/stream base silently drops `loom_change_kind`/`loom_bucket`/`loom_offset`
-//! from the physical schema even though the table stays declared as a stream in
-//! the registry — a schema divergence future flushes/reads would trip over. A
-//! batch (non-stream) table's overwrite must stay byte-identical (no framing).
+//! An overwrite of a declared stream table must PRESERVE the physical framing columns
+//! (`loom_change_kind`/`loom_bucket`/`loom_offset`) — dropping them would leave the
+//! physical schema diverged from a table the registry still calls a stream, which future
+//! flushes/reads trip over. The only entrypoint permitted to overwrite one at all is
+//! `overwrite_stream_base` (the CDC consolidate fold's framed door — the two public
+//! overwrite primitives now REFUSE a declared stream target outright; see
+//! `tests/stream_write_refuse.rs`), so this pins the framing on THAT door. A batch
+//! (non-stream) table's overwrite goes through the public `overwrite_parquet_snapshot`
+//! and must stay byte-identical (no framing).
 //! loom_fixture_test (Postgres).
 
 use std::sync::Arc;
@@ -15,7 +18,7 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_inline::inline_append;
-use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
+use control_plane_postgres::iceberg_landing::{overwrite_parquet_snapshot, overwrite_stream_base};
 use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use loom_test_seed::local_sql_catalog;
 
@@ -127,15 +130,18 @@ async fn stream_overwrite_preserves_framing() {
 
     let ice = IcebergCatalog::new(pool.clone());
 
-    // Overwrite the base with a fresh framed batch (user col + framing cols).
-    let at_after = overwrite_parquet_snapshot(
+    // Overwrite the base with a fresh framed batch (user col + framing cols), through the
+    // CDC fold's framed door — the public `overwrite_parquet_snapshot` refuses a declared
+    // stream target now (`tests/stream_write_refuse.rs`). `consumed: None`: the seed was
+    // flushed, so there is no live inline tail to retire.
+    let at_after = overwrite_stream_base(
         &pool,
         &catalog,
         &table,
         &cols,
         vec![framed_batch(&[4, 5], 0, 0)],
         Some(&lin()),
-        &[],
+        None,
     )
     .await
     .expect("overwrite");

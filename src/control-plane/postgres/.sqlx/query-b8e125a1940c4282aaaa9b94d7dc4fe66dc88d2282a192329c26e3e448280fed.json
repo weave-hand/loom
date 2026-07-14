@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select df.data_file_id from iceberg_mirror.data_file df where df.table_id = $1 and df.end_snapshot is null and not coalesce(( select cs.max_value from iceberg_mirror.data_file_column_stat cs where cs.data_file_id = df.data_file_id and cs.column_name = 'loom_offset')::bigint < $2::bigint, false) limit 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "data_file_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.data_file",
+            "name": "data_file_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b8e125a1940c4282aaaa9b94d7dc4fe66dc88d2282a192329c26e3e448280fed"
+}

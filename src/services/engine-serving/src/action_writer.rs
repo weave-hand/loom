@@ -172,7 +172,13 @@ impl IcebergActionWriter {
             jobs,
         )
         .await
-        .map_err(|e| EngineServingError::Engine(e.to_string()))
+        // A declared stream/CDC target is REFUSED by the overwrite primitive
+        // (`pg_refuse_stream_target`): that is a caller error, not an engine fault, so it
+        // must surface as 4xx — same arm as `write_steps` above.
+        .map_err(|e| match e {
+            ControlPlaneError::Validation(m) => EngineServingError::Validation(m),
+            other => EngineServingError::Engine(other.to_string()),
+        })
     }
 
     /// The current inline version of one identity — `id_ipc` is a one-row Arrow IPC
@@ -255,8 +261,13 @@ impl IcebergActionWriter {
             jobs,
         )
         .await
+        // A declared LOG target is REFUSED by the inline-delta primitive: a typed
+        // UPDATE/DELETE over an offset-framed event log has no identity semantics to
+        // fold. Like the CAS conflict, that is a caller error, not an engine fault, so
+        // it must surface as 4xx — same arm as `write_steps`/`overwrite_table` above.
         .map_err(|e| match e {
             ControlPlaneError::Conflict(m) => EngineServingError::Conflict(m),
+            ControlPlaneError::Validation(m) => EngineServingError::Validation(m),
             other => EngineServingError::Engine(other.to_string()),
         })
     }

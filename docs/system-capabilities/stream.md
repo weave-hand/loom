@@ -153,6 +153,38 @@ alongside the filtered ones, used only by the changelog flush path and by
 consolidation's fold (which needs every event, including `−U`, but never lets
 one win).
 
+**A CDC table's first typed UPDATE/DELETE could fail to provision inline
+storage at all (#443).** `write_inline_delta` (`iceberg_inline.rs`) provisions
+`inline_<tid>` from `full_live_column_specs` — the table's live
+`iceberg_mirror.column` set, which for a declared stream table already
+includes the three framing columns above. `inline_ddl` separately hardcodes
+those same reserved columns and appends the caller's list, so a CREATE TABLE
+built from the unfiltered set named `loom_change_kind` twice and died with
+`column "loom_change_kind" specified more than once`. This was reachable for a
+CDC table whose land went straight to Parquet (`land_parquet_stream` registers
+framing on the mirror but never provisions inline storage), so the table's
+first typed UPDATE/DELETE — a supported CDC operation — was what CREATEs
+`inline_<tid>`. The failure was self-masking: that error is SQLSTATE 42701,
+which `is_duplicate_object_race` treats as a benign concurrent-create and
+swallows, so the caller instead saw a misleading `relation
+"iceberg_mirror.inline_<tid>" does not exist` from the next ALTER. Fixed by
+excluding reserved columns (`iceberg_catalog::is_reserved`) from
+`full_live_column_specs`, restoring the invariant `inline_append_decl` already
+held: `ensure_inline_schema` is handed the data columns only, and `inline_ddl`
+owns the reserved ones — de-duplicating inside `inline_ddl` instead was
+rejected, since it would silently accept and drop a caller-supplied
+`loom_bucket` of the wrong type. (The log-table variant of this shape is
+already refused outright by `pg_stream_meta_for_typed_write` — see *typed
+UPDATE/DELETE against a declared log table is refused*, under **Continuous /
+standing queries (materialized views)** below; CDC is not, and must not be.
+`is_duplicate_object_race`'s 42701 entry is still correct for the ALTER
+path — tightening it for the CREATE case is a behavioral change to
+concurrent-DDL handling, left out of scope.) The
+`//src/control-plane/postgres:cdc-parquet-typed-delta` fixture test asserts
+the premise (a Parquet-landed CDC table has framing live in the mirror but no
+inline table) and then drives a real typed DELETE and UPDATE through
+`write_inline_delta` to their framed `−D` and `−U`/`+U` rows.
+
 ## Dual Iceberg tables
 
 A declared CDC table is **two** Iceberg tables, one registry row
@@ -583,23 +615,62 @@ warning names the per-bucket laggard, and deleting the MV's transform def delete
 its watermark rows (releasing the floor) as the escape hatch. See engine's **GC**
 section for the full guard.
 
-**That is byte-retention defense, not hole-freedom** — read the distinction
-before relying on it. GC only reclaims **end-capped** rows (`end_snapshot <= H`),
-whereas a micro-batch delta reads **live** rows at the **current** snapshot
-(`mv_delta_scan`): an end-capped row is already invisible to the MV before GC
-touches it, so `gc_table` could never have taken a row an MV could still read.
-The starvation is created by whichever path **end-caps** offsets the MV has not
-consumed (the catalog drop today; changelog retention, stream consolidation, and
-any truncation/replay surface tomorrow) — those rows leave the MV's delta
-immediately, no GC-tier guard can bring them back, and the next micro-batch's
-delta then starts at an offset **above** the committed watermark, so the derived
-CAS `from` no longer matches the stored `next_offset` and the commit
-**Conflict-aborts the run (fails loud)** rather than silently under-reading — but
-the MV is wedged until an operator intervenes. Making the end-cap-issuing paths
-consult `mv_floor` **before** end-capping is the real fix, tracked as
-`#iss-end-cap-ignores-mv-floor` (Known gaps). Until it lands, retention must
-still exceed the slowest MV's lag — an operational caveat shared with the
-subscribe feed's own retention story (see `#fut-stream-consumer-offsets`).
+**That GC tier is byte-retention defense, not hole-freedom** — read the
+distinction before relying on it. GC only reclaims **end-capped** rows
+(`end_snapshot <= H`), whereas a micro-batch delta reads **live** rows at the
+**current** snapshot (`mv_delta_scan`): an end-capped row is already invisible to
+the MV before GC touches it, so `gc_table` could never have taken a row an MV
+could still read. The starvation is created by whichever path **end-caps** offsets
+the MV has not consumed — those rows leave the MV's delta immediately, and no
+GC-tier guard can bring them back.
+
+**The end-cap side now ships too (#443).** Every end-cap primitive in the mirror
+requires an explicit **`EndCapIntent`** (`postgres/src/mv_floor.rs`) and calls
+`guard_end_cap` on the caller's transaction: `Reframing` (the same rows are
+re-projected at the same `(bucket, offset)` — flush, plain-coalesce compaction —
+no floor consult), `Removing` (the offsets leave the live set — the floor is
+consulted and a blocked removal refused, with the stable message prefix `mv-floor
+refuses end-cap:`; this is the **default**, so a future retention path inherits the
+guard structurally), and `Destroying { reason }` (deliberate destruction, bypassed
+on purpose and logged — the catalog drop). On top of that seam, **three refusals**
+remove the lossy paths outright:
+
+- an **overwrite of a declared stream table is refused**
+  (`pg_refuse_stream_target` on `overwrite_parquet_snapshot` and its consuming
+  twin) — previously a delete-all (`overwrite_truncate`) end-capped every live file
+  *and* every live inline row with no stream check, destroying a log table's whole
+  offset range; the CDC consolidate fold, the only legitimate overwriter of a
+  framed base, keeps its own private door (`overwrite_stream_base`);
+- a **typed UPDATE/DELETE against a declared log table is refused**
+  (`write_inline_delta` → `pg_stream_meta_for_typed_write`) — previously it wrote an
+  unframed delta row, set `has_shadow`, and handed the table to the COW arm, which
+  folds an offset-framed event log **by identity**;
+- a **micro-batch MV over a CDC source is refused in both directions** — at
+  registration (`define_transform`) and at declaration (`reconcile_stream_mode`);
+  `mv_delta_scan` reads log sources only, so such an MV could never run and would
+  pin its source at offset `0` forever (the residual concurrent interleave is
+  `#iss-mv-cdc-declare-register-race`).
+
+With those in place, **no production path can `Removing`-end-cap a declared log
+stream table** — the refusals are the fix; the seam is the type-level constraint
+future retention paths inherit. The CDC fold *is* a `Removing` end-cap, so it can
+meet a floor: it pre-checks, and on a block it **skips and re-arms** (warn naming
+the laggard MV, clear the consolidate trigger, `Ok(0)`) rather than erroring or
+abandoning. Should an end-cap ever take offsets an MV has not read, the failure is
+still loud rather than silent: the next micro-batch's delta starts **above** the
+committed watermark, the derived CAS `from` no longer matches the stored
+`next_offset`, and the commit **Conflict-aborts the run**. Retention should still
+exceed the slowest MV's lag — an operational caveat shared with the subscribe
+feed's own retention story (see `#fut-stream-consumer-offsets`).
+
+**Manual repair: a legacy shadowed log table.** A declared log table carrying
+`has_shadow` can only be one typed-mutated *before* the refusal above landed. It
+**neither folds nor flushes** until an operator intervenes — `consolidate_table`'s
+defensive `StreamKind::Log` arm warns and skips (never folds by identity) and
+deliberately leaves the flag set, which keeps the non-CDC flush suppressed. Repair
+by hand: inspect the unframed delta rows on `inline_<tid>` (NULL
+`loom_bucket`/`loom_offset`), decide their fate, then clear the flag (`delete from
+iceberg_mirror.shadow_flag where table_id = <tid>`).
 
 Deferred from this slice, named so the register close-out can track them as
 their own items:
@@ -623,9 +694,10 @@ their own items:
   whole, the same posture as `consolidate_stream`; pruning by `loom_offset`
   file stats and streaming (non-collecting) execution are follow-ons under
   `#fut-transform-followups`.
-- **Watermark-aware GC** — shipped: `gc_locked` now holds reclaim of an MV
-  source at the per-bucket `mv_floor` (see the retention section above). The
-  end-cap-side half of the guarantee is not (`#iss-end-cap-ignores-mv-floor`).
+- **Watermark-aware GC** — shipped: `gc_locked` holds reclaim of an MV source at
+  the per-bucket `mv_floor`, and the end-cap-side half shipped too (#443) — the
+  `EndCapIntent` seam plus the three write-path refusals (see the retention
+  section above).
 - **`/admin/views` sugar surface** — MVs register through the ordinary
   transforms admin surface in v1; a dedicated, MV-shaped admin surface is
   deferred.
@@ -716,13 +788,14 @@ from the continuous-query slice.
   physical Iceberg schema carries the loser's framing columns; the mirror-row
   race itself is correctly guarded (see *Declaration* above), only the
   Iceberg-create race is not.
-- `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards GC only;
-  the paths that **end-cap** unread source offsets do not consult `mv_floor`, so
-  an MV can still be starved by an end-cap (byte-retention defense ≠
-  hole-freedom).
 - `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
-  offset `0` even if the source's low offsets are already gone, and the floor
-  read sits outside the GC transaction (registration/GC race).
+  offset `0` even if the source's low offsets are already gone, and registration
+  is not serialized against GC's per-table lock (a race #443 narrowed — GC's
+  floor read now runs inside its own transaction — but did not close).
+- `#iss-mv-cdc-declare-register-race` — the MV/CDC mutual exclusion is guarded
+  from both sides, but the guards share no lock, so a concurrent `?mode=cdc`
+  write and `define_transform` can still interleave into an MV that can never
+  run over a CDC source.
 - `#iss-mv-floor-holds-pre-declaration-files` — data files written before
   `declare_stream` carry no `loom_offset` stat and are held forever by the
   floor's fail-safe, inflating `held_by_mv_floor`.

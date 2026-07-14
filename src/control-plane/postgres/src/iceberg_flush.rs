@@ -25,6 +25,7 @@ use crate::iceberg_landing::{
 use crate::iceberg_mirror::{live_table_id, reset_inline_trigger};
 use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 use crate::iceberg_writer::{COMMIT_MAX_RETRIES, append_batches_on_tx, commit_backoff};
+use crate::mv_floor::EndCapIntent;
 use crate::stream::pg_stream_meta;
 
 /// Flush `table`'s live inline rows into a real Iceberg Parquet snapshot, retiring
@@ -181,6 +182,14 @@ async fn flush_locked(
             lineage: Some(&lineage),
             end_cap: Some(end_cap),
             jobs: &rebuild_jobs,
+            // REFRAMING: the inline rows this end-caps are the SAME rows `batch` writes
+            // back as Parquet, in this same commit, carrying their `loom_bucket`/
+            // `loom_offset` through unchanged (`inline_live_batch` reads the framing
+            // columns and `include_framing` projects them). Nothing leaves the live set,
+            // so no micro-batch MV can miss a row — and consulting the floor would make a
+            // floored stream table unflushable forever, since a flush is exactly how its
+            // unread offsets become file-backed.
+            intent: EndCapIntent::Reframing,
             ..CommitExtras::default()
         },
         include_framing,
@@ -296,6 +305,18 @@ async fn flush_locked_cdc(
                 lineage: Some(&lineage),
                 end_cap: Some(end_cap.clone()),
                 jobs: &rebuild_jobs,
+                // REFRAMING — the SECOND end-capping flush commit (the sibling of the
+                // non-CDC one above; miss it and a floored CDC table can never flush,
+                // because `EndCapIntent`'s default is `Removing`).
+                //
+                // Reframing holds even though the BASE re-projects only the `+I/+U/-D`
+                // subset (`filter_out_minus_u`), so a `-U` row does leave the base's live
+                // set: the durable CHANGELOG append below retains EVERY row, `-U`
+                // included, and `mv_delta_scan` (`engine-serving/src/mv_delta.rs`) reads
+                // LOG sources only — it never scans a CDC base — so no MV's delta can
+                // miss a row this drops. Every other row is re-projected at the SAME
+                // `(loom_bucket, loom_offset)`.
+                intent: EndCapIntent::Reframing,
                 ..CommitExtras::default()
             },
             &mut tx,

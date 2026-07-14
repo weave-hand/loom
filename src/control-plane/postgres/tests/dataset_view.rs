@@ -9,6 +9,7 @@ use control_plane_core::{
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_mirror::{ensure_table, mark_dropped, next_snapshot};
+use control_plane_postgres::mv_floor::EndCapIntent;
 use control_plane_testkit::{CatalogSeed, SeedSpec, SeededSnapshot, catalog_view_contract};
 
 struct IcebergSeeder {
@@ -97,9 +98,15 @@ async fn dropping_a_base_with_dependent_views_is_refused() {
     // (which `.expect()`s and would panic on the refusal instead of letting us assert it).
     let mut tx = cp.pool().begin().await.expect("begin tx");
     let at = next_snapshot(&mut tx, None).await.expect("next_snapshot");
-    let err = mark_dropped(&mut tx, &base.schema, &base.name, at)
-        .await
-        .expect_err("drop refused while a dependent view exists");
+    let err = mark_dropped(
+        &mut tx,
+        &base.schema,
+        &base.name,
+        at,
+        &EndCapIntent::Destroying { reason: "test" },
+    )
+    .await
+    .expect_err("drop refused while a dependent view exists");
     assert!(
         matches!(err, ControlPlaneError::Conflict(_)),
         "expected Conflict, got {err:?}"

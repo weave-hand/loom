@@ -13,6 +13,7 @@ use time::OffsetDateTime;
 use crate::backend;
 use crate::iceberg_inline::is_duplicate_object_race;
 use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
+use crate::mv_floor::{EndCapIntent, guard_end_cap};
 use sqlx::AssertSqlSafe;
 
 /// A neutral view of one committed Iceberg data file the projection writes.
@@ -373,15 +374,25 @@ pub async fn dropped_table_ids(
 /// not currently live (a concurrent compaction already superseded it), so a raced
 /// compaction fails rather than silently dropping files. `paths` is de-duplicated
 /// before the count check.
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written:
+/// a `Removing` end-cap of offsets a micro-batch MV has not read is REFUSED. Compaction
+/// — this primitive's only production caller — is `Reframing`: it re-projects the same
+/// rows, at the same `(loom_bucket, loom_offset)`, into the coalesced file it adds in the
+/// same transaction, so nothing leaves the live set.
 pub async fn end_cap_files_by_path(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     paths: &[String],
     at: SnapshotId,
+    intent: &EndCapIntent<'_>,
 ) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
+    guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let mut unique: Vec<String> = paths.to_vec();
     unique.sort();
     unique.dedup();
@@ -411,11 +422,20 @@ pub async fn end_cap_files_by_path(
 /// data-file leg of a drop ([`mark_dropped`]) and the whole "expire old files" step
 /// of an overwrite/replace (the overwrite/replace commit primitive `Tx::replace_files`).
 /// Old rows keep their `begin_snapshot < at`, so prior snapshots still time-travel.
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written:
+/// a `Removing` end-cap of offsets a micro-batch MV has not read is REFUSED. A caller
+/// that re-projects the same rows at the same `(loom_bucket, loom_offset)` in the same
+/// commit (flush, compaction) passes `Reframing`; a drop passes `Destroying`.
 pub async fn end_cap_live_data_files(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     at: SnapshotId,
+    intent: &EndCapIntent<'_>,
 ) -> Result<()> {
+    guard_end_cap(&mut *conn, table, table_id, intent).await?;
     sqlx::query!(
         "update iceberg_mirror.data_file set end_snapshot = $2 where table_id = $1 and end_snapshot is null",
         table_id,
@@ -434,11 +454,18 @@ pub async fn end_cap_live_data_files(
 /// Refuses (`ControlPlaneError::Conflict`, naming the dependents) when a catalog view is
 /// still defined over `(ns, name)` — dropping the base out from under a live view would
 /// leave it resolving to nothing. Callers must `drop_view` the dependents first.
+///
+/// `intent` guards the table/column end-cap up front (before any write, mirroring the
+/// other four end-cap primitives) and is forwarded verbatim to the data-file end-cap
+/// below; the production caller (`SqlCatalog::drop_table`) passes `Destroying`, which
+/// bypasses the MV floor ON PURPOSE — the operator dropped the source, so its MVs are
+/// dead by definition (the reclaim warns about them via `mv_floor::stranded_mv_readers`).
 pub async fn mark_dropped(
     conn: &mut PgConnection,
     ns: &str,
     name: &str,
     at: SnapshotId,
+    intent: &EndCapIntent<'_>,
 ) -> Result<()> {
     let dependents = sqlx::query!(
         "select view_schema, view_name from dataset_view.view \
@@ -459,6 +486,18 @@ pub async fn mark_dropped(
             names.join(", ")
         )));
     }
+    let table = TableRef {
+        schema: ns.to_owned(),
+        name: name.to_owned(),
+    };
+    // Guard BEFORE any write, like every other end-cap primitive. When there is no live
+    // mirror row, `live_table_id` returns `None` — nothing to guard and nothing to
+    // end-cap; the `update ... returning` below still runs and fails exactly as it did
+    // before this guard existed (same `RowNotFound` -> `backend()` path), so a caller
+    // that reaches `mark_dropped` without a live row sees no new error path.
+    if let Some(tid) = live_table_id(&mut *conn, ns, name).await? {
+        guard_end_cap(&mut *conn, &table, tid, intent).await?;
+    }
     let tid = sqlx::query_scalar!(
         "update iceberg_mirror.table set end_snapshot = $3 \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null \
@@ -478,7 +517,7 @@ pub async fn mark_dropped(
     .execute(&mut *conn)
     .await
     .map_err(backend)?;
-    end_cap_live_data_files(conn, tid, at).await?;
+    end_cap_live_data_files(conn, &table, tid, at, intent).await?;
     Ok(())
 }
 

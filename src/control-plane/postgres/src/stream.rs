@@ -256,6 +256,7 @@ pub async fn reconcile_stream_mode(
         )));
     }
 
+    pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
     ensure_versioned_orderable(&mut *conn, decl, table).await?;
 
     // The requested stream KIND (log vs cdc). Exhaustive (no `_` arm) so a future
@@ -471,6 +472,116 @@ pub async fn pg_refuse_stream_target(
         )));
     }
     Ok(())
+}
+
+/// Refuse a micro-batch MV registration whose SOURCE is a declared CDC table —
+/// `define_transform`'s half of the CDC/MV mutual exclusion.
+///
+/// A micro-batch MV's source must be a LOG stream: declared, or not yet declared (it becomes
+/// one on its first `?mode=stream` write). `mv_delta_scan` accepts LOG sources only
+/// (`engine-serving/src/mv_delta.rs` — "cdc sources are deferred"), so an MV over a CDC
+/// source could never run: its watermark would never advance, and `mv_floor` would pin the
+/// source at offset 0 forever, permanently declining that table's consolidate fold
+/// (`#iss-end-cap-ignores-mv-floor`). Refuse the registration rather than accept an
+/// unrunnable one.
+///
+/// The symmetric half is [`pg_refuse_cdc_over_mv_source`], and BOTH are required: guarding
+/// only the registration is defeated by ordering — an MV may legitimately be registered over
+/// a source that does not exist yet, and the declaration path is what would then turn that
+/// source into a CDC table. Lift both when `fut-mv-cdc-source` lands.
+///
+/// Runs on the caller's transaction, so the refusal is atomic with the upsert it guards. A
+/// source with no live mirror row, or one with no stream declaration, passes.
+pub(crate) async fn pg_refuse_mv_over_cdc_source(
+    conn: &mut sqlx::PgConnection,
+    source: &TableRef,
+) -> Result<()> {
+    let Some(tid) =
+        crate::iceberg_mirror::live_table_id(&mut *conn, &source.schema, &source.name).await?
+    else {
+        return Ok(());
+    };
+    let Some(meta) = pg_stream_meta(&mut *conn, tid).await? else {
+        return Ok(());
+    };
+    if meta.kind == StreamKind::Cdc {
+        return Err(ControlPlaneError::Validation(format!(
+            "micro-batch source refused: {}.{} is a declared cdc table; a micro-batch \
+             MV reads log streams only (cdc sources are deferred)",
+            source.schema, source.name
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a CDC declaration on a table a micro-batch MV already sources — the mirror image
+/// of [`pg_refuse_mv_over_cdc_source`]. A no-op for any non-CDC `decl`, so
+/// [`reconcile_stream_mode`] can call it unconditionally BEFORE any declare, on the caller's
+/// transaction.
+///
+/// A micro-batch MV reads LOG streams only (`mv_delta_scan` — "cdc sources are deferred"), so
+/// a CDC declaration on a table an MV already sources creates a reader that can never run: its
+/// watermark never advances, `mv_floor` pins every bucket at 0 forever, and the table's
+/// consolidate fold declines on every attempt for good (`#iss-end-cap-ignores-mv-floor`).
+///
+/// **Both halves are required.** Guarding only `define_transform` is defeated by ordering — an
+/// MV may legitimately be registered over a source that does not exist yet (it becomes a log
+/// stream on its first `?mode=stream` write), and THIS is the path that then turns that source
+/// into a CDC table. Lift both when `fut-mv-cdc-source` lands.
+pub(crate) async fn pg_refuse_cdc_over_mv_source(
+    conn: &mut sqlx::PgConnection,
+    decl: &StreamDecl,
+    table: &TableRef,
+) -> Result<()> {
+    if !matches!(decl, StreamDecl::Cdc { .. }) {
+        return Ok(());
+    }
+    let readers = crate::transforms::pg_micro_batch_readers(&mut *conn, table).await?;
+    if !readers.is_empty() {
+        return Err(ControlPlaneError::Validation(format!(
+            "cdc declaration refused: {}.{} is sourced by micro-batch MV(s) {readers:?}; \
+             a micro-batch MV reads log streams only (cdc sources are deferred)",
+            table.schema, table.name
+        )));
+    }
+    Ok(())
+}
+
+/// The stream declaration of a typed UPDATE/DELETE's target, refusing a declared LOG table
+/// outright. Returns the meta the caller then dispatches its CDC-vs-plain emit on.
+///
+/// A declared LOG table has no identity semantics — it is an offset-framed, replayable event
+/// log (the substrate `mv_delta_scan` reads; see `docs/system-capabilities/stream.md`: "No
+/// identity requirement; appends only"). A typed UPDATE/DELETE there would write an UNFRAMED
+/// delta row (NULL `loom_bucket`/`loom_offset`), set `has_shadow`, and hand the table to
+/// `consolidate_table`'s COW arm, which folds by identity: it end-caps every live file and
+/// re-projects only the fold winners, destroying offsets no MV has read. Refused here — the
+/// ONE point where all four routes into that state converge (base-bound, view-bound,
+/// define-then-declare, declare-then-define).
+///
+/// `write_inline_delta` calls this BEFORE `ensure_inline_schema`, not after the CAS: a log
+/// table declared AT LAND time carries the framing columns in its live mirror column set, so
+/// `full_live_column_specs` hands `inline_ddl` a list holding
+/// `loom_change_kind`/`loom_bucket`/`loom_offset` — which that DDL also adds itself, and the
+/// create fails with `column "loom_change_kind" specified more than once` (a Backend 500).
+/// Refusing first turns BOTH shapes — declared-at-land and declared-after-land — into the
+/// same 422. In-tx either way, so nothing is written and `has_shadow` is never set. Same
+/// `Validation` + stable prefix as the other write-path refusals
+/// ([`pg_refuse_stream_target`]).
+pub(crate) async fn pg_stream_meta_for_typed_write(
+    conn: &mut sqlx::PgConnection,
+    table: &TableRef,
+    table_id: i64,
+) -> Result<Option<StreamMeta>> {
+    let meta = pg_stream_meta(&mut *conn, table_id).await?;
+    if matches!(&meta, Some(m) if m.kind == StreamKind::Log) {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream-table target refused: {}.{} is a declared log stream table; \
+             a typed UPDATE/DELETE would fold its offset-framed log by identity",
+            table.schema, table.name
+        )));
+    }
+    Ok(meta)
 }
 
 /// Declare a PK/CDC table (idempotent, first-wins on all fields).

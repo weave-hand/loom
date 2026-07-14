@@ -592,23 +592,110 @@ loom_fixture_test(
     ],
 )
 
-loom_fixture_test(
-    name = "mv-floor",
-    crate = "mv_floor",
-    srcs = ["tests/mv_floor.rs"],
-    crate_root = "tests/mv_floor.rs",
+rust_library(
+    name = "end-cap-seed",
+    crate = "end_cap_seed",
+    srcs = ["tests/end_cap_seed.rs"],
+    crate_root = "tests/end_cap_seed.rs",
     deps = [
         "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
         "//third-party:arrow-array",
         "//third-party:arrow-schema",
-        # The dropped-source test (Task 2) drops through the iceberg Catalog trait.
-        "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+    # PUBLIC so out-of-package fixture tests can reuse the seeds — the CDC consolidate
+    # fold's floor tests live in `//src/services/engine-serving`, exactly as query-api's
+    # e2e tests reuse `//src/services/query-api:e2e-support`.
+    visibility = ["PUBLIC"],
+)
+
+loom_fixture_test(
+    name = "stream-write-refuse",
+    crate = "stream_write_refuse",
+    srcs = ["tests/stream_write_refuse.rs"],
+    crate_root = "tests/stream_write_refuse.rs",
+    deps = [
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "cdc-parquet-typed-delta",
+    crate = "cdc_parquet_typed_delta",
+    srcs = ["tests/cdc_parquet_typed_delta.rs"],
+    crate_root = "tests/cdc_parquet_typed_delta.rs",
+    deps = [
+        "//src/testing:seed",
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "end-cap-intent",
+    crate = "end_cap_intent",
+    srcs = ["tests/end_cap_intent.rs"],
+    crate_root = "tests/end_cap_intent.rs",
+    deps = [
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "mv-source-refuse",
+    crate = "mv_source_refuse",
+    srcs = ["tests/mv_source_refuse.rs"],
+    crate_root = "tests/mv_source_refuse.rs",
+    deps = [
+        "//src/testing:seed",
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "mv-floor",
+    crate = "mv_floor",
+    srcs = ["tests/mv_floor.rs"],
+    crate_root = "tests/mv_floor.rs",
+    deps = [
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        # The dropped-source test (Task 2) drops through the iceberg Catalog trait.
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:uuid",
     ],

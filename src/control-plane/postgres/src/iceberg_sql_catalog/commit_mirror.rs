@@ -12,6 +12,7 @@ use control_plane_core::{LineageEvent, SnapshotId, TableRef};
 
 use crate::iceberg_mirror::{ProjectedColumn, ProjectedFile};
 use crate::lineage::pg_emit;
+use crate::mv_floor::EndCapIntent;
 
 use super::catalog::{
     CATALOG_FIELD_CATALOG_NAME, CATALOG_FIELD_METADATA_LOCATION_PROP,
@@ -57,6 +58,14 @@ pub struct CommitExtras<'a> {
     /// a spurious empty seed plus the commit's. `None` (the `Default`) allocates a
     /// fresh snapshot, exactly as before this field existed (every other caller).
     pub reuse_snapshot: Option<SnapshotId>,
+    /// WHY this commit end-caps — both its `overwrite` file/inline caps (applied by
+    /// `write_mirror`) and its targeted `end_cap` (applied by [`apply_commit_extras`]).
+    /// Checked against the MV read-position floor (`crate::mv_floor::guard_end_cap`).
+    /// Defaults to `Removing` — the fail-safe, so a new commit path that starts
+    /// end-capping without thinking gets the guard. **Flush overrides it to
+    /// `Reframing`**: it end-caps inline rows and re-projects those SAME rows into live
+    /// Parquet at the SAME `(loom_bucket, loom_offset)`, so no MV can miss one.
+    pub intent: EndCapIntent<'a>,
 }
 
 /// Mark inline rows `loom_row_id = ANY(row_ids)` of `iceberg_mirror.inline_<table_id>`
@@ -78,16 +87,27 @@ pub struct InlineEndCap<'a> {
 /// `extras.overwrite` is NOT applied here: overwrite ordering (end-cap the live
 /// files BEFORE projecting the new ones) belongs to the projection step
 /// (`write_mirror` / `register_files`), which runs before this.
+///
+/// `table` is the identity the targeted inline end-cap is guarded against
+/// (`extras.intent` vs the MV read-position floor); both callers already hold it.
 pub(crate) async fn apply_commit_extras(
     conn: &mut sqlx::PgConnection,
+    table: &TableRef,
     at: SnapshotId,
     extras: &CommitExtras<'_>,
 ) -> control_plane_core::Result<()> {
     if let Some(cap) = &extras.end_cap {
         // Retire the flushed inline rows at the same snapshot the new data
         // becomes live, so reads never double-serve or drop them.
-        crate::iceberg_inline::end_cap_inline_rows_by_id(conn, cap.table_id, cap.row_ids, at)
-            .await?;
+        crate::iceberg_inline::end_cap_inline_rows_by_id(
+            conn,
+            table,
+            cap.table_id,
+            cap.row_ids,
+            at,
+            &extras.intent,
+        )
+        .await?;
     }
     if let Some(ev) = extras.lineage {
         pg_emit(&mut *conn, ev).await?;
@@ -146,8 +166,9 @@ impl SqlCatalog {
         clippy::too_many_arguments,
         reason = "one cohesive commit-projection call: the tx + table identity + \
                   staged snapshot + precomputed columns/files + overwrite mode + \
-                  blanket-inline-cap decision, plus the optional reuse-snapshot for \
-                  the atomic stream direct-write path"
+                  blanket-inline-cap decision + the end-cap intent those two caps are \
+                  guarded against, plus the optional reuse-snapshot for the atomic \
+                  stream direct-write path"
     )]
     async fn write_mirror(
         &self,
@@ -158,6 +179,7 @@ impl SqlCatalog {
         files: &[ProjectedFile],
         overwrite: bool,
         blanket_inline_cap: bool,
+        intent: &EndCapIntent<'_>,
         reuse_snapshot: Option<SnapshotId>,
     ) -> control_plane_core::Result<SnapshotId> {
         use crate::iceberg_mirror::{
@@ -167,6 +189,12 @@ impl SqlCatalog {
 
         let ns = ident.namespace().join(".");
         let name = ident.name();
+        // The identity the end-caps below (and the compaction trigger at the tail) are
+        // keyed by — built once from the ident this commit is for.
+        let table = TableRef {
+            schema: ns.clone(),
+            name: name.to_owned(),
+        };
 
         let conn = &mut **tx;
         // The atomic direct-write stream path pre-allocated the snapshot (and the
@@ -187,14 +215,19 @@ impl SqlCatalog {
         // (also `end_snapshot is null`, also `table_id = tid`), so they stay live; only
         // the prior files get `end_snapshot = at`. Ordering is load-bearing — end-capping
         // after `project_files` would wrongly retire the just-projected files too.
+        //
+        // Both caps are guarded by `intent` (the MV read-position floor): a `Removing`
+        // overwrite of offsets a micro-batch MV has not read is REFUSED, rolling the
+        // caller's commit tx back.
         if overwrite {
-            end_cap_live_data_files(conn, tid, at).await?;
+            end_cap_live_data_files(conn, &table, tid, at, intent).await?;
             // A targeted InlineEndCap riding this same commit supersedes the
             // blanket cap: the caller consumed a known inline row set (the
             // consolidation fold) and everything else must SURVIVE — a delta
             // committed mid-consolidation keeps shadowing the new base.
             if blanket_inline_cap {
-                crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
+                crate::iceberg_inline::end_cap_live_inline_rows(conn, &table, tid, at, intent)
+                    .await?;
             }
         }
         reconcile_and_project(conn, tid, at, columns).await?;
@@ -206,10 +239,6 @@ impl SqlCatalog {
         // COW overwrite, and the stream direct write. `None` (default) is a
         // no-op, preserving today's behavior byte-identically.
         if let Some(cfg) = &self.compact_trigger {
-            let table = TableRef {
-                schema: ns.clone(),
-                name: name.to_string(),
-            };
             crate::iceberg_compact::maybe_enqueue_compact(conn, &table, cfg).await?;
         }
         Ok(at)
@@ -429,12 +458,17 @@ impl SqlCatalog {
                 mirror_files,
                 extras.overwrite,
                 blanket_inline_cap,
+                &extras.intent,
                 extras.reuse_snapshot,
             )
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
-        apply_commit_extras(tx, at, extras)
+        let table = TableRef {
+            schema: table_ident.namespace().join("."),
+            name: table_ident.name().to_owned(),
+        };
+        apply_commit_extras(tx, &table, at, extras)
             .await
             .map_err(|e| Error::new(ErrorKind::Unexpected, e.to_string()))?;
 
