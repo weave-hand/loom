@@ -72,7 +72,10 @@ validated before any row is written:
   sub-branch's changelog writes (`ensure_table`/`pg_set_changelog_table_id`) —
   a rejected declare performs no writes at all, where previously a losing CDC
   declare could stamp `changelog_table_id` onto the winner's log row before
-  being rejected.
+  being rejected. Because `ensure_table_witnessed` serializes the mirror-row
+  create via a partial unique index, no two production transactions can
+  actually contend on this path any more — it is defense-in-depth, reached
+  only by tests driving the seam directly with a synthetic `tid`.
 
 Declaration runs **inside the write's own transaction**, so it commits iff the
 write does. For a fresh CDC declaration it also creates and registers the

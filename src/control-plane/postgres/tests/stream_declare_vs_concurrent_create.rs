@@ -73,6 +73,7 @@ async fn await_ensure_table_blocked(pool: &PgPool) {
             "select count(*) from pg_stat_activity \
              where datname = current_database() \
                and wait_event_type = 'Lock' \
+               and wait_event = 'transactionid' \
                and query like 'insert into iceberg_mirror.table%'",
         )
         .fetch_one(pool)
@@ -151,7 +152,4 @@ async fn stream_declare_losing_the_create_race_cannot_convert_the_winners_table(
         "a stream declare that LOSES the create race must see the winner's table as \
          pre-existing and refuse the batch->stream conversion, got {res:?}"
     );
-
-    drop(wh);
-    drop(catalog);
 }

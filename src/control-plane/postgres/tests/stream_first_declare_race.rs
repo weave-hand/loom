@@ -417,7 +417,8 @@ async fn cdc_first_declare_losing_to_different_bucket_key_winner_is_validation_e
 
     let res = out.res;
     assert!(
-        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different bucket_key")),
+        matches!(&res, Err(ControlPlaneError::Validation(msg))
+                 if msg.contains("declared concurrently with a different bucket_key")),
         "a cdc first-declare losing to a winner with a DIFFERENT bucket_key and the \
          same count/merge_engine must be rejected by the FIRST-DECLARE arm, got {res:?}"
     );

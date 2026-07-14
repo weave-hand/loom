@@ -214,7 +214,11 @@ async fn ensure_versioned_orderable(
 /// re-read's rejection MUST precede the CDC changelog writes below it: those are
 /// unconditional writes to the winner's registry row, so a rejected declare would
 /// otherwise mutate it. Runs entirely on the caller's transaction so the declare
-/// commits iff the write does.
+/// commits iff the write does. Because `ensure_table_witnessed` now serializes the
+/// mirror-row create via a partial unique index, no two production transactions
+/// can actually reach this contended `on conflict do nothing` path any more — it
+/// is defense-in-depth today, exercised only by tests driving this seam directly
+/// with a synthetic `tid`.
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
 /// (the batch→stream conversion guard). `tid`: the mirror table id (already
