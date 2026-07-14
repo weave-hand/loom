@@ -172,3 +172,126 @@ async fn count_mismatch_against_an_existing_row_stays_conflict() {
     );
     drop(tx.rollback().await);
 }
+
+/// Barrier: block until some backend in this database is waiting on another
+/// transaction's lock inside a `stream.stream_table` insert — i.e. the loser's
+/// `insert … on conflict do nothing` is blocked on the uncommitted winner.
+/// `wait_event_type='Lock' / wait_event='transactionid'` is exactly what that
+/// insert waits on against an uncommitted conflicting row (verified against the
+/// pinned PG 17.9). Polls `pg_stat_activity`; panics rather than hanging.
+///
+/// Load-bearing: only once the loser is observably blocked may the caller commit
+/// the winner. Commit it any earlier and the loser's `pg_stream_meta` read at the
+/// top of `reconcile_stream_mode` sees the winner's row, routing it into the
+/// (already-guarded) count-equal arm — a green test for the wrong reason.
+///
+/// Reads another backend's `query` column, which Postgres exposes only to a
+/// superuser or a `pg_read_all_stats` member. The fixture connects as `postgres`
+/// (superuser — `fixture.rs:402`), so this holds; if that ever changes, the poll
+/// would spin and panic. The privilege-free equivalent, if it comes to that, is
+/// `where cardinality(pg_blocking_pids(pid)) > 0` (in these fresh single-purpose
+/// databases only the loser can be blocked, so it stays deterministic).
+async fn await_declare_blocked(pool: &PgPool) {
+    for _ in 0..600 {
+        let blocked: i64 = sqlx::query_scalar(
+            "select count(*) from pg_stat_activity \
+             where datname = current_database() \
+               and wait_event_type = 'Lock' \
+               and wait_event = 'transactionid' \
+               and query like 'insert into stream.stream_table%'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("pg_stat_activity barrier probe");
+        if blocked >= 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the losing declare never blocked on the winner's transactionid lock");
+}
+
+/// THE DEFECT: a log first-declare that loses the `on conflict do nothing` race
+/// to a CDC first-declare with the SAME bucket count must be rejected. Before the
+/// fix the re-read compares only the count, so the log write proceeds against a
+/// `kind='cdc'` row — log framing stamped into CDC storage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn log_first_declare_losing_to_cdc_winner_is_validation_error() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    // A: the CDC winner, held UNCOMMITTED.
+    let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id")).await;
+
+    // B: the log loser. Its `pg_stream_meta` read returns None (A is uncommitted), so
+    // it takes the (Some, None) first-declare arm, and its `pg_declare_stream` insert
+    // then BLOCKS on A's transactionid lock.
+    let pool_b = pool.clone();
+    let loser = tokio::spawn(async move {
+        let mut tx = pool_b.begin().await.expect("begin loser tx");
+        let res = reconcile_stream_mode(
+            &mut tx,
+            TID,
+            &StreamDecl::Log(2),
+            false,
+            &tref(),
+            SnapshotId(1),
+        )
+        .await;
+        drop(tx.rollback().await);
+        res
+    });
+
+    await_declare_blocked(&pool).await;
+    winner.commit().await.expect("commit winner");
+
+    let res = loser.await.expect("join loser");
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Validation(msg))
+                 if msg.contains("declared concurrently with a different stream kind")),
+        "a log first-declare losing to a cdc winner with the same count must be rejected \
+         by the FIRST-DECLARE arm, got {res:?}"
+    );
+}
+
+/// Symmetric: a CDC first-declare losing to a LOG winner with the same count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let winner = insert_stream_row(&pool, TID, 2, "log", None).await;
+
+    let pool_b = pool.clone();
+    let loser = tokio::spawn(async move {
+        let mut tx = pool_b.begin().await.expect("begin loser tx");
+        let res = reconcile_stream_mode(
+            &mut tx,
+            TID,
+            &StreamDecl::Cdc {
+                buckets: 2,
+                bucket_key: "id".into(),
+                merge_engine: MergeEngine::LastRow,
+            },
+            false,
+            &tref(),
+            SnapshotId(1),
+        )
+        .await;
+        drop(tx.rollback().await);
+        res
+    });
+
+    await_declare_blocked(&pool).await;
+    winner.commit().await.expect("commit winner");
+
+    let res = loser.await.expect("join loser");
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Validation(msg))
+                 if msg.contains("declared concurrently with a different stream kind")),
+        "a cdc first-declare losing to a log winner with the same count must be rejected \
+         by the FIRST-DECLARE arm, got {res:?}"
+    );
+}

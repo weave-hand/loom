@@ -47,9 +47,10 @@ pub enum StreamDecl {
 /// → `Validation`.
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
 /// it declares the stream (as a log or cdc table, per `decl`) and honours the
-/// recorded count (a concurrent first-writer may have won the declare with a
-/// different count — re-read and reject on mismatch). Runs entirely on the
-/// caller's transaction so the declare commits iff the write does.
+/// recorded count (a concurrent first-writer may have won the declare — re-read
+/// what was recorded and reject a disagreeing bucket count (`Conflict`) or
+/// stream kind (`Validation`)). Runs entirely on the caller's transaction so the
+/// declare commits iff the write does.
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
 /// (the batch→stream conversion guard). `tid`: the mirror table id (already
@@ -238,24 +239,44 @@ pub async fn reconcile_stream_mode(
                     pg_declare_stream(&mut *conn, tid, n).await?;
                 }
             }
-            // A concurrent first-writer may have won the declare with a different
-            // count (our ON CONFLICT DO NOTHING then no-ops). Re-read the recorded
-            // count and honour it, so the rows we stamp always agree with
-            // stream_table.bucket_count.
-            let stored = pg_stream_bucket_count(&mut *conn, tid)
-                .await?
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        "stream_table row missing immediately after declare".into(),
-                    )
-                })?;
-            if stored != n {
+            // A concurrent first-writer may have won the declare (our ON CONFLICT DO
+            // NOTHING then no-ops). Re-read what was ACTUALLY recorded and honour it,
+            // so the rows we stamp always agree with the registry — checking KIND as
+            // well as count. Re-reading only the count (as this arm did before
+            // iss-stream-first-declare-race-kind) let a log declare that lost the race
+            // to a same-count cdc declare proceed against a `kind='cdc'` row, stamping
+            // log framing into CDC storage — exactly what the count-equal arm above
+            // rejects. `pg_stream_meta` is the same statement read at the top of this
+            // function, so this adds no new SQL.
+            let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    "stream_table row missing immediately after declare".into(),
+                )
+            })?;
+            if stored.bucket_count != n {
                 return Err(ControlPlaneError::Conflict(format!(
-                    "stream bucket count mismatch for {}.{}: requested {n}, table has {stored}",
+                    "stream bucket count mismatch for {}.{}: requested {n}, table has {}",
+                    table.schema, table.name, stored.bucket_count
+                )));
+            }
+            let requested_kind = match decl {
+                StreamDecl::Cdc { .. } => StreamKind::Cdc,
+                // `Log` and `None` alike declare a log table here — `None` cannot
+                // reach this arm (it has no `requested` count), so this is the Log
+                // case. A future StreamDecl variant must extend this mapping.
+                StreamDecl::Log(_) | StreamDecl::None => StreamKind::Log,
+            };
+            if stored.kind != requested_kind {
+                // Distinct wording from the count-equal arm's "already declared with a
+                // different stream kind": these two rejections are otherwise
+                // indistinguishable, and the race test asserts on the message to prove
+                // the FIRST-DECLARE arm fired.
+                return Err(ControlPlaneError::Validation(format!(
+                    "cannot declare {}.{}: declared concurrently with a different stream kind",
                     table.schema, table.name
                 )));
             }
-            Some(stored)
+            Some(stored.bucket_count)
         }
         (None, existing) => existing,
     };
