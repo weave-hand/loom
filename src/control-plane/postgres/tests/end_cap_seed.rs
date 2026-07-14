@@ -257,7 +257,13 @@ pub fn framed_cdc_batch(id: i64, val: i64, bucket: i32, offset: i64) -> RecordBa
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("val", DataType::Int64, false),
-        Field::new("loom_change_kind", DataType::Utf8, true),
+        // NOT nullable — `framing_column_specs` (`iceberg_landing.rs:662-665`) declares it
+        // `nullable: false`, as do every provider-schema builder (`serving.rs`, `feed.rs`)
+        // and the sibling fixture `tests/stream_overwrite_framing.rs:43`. `loom_bucket` /
+        // `loom_offset` below ARE nullable. Getting this wrong does not panic
+        // `RecordBatch::try_new` (it only checks arrays, not schema nullability), but any
+        // consumer asserting schema equality against the production framing shape fails.
+        Field::new("loom_change_kind", DataType::Utf8, false),
         Field::new("loom_bucket", DataType::Int32, true),
         Field::new("loom_offset", DataType::Int64, true),
     ]));

@@ -470,21 +470,7 @@ async fn delete_end_capped_inline_rows(
     let inline = inline_table_name(tid);
     let guard = match floor {
         None => String::new(),
-        Some(f) => {
-            let clauses: Vec<String> = f
-                .per_bucket
-                .iter()
-                .filter(|(_, offset)| **offset > 0)
-                .map(|(bucket, offset)| {
-                    format!("(loom_bucket = {bucket} and loom_offset < {offset})")
-                })
-                .collect();
-            if clauses.is_empty() {
-                " and false".to_owned()
-            } else {
-                format!(" and ({})", clauses.join(" or "))
-            }
-        }
+        Some(f) => format!(" and {}", f.below_floor_pred()),
     };
     let rows = sqlx::query(AssertSqlSafe(format!(
         "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard}"

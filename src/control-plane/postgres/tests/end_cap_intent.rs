@@ -182,3 +182,86 @@ async fn a_caught_up_mv_does_not_block_removal() {
         "a fully-consumed source blocks nothing"
     );
 }
+
+/// The INLINE tier, genuinely exercised: `inline = true` keeps all 6 rows as LIVE
+/// rows in `inline_<tid>` (no Parquet files at all, so the file tier finds nothing
+/// live and falls through). The MV has read 0,1,2; offsets 3,4,5 are still live
+/// inline rows above the floor, so `removal_blocked` must hit the `select
+/// exists(...)` query against `inline_<tid>` — not the `inline_table_exists`
+/// early-return — and find a blocking row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_tier_blocks_above_the_floor() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // inline = true => rows stay inline (never flushed to Parquet), so this test
+    // exercises the INLINE tier of `removal_blocked`, not the file tier.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
+
+    let mut conn = s.pool.acquire().await.expect("conn");
+    assert!(
+        removal_blocked(&mut conn, &s.src, s.tid)
+            .await
+            .expect("removal_blocked")
+            .is_some(),
+        "offsets 3..6 are still live inline rows above the floor — a removal must be blocked"
+    );
+
+    let err = guard_end_cap(&mut conn, &s.src, s.tid, &EndCapIntent::Removing)
+        .await
+        .expect_err("a Removing end-cap above the floor must be refused (inline tier)");
+    match err {
+        ControlPlaneError::Validation(m) => {
+            assert!(
+                m.starts_with("mv-floor refuses end-cap:"),
+                "unexpected message: {m}"
+            );
+        }
+        other => panic!("expected Validation, got {other:?}"),
+    }
+}
+
+/// The INLINE tier's other branch: watermark caught up to 6 of 6 means every live
+/// inline row is strictly below its bucket's floor, so the `select exists(...)`
+/// query against `inline_<tid>` must run and find NOTHING blocking.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_tier_does_not_block_at_the_floor() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 6).await;
+
+    let mut conn = s.pool.acquire().await.expect("conn");
+    assert!(
+        removal_blocked(&mut conn, &s.src, s.tid)
+            .await
+            .expect("removal_blocked")
+            .is_none(),
+        "every live inline row is below the floor — nothing should block"
+    );
+    guard_end_cap(&mut conn, &s.src, s.tid, &EndCapIntent::Removing)
+        .await
+        .expect("a fully-consumed inline source is never refused");
+}

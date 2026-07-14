@@ -60,6 +60,34 @@ impl MvFloor {
     pub fn min_offset(&self) -> i64 {
         self.per_bucket.values().copied().min().unwrap_or(0)
     }
+
+    /// The bare OR-chain predicate selecting inline rows STRICTLY BELOW this floor,
+    /// per bucket — `(loom_bucket = B and loom_offset < F)` for each bucket whose
+    /// floor is above 0 (a bucket at floor 0 contributes no clause: nothing in it is
+    /// reclaimable), joined with `or`, parenthesized; or the bare string `"false"`
+    /// when every bucket's floor is 0.
+    ///
+    /// This is the SHARED derivation between GC's `delete_end_capped_inline_rows`
+    /// (`iceberg_gc.rs`) and the end-cap guard's `removal_blocked` below — the two
+    /// MUST stay in lockstep, since GC reclaims exactly what the guard calls
+    /// below-floor; if they ever diverged, GC could reclaim rows the guard is still
+    /// protecting. Callers splice the returned string into their own dynamic SQL
+    /// (each wraps it differently — see the two call sites); the bucket/offset
+    /// literals come from our own mirror, never from user input.
+    #[must_use]
+    pub fn below_floor_pred(&self) -> String {
+        let clauses: Vec<String> = self
+            .per_bucket
+            .iter()
+            .filter(|(_, offset)| **offset > 0)
+            .map(|(bucket, offset)| format!("(loom_bucket = {bucket} and loom_offset < {offset})"))
+            .collect();
+        if clauses.is_empty() {
+            "false".to_owned()
+        } else {
+            format!("({})", clauses.join(" or "))
+        }
+    }
 }
 
 /// The reclaim floor for the live incarnation `tid` of `table`, or `None` — the
@@ -173,18 +201,23 @@ async fn watermark_mvs(conn: &mut PgConnection, tid: i64) -> Result<Vec<String>>
     .map_err(backend)
 }
 
-/// The stable prefix of the seam's refusal message. `consolidate_table` matches on it
-/// to turn a refusal into a clean skip-and-re-arm rather than a queue-poisoning error
-/// (the gRPC status code does not survive the wire — `worker/src/stream_mv.rs`'s
-/// `classify_*` uses the same idiom).
+/// The stable prefix of the seam's refusal message (`ControlPlaneError::Validation`,
+/// see [`guard_end_cap`]). Not yet matched on anywhere in the tree: no end-cap-issuing
+/// path calls `guard_end_cap` yet, so this refusal never fires in production today.
+/// The intended future consumer is `consolidate_table`, which should turn a refusal
+/// into a clean skip-and-re-arm rather than a queue-poisoning error (the gRPC status
+/// code does not survive the wire — `worker/src/stream_mv.rs`'s `classify_*` uses the
+/// same idiom) — that wiring is a later task, tracked outside this module.
 pub const MV_FLOOR_REFUSAL_PREFIX: &str = "mv-floor refuses end-cap:";
 
-/// Why a caller is end-capping. Required by every end-cap primitive, so a future
-/// retention path cannot end-cap an MV's unread offsets by simply not thinking about
-/// it — the type system makes it decide. Intent CANNOT be inferred from the SQL: flush
-/// and compaction end-cap offsets ABOVE the floor and re-project those same rows at the
-/// same `(bucket, offset)`, so a blanket "refuse any end-cap at or above the floor"
-/// would break them.
+/// Why a caller is end-capping, for the [`guard_end_cap`]/[`removal_blocked`] seam
+/// below. Intent CANNOT be inferred from the SQL: flush and compaction end-cap offsets
+/// ABOVE the floor and re-project those same rows at the same `(bucket, offset)`, so a
+/// blanket "refuse any end-cap at or above the floor" would break them — the type
+/// forces a caller to say which case it is. Not yet threaded through every (or any)
+/// end-cap-issuing path in the tree; wiring each of them to call `guard_end_cap` with
+/// the right intent is later work, so today the type exists but nothing requires a
+/// caller to construct or pass it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndCapIntent<'a> {
     /// The offsets SURVIVE: the same rows are re-projected into the new live set at the
@@ -259,19 +292,7 @@ pub async fn removal_blocked(
     if !crate::iceberg_inline::inline_table_exists(&mut *conn, tid).await? {
         return Ok(None);
     }
-    let below: String = {
-        let clauses: Vec<String> = floor
-            .per_bucket
-            .iter()
-            .filter(|(_, offset)| **offset > 0)
-            .map(|(bucket, offset)| format!("(loom_bucket = {bucket} and loom_offset < {offset})"))
-            .collect();
-        if clauses.is_empty() {
-            "false".to_owned()
-        } else {
-            format!("({})", clauses.join(" or "))
-        }
-    };
+    let below = floor.below_floor_pred();
     let inline = crate::iceberg_inline::inline_table_name(tid);
     let blocking_row: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "select exists(select 1 from {inline} \
