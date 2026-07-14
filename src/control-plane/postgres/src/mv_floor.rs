@@ -223,10 +223,25 @@ pub const MV_FLOOR_REFUSAL_PREFIX: &str = "mv-floor refuses end-cap:";
 /// `guard_end_cap` with it before writing, so every caller must construct and pass one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EndCapIntent<'a> {
-    /// The offsets SURVIVE: the same rows are re-projected into the new live set at the
-    /// SAME `(bucket, offset)`. Flush (inline rows → live Parquet) and plain-coalesce
-    /// compaction (small files → one big file). No floor consult — no MV can miss a row
-    /// that never left the live set.
+    /// **No row an MV can read leaves the live set.** No floor consult.
+    ///
+    /// The usual shape is re-projection: the same rows land back in the new live set at
+    /// the SAME `(bucket, offset)` — flush (inline rows → live Parquet), plain-coalesce
+    /// compaction (small files → one big file).
+    ///
+    /// **Read the invariant literally: it is about what an MV can READ, not about
+    /// re-projecting every row.** The CDC base flush is `Reframing` while dropping the
+    /// `-U` before-images from the base (`iceberg_flush::flush_locked_cdc` re-projects
+    /// only the `+I/+U/-D` subset), and that is sound for a reason specific to CDC: the
+    /// durable changelog retains every `-U` in the SAME transaction, and `mv_delta_scan`
+    /// reads LOG sources only (`engine-serving/src/mv_delta.rs` — it hard-refuses a CDC
+    /// source), so no MV can ever scan a CDC base.
+    ///
+    /// So do NOT reason "flush is `Reframing`, therefore a subset re-projection is always
+    /// fine". On a LOG stream table — the one an MV actually replays — dropping any live
+    /// row IS a removal, and the intent is [`Self::Removing`]. If you are adding a
+    /// base-rewriting path, the question to answer is not "do I re-project?" but "can any
+    /// MV still read every offset I am retiring?".
     Reframing,
     /// The offsets LEAVE the live set. Must clear the MV floor. The DEFAULT, so a new
     /// caller that starts end-capping without thinking gets the guard.
