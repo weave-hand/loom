@@ -48,8 +48,9 @@ pub enum StreamDecl {
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
 /// it declares the stream (as a log or cdc table, per `decl`) and honours the
 /// recorded count (a concurrent first-writer may have won the declare — re-read
-/// what was recorded and reject a disagreeing bucket count (`Conflict`) or
-/// stream kind (`Validation`)). Runs entirely on the caller's transaction so the
+/// what was recorded and reject a disagreeing bucket count (`Conflict`), stream
+/// kind (`Validation`), or — for a `Cdc` request — merge_engine (`Conflict`) or
+/// bucket_key (`Validation`)). Runs entirely on the caller's transaction so the
 /// declare commits iff the write does.
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
@@ -131,6 +132,20 @@ pub async fn reconcile_stream_mode(
             )));
         }
     }
+
+    // The requested stream KIND (log vs cdc), hoisted above the declare `match`
+    // so both it and the post-declare re-read's kind check (below) derive from
+    // the same exhaustive mapping and fail closed together (iss-review finding
+    // 2): a future `StreamDecl` variant that adds no arm here is a compile
+    // error, not a silently-wrong log declare.
+    let requested_kind = match decl {
+        StreamDecl::Cdc { .. } => StreamKind::Cdc,
+        // `Log` and `None` alike declare a log table here — `None` cannot
+        // reach the first-declare arm below (it has no `requested` count), so
+        // this is the Log case. A future StreamDecl variant must extend this
+        // mapping.
+        StreamDecl::Log(_) | StreamDecl::None => StreamKind::Log,
+    };
 
     let existing_meta = pg_stream_meta(&mut *conn, tid).await?;
     let existing = existing_meta.as_ref().map(|m| m.bucket_count);
@@ -235,19 +250,31 @@ pub async fn reconcile_stream_mode(
                     .await?;
                     pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
                 }
-                _ => {
+                // Spelled out (not `_`) so a future `StreamDecl` variant fails closed
+                // the same way `requested_kind` above does: an exhaustive match here
+                // means adding a variant is a compile error, not a silent
+                // declare-as-log (iss-review finding 2).
+                StreamDecl::Log(_) | StreamDecl::None => {
                     pg_declare_stream(&mut *conn, tid, n).await?;
                 }
             }
             // A concurrent first-writer may have won the declare (our ON CONFLICT DO
             // NOTHING then no-ops). Re-read what was ACTUALLY recorded and honour it,
-            // so the rows we stamp always agree with the registry — checking KIND as
-            // well as count. Re-reading only the count (as this arm did before
+            // so the rows we stamp always agree with the registry — checking bucket
+            // count, KIND, and (for a Cdc request) merge_engine and bucket_key.
+            // Re-reading only the count (as this arm did before
             // iss-stream-first-declare-race-kind) let a log declare that lost the race
             // to a same-count cdc declare proceed against a `kind='cdc'` row, stamping
             // log framing into CDC storage — exactly what the count-equal arm above
             // rejects. `pg_stream_meta` is the same statement read at the top of this
             // function, so this adds no new SQL.
+            //
+            // Load-bearing isolation assumption: under READ COMMITTED (Postgres's
+            // default, and what this pool runs), each statement gets a fresh
+            // snapshot — so this re-read, issued after the loser's blocked insert is
+            // unblocked by the winner's commit, is guaranteed to observe the
+            // just-committed winner's row rather than the pre-commit snapshot the
+            // top-of-function read saw.
             let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
                 ControlPlaneError::Backend(
                     "stream_table row missing immediately after declare".into(),
@@ -259,22 +286,47 @@ pub async fn reconcile_stream_mode(
                     table.schema, table.name, stored.bucket_count
                 )));
             }
-            let requested_kind = match decl {
-                StreamDecl::Cdc { .. } => StreamKind::Cdc,
-                // `Log` and `None` alike declare a log table here — `None` cannot
-                // reach this arm (it has no `requested` count), so this is the Log
-                // case. A future StreamDecl variant must extend this mapping.
-                StreamDecl::Log(_) | StreamDecl::None => StreamKind::Log,
-            };
             if stored.kind != requested_kind {
                 // Distinct wording from the count-equal arm's "already declared with a
                 // different stream kind": these two rejections are otherwise
                 // indistinguishable, and the race test asserts on the message to prove
-                // the FIRST-DECLARE arm fired.
+                // the FIRST-DECLARE arm fired. Names both kinds (iss-review finding 3).
                 return Err(ControlPlaneError::Validation(format!(
-                    "cannot declare {}.{}: declared concurrently with a different stream kind",
-                    table.schema, table.name
+                    "cannot declare {}.{} as a {requested_kind:?} table: declared concurrently \
+                     with a different stream kind (recorded {:?})",
+                    table.schema, table.name, stored.kind
                 )));
+            }
+            // iss-review finding 1: the kind check above is not enough for a Cdc
+            // request — a same-count, same-kind winner can still have been declared
+            // with a DIFFERENT merge_engine or bucket_key, which the loser never
+            // requested and must not silently inherit. Mirrors the count-equal arm's
+            // existing merge_engine guard, but with wording distinguishable from it
+            // (that arm's message has no "declared concurrently"), so a test can
+            // prove which arm fired.
+            if let StreamDecl::Cdc {
+                bucket_key,
+                merge_engine,
+                ..
+            } = decl
+            {
+                if stored.merge_engine != *merge_engine {
+                    return Err(ControlPlaneError::Conflict(format!(
+                        "stream merge_engine mismatch for {}.{}: requested {}, table has {} \
+                         (declared concurrently)",
+                        table.schema,
+                        table.name,
+                        merge_engine.as_str(),
+                        stored.merge_engine.as_str(),
+                    )));
+                }
+                if stored.bucket_key.as_deref() != Some(bucket_key.as_str()) {
+                    return Err(ControlPlaneError::Validation(format!(
+                        "cannot declare {}.{} as a cdc table keyed on '{bucket_key}': \
+                         declared concurrently with a different bucket_key (recorded {:?})",
+                        table.schema, table.name, stored.bucket_key
+                    )));
+                }
             }
             Some(stored.bucket_count)
         }

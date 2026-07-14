@@ -41,26 +41,46 @@ const TID: i64 = 4242;
 
 /// Begin a transaction, insert the WINNER's `stream.stream_table` row, and return
 /// the transaction still OPEN (uncommitted) — the loser's `on conflict do nothing`
-/// insert blocks on it until the caller commits.
+/// insert blocks on it until the caller commits. `merge_engine` is `None` for the
+/// pre-existing callers (the column then takes its `'last_row'` default per
+/// migrations/0040); `Some(token)` lets a merge_engine-mismatch race pin the
+/// winner to a SPECIFIC engine.
 async fn insert_stream_row(
     pool: &PgPool,
     tid: i64,
     buckets: i32,
     kind: &str,
     bucket_key: Option<&str>,
+    merge_engine: Option<&str>,
 ) -> Transaction<'static, Postgres> {
     let mut tx = pool.begin().await.expect("begin winner tx");
-    sqlx::query(
-        "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key) \
-         values ($1, $2, $3, $4)",
-    )
-    .bind(tid)
-    .bind(buckets)
-    .bind(kind)
-    .bind(bucket_key)
-    .execute(&mut *tx)
-    .await
-    .expect("winner insert");
+    if let Some(engine) = merge_engine {
+        sqlx::query(
+            "insert into stream.stream_table \
+             (table_id, bucket_count, kind, bucket_key, merge_engine) \
+             values ($1, $2, $3, $4, $5)",
+        )
+        .bind(tid)
+        .bind(buckets)
+        .bind(kind)
+        .bind(bucket_key)
+        .bind(engine)
+        .execute(&mut *tx)
+        .await
+        .expect("winner insert");
+    } else {
+        sqlx::query(
+            "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key) \
+             values ($1, $2, $3, $4)",
+        )
+        .bind(tid)
+        .bind(buckets)
+        .bind(kind)
+        .bind(bucket_key)
+        .execute(&mut *tx)
+        .await
+        .expect("winner insert");
+    }
     tx
 }
 
@@ -150,7 +170,7 @@ async fn count_mismatch_against_an_existing_row_stays_conflict() {
 
     // Winner: a log table with a DIFFERENT count, committed before the loser runs
     // (no barrier needed — this test pins the count arm, not the race).
-    let tx = insert_stream_row(&pool, TID, 4, "log", None).await;
+    let tx = insert_stream_row(&pool, TID, 4, "log", None, None).await;
     tx.commit().await.expect("commit winner");
 
     let mut tx = pool.begin().await.expect("begin");
@@ -222,7 +242,7 @@ async fn log_first_declare_losing_to_cdc_winner_is_validation_error() {
     let pool = fx.pool_for(&db).await;
 
     // A: the CDC winner, held UNCOMMITTED.
-    let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id")).await;
+    let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id"), None).await;
 
     // B: the log loser. Its `pg_stream_meta` read returns None (A is uncommitted), so
     // it takes the (Some, None) first-declare arm, and its `pg_declare_stream` insert
@@ -262,7 +282,7 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
     let (_cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    let winner = insert_stream_row(&pool, TID, 2, "log", None).await;
+    let winner = insert_stream_row(&pool, TID, 2, "log", None, None).await;
 
     let pool_b = pool.clone();
     let loser = tokio::spawn(async move {
@@ -293,5 +313,101 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
                  if msg.contains("declared concurrently with a different stream kind")),
         "a cdc first-declare losing to a log winner with the same count must be rejected \
          by the FIRST-DECLARE arm, got {res:?}"
+    );
+}
+
+/// THE DEFECT (finding 1): the re-read compared `bucket_count` and `kind` but
+/// NOT `merge_engine` — so a `LastRow` CDC first-declare losing a race to a
+/// `Versioned` CDC winner with the SAME bucket count and bucket_key still
+/// slipped through: no-op insert, count matches, kind matches ('cdc' both
+/// sides), and the loser then proceeds under the winner's fold semantics it
+/// never requested. Before the fix this asserts `Ok(Some(2))` (accepted), not a
+/// barrier timeout or a `Conflict` from the count-equal arm.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cdc_first_declare_losing_to_different_merge_engine_winner_is_conflict() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    // A: the Versioned winner, held UNCOMMITTED. Same count and bucket_key as
+    // the loser below, so only the merge_engine guard can distinguish them.
+    let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("id"), Some("versioned")).await;
+
+    // B: the LastRow loser.
+    let pool_b = pool.clone();
+    let loser = tokio::spawn(async move {
+        let mut tx = pool_b.begin().await.expect("begin loser tx");
+        let res = reconcile_stream_mode(
+            &mut tx,
+            TID,
+            &StreamDecl::Cdc {
+                buckets: 2,
+                bucket_key: "id".into(),
+                merge_engine: MergeEngine::LastRow,
+            },
+            false,
+            &tref(),
+            SnapshotId(1),
+        )
+        .await;
+        drop(tx.rollback().await);
+        res
+    });
+
+    await_declare_blocked(&pool).await;
+    winner.commit().await.expect("commit winner");
+
+    let res = loser.await.expect("join loser");
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Conflict(msg)) if msg.contains("declared concurrently")),
+        "a cdc first-declare losing to a winner with a DIFFERENT merge_engine and the \
+         same count/bucket_key must be rejected by the FIRST-DECLARE arm, got {res:?}"
+    );
+}
+
+/// THE DEFECT (finding 1): the re-read also never compared `bucket_key` — a
+/// CDC first-declare losing a race to a same-count, same-engine winner keyed on
+/// a DIFFERENT identity column still slipped through. Before the fix this
+/// asserts `Ok(Some(2))`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cdc_first_declare_losing_to_different_bucket_key_winner_is_validation_error() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    // A: the winner, keyed on "user_id", held UNCOMMITTED. Same count and
+    // (default) merge_engine as the loser, so only the bucket_key guard can
+    // distinguish them.
+    let winner = insert_stream_row(&pool, TID, 2, "cdc", Some("user_id"), None).await;
+
+    // B: the loser, keyed on "id".
+    let pool_b = pool.clone();
+    let loser = tokio::spawn(async move {
+        let mut tx = pool_b.begin().await.expect("begin loser tx");
+        let res = reconcile_stream_mode(
+            &mut tx,
+            TID,
+            &StreamDecl::Cdc {
+                buckets: 2,
+                bucket_key: "id".into(),
+                merge_engine: MergeEngine::LastRow,
+            },
+            false,
+            &tref(),
+            SnapshotId(1),
+        )
+        .await;
+        drop(tx.rollback().await);
+        res
+    });
+
+    await_declare_blocked(&pool).await;
+    winner.commit().await.expect("commit winner");
+
+    let res = loser.await.expect("join loser");
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("declared concurrently")),
+        "a cdc first-declare losing to a winner with a DIFFERENT bucket_key and the \
+         same count/merge_engine must be rejected by the FIRST-DECLARE arm, got {res:?}"
     );
 }
