@@ -75,7 +75,7 @@ use time::OffsetDateTime;
 
 use crate::backend;
 use crate::iceberg_flush::lock_key;
-use crate::iceberg_inline::inline_table_name;
+use crate::iceberg_inline::{inline_table_exists, inline_table_name};
 use crate::iceberg_mirror::{DroppedIncarnation, dropped_table_ids, live_table_id};
 use crate::iceberg_sql_catalog::SqlCatalog;
 use crate::mv_floor::{MvFloor, mv_floor, stranded_mv_readers};
@@ -497,21 +497,10 @@ async fn bump_reclaimed_through(
     Ok(())
 }
 
-/// Does the physical `inline_<tid>` table exist? Probed ONCE per GC run and passed to
-/// the two callers that need it (`count_candidates`, `delete_end_capped_inline_rows`).
-async fn inline_table_exists(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool> {
-    let name = inline_table_name(tid);
-    let reg: Option<String> = sqlx::query_scalar(AssertSqlSafe("select to_regclass($1)::text"))
-        .bind(&name)
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(backend)?;
-    Ok(reg.is_some())
-}
-
 /// Delete the live incarnation's end-capped inline rows under the per-bucket MV floor.
 /// Deletes rows with `end_snapshot <= h` from `inline_<tid>` (`has_inline`
-/// says whether that physical table exists — see `inline_table_exists`). With a floor, a
+/// says whether that physical table exists — see
+/// [`crate::iceberg_inline::inline_table_exists`]). With a floor, a
 /// row is reclaimable only strictly below ITS
 /// bucket's floor (inline rows carry `loom_bucket`/`loom_offset`, so this tier is
 /// per-bucket precise); a bucket at floor 0 contributes no clause (nothing in it is

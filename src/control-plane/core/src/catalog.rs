@@ -153,6 +153,54 @@ pub trait Catalog {
     /// has aged out. The same derivation `iceberg_gc` reclaims under; a read at a
     /// snapshot `>=` this horizon is guaranteed complete.
     async fn snapshot_horizon(&self, cutoff: OffsetDateTime) -> Result<Option<SnapshotId>>;
+    /// Whether every row visible at `at` is still readable — and cannot be destroyed out
+    /// from under the read — given the retention horizon `horizon`.
+    ///
+    /// This is the PRECISE form of the retention guard, for reads BELOW the horizon. At or
+    /// above it, completeness is already provable with no query at all (a reclaimable row
+    /// has `end <= horizon <= at`, so it was never visible at `at`), and callers should
+    /// keep that fast path.
+    ///
+    /// Returns `false` iff either:
+    ///
+    /// 1. some row visible at `at` has ALREADY been reclaimed — the incarnation's
+    ///    `reclaimed_through` watermark is above `at`; or
+    /// 2. some SURVIVING row visible at `at` is ELIGIBLE for reclaim
+    ///    (`begin <= at < end <= horizon`) and so could be destroyed at any moment,
+    ///    including mid-read.
+    ///
+    /// Clause 2 is what makes the verdict independent of whether GC has actually run, and
+    /// what closes the race with a concurrent GC. The conjunction is monotone: a GC that
+    /// reclaims such a row bumps the watermark above `at` in the SAME commit, so a verdict
+    /// can never flip from "incomplete" back to "complete".
+    ///
+    /// **Implementors: evaluate clause 2 BEFORE clause 1, and order the two reads in time.**
+    /// The clauses are not commutative under concurrency. Checking the (cheaper) watermark
+    /// first admits the exact under-read this guard exists to prevent: the watermark read
+    /// returns "nothing reclaimed", GC then commits — destroying a row visible at `at` and
+    /// bumping the watermark together — and the later evidence read finds nothing eligible
+    /// *because it has already been destroyed*. Reading the evidence first and the watermark
+    /// last makes the pair a complete detector: whichever side of the evidence read GC lands
+    /// on, one of the two clauses observes it.
+    ///
+    /// Both clauses are per-INCARNATION (the `table_id` live at `at`) and cover the data
+    /// file and inline tiers — the two tiers GC reclaims. Schema (`column`) rows are
+    /// deliberately out of scope: an end-capped column destroys no data, and GC reclaims
+    /// `column` rows only at full dropped-incarnation reclaim, which deletes the `table`
+    /// row and degrades the read to `NotFound` anyway.
+    ///
+    /// A "quiet table" proxy (`no writes since at`) is NOT a valid implementation of this:
+    /// a governed delete-all end-caps every row and writes none, so it looks quiet from
+    /// the surviving rows while serving zero rows. See
+    /// `docs/superpowers/specs/2026-07-14-timetravel-retention-precision-design.md`.
+    ///
+    /// `NotFound` if the table is not live at `at`.
+    async fn snapshot_intact(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        horizon: SnapshotId,
+    ) -> Result<bool>;
     /// The Parquet files live for `table` at snapshot `at`. `NotFound` if the
     /// table is not live at `at`. The `page` request is accepted but not yet enforced;
     /// results are a single full page.

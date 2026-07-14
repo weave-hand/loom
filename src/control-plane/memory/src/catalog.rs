@@ -138,6 +138,39 @@ impl Catalog for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_intact(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        horizon: SnapshotId,
+    ) -> Result<bool> {
+        let cat = self.catalog.lock();
+        let (table, _) = cat.resolve_view(table);
+        let table = &table;
+        let live = cat.tables.get(table).is_some_and(|t| t.live_at(at.0));
+        if !live {
+            return Err(ControlPlaneError::NotFound(format!(
+                "{}.{} @ {}",
+                table.schema, table.name, at.0
+            )));
+        }
+        // Clause 1 is vacuous in the fake: it models no GC, so nothing is ever physically
+        // reclaimed and its watermark is permanently 0 (`at >= 0` always holds). That is
+        // faithful, not a stub — there is nothing to be blind to.
+        //
+        // Clause 2 is the whole verdict: no file visible at `at` may be eligible for
+        // reclaim (`begin <= at < end <= horizon`). The fake has no inline tier, so data
+        // files are the only tier there is.
+        let eligible = cat
+            .files
+            .get(table)
+            .into_iter()
+            .flatten()
+            .any(|f| f.begin <= at.0 && f.end.is_some_and(|e| e > at.0 && e <= horizon.0));
+        Ok(!eligible)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn snapshots(&self, table: &TableRef, _page: PageReq) -> Result<Page<Snapshot>> {
         let cat = self.catalog.lock();
         let (table, _) = cat.resolve_view(table);

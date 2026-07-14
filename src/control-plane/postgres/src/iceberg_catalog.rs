@@ -3,7 +3,7 @@ use control_plane_core::{
     BaseType, Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot,
     SnapshotId, TableRef, TableSchema, ViewDef, validate_view_shape, view_definition_event,
 };
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 
 use control_plane_core::snapshot::ColumnStat;
@@ -409,6 +409,102 @@ impl Catalog for IcebergCatalog {
         Ok(crate::iceberg_mirror::horizon_before(&self.pool, cutoff)
             .await?
             .map(SnapshotId))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_intact(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        horizon: SnapshotId,
+    ) -> Result<bool> {
+        let resolved; // borrow gymnastics: delegate view -> base
+        let (table, _projection) = match fetch_view(&self.pool, table).await? {
+            Some(v) => {
+                resolved = v.base;
+                (&resolved, v.columns)
+            }
+            None => (table, None),
+        };
+        // Per-INCARNATION: the table_id live at `at`, which for a dropped-but-unreclaimed
+        // incarnation is that incarnation, not the recreated one. `NotFound` here is the
+        // fully-reclaimed case, and it is the one place the evidence self-destructs safely
+        // (the read degrades to 404, which is honest).
+        let tid = self.resolve_table(table, at).await?;
+
+        // ORDER IS LOAD-BEARING: clause 2 (the surviving-row evidence) is read FIRST, and
+        // the clause-1 watermark LAST, on one connection so the reads are strictly ordered
+        // in time. Do not "simplify" by checking the cheap watermark first.
+        //
+        // Each statement runs on its own snapshot (loom sets no isolation level, so this is
+        // READ COMMITTED), and GC commits its deletes and its watermark bump ATOMICALLY.
+        // Reading the watermark first is therefore unsound: it could return 0, GC could then
+        // commit (destroying a row visible at `at` AND bumping the watermark past `at`), and
+        // the later evidence read would find nothing eligible — because it was already
+        // destroyed — and we would serve an incomplete read. That is precisely the silent
+        // under-read this whole guard exists to prevent.
+        //
+        // Evidence-then-watermark is a complete detector, because the watermark is monotone
+        // and GC's two effects land together:
+        //   - GC commits BEFORE the evidence read -> the watermark read (later still) sees
+        //     the bump -> clause 1 fires.
+        //   - GC commits AFTER the evidence read -> the row was still there, end-capped at
+        //     or below the horizon, when we looked -> clause 2 fires.
+        // There is no third case. (A `REPEATABLE READ` transaction would also close it, at
+        // the cost of an isolation change; ordering is cheaper and needs no new machinery.)
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+
+        // Clause 2, data-file tier: is anything visible at `at` ELIGIBLE for reclaim?
+        // `begin <= at` (visible) and `at < end <= horizon` (end-capped above the read but
+        // at or below the horizon, i.e. GC may take it at any moment).
+        let file_eligible = sqlx::query_scalar!(
+            "select exists(select 1 from iceberg_mirror.data_file \
+             where table_id = $1 and begin_snapshot <= $2 \
+               and end_snapshot is not null and end_snapshot > $2 and end_snapshot <= $3) \
+             as \"eligible!\"",
+            tid,
+            at.0,
+            horizon.0,
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if file_eligible {
+            return Ok(false);
+        }
+
+        // Clause 2, inline tier. `inline_<tid>` is a DYNAMIC relation, so this one cannot
+        // be a compile-time `query!` — probe for it, then splice the (trusted, i64-derived)
+        // identifier and bind the values, exactly as `iceberg_gc` does.
+        if crate::iceberg_inline::inline_table_exists(&mut conn, tid).await? {
+            let inline = crate::iceberg_inline::inline_table_name(tid);
+            let inline_eligible: bool = sqlx::query_scalar(AssertSqlSafe(format!(
+                "select exists(select 1 from {inline} \
+                 where begin_snapshot <= $1 \
+                   and end_snapshot is not null and end_snapshot > $1 and end_snapshot <= $2)"
+            )))
+            .bind(at.0)
+            .bind(horizon.0)
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(backend)?;
+            if inline_eligible {
+                return Ok(false);
+            }
+        }
+
+        // Clause 1, read LAST (see the ordering note above): has anything visible at `at`
+        // ALREADY been destroyed? Every reclaimed row had `end <= reclaimed_through`, and
+        // was visible at `at` iff `at < end`. So `at >= watermark` proves none of them was.
+        let watermark = sqlx::query_scalar!(
+            "select reclaimed_through as \"reclaimed_through!\" \
+             from iceberg_mirror.table where table_id = $1",
+            tid,
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        Ok(at.0 >= watermark)
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select reclaimed_through as \"reclaimed_through!\" from iceberg_mirror.table where table_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reclaimed_through!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iceberg_mirror.\"table\"",
+            "name": "reclaimed_through"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "afb58c30e2bb9fff6de8857499d06839877d569d07025dc965688f7d1cff03e8"
+}

@@ -783,6 +783,33 @@ where
     sorted.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
     assert_eq!(listed.items, sorted, "(schema, name)-ordered");
     assert!(listed.items.contains(&t), "seeded table listed");
+
+    // snapshot_intact(at, horizon): the precise retention predicate. `s0` and `s1` are the
+    // two seeded batches; seeding APPENDS, so nothing is end-capped and every read is
+    // complete — this is exactly the case the old `at < H` proxy got wrong.
+    assert!(
+        catalog.snapshot_intact(&t, s0.id, s1.id).await.unwrap(),
+        "append-only: no row visible at s0 is end-capped at all, so s0 is intact even \
+         though s0 < horizon (this is the whole point of the fix)"
+    );
+    assert!(
+        catalog.snapshot_intact(&t, s1.id, s1.id).await.unwrap(),
+        "at == horizon is trivially intact"
+    );
+
+    // Now end-cap: dropping the table end-caps every file at D. A read at s0 is then
+    // exposed the moment D falls at or below the horizon.
+    let d = seeder.drop_table(&t).await;
+    assert!(
+        !catalog.snapshot_intact(&t, s0.id, d).await.unwrap(),
+        "the drop end-capped s0's files at D; with horizon == D they are reclaim-eligible, \
+         so s0 is NOT intact"
+    );
+    assert!(
+        catalog.snapshot_intact(&t, s0.id, s1.id).await.unwrap(),
+        "same end-cap, but horizon == s1 < D: the files are end-capped ABOVE the horizon, \
+         so nothing may be reclaimed and s0 is still intact"
+    );
 }
 
 /// Contract for the MVCC `end`-bound and before-existence branches of the catalog
