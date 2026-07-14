@@ -261,8 +261,13 @@ impl IcebergActionWriter {
             jobs,
         )
         .await
+        // A declared LOG target is REFUSED by the inline-delta primitive: a typed
+        // UPDATE/DELETE over an offset-framed event log has no identity semantics to
+        // fold. Like the CAS conflict, that is a caller error, not an engine fault, so
+        // it must surface as 4xx — same arm as `write_steps`/`overwrite_table` above.
         .map_err(|e| match e {
             ControlPlaneError::Conflict(m) => EngineServingError::Conflict(m),
+            ControlPlaneError::Validation(m) => EngineServingError::Validation(m),
             other => EngineServingError::Engine(other.to_string()),
         })
     }

@@ -239,6 +239,38 @@ pub async fn consolidate_table(
             lock.release().await;
             result
         }
+        // LOG arm (defensive) — a declared log table must NEVER reach the COW identity
+        // fold below: folding an offset-framed event log by identity end-caps every live
+        // file and re-projects only the fold winners, destroying offsets an MV has not
+        // read. `write_inline_delta` now refuses the typed mutation that sets `has_shadow`,
+        // so a shadow-bearing log table can only be one mutated BEFORE that fix. Loud, and
+        // a no-op — never a fold.
+        //
+        // Gated on `has_shadow`: without the gate this arm fires for every ORDINARY log
+        // table on every consolidate poll and spams the warning. The unshadowed case is
+        // the common one and is silent.
+        //
+        // `has_shadow` is deliberately LEFT SET: the shadow tier really is unfolded, and
+        // the non-CDC flush must stay suppressed rather than flush a tier we refuse to
+        // fold. Such a legacy table needs MANUAL repair. The trigger IS cleared, so the
+        // `enqueued` latch does not leak and the job does not re-fire forever.
+        Some(meta) if meta.kind == StreamKind::Log => {
+            let mut conn = pool.acquire().await.map_err(to_serving)?;
+            if !has_shadow(&mut conn, tid).await.map_err(to_serving)? {
+                return Ok(0); // the common case: an ordinary log table, nothing to do
+            }
+            tracing::warn!(
+                schema = %table.schema,
+                name = %table.name,
+                tid,
+                "consolidate skipped: a declared log stream table carries has_shadow \
+                 (a pre-existing typed mutation); it must not be folded by identity",
+            );
+            clear_consolidate_trigger(&mut conn, tid)
+                .await
+                .map_err(to_serving)?;
+            Ok(0)
+        }
         // COW arm — a non-CDC table folds ONLY when it both bears an identity and
         // is currently shadow-bearing. An identity-less table (no dedup key) or a
         // quiescent one (nothing to fold) is a no-op, reported as snapshot id `0`.

@@ -16,3 +16,4 @@ async-trait = "0.1"
 thiserror = "1"
 time = "=0.3.47"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"

@@ -1265,6 +1265,32 @@ pub async fn write_inline_delta(
             )
         })?;
 
+    // A declared LOG table has no identity semantics — it is an offset-framed, replayable
+    // event log (the substrate `mv_delta_scan` reads; see docs/system-capabilities/stream.md:
+    // "No identity requirement; appends only"). A typed UPDATE/DELETE here would write an
+    // UNFRAMED delta row (NULL loom_bucket/loom_offset), set `has_shadow`, and hand the
+    // table to `consolidate_table`'s COW arm, which folds by identity: it end-caps every
+    // live file and re-projects only the fold winners, destroying offsets no MV has read.
+    // Refuse here — the ONE point where all four routes into that state converge
+    // (base-bound, view-bound, define-then-declare, declare-then-define).
+    //
+    // Placed BEFORE `ensure_inline_schema`, not after the CAS: a log table declared AT LAND
+    // time carries the framing columns in its live mirror column set, so `full_live_column_specs`
+    // hands `inline_ddl` a list holding `loom_change_kind`/`loom_bucket`/`loom_offset` — which
+    // that DDL also adds itself, and the create fails with `column "loom_change_kind" specified
+    // more than once` (a Backend 500). Refusing first turns BOTH shapes — declared-at-land and
+    // declared-after-land — into the same 422. In-tx either way, so nothing is written and
+    // `has_shadow` is never set. Same `Validation` + stable prefix as the other write-path
+    // refusals (`crate::stream::pg_refuse_stream_target`).
+    let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
+    if matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Log) {
+        return Err(ControlPlaneError::Validation(format!(
+            "stream-table target refused: {}.{} is a declared log stream table; \
+             a typed UPDATE/DELETE would fold its offset-framed log by identity",
+            table.schema, table.name
+        )));
+    }
+
     // Provision inline storage (+ loom_tombstone) with the table's FULL live column
     // set, NOT the possibly-one-column `columns` arg. A tombstone passes only
     // `[id spec]`; since `create table if not exists` never adds columns later, a
@@ -1302,7 +1328,7 @@ pub async fn write_inline_delta(
     // adjacent (-U before-image, +U after-image) pair, a delete writes a -D carrying
     // the full prior image — each stamped with a hash-on-identity bucket and gapless
     // per-bucket offsets. Non-CDC tables fall through to the existing single-row inserts.
-    let meta = crate::stream::pg_stream_meta(&mut *tx, tid).await?;
+    // `meta` was read (and a declared LOG target refused) above, before the inline DDL.
     let cdc = matches!(&meta, Some(m) if m.kind == control_plane_core::StreamKind::Cdc);
 
     // Emit the delta row(s). Every row carries the identity value so merge-on-read
