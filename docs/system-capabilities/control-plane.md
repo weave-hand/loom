@@ -181,7 +181,7 @@ physical base table — sharing the `(schema, name)` namespace with physical
 tables, so it binds and grants exactly like one (`ObjectType.table`,
 `PolicyTarget::Table`): subsets of one physical dataset now get independent
 permission scopes without row duplication (the prior workaround was
-dataset-partition-per-scope, e.g. `grimoire-kg-agenda`) (PR pending). `ViewDef`
+dataset-partition-per-scope, e.g. `grimoire-kg-agenda`) (#438). `ViewDef`
 carries `view`/`base` refs, an optional `RowFilter` `predicate` (naming BASE
 columns directly, `None` = all rows), and an optional `columns` projection
 (`None` = all columns). `Catalog` grows `define_view`/`drop_view`/`get_view`/

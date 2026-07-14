@@ -52,7 +52,7 @@ still answers a not-found planning error.
 ## Catalog views at serving resolution
 
 Catalog views (see [control-plane.md](control-plane.md) → *Catalog views*) are
-expanded at serving resolution, not rewritten in SQL text (PR pending). A
+expanded at serving resolution, not rewritten in SQL text (#438). A
 shared helper, `fold_view`, folds a `ViewDef`'s predicate + projection onto a
 base `DataFrame`, expanding it to `SELECT <columns> FROM base WHERE
 <predicate>` (`None` on either side is a no-op); both view-registration paths
