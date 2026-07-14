@@ -509,15 +509,46 @@ impl Transforms for PgControlPlane {
         if let Some(row) = prior {
             match de_body(row.body) {
                 Ok(
-                    TransformBody::MicroBatch { output, .. }
-                    | TransformBody::MicroBatchJoin { output, .. },
+                    TransformBody::MicroBatch { output, source, .. }
+                    | TransformBody::MicroBatchJoin { output, source, .. },
                 ) => {
                     let old_mv = mv_key(&output);
                     if new_mv.as_ref() != Some(&old_mv) {
+                        // (existing) the OUTPUT moved: the old key's rows are orphaned.
                         sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
                             .execute(&mut *tx)
                             .await
                             .map_err(backend)?;
+                    } else if mv_source(&def.body) != Some(&source) {
+                        // The SOURCE moved while the OUTPUT stayed: the `mv_key` is unchanged, so
+                        // the branch above did not fire, but the rows keyed
+                        // `(mv, OLD source_table_id, bucket)` are now referenced by no def.
+                        // `delete_transform` keys on the def's CURRENT source and can never reach
+                        // them, while `crate::mv_floor`'s reader set counts every mv holding a
+                        // watermark row against a source — so the old source would stay floored at
+                        // the departed MV's offsets forever.
+                        //
+                        // Keyed on the PRIOR source (not "everything that is not the current
+                        // source"): it names exactly the stale rows, and it is a no-op when the
+                        // source did not move — which is what keeps the resume case, and the
+                        // testkit contract's synthetic-tid redefinition, intact.
+                        if let Some(old_tid) = crate::iceberg_mirror::live_table_id(
+                            &mut tx,
+                            &source.schema,
+                            &source.name,
+                        )
+                        .await?
+                        {
+                            sqlx::query!(
+                                "delete from stream.mv_watermark \
+                                 where mv = $1 and source_table_id = $2",
+                                old_mv,
+                                old_tid,
+                            )
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(backend)?;
+                        }
                     }
                 }
                 Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}

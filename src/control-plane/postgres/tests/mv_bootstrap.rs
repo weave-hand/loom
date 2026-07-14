@@ -424,6 +424,49 @@ async fn define_transform_blocks_on_the_sources_table_lock() {
     .expect("register");
 }
 
+/// Redefining an MV onto a DIFFERENT SOURCE (same output, so the same `mv_key`) must release the
+/// old source's watermarks — else the old source is floored forever by an MV that no longer reads
+/// it, and no def names those rows, so nothing can ever reach them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn redefining_onto_a_new_source_releases_the_old_sources_floor() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        8,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    let mv = mv_key(&tref("s", "out_a"));
+    advance(&cp, &mv, s.tid, 0, 0, 3).await;
+
+    // A second stream source (first land creates + declares it), and the MV is redefined onto it
+    // — same output, so the same mv key.
+    let other = tref("s", "events2");
+    land_more(&s.pool, &s.catalog, &other, 4, Some(1), true).await;
+    register_mv(&cp, "mv_a", &other, &tref("s", "out_a")).await;
+
+    let wm_old = cp.mv_watermarks(&mv, s.tid).await.expect("watermarks");
+    assert!(
+        wm_old.is_empty(),
+        "the MV no longer reads s.events — its watermarks there must be released, or s.events is \
+         floored at offset 3 forever with no def to point an operator at"
+    );
+
+    let mut conn = s.pool.acquire().await.expect("conn");
+    assert_eq!(
+        mv_floor(&mut conn, &s.src, s.tid).await.expect("floor"),
+        None,
+        "no MV reads s.events any more: its GC floor is gone entirely"
+    );
+}
+
 /// A registration and a concurrent commit on the SAME source must not deadlock: the commit path
 /// takes lock_key(table) then row-locks transforms.transform, so define_transform must take them
 /// in that same order.
