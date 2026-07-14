@@ -9,12 +9,17 @@ use crate::{PgControlPlane, backend};
 /// A write's REQUESTED stream-mode declaration, threaded from `LandRequest` down
 /// to [`reconcile_stream_mode`]. `Log`/`Cdc` carry the requested bucket count;
 /// `Cdc` additionally carries the identity column to bucket on (the "bucket
-/// key"). Confined to this crate — the ingest-facing boundary (`land`'s public
-/// signature / `LandRequest`) instead carries the plain `Option<i32>`/
-/// `Option<CdcDecl>` pair the brief specifies, combined into this enum once
-/// inside `land`.
+/// key"). The ingest-facing boundary (`land`'s public signature / `LandRequest`)
+/// instead carries the plain `Option<i32>`/`Option<CdcDecl>` pair the brief
+/// specifies, combined into this enum once inside `land`.
+///
+/// `pub` (not `pub(crate)`) only so the reconcile seam is drivable from a
+/// `tests/` target: loom forbids inline `#[cfg(test)]` tests, and the
+/// concurrent first-declare race
+/// (`postgres/tests/stream_first_declare_race.rs`) cannot be reproduced through
+/// the `land` API — it needs a caller-controlled `tid`/`pre_existing`.
 #[derive(Clone, Debug)]
-pub(crate) enum StreamDecl {
+pub enum StreamDecl {
     /// No stream intent requested this write (the common batch-table case).
     None,
     /// Declare (or confirm) a log table with this many buckets.
@@ -53,7 +58,11 @@ pub(crate) enum StreamDecl {
 /// CDC first-declare, as the changelog table's `iceberg_mirror.table` genesis
 /// snapshot, exactly as `write_steps` shares one snapshot across every table it
 /// touches in a transaction.
-pub(crate) async fn reconcile_stream_mode(
+///
+/// `pub` (not `pub(crate)`) only so a `tests/` target can drive this seam
+/// directly; production callers remain `iceberg_inline::inline_append` and
+/// `iceberg_landing::land_parquet_stream`.
+pub async fn reconcile_stream_mode(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     decl: &StreamDecl,

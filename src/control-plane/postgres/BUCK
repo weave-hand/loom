@@ -1770,6 +1770,19 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-first-declare-race",
+    crate = "stream_first_declare_race",
+    srcs = ["tests/stream_first_declare_race.rs"],
+    crate_root = "tests/stream_first_declare_race.rs",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "define-transform-refuse",
     crate = "define_transform_refuse",
     srcs = ["tests/define_transform_refuse.rs"],
