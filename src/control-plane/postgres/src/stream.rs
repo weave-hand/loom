@@ -256,14 +256,7 @@ pub async fn reconcile_stream_mode(
         )));
     }
 
-    // Raised BEFORE any declare, alongside the bucket-count check above: a CDC declaration
-    // on a table a micro-batch MV already sources is refused ([`pg_refuse_cdc_over_mv_source`]).
-    // The `merge_engine=versioned` orderable-version check is `ensure_versioned_orderable`, just
-    // below.
-    if matches!(decl, StreamDecl::Cdc { .. }) {
-        pg_refuse_cdc_over_mv_source(&mut *conn, table).await?;
-    }
-
+    pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
     ensure_versioned_orderable(&mut *conn, decl, table).await?;
 
     // The requested stream KIND (log vs cdc). Exhaustive (no `_` arm) so a future
@@ -522,13 +515,27 @@ pub(crate) async fn pg_refuse_mv_over_cdc_source(
 }
 
 /// Refuse a CDC declaration on a table a micro-batch MV already sources — the mirror image
-/// of [`pg_refuse_mv_over_cdc_source`] (see there for why both halves are required, and for
-/// what an MV over a CDC source would wedge). Raised by [`reconcile_stream_mode`] BEFORE any
-/// declare, on the caller's transaction.
+/// of [`pg_refuse_mv_over_cdc_source`]. A no-op for any non-CDC `decl`, so
+/// [`reconcile_stream_mode`] can call it unconditionally BEFORE any declare, on the caller's
+/// transaction.
+///
+/// A micro-batch MV reads LOG streams only (`mv_delta_scan` — "cdc sources are deferred"), so
+/// a CDC declaration on a table an MV already sources creates a reader that can never run: its
+/// watermark never advances, `mv_floor` pins every bucket at 0 forever, and the table's
+/// consolidate fold declines on every attempt for good (`#iss-end-cap-ignores-mv-floor`).
+///
+/// **Both halves are required.** Guarding only `define_transform` is defeated by ordering — an
+/// MV may legitimately be registered over a source that does not exist yet (it becomes a log
+/// stream on its first `?mode=stream` write), and THIS is the path that then turns that source
+/// into a CDC table. Lift both when `fut-mv-cdc-source` lands.
 pub(crate) async fn pg_refuse_cdc_over_mv_source(
     conn: &mut sqlx::PgConnection,
+    decl: &StreamDecl,
     table: &TableRef,
 ) -> Result<()> {
+    if !matches!(decl, StreamDecl::Cdc { .. }) {
+        return Ok(());
+    }
     let readers = crate::transforms::pg_micro_batch_readers(&mut *conn, table).await?;
     if !readers.is_empty() {
         return Err(ControlPlaneError::Validation(format!(
