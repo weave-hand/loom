@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, RowFilter,
+    ScalarValue, SubjectId, TableRef, TypeName, ViewDef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -169,6 +169,161 @@ async fn grant_analyst_table(cp: &MemoryControlPlane) {
     )
     .await
     .unwrap();
+}
+
+/// Drive a request as an arbitrary named subject (the module-level `get` hardcodes
+/// `analyst`). Needed to distinguish role A (view grant) from role B (base grant).
+async fn get_as(app: &axum::Router, uri: &str, subject: &str) -> (StatusCode, serde_json::Value) {
+    let mut req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+    req.extensions_mut()
+        .insert(Subject(SubjectId(subject.into())));
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let json = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+/// Give `subject` a fresh role with a Table Read grant on `table`.
+async fn grant_table(cp: &MemoryControlPlane, subject: &str, table: TableRef) {
+    let subj = SubjectId(subject.into());
+    let role = RoleId(format!("{subject}-role"));
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Table(table),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+}
+
+/// Seed a base `main.customers(id, region, amount)` with two append snapshots, then
+/// define the view `gov.customers_eu = main.customers WHERE region='EU'` projecting
+/// `(id, region)`. Returns the cp and the base's latest snapshot id.
+async fn seeded_with_view() -> (MemoryControlPlane, i64) {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    let base = TableRef {
+        schema: "main".into(),
+        name: "customers".into(),
+    };
+    let cols = vec![
+        ("id".to_string(), "Long".to_string(), false),
+        ("region".to_string(), "String".to_string(), true),
+        ("amount".to_string(), "Long".to_string(), true),
+    ];
+    let snapshots = cp.seed_catalog(&base, &cols, &[3, 2]);
+    let latest = snapshots.last().expect("seeded snapshots").0;
+    cp.catalog()
+        .define_view(ViewDef {
+            view: TableRef {
+                schema: "gov".into(),
+                name: "customers_eu".into(),
+            },
+            base: base.clone(),
+            predicate: Some(RowFilter::Compare {
+                property: "region".into(),
+                op: CompareOp::Eq,
+                value: ScalarValue::Text("EU".into()),
+            }),
+            columns: Some(vec!["id".into(), "region".into()]),
+        })
+        .await
+        .expect("define_view");
+    (cp, latest)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn views_list_with_kind_and_base_under_their_own_grant() {
+    let (cp, _) = seeded_with_view().await;
+    // Role A: Table grant on the VIEW only. Role B: Table grant on the BASE only.
+    grant_table(
+        &cp,
+        "alice",
+        TableRef {
+            schema: "gov".into(),
+            name: "customers_eu".into(),
+        },
+    )
+    .await;
+    grant_table(
+        &cp,
+        "bob",
+        TableRef {
+            schema: "main".into(),
+            name: "customers".into(),
+        },
+    )
+    .await;
+    let app = app(cp);
+
+    // Alice sees exactly the view entry; the base is NOT listed.
+    let (status, json) = get_as(&app, "/datasets", "alice").await;
+    assert_eq!(status, StatusCode::OK);
+    let ds = json["datasets"].as_array().unwrap();
+    assert_eq!(ds.len(), 1, "view-grantee sees only the view: {json}");
+    assert_eq!(ds[0]["schema"], "gov");
+    assert_eq!(ds[0]["name"], "customers_eu");
+    assert_eq!(ds[0]["kind"], "view");
+    assert_eq!(
+        ds[0]["base"],
+        serde_json::json!({ "schema": "main", "name": "customers" })
+    );
+    assert!(
+        ds[0]["updated"].as_str().is_some_and(|t| !t.is_empty()),
+        "view updated delegates to the base snapshot time: {json}"
+    );
+
+    // Bob sees exactly the base table; the view is NOT listed.
+    let (status, json) = get_as(&app, "/datasets", "bob").await;
+    assert_eq!(status, StatusCode::OK);
+    let ds = json["datasets"].as_array().unwrap();
+    assert_eq!(ds.len(), 1, "base-grantee sees only the base: {json}");
+    assert_eq!(ds[0]["schema"], "main");
+    assert_eq!(ds[0]["name"], "customers");
+    assert_eq!(ds[0]["kind"], "table");
+    assert!(
+        ds[0].get("base").is_none(),
+        "a table entry has no base: {json}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn view_get_dataset_returns_projected_columns() {
+    let (cp, latest) = seeded_with_view().await;
+    grant_table(
+        &cp,
+        "alice",
+        TableRef {
+            schema: "gov".into(),
+            name: "customers_eu".into(),
+        },
+    )
+    .await;
+    let app = app(cp);
+
+    let (status, json) = get_as(&app, "/datasets/gov/customers_eu", "alice").await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    assert_eq!(json["table"]["schema"], "gov");
+    assert_eq!(json["table"]["name"], "customers_eu");
+    assert_eq!(json["kind"], "view");
+    assert_eq!(
+        json["base"],
+        serde_json::json!({ "schema": "main", "name": "customers" })
+    );
+    // Snapshot delegates to the base's current; columns are the projected subset.
+    assert_eq!(json["snapshot_id"], latest);
+    assert_eq!(
+        json["columns"],
+        serde_json::json!([
+            { "name": "id", "ty": "Long", "nullable": false },
+            { "name": "region", "ty": "String", "nullable": true },
+        ]),
+        "projected to (id, region): {json}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

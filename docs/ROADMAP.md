@@ -10,9 +10,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## catalog
 
-- [ ] **Catalog views — dataset/type decoupling** `{#road-catalog-views area:catalog status:planned from:operator-brainstorm pr:- spec:2026-07-13-catalog-views-design}`
-  A **view** as a first-class virtual dataset: base table + optional `RowFilter` predicate + optional column projection, sharing the `(schema, name)` namespace with physical tables so `ObjectType.table` binds it and `PolicyTarget::Table` grants it unchanged — subsets of one physical dataset get independent permission scopes without row duplication (today's workaround is dataset-partition-per-scope, `grimoire-kg-agenda`). Engine-side expansion at serving resolution; write-through (insert/PATCH/delete gated by the view predicate — a written row must stay visible in the writer's view); `/datasets` + lineage treat views as dataset nodes; base-drop protection. Deferred residues at landing: view nesting, subscribe-on-view, arbitrary-SQL views, pushdown stats. Relates to (does not close) [[fut-fgac-subject-attribute]].
-
 ## acl
 
 - [ ] **Comprehensive auth capability — build-vs-adopt a fuller identity layer** `{#road-auth-comprehensive area:acl status:planned from:2026-06-23-auth-password-session-design pr:- spec:2026-07-01-auth-comprehensive-adopt-design}`

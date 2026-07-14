@@ -528,6 +528,17 @@ rust_test(
 )
 
 rust_test(
+    name = "view-def",
+    crate = "view_def",
+    srcs = ["tests/view_def.rs"],
+    crate_root = "tests/view_def.rs",
+    edition = "2024",
+    deps = [
+        ":core",
+    ],
+)
+
+rust_test(
     name = "orphan-sweep-job",
     crate = "orphan_sweep_job",
     srcs = ["tests/orphan_sweep_job.rs"],

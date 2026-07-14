@@ -120,6 +120,21 @@ loom_fixture_test(
     ],
 )
 
+loom_fixture_test(
+    name = "view-scan",
+    crate = "view_scan",
+    srcs = ["tests/view_scan.rs"],
+    crate_root = "tests/view_scan.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
+    ],
+)
+
 rust_test(
     name = "row-filter-to-expr",
     crate = "row_filter_to_expr",

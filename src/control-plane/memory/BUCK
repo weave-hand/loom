@@ -52,6 +52,21 @@ rust_test(
 )
 
 rust_test(
+    name = "catalog-views",
+    crate = "catalog_views",
+    srcs = ["tests/catalog_views.rs"],
+    crate_root = "tests/catalog_views.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        "//third-party:async-trait",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "ontology",
     crate = "ontology",
     srcs = ["tests/ontology.rs"],

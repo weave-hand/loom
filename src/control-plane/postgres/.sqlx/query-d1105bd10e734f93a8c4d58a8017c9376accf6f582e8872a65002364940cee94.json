@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select view_schema, view_name from dataset_view.view where base_schema = $1 and base_name = $2 order by view_schema, view_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "view_schema",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "view_schema"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "view_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "dataset_view.view",
+            "name": "view_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d1105bd10e734f93a8c4d58a8017c9376accf6f582e8872a65002364940cee94"
+}

@@ -10,11 +10,12 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Field, Schema};
 use async_trait::async_trait;
 use control_plane_core::snapshot::StatValue;
-use control_plane_core::{SnapshotId, TableRef, resolve_logical};
+use control_plane_core::{SnapshotId, TableRef, ViewDef, resolve_logical};
 use control_plane_postgres::iceberg_catalog::{FileWithStats, IcebergCatalog};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{MemorySchemaProvider, Session, TableProvider};
 use datafusion::common::{Column, DFSchema, TableReference};
+use datafusion::dataframe::DataFrame;
 use datafusion::datasource::listing::{ListingTableUrl, PartitionedFile};
 use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource};
 use datafusion::datasource::source::DataSourceExec;
@@ -568,6 +569,73 @@ pub async fn register_iceberg_table(
     register_qualified(ctx, &table.schema, &table.name, provider)
 }
 
+/// Fold a view's predicate + projection onto a base `DataFrame`, expanding a
+/// [`ViewDef`] to `SELECT <columns> FROM base WHERE <predicate>`. `None`
+/// predicate/columns are pass-throughs. Shared by the ungoverned
+/// ([`register_catalog_views`]) and governed
+/// (`governed::execute_governed_sql_stream`) view-registration paths so both
+/// expand a view identically — the governance decorator wraps the result of
+/// this fold, it never re-derives it.
+///
+/// # Errors
+///
+/// Returns [`EngineServingError`] if the predicate cannot be translated to a
+/// DataFusion `Expr` ([`crate::governed::row_filter_to_expr`]), or if the
+/// filter/projection cannot be planned (e.g. a projection column absent from
+/// the base — the shape gate in `validate_view_shape` normally prevents this).
+pub(crate) fn fold_view(df: DataFrame, v: &ViewDef) -> Result<DataFrame, EngineServingError> {
+    let df = match &v.predicate {
+        Some(f) => df
+            .filter(crate::governed::row_filter_to_expr(f)?)
+            .map_err(to_serving)?,
+        None => df,
+    };
+    match &v.columns {
+        Some(cols) => {
+            let names: Vec<&str> = cols.iter().map(String::as_str).collect();
+            df.select_columns(&names).map_err(to_serving)
+        }
+        None => Ok(df),
+    }
+}
+
+/// Register every catalog view as a DataFusion logical view over its (already
+/// registered) base: `SELECT <columns> FROM base WHERE <predicate>`. Called
+/// from [`execute_query_stream`] AFTER the live-tables loop, so each view's base
+/// is already registered and resolvable via `ctx.table(...)`. A view whose base
+/// is not registered (dropped, or not live at the requested snapshot) is
+/// skipped — a scan of it then fails with the same Plan error as any unknown
+/// name.
+///
+/// # Errors
+///
+/// Returns [`EngineServingError`] on a catalog read failure, or if a view's
+/// predicate/projection fold or registration fails.
+pub(crate) async fn register_catalog_views(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+) -> Result<(), EngineServingError> {
+    use control_plane_core::Catalog as _;
+    let views = catalog
+        .list_views(control_plane_core::PageReq::unbounded())
+        .await
+        .map_err(to_serving)?;
+    for v in views.items {
+        let Ok(df) = ctx
+            .table(TableReference::partial(
+                v.base.schema.clone(),
+                v.base.name.clone(),
+            ))
+            .await
+        else {
+            continue; // dangling view: base not live/registered here
+        };
+        let provider = fold_view(df, &v)?.into_view();
+        register_qualified(ctx, &v.view.schema, &v.view.name, provider)?;
+    }
+    Ok(())
+}
+
 /// Ensure `schema` exists in `ctx`'s default `datafusion` catalog (creating it if
 /// absent), then register `provider` under the schema-qualified name
 /// `"schema"."name"` so `"schema"."name"` references resolve. Shared by the
@@ -977,6 +1045,7 @@ pub async fn execute_query_stream(
     for table in catalog.live_tables().await.map_err(to_serving)? {
         register_iceberg_table(&ctx, catalog, &table, serving_store, at).await?;
     }
+    register_catalog_views(&ctx, catalog).await?;
     let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)
 }

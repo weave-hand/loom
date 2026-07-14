@@ -270,6 +270,37 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
             "name": t.name,
             "project": t.schema,
             "updated": updated,
+            "kind": "table",
+        }));
+    }
+    // Views share the (schema, name) namespace and gate identically to a physical
+    // table (`is_table_readable` already resolves a view ref: Table grant on the view
+    // OR a type bound to it). Their `updated` delegates through `current_snapshot` to
+    // the base, mirroring the physical loop's best-effort posture.
+    let views = match catalog.list_views(PageReq::unbounded()).await {
+        Ok(p) => p,
+        Err(e) => return internal_error("catalog list_views fault", e),
+    };
+    for v in &views.items {
+        match vis.is_table_readable(&subject.0, &v.view).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => return internal_error("catalog dataset acl fault", e),
+        }
+        let updated = match catalog.current_snapshot(&v.view).await {
+            Ok(s) => s
+                .time
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        datasets.push(serde_json::json!({
+            "schema": v.view.schema,
+            "name": v.view.name,
+            "project": v.view.schema,
+            "updated": updated,
+            "kind": "view",
+            "base": { "schema": v.base.schema, "name": v.base.name },
         }));
     }
     Json(serde_json::json!({ "datasets": datasets })).into_response()
@@ -351,13 +382,28 @@ async fn get_dataset(
         .iter()
         .map(|c| serde_json::json!({ "name": c.name, "ty": c.ty, "nullable": c.nullable }))
         .collect();
-    Json(serde_json::json!({
+    // A view ref carries the same snapshot/columns (delegated to the base via the
+    // catalog) plus its `kind`/`base` marker; a physical table is `kind: "table"`.
+    let view = match catalog.get_view(&table_ref).await {
+        Ok(v) => v,
+        Err(e) => return cp_read_error("catalog get_view fault", e),
+    };
+    let mut body = serde_json::json!({
         "table": { "schema": table_ref.schema, "name": table_ref.name },
         "snapshot_id": snapshot.id.0,
         "snapshot_time": snapshot_time,
         "columns": columns,
-    }))
-    .into_response()
+        "kind": if view.is_some() { "view" } else { "table" },
+    });
+    if let Some(v) = &view
+        && let Some(m) = body.as_object_mut()
+    {
+        m.insert(
+            "base".into(),
+            serde_json::json!({ "schema": v.base.schema, "name": v.base.name }),
+        );
+    }
+    Json(body).into_response()
 }
 
 /// Resolve dataset-detail's target snapshot: the selector's snapshot when given,

@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
-use crate::error::Result;
+use crate::error::{ControlPlaneError, Result};
 use crate::page::{Page, PageReq};
 
 /// A catalog-global snapshot/version id (monotonic). Portable across table formats
@@ -64,6 +64,67 @@ pub struct TableSchema {
     pub columns: Vec<ColumnDef>,
 }
 
+/// A virtual dataset: a named row/column subset of one physical base table.
+/// Shares the `(schema, name)` namespace with physical tables so it binds and
+/// grants exactly like one (`ObjectType.table`, `PolicyTarget::Table`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewDef {
+    /// The view's own ref — must not collide with any physical table or view.
+    pub view: TableRef,
+    /// The physical base. v1 forbids view-over-view: this must be a table.
+    pub base: TableRef,
+    /// Row subset. `property` names a BASE column directly (Table-target
+    /// `RowFilter` semantics). `None` = all rows.
+    pub predicate: Option<crate::acl::RowFilter>,
+    /// Column subset, in base-schema order significance. `None` = all columns.
+    pub columns: Option<Vec<String>>,
+}
+
+/// Pure shape validation of a view definition against its base schema:
+/// predicate columns and projection columns must exist in the base; the
+/// projection must be non-empty and duplicate-free; the view must not name
+/// itself as base. Existence/collision checks are the adapters' job (they
+/// need store access); this is the shared schema-shape gate.
+///
+/// # Errors
+///
+/// Returns a human-readable reason on the first failure: the view naming
+/// itself as base, a predicate referencing an unknown or caller-only-op
+/// column (surfaced via [`crate::acl::validate_row_filter`]), an empty
+/// projection, an unknown projection column, or a duplicate projection
+/// column.
+pub fn validate_view_shape(
+    v: &ViewDef,
+    base_schema: &TableSchema,
+) -> std::result::Result<(), String> {
+    if v.view == v.base {
+        return Err(format!(
+            "view {}.{} cannot use itself as base",
+            v.view.schema, v.view.name
+        ));
+    }
+    let base_cols: std::collections::HashSet<String> =
+        base_schema.columns.iter().map(|c| c.name.clone()).collect();
+    if let Some(f) = &v.predicate {
+        crate::acl::validate_row_filter(f, Some(&base_cols))?;
+    }
+    if let Some(cols) = &v.columns {
+        if cols.is_empty() {
+            return Err("projection must name at least one column".into());
+        }
+        let mut seen = std::collections::HashSet::new();
+        for c in cols {
+            if !base_cols.contains(c) {
+                return Err(format!("projection column `{c}` not in base schema"));
+            }
+            if !seen.insert(c) {
+                return Err(format!("duplicate projection column `{c}`"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait Catalog {
     /// The latest snapshot at which `table` is live. `NotFound` if the table does
@@ -104,4 +165,35 @@ pub trait Catalog {
     /// The `page` request is accepted but not yet enforced; results are a single
     /// full page.
     async fn list_tables(&self, page: PageReq) -> Result<Page<TableRef>>;
+
+    /// Create a view. Create-only: an existing view (or a name colliding with
+    /// a physical table) is `Conflict`. The base must exist, be physical (no
+    /// view-over-view), and satisfy [`validate_view_shape`].
+    async fn define_view(&self, view: ViewDef) -> Result<()> {
+        let _ = view;
+        Err(ControlPlaneError::Validation(
+            "views are not supported by this catalog".into(),
+        ))
+    }
+
+    /// Drop a view by its ref. `NotFound` if it does not exist.
+    async fn drop_view(&self, view: &TableRef) -> Result<()> {
+        Err(ControlPlaneError::NotFound(format!(
+            "{}.{}",
+            view.schema, view.name
+        )))
+    }
+
+    /// Resolve a ref to its view definition, `None` if it is not a view.
+    async fn get_view(&self, view: &TableRef) -> Result<Option<ViewDef>> {
+        let _ = view;
+        Ok(None)
+    }
+
+    /// All views, `(schema, name)`-ordered, single full page (parity with
+    /// `list_tables`).
+    async fn list_views(&self, page: PageReq) -> Result<Page<ViewDef>> {
+        let _ = page;
+        Ok(Page::from_full(Vec::new()))
+    }
 }

@@ -107,6 +107,25 @@ pub async fn ensure_table(
     {
         return Ok(tid);
     }
+    // Refuse to create a physical table under a name already claimed by a catalog
+    // view: a land at a view's (schema, name) would succeed and be permanently
+    // shadowed by the view. Mirrors `mark_dropped`'s dependent-view guard on the
+    // reverse edge (`define_view` blocks the other direction). Only on the create
+    // path — an append to an already-live table returned above without this check.
+    let name_is_view = sqlx::query_scalar!(
+        "select exists(select 1 from dataset_view.view \
+         where view_schema = $1 and view_name = $2) as \"e!\"",
+        ns,
+        name,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if name_is_view {
+        return Err(ControlPlaneError::Conflict(format!(
+            "name is a catalog view: {ns}.{name}"
+        )));
+    }
     // No live row yet: insert one, guarded by a savepoint so a lost first-write
     // race (a concurrent writer inserted the live row for (ns, name) between our
     // SELECT and INSERT) resolves to the winner's table_id instead of surfacing a
@@ -389,12 +408,35 @@ pub async fn end_cap_live_data_files(
 /// Mark a table (and its live columns/files) dropped at `at` — sets `end_snapshot = at` on every
 /// currently-live row. Drives `CatalogSeed::drop_table` and the MVCC `end`-bound the delete
 /// contract exercises.
+///
+/// Refuses (`ControlPlaneError::Conflict`, naming the dependents) when a catalog view is
+/// still defined over `(ns, name)` — dropping the base out from under a live view would
+/// leave it resolving to nothing. Callers must `drop_view` the dependents first.
 pub async fn mark_dropped(
     conn: &mut PgConnection,
     ns: &str,
     name: &str,
     at: SnapshotId,
 ) -> Result<()> {
+    let dependents = sqlx::query!(
+        "select view_schema, view_name from dataset_view.view \
+         where base_schema = $1 and base_name = $2 order by view_schema, view_name",
+        ns,
+        name,
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if !dependents.is_empty() {
+        let names: Vec<String> = dependents
+            .iter()
+            .map(|d| format!("{}.{}", d.view_schema, d.view_name))
+            .collect();
+        return Err(ControlPlaneError::Conflict(format!(
+            "table has dependent views: {}",
+            names.join(", ")
+        )));
+    }
     let tid = sqlx::query_scalar!(
         "update iceberg_mirror.table set end_snapshot = $3 \
          where table_namespace = $1 and table_name = $2 and end_snapshot is null \

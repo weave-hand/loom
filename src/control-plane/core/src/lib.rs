@@ -41,7 +41,8 @@ pub use auth::{
     ServiceToken, UserSummary,
 };
 pub use catalog::{
-    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, small_files,
+    Catalog, ColumnDef, FileRef, Snapshot, SnapshotId, TableRef, TableSchema, ViewDef, small_files,
+    validate_view_shape,
 };
 pub use compact_job::{COMPACT_JOB_KIND, CompactJob};
 pub use conform::{Violation, check_conformance};
@@ -55,7 +56,7 @@ pub use gc::{GC_JOB_KIND, GcJob};
 pub use governed::{GovernedCatalog, GovernedTable};
 pub use identity::{
     DatasetId, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TYPE_TABLE_BINDING_KIND, TypeId,
-    type_table_binding_event,
+    VIEW_DEFINITION_KIND, type_table_binding_event, view_definition_event,
 };
 pub use job_schedule::{JobSchedule, SCHEDULABLE_JOB_KINDS, validate_job_schedule};
 pub use lineage::{

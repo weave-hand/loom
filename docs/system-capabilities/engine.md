@@ -49,6 +49,36 @@ previews, governed SQL, and transform inputs alike — while an undeclared or
 dropped table, and, for as-of reads, a table not live at the pinned snapshot,
 still answers a not-found planning error.
 
+## Catalog views at serving resolution
+
+Catalog views (see [control-plane.md](control-plane.md) → *Catalog views*) are
+expanded at serving resolution, not rewritten in SQL text (#438). A
+shared helper, `fold_view`, folds a `ViewDef`'s predicate + projection onto a
+base `DataFrame`, expanding it to `SELECT <columns> FROM base WHERE
+<predicate>` (`None` on either side is a no-op); both view-registration paths
+call it so a view expands **identically** everywhere it is read. On the plain
+serving path, `register_catalog_views` runs `AFTER` the live-tables
+registration loop in `execute_query_stream` and registers every catalog view
+as an ordinary DataFusion logical view over its (already-registered) base
+via `ctx.table(...)` — so every SQL consumer of the serving context (object
+reads, dataset preview, link traversal, transform inputs) resolves a view
+name exactly like a table, with no per-caller special-casing.
+
+The **governed** path (`execute_governed_sql_stream`, arbitrary client SQL
+under ACL) treats a view as an ordinary governed relation with one deliberate
+twist: a view registers **only** when the view itself has a `GovernedTable`
+entry (closed-world, exactly as for a base table) — a view grant is
+sufficient on its own and never requires the base's own grant. To make that
+true, the view's inner base relation is built **privately and ungoverned**
+(`build_serving_provider`, never `ctx.table`) inside the governed session,
+where a base is otherwise registered — wrapped in the **base's own** policy —
+only when it independently has a `GovernedTable` entry; using that path for a
+view's inner scan would be doubly wrong (it could either fail to resolve, or
+wrap the view in the wrong policy). The folded view is instead wrapped in the
+**view's own** policy via `GovernedTableProvider`, so a base's row filters/
+masks/denials can never contaminate a view scan, and a subject holding only a
+view grant (no base grant at all) can read through it.
+
 ## Iceberg catalog: pointer + mirror
 
 loom vendors and owns the Iceberg SQL catalog (ported from
@@ -521,6 +551,11 @@ and maintenance schedules.
 
 ## Known gaps
 
+- `#fut-view-sql-derived` — arbitrary-SQL (join/aggregate) read-only catalog
+  views; today a view is a row/column subset of exactly one physical table.
+- `#fut-view-pushdown-stats` — a catalog view's own predicate is evaluated as
+  a plain filter above the base scan, not pushed into the base provider's
+  file-skipping `PruningPredicate`.
 - `#fut-flight-sql-surface` — the rest of the Flight SQL command surface
   (prepared statements, catalog-metadata commands).
 - `#fut-flight-export-tls` — TLS/mTLS on the external Flight export wire.
