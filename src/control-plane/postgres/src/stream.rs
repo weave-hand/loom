@@ -351,15 +351,7 @@ pub async fn reconcile_stream_mode(
                     )));
                 }
             }
-            // Winner (or an agreeing redeclare of our own kind): register the
-            // changelog table's mirror row (its Iceberg metadata was created by
-            // `land_cdc` before this tx, outside any commit) and point the registry
-            // at it, reusing this write's `at` snapshot — the changelog table's
-            // genesis shares the same snapshot as the declaring write. Its columns
-            // are projected on first flush append; an empty mirror row is a valid
-            // never-written table. Runs ONLY after every guard above has passed, so a
-            // losing cdc declare can never stamp a winner's row (see the load-bearing
-            // note above).
+            // CDC-only; runs after every guard — see the ordering note above.
             if matches!(decl, StreamDecl::Cdc { .. }) {
                 let clog = crate::iceberg_landing::changelog_table_ref(table);
                 let clog_tid =

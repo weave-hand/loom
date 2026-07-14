@@ -306,14 +306,29 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
         .fetch_one(&mut *tx)
         .await
         .expect("read winner changelog_table_id on the loser tx");
+        // Second probe, same still-open tx: `pg_set_changelog_table_id` stamping
+        // `None` above only pins a regression in THAT write. It says nothing about
+        // `ensure_table`, the OTHER write the CDC sub-branch performs — a future edit
+        // that moved only the pointer stamp below the guards, leaving `ensure_table`
+        // above them, would still pass the assertion above while the loser silently
+        // inserted an orphan changelog mirror row inside its tx. Count the changelog
+        // table's mirror rows directly (`s.t__changelog`, per
+        // `iceberg_landing::changelog_table_ref`) to pin that write too.
+        let clog_rows: i64 = sqlx::query_scalar(
+            "select count(*) from iceberg_mirror.\"table\" \
+             where table_namespace = 's' and table_name = 't__changelog'",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .expect("count changelog mirror rows on the loser tx");
         drop(tx.rollback().await);
-        (res, stamped)
+        (res, stamped, clog_rows)
     });
 
     await_declare_blocked(&pool).await;
     winner.commit().await.expect("commit winner");
 
-    let (res, stamped) = loser.await.expect("join loser");
+    let (res, stamped, clog_rows) = loser.await.expect("join loser");
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg))
                  if msg.contains("declared concurrently with a different stream kind")),
@@ -324,6 +339,11 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
         stamped, None,
         "a losing cdc declare must bail out BEFORE writing changelog_table_id onto the \
          winner's log row — the kind check has to precede the changelog writes"
+    );
+    assert_eq!(
+        clog_rows, 0,
+        "a rejected declare must not have created the changelog mirror row either — \
+         ensure_table must run only after every guard above has passed"
     );
 }
 
