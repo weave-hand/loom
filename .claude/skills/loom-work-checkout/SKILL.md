@@ -39,16 +39,7 @@ one step. The registers and grammar are defined in
    4. **Final review** — after all tasks, the whole-implementation review that
       `superpowers:subagent-driven-development` ends with (a final code-reviewer
       subagent) before finishing. **The final review MUST include the metric
-      gate**: run `loom-complexity diff` and `loom-duplication diff` (both
-      skills take a `diff` argument — changed files only, print, no commit)
-      and report as findings any NEW hotspot over the census thresholds
-      (cc > 15, cognitive > 15, MI < 20, SLOC > 100) or any NEW cross-file
-      duplication pair ≥ 20 lines introduced by the branch. Findings are
-      advisory, not auto-blocking — some legitimate changes trip the detectors
-      (e.g. an intentionally-local test seed) — but each one must be either
-      fixed or explicitly justified in the PR description. When the item's
-      whole point is a metric improvement, quote the before/after numbers in
-      the register close prose.
+      gate** (below).
 4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR whose head
    branch is `work/<id>` (this is what binds the claim to the PR). In that PR,
    close the register item via `loom-docs-update` — remove its entry and fold
@@ -57,6 +48,109 @@ one step. The registers and grammar are defined in
 5. **Release** is automatic: once the PR merges/closes, the claim is reaped by
    `bash tools/docs.sh claims --reap` (run by routines). If you abandon before a
    PR, release explicitly: `bash tools/docs.sh release <id>`.
+
+## The metric gate is a FIX step, not a reporting step
+
+Run `loom-complexity diff` and `loom-duplication diff` (both take a `diff`
+argument — changed files only, print, no commit) before the PR opens.
+
+**Compare against the MERGE-BASE, not the committed register** — the register can
+be many commits stale, and a stale register makes new debt look pre-existing.
+Measure the functions/files your branch touched at `git merge-base HEAD main`, and
+again at `HEAD`. That diff is the finding.
+
+**If your branch worsened any hotspot on any axis (cc, cognitive, MI, SLOC), or
+introduced any cross-file duplication pair ≥ 20 lines: FIX IT IN THIS PR.** Not in
+a follow-up. Not in an issue. Not in the PR description.
+
+**"It was already a hotspot" is not a licence to make it worse.** A function over
+threshold before your branch and further over it after your branch is debt *you*
+added, and the gate exists to tell you so while the code is still in your head.
+
+**Do not defer to `loom-complexity-fix` / `loom-duplication-fix`.** Those routines
+exist for hotspots nobody is currently touching. Debt you created an hour ago is
+not their job.
+
+The gates usually point at the *same seam* — when they do, one extraction fixes
+both (and the shared extraction is normally the thing that should have existed
+already). Re-run both gates after the fix and put the before/after numbers in the
+PR body.
+
+**The only acceptable non-fix** is that the detector is measuring something that is
+not debt — and you must name the shared abstraction you checked for and say why it
+cannot serve. "A test seed must stay local" is only true if you looked at
+`//src/testing:seed` (and the crate's `*-support` test library) and it genuinely
+cannot express the case; the shared helper often exists already and you just did
+not look.
+
+| Rationalization | Reality |
+|---|---|
+| "It was already over the threshold before my branch" | You made it worse. Fix the delta you added, at minimum. |
+| "This is a correctness fix on a hot path — refactoring adds risk" | You have just written the tests that make the refactor safe. Run them. |
+| "loom's convention is that remediation lands as its own PR" | That convention is for *untouched* hotspots. Not for debt from this diff. |
+| "The MI crossing is marginal (19.93 vs 20)" | Thresholds are not negotiable by proximity. Fix it. |
+| "It's a good `loom-complexity-fix` candidate" | It is a good candidate for you, now, with the context loaded. |
+| "The duplication is just test seeding" | Then use the seed library. That is what it is for (CLAUDE.md says so). |
+| "I'll note it in the PR description" | A note is not a fix. The gate is signal, not paperwork. |
+
+**Red flags — you are rationalizing, go fix it:**
+
+- You are writing a paragraph explaining why you are *not* fixing a finding.
+- The words "justified", "acceptable", "pre-existing", "out of scope", or
+  "follow-up" are appearing near a metric finding.
+- You are about to close the PR body with a "Known debt" section describing
+  something you could have fixed in the time it took to write the section.
+
+## Problems you find while implementing: FIX them, do not FILE them
+
+A register item is closed by *fixing* things. If your branch ends with more open
+issues than it started with, you have grown the backlog, not shrunk it.
+
+**Default: if you find a defect while building the item and you can reach it, test
+it, and fix it — fix it in this PR.** This includes bugs you find in code your item
+does not name (a second instance of the same bug is the commonest case, and the
+cheapest possible fix: you have the pattern, the test idiom, and the context).
+
+**Filing is the exception.** You may file a new item ONLY when one of these holds,
+and you must say which in the item's prose:
+
+1. The fix needs a **design decision a human must make** (competing approaches with
+   different blast radii — the kind of thing `loom-work-plan` writes a spec for), or
+2. The fix lands in a **different subsystem** and would need its own spec and its own
+   test surface — i.e. it is a genuinely separate item, not a second call site.
+
+**Before you file anything, VERIFY the defect is real.** Read the code path end to
+end and convince yourself it can actually be reached. A filed issue that cannot
+happen is worse than no issue: it is a permanent, confident lie in the register that
+some future session will spend a day "fixing". (A real session filed a
+trigger-latches-forever issue whose only trigger path — job abandonment — the worker
+cannot even produce, because every RPC failure retries with no attempt cap.)
+
+**Filing a bug does not preserve it — it rots it.** The description you write is a
+guess at the fix. It is often wrong: a real session filed "the same one-line guard is
+needed in `collect_vectors`", and the actual fix turned out to need a second change
+(`write_sidecar` also loaded the Iceberg table) that the note never mentioned. Fixing
+it forces you to find that out; filing it does not.
+
+When you do fix a found defect, it rides the same rules as the item itself: a failing
+test first (watch it fail for the right reason), then the fix, then the register close
+if it had an entry — and the capability recorded in `docs/system-capabilities/`.
+
+| Rationalization | Reality |
+|---|---|
+| "Filed rather than folded in, to keep this fix scoped" | Scope discipline is about *design*, not about ducking a 5-line fix. |
+| "It's the same bug elsewhere — I'll file it as its own item" | Same bug + same fix shape = fix it now. You will never be cheaper. |
+| "It's out of scope for this item" | The item is the excuse, not the boundary. Can you test it? Then fix it. |
+| "The spec says 'out of scope — file it as its own item'" | The spec was written **before** anyone knew the bug's real shape. That line is a hypothesis, not an exemption — and it is routinely wrong (the same spec also predicted a one-line fix that turned out to need two). Once you can see the fix, the spec's guess does not bind you. |
+| "I'll write a really good issue for it" | The best issue is a merged fix. |
+| "A future session can pick it up" | It will be stale, mis-described, or never picked up. |
+
+**Red flags — stop and fix instead:**
+
+- You are adding an entry to `docs/ISSUES.md` for something you found *while your
+  own branch was open*, and you have not tried to fix it.
+- Your PR body says "files N new issues" and N > 0 while "closes" is 1.
+- You are describing a **fix shape** in an issue you could just apply.
 
 ## Notes
 
