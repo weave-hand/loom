@@ -211,7 +211,7 @@ the output — so a read before and after consolidation is byte-identical by
 construction. The file tier is read only when the base actually has live
 Parquet files, so a shadow-bearing table that has never been flushed — no
 Parquet, no `iceberg_tables` row — folds on its inline tier alone; that
-branch shipped with the arm but was untested until #439 pinned it.
+branch shipped with the arm but was untested until #440 pinned it.
 
 **Nullability across the union (#435).** A non-CDC tombstone row carries NULL
 data columns (only the identity and the framing columns are set), and it *must*

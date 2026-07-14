@@ -182,7 +182,7 @@ The CDC fold itself:
   still folds correctly; `inline_live_batch_full` keeps `−U` rows in the read
   but they never win the fold, since their adjacent `+U` always carries a
   greater `loom_offset`).
-- Reads **only the tiers that exist** (#439). The file leg is taken only when
+- Reads **only the tiers that exist** (#440). The file leg is taken only when
   the base actually has live Parquet files, and the fold's `union all` is
   assembled from the registered tiers — because `read_files_as_batches` calls
   `catalog.load_table` *before* it looks at its path list, and a CDC base has
@@ -196,7 +196,7 @@ The CDC fold itself:
   the mirror-only `overwrite_truncate`, which is likewise safe with no
   `iceberg_tables` row.
 - A base with **neither** tier is a no-op that still clears `has_shadow` **and
-  the consolidate trigger** (#439). The trigger is armed by the enqueue and
+  the consolidate trigger** (#440). The trigger is armed by the enqueue and
   cleared only by a completed consolidate, and the enqueue condition is
   `delta_count >= effective && !enqueued` — so a consolidate that errored or
   returned early without clearing latched `enqueued = true` permanently, and
