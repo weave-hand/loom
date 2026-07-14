@@ -1095,6 +1095,38 @@ where
             .await,
         Err(ControlPlaneError::Conflict(_) | ControlPlaneError::Validation(_))
     ));
+    // Name collision with a DIFFERENT existing physical table (base is a THIRD table),
+    // not the self-referential case above — pins the `view_is_live_table` Conflict branch
+    // on its own, unconfounded with the view==base identity. Seed the other table first.
+    let other = TableRef {
+        schema: "main".into(),
+        name: "orders".into(),
+    };
+    seeder
+        .seed(SeedSpec {
+            table: other.clone(),
+            columns: vec![SeedColumn {
+                name: "id".into(),
+                ty: "long".into(),
+                nullable: false,
+            }],
+            row_batches: vec![1],
+        })
+        .await;
+    assert!(
+        matches!(
+            catalog
+                .define_view(ViewDef {
+                    view: other.clone(),
+                    base: base.clone(),
+                    predicate: None,
+                    columns: None,
+                })
+                .await,
+            Err(ControlPlaneError::Conflict(_))
+        ),
+        "a view whose name collides with a different physical table is Conflict"
+    );
     // Missing base is NotFound.
     assert!(matches!(
         catalog
