@@ -256,6 +256,28 @@ pub async fn reconcile_stream_mode(
         )));
     }
 
+    // The mirror of `define_transform`'s micro-batch source guard. A micro-batch MV reads
+    // LOG streams only (`mv_delta_scan` — "cdc sources are deferred"), so a CDC declaration
+    // on a table an MV already sources creates a reader that can never run: its watermark
+    // never advances, `mv_floor` pins every bucket at 0 forever, and the table's consolidate
+    // fold declines on every attempt for good (`#iss-end-cap-ignores-mv-floor`).
+    //
+    // Both halves are required. Guarding only `define_transform` is defeated by ordering —
+    // an MV may legitimately be registered over a source that does not exist yet (it becomes
+    // a log stream on its first `?mode=stream` write), and this is the path that then turns
+    // that source into a CDC table. Raised BEFORE any declare, alongside the bucket-count
+    // check above. Lift both when `fut-mv-cdc-source` lands.
+    if matches!(decl, StreamDecl::Cdc { .. }) {
+        let readers = crate::transforms::pg_micro_batch_readers(&mut *conn, table).await?;
+        if !readers.is_empty() {
+            return Err(ControlPlaneError::Validation(format!(
+                "cdc declaration refused: {}.{} is sourced by micro-batch MV(s) {readers:?}; \
+                 a micro-batch MV reads log streams only (cdc sources are deferred)",
+                table.schema, table.name
+            )));
+        }
+    }
+
     ensure_versioned_orderable(&mut *conn, decl, table).await?;
 
     // The requested stream KIND (log vs cdc). Exhaustive (no `_` arm) so a future

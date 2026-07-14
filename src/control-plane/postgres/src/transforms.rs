@@ -422,6 +422,35 @@ impl Transforms for PgControlPlane {
         if let Some(t) = &output_table {
             crate::stream::pg_refuse_stream_target(&mut tx, t).await?;
         }
+        // A micro-batch MV's SOURCE must be a log stream (declared, or not yet declared —
+        // it becomes one on its first `?mode=stream` write). `mv_delta_scan` accepts LOG
+        // sources only (`engine-serving/src/mv_delta.rs` — "cdc sources are deferred"), so
+        // an MV over a CDC source could never run: its watermark would never advance, and
+        // `mv_floor` would pin the source at offset 0 forever, permanently declining that
+        // table's consolidate fold (`#iss-end-cap-ignores-mv-floor`). Refuse the
+        // registration rather than accept an unrunnable one. The symmetric half lives in
+        // `reconcile_stream_mode` (a CDC declaration on a table an MV already sources) —
+        // both are required, since an MV may legitimately be registered over a source that
+        // does not exist yet, and the declaration path is what would then turn that source
+        // into a CDC table. Lift both when `fut-mv-cdc-source` lands. In-tx, so the refusal
+        // is atomic with the upsert.
+        let mv_source: Option<TableRef> = match &def.body {
+            TransformBody::MicroBatch { source, .. }
+            | TransformBody::MicroBatchJoin { source, .. } => Some(source.clone()),
+            TransformBody::Physical { .. } | TransformBody::Typed { .. } => None,
+        };
+        if let Some(src) = &mv_source
+            && let Some(tid) =
+                crate::iceberg_mirror::live_table_id(&mut tx, &src.schema, &src.name).await?
+            && let Some(meta) = crate::stream::pg_stream_meta(&mut *tx, tid).await?
+            && meta.kind == control_plane_core::StreamKind::Cdc
+        {
+            return Err(ControlPlaneError::Validation(format!(
+                "micro-batch source refused: {}.{} is a declared cdc table; a micro-batch \
+                 MV reads log streams only (cdc sources are deferred)",
+                src.schema, src.name
+            )));
+        }
         // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
         // (`mv_key`), not by this def's name. So a redefinition that changes the
         // output — or drops the micro-batch body altogether — leaves the PRIOR

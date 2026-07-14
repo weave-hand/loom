@@ -646,6 +646,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "mv-source-refuse",
+    crate = "mv_source_refuse",
+    srcs = ["tests/mv_source_refuse.rs"],
+    crate_root = "tests/mv_source_refuse.rs",
+    deps = [
+        "//src/testing:seed",
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "mv-floor",
     crate = "mv_floor",
     srcs = ["tests/mv_floor.rs"],
