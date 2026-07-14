@@ -16,9 +16,9 @@
 //! the laggard's name. It does NOT stand between an MV and a data hole, and must not
 //! be described as one — GC only ever reclaims END-CAPPED rows, which an MV's
 //! current-snapshot delta can no longer read anyway. This module's other half is
-//! being the **reusable primitive** the END-CAP-issuing paths must call before they
-//! end-cap an offset an MV has not consumed (that is where the hole is actually
-//! created); wiring it in there is `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md).
+//! being the **seam** the END-CAP-issuing paths call before they end-cap an offset
+//! an MV has not consumed (that is where the hole is actually created) — see
+//! [`EndCapIntent`] / [`guard_end_cap`] below.
 //!
 //! ## Who reads a source
 //! The union of (a) every registered `MicroBatch`/`MicroBatchJoin` transform def
@@ -33,7 +33,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use control_plane_core::{Result, TableRef};
-use sqlx::PgPool;
+use sqlx::PgConnection;
 
 use crate::backend;
 use crate::stream::pg_stream_bucket_count;
@@ -66,11 +66,15 @@ impl MvFloor {
 /// fast path — when `table` is not a declared stream table or no MV reads it. A
 /// `None` floor leaves every GC predicate byte-identical to the pre-floor
 /// behavior.
-pub async fn mv_floor(pool: &PgPool, table: &TableRef, tid: i64) -> Result<Option<MvFloor>> {
-    let Some(bucket_count) = pg_stream_bucket_count(pool, tid).await? else {
+pub async fn mv_floor(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    tid: i64,
+) -> Result<Option<MvFloor>> {
+    let Some(bucket_count) = pg_stream_bucket_count(&mut *conn, tid).await? else {
         return Ok(None);
     };
-    let readers = mv_readers(pool, table, tid).await?;
+    let readers = mv_readers(&mut *conn, table, tid).await?;
     if readers.is_empty() {
         return Ok(None);
     }
@@ -79,7 +83,7 @@ pub async fn mv_floor(pool: &PgPool, table: &TableRef, tid: i64) -> Result<Optio
         "select mv, bucket, next_offset from stream.mv_watermark where source_table_id = $1",
         tid,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(backend)?;
     let mut wm: BTreeMap<String, BTreeMap<i32, i64>> = BTreeMap::new();
@@ -131,36 +135,40 @@ pub async fn mv_floor(pool: &PgPool, table: &TableRef, tid: i64) -> Result<Optio
 /// incarnations drain. The caller passes `live.is_none()` — no live incarnation, so
 /// a registered reader really is reading nothing.
 pub async fn stranded_mv_readers(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     table: &TableRef,
     tids: &[i64],
     include_registered: bool,
 ) -> Result<BTreeSet<String>> {
     let mut out = if include_registered {
-        pg_micro_batch_readers(pool, table).await?
+        pg_micro_batch_readers(&mut *conn, table).await?
     } else {
         BTreeSet::new()
     };
     for tid in tids {
-        out.extend(watermark_mvs(pool, *tid).await?);
+        out.extend(watermark_mvs(&mut *conn, *tid).await?);
     }
     Ok(out)
 }
 
 /// Registered MV readers of `table` ∪ MVs with watermark rows against `tid`.
-async fn mv_readers(pool: &PgPool, table: &TableRef, tid: i64) -> Result<BTreeSet<String>> {
-    let mut out = pg_micro_batch_readers(pool, table).await?;
-    out.extend(watermark_mvs(pool, tid).await?);
+async fn mv_readers(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    tid: i64,
+) -> Result<BTreeSet<String>> {
+    let mut out = pg_micro_batch_readers(&mut *conn, table).await?;
+    out.extend(watermark_mvs(&mut *conn, tid).await?);
     Ok(out)
 }
 
 /// Distinct `mv` keys holding a watermark row against source `tid`.
-async fn watermark_mvs(pool: &PgPool, tid: i64) -> Result<Vec<String>> {
+async fn watermark_mvs(conn: &mut PgConnection, tid: i64) -> Result<Vec<String>> {
     sqlx::query_scalar!(
         "select distinct mv from stream.mv_watermark where source_table_id = $1",
         tid,
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await
     .map_err(backend)
 }

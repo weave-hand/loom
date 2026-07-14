@@ -132,25 +132,26 @@ async fn gc_locked(
         return Ok(GcSummary::default());
     };
 
-    // 2. Resolve the (maybe) live incarnation AND every dropped incarnation.
-    let mut conn = pool.acquire().await.map_err(backend)?;
-    let live = live_table_id(&mut conn, &table.schema, &table.name).await?;
-    let dropped = dropped_table_ids(&mut conn, &table.schema, &table.name).await?;
-    drop(conn);
+    // 2. One transaction for the whole run. The floor is read INSIDE it (2b), so the
+    //    floor read and the reclaim cannot straddle a concurrent `define_transform` — a
+    //    brand-new MV either commits before this tx's snapshot (and floors us) or after
+    //    it (and finds its source intact). Reading it on the pool, as this once did, left
+    //    exactly that window open (`#iss-mv-register-below-reclaimed-floor`).
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let live = live_table_id(&mut tx, &table.schema, &table.name).await?;
+    let dropped = dropped_table_ids(&mut tx, &table.schema, &table.name).await?;
 
     // 2b. The MV read-position floor of the LIVE incarnation (`None` for a table no
     //     micro-batch MV reads — the guard then goes NULL, a pre-floor no-op).
     let floor = match live {
-        Some(tid) => mv_floor(pool, table, tid).await?,
+        Some(tid) => mv_floor(&mut tx, table, tid).await?,
         None => None,
     };
     let file_guard: Option<i64> = floor.as_ref().map(MvFloor::min_offset);
-    let stranded = stranded_readers(pool, table, live, &dropped).await?;
+    let stranded = stranded_readers(&mut tx, table, live, &dropped).await?;
 
-    // 3. One transaction: reclaim the live incarnation (floor-guarded, see
-    //    `reclaim_live`), then every dropped incarnation (unguarded, see
-    //    `reclaim_dropped`), collecting every object path to delete post-commit.
-    let mut tx = pool.begin().await.map_err(backend)?;
+    // 3. Reclaim the live incarnation (floor-guarded), then every dropped incarnation
+    //    (unguarded), collecting every object path to delete post-commit.
     let mut paths: Vec<String> = Vec::new();
     let mut data_file_rows = 0u64;
     let mut inline_rows = 0u64;
@@ -324,7 +325,7 @@ async fn reclaim_dropped(
 /// readers therefore count only when there is no live incarnation (`live.is_none()`);
 /// a reader holding watermarks against a DROPPED tid is a real strand either way.
 async fn stranded_readers(
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     table: &TableRef,
     live: Option<i64>,
     dropped: &[DroppedIncarnation],
@@ -333,7 +334,7 @@ async fn stranded_readers(
         return Ok(BTreeSet::new());
     }
     let tids: Vec<i64> = dropped.iter().map(|d| d.table_id).collect();
-    stranded_mv_readers(pool, table, &tids, live.is_none()).await
+    stranded_mv_readers(&mut *conn, table, &tids, live.is_none()).await
 }
 
 /// The data files one GC run reclaims for one incarnation: their ids (what the deletes

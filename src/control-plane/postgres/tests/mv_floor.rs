@@ -205,8 +205,9 @@ async fn plain_table_has_no_floor() {
     )
     .await;
 
+    let mut conn = s.pool.acquire().await.expect("conn");
     assert_eq!(
-        mv_floor(&s.pool, &s.src, s.tid).await.expect("floor"),
+        mv_floor(&mut conn, &s.src, s.tid).await.expect("floor"),
         None,
         "a non-stream table has no MV floor"
     );
@@ -230,8 +231,9 @@ async fn stream_table_without_readers_has_no_floor() {
     )
     .await;
 
+    let mut conn = s.pool.acquire().await.expect("conn");
     assert_eq!(
-        mv_floor(&s.pool, &s.src, s.tid).await.expect("floor"),
+        mv_floor(&mut conn, &s.src, s.tid).await.expect("floor"),
         None,
         "no MV reads this stream table -> no floor"
     );
@@ -255,7 +257,8 @@ async fn registered_but_unrun_mv_floors_at_zero() {
     )
     .await;
 
-    let floor = mv_floor(&s.pool, &s.src, s.tid)
+    let mut conn = s.pool.acquire().await.expect("conn");
+    let floor = mv_floor(&mut conn, &s.src, s.tid)
         .await
         .expect("floor")
         .expect("a registered MV reads this source");
@@ -294,7 +297,8 @@ async fn slowest_mv_sets_the_floor_per_bucket() {
     advance(&cp, &a, s.tid, 1, 0, 3).await;
     advance(&cp, &b, s.tid, 0, 0, 2).await;
 
-    let floor = mv_floor(&s.pool, &s.src, s.tid)
+    let mut conn = s.pool.acquire().await.expect("conn");
+    let floor = mv_floor(&mut conn, &s.src, s.tid)
         .await
         .expect("floor")
         .expect("two MVs read this source");
@@ -334,7 +338,8 @@ async fn caught_up_mv_floors_at_its_watermark() {
     .await;
     advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 4).await;
 
-    let floor = mv_floor(&s.pool, &s.src, s.tid)
+    let mut conn = s.pool.acquire().await.expect("conn");
+    let floor = mv_floor(&mut conn, &s.src, s.tid)
         .await
         .expect("floor")
         .expect("registered MV");
