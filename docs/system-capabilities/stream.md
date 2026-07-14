@@ -153,6 +153,38 @@ alongside the filtered ones, used only by the changelog flush path and by
 consolidation's fold (which needs every event, including `−U`, but never lets
 one win).
 
+**A CDC table's first typed UPDATE/DELETE could fail to provision inline
+storage at all (#442).** `write_inline_delta` (`iceberg_inline.rs`) provisions
+`inline_<tid>` from `full_live_column_specs` — the table's live
+`iceberg_mirror.column` set, which for a declared stream table already
+includes the three framing columns above. `inline_ddl` separately hardcodes
+those same reserved columns and appends the caller's list, so a CREATE TABLE
+built from the unfiltered set named `loom_change_kind` twice and died with
+`column "loom_change_kind" specified more than once`. This was reachable for a
+CDC table whose land went straight to Parquet (`land_parquet_stream` registers
+framing on the mirror but never provisions inline storage), so the table's
+first typed UPDATE/DELETE — a supported CDC operation — was what CREATEs
+`inline_<tid>`. The failure was self-masking: that error is SQLSTATE 42701,
+which `is_duplicate_object_race` treats as a benign concurrent-create and
+swallows, so the caller instead saw a misleading `relation
+"iceberg_mirror.inline_<tid>" does not exist` from the next ALTER. Fixed by
+excluding reserved columns (`iceberg_catalog::is_reserved`) from
+`full_live_column_specs`, restoring the invariant `inline_append_decl` already
+held: `ensure_inline_schema` is handed the data columns only, and `inline_ddl`
+owns the reserved ones — de-duplicating inside `inline_ddl` instead was
+rejected, since it would silently accept and drop a caller-supplied
+`loom_bucket` of the wrong type. (The log-table variant of this shape is
+already refused outright by `pg_stream_meta_for_typed_write` — see *typed
+UPDATE/DELETE against a declared log table is refused*, under **Continuous /
+standing queries (materialized views)** below; CDC is not, and must not be.
+`is_duplicate_object_race`'s 42701 entry is still correct for the ALTER
+path — tightening it for the CREATE case is a behavioral change to
+concurrent-DDL handling, left out of scope.) The
+`//src/control-plane/postgres:cdc-parquet-typed-delta` fixture test asserts
+the premise (a Parquet-landed CDC table has framing live in the mirror but no
+inline table) and then drives a real typed DELETE and UPDATE through
+`write_inline_delta` to their framed `−D` and `−U`/`+U` rows.
+
 ## Dual Iceberg tables
 
 A declared CDC table is **two** Iceberg tables, one registry row
