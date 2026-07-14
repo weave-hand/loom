@@ -174,6 +174,25 @@ pub fn mv_key(output: &crate::TableRef) -> String {
 /// in the postgres adapter). The CAS therefore accepts `next_offset <= from` and
 /// refuses anything above it: a watermark ahead of the delta means a concurrent run
 /// already covered it. `from == 0` is the bootstrap case (may insert the row).
+///
+/// The CAS ALSO requires `next_offset < to`, so **monotonicity is enforced by the
+/// mechanism, not owed by the caller**: `to > from` happens to hold for every advance
+/// the worker's `framing_bounds` frames, but nothing between here and the backend
+/// validates it, and without that conjunct a `{from: 900, to: 5}` advance would REWIND
+/// a watermark at 100 and re-append the offsets in between forever.
+///
+/// Accepting `<=` cashes in an assumption worth naming: `mv_delta_scan` (engine-serving)
+/// must read `loom_offset >= next_offset` **snapshot-consistently across both storage
+/// tiers**, so that a delta's observed minimum sitting above the watermark PROVES the
+/// offsets in between do not exist rather than merely being transiently invisible. A
+/// flush end-caps the inline rows and publishes the Parquet file in one commit, so a row
+/// is always live in exactly one tier. Under the old `=` predicate a transiently-invisible
+/// row would have been a loud, permanent Conflict; under `<=` it would be a SILENT SKIP —
+/// so a future non-atomic flush would break exactly-once here.
+///
+/// (Aside, for anyone diffing the two backends: memory's `current <= from` arm and
+/// postgres's `where next_offset = 0` bootstrap predicate coincide for `from == 0` only
+/// because offsets are assumed non-negative — an assumption nothing in the type states.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatermarkAdvance {
     pub bucket: i32,

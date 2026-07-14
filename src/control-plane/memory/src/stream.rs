@@ -123,11 +123,15 @@ impl MvWatermarks for MemoryControlPlane {
         for adv in advances {
             let key = (mv.to_string(), source_table_id, adv.bucket);
             match map.get(&key).copied() {
-                // `<=`, not `==` — see the postgres adapter's `pg_advance_mv_watermark`: a
-                // rounded-down bootstrap can leave the row BELOW the delta's observed minimum
-                // offset, and exactly-once survives because the advance is still monotone and a
-                // replay (whose `from` is below the now-committed `to`) is still refused.
-                Some(current) if current <= adv.from => {
+                // Mirrors the postgres CAS predicate in `pg_advance_mv_watermark` — read its
+                // comment for the full argument. In short: `current <= adv.from` (not `==`)
+                // because a rounded-down bootstrap can leave the row BELOW the delta's observed
+                // minimum offset; `current < adv.to` because that relaxation alone would let a
+                // non-monotone advance REWIND the watermark (`{from: 900, to: 5}` against a row
+                // at 100), re-appending the offsets in between on every later run. Together they
+                // make monotonicity structural rather than a caller contract, and still refuse a
+                // replay (the winner leaves `current = to`, failing both conjuncts).
+                Some(current) if current <= adv.from && current < adv.to => {
                     map.insert(key, adv.to);
                 }
                 None if adv.from == 0 => {
@@ -135,9 +139,11 @@ impl MvWatermarks for MemoryControlPlane {
                 }
                 current => {
                     return Err(ControlPlaneError::Conflict(format!(
-                        "mv watermark advanced concurrently: {mv} source {source_table_id} \
-                         bucket {} expected {} found {:?}",
-                        adv.bucket, adv.from, current
+                        "mv watermark refused advance {}..{} : {mv} source {source_table_id} \
+                         bucket {} — the watermark is either ABOVE `from` (a concurrent run \
+                         already covered this delta) or at/above `to` (the advance is not \
+                         monotone); found {:?}",
+                        adv.from, adv.to, adv.bucket, current
                     )));
                 }
             }

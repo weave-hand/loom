@@ -6665,4 +6665,33 @@ pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks 
         ),
         "a replayed advance is still a Conflict — relaxing to `<=` did not weaken exactly-once"
     );
+
+    // --- monotonicity is STRUCTURAL, not a caller contract. `to > from` is produced by the
+    // worker's `framing_bounds`, but the CAS must not TRUST it: a garbled/hostile advance whose
+    // `to` sits below the committed watermark must be refused by the predicate itself, or it
+    // would REWIND the watermark inside the output-commit transaction and every later run would
+    // re-read and re-append the offsets in between (a double-write — exactly-once broken). The
+    // row is at 12 here; `{from: 900, to: 5}` satisfies `next_offset <= from` yet is not
+    // monotone, so the `next_offset < to` conjunct is the only thing refusing it. ---
+    assert!(
+        matches!(
+            cp.advance_mv_watermark(
+                cas_mv,
+                cas_tid,
+                &[WatermarkAdvance {
+                    bucket: 0,
+                    from: 900,
+                    to: 5,
+                }],
+            )
+            .await,
+            Err(ControlPlaneError::Conflict(_))
+        ),
+        "a non-monotone advance (to below the watermark) must Conflict, never rewind"
+    );
+    assert_eq!(
+        cp.mv_watermarks(cas_mv, cas_tid).await.unwrap().get(&0),
+        Some(&12),
+        "the refused non-monotone advance left the watermark untouched"
+    );
 }
