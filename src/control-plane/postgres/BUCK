@@ -613,6 +613,21 @@ rust_library(
 )
 
 loom_fixture_test(
+    name = "end-cap-intent",
+    crate = "end_cap_intent",
+    srcs = ["tests/end_cap_intent.rs"],
+    crate_root = "tests/end_cap_intent.rs",
+    deps = [
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "mv-floor",
     crate = "mv_floor",
     srcs = ["tests/mv_floor.rs"],

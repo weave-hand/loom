@@ -32,7 +32,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use control_plane_core::{Result, TableRef};
+use control_plane_core::{ControlPlaneError, Result, TableRef};
 use sqlx::PgConnection;
 
 use crate::backend;
@@ -171,4 +171,155 @@ async fn watermark_mvs(conn: &mut PgConnection, tid: i64) -> Result<Vec<String>>
     .fetch_all(&mut *conn)
     .await
     .map_err(backend)
+}
+
+/// The stable prefix of the seam's refusal message. `consolidate_table` matches on it
+/// to turn a refusal into a clean skip-and-re-arm rather than a queue-poisoning error
+/// (the gRPC status code does not survive the wire — `worker/src/stream_mv.rs`'s
+/// `classify_*` uses the same idiom).
+pub const MV_FLOOR_REFUSAL_PREFIX: &str = "mv-floor refuses end-cap:";
+
+/// Why a caller is end-capping. Required by every end-cap primitive, so a future
+/// retention path cannot end-cap an MV's unread offsets by simply not thinking about
+/// it — the type system makes it decide. Intent CANNOT be inferred from the SQL: flush
+/// and compaction end-cap offsets ABOVE the floor and re-project those same rows at the
+/// same `(bucket, offset)`, so a blanket "refuse any end-cap at or above the floor"
+/// would break them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EndCapIntent<'a> {
+    /// The offsets SURVIVE: the same rows are re-projected into the new live set at the
+    /// SAME `(bucket, offset)`. Flush (inline rows → live Parquet) and plain-coalesce
+    /// compaction (small files → one big file). No floor consult — no MV can miss a row
+    /// that never left the live set.
+    Reframing,
+    /// The offsets LEAVE the live set. Must clear the MV floor. The DEFAULT, so a new
+    /// caller that starts end-capping without thinking gets the guard.
+    #[default]
+    Removing,
+    /// Deliberate destruction; the floor is bypassed ON PURPOSE and the reason logged.
+    /// The catalog drop: the operator dropped the source, so its MVs are dead by
+    /// definition, and wedging drop-GC on a dead MV forever is strictly worse than
+    /// stranding it (which [`stranded_mv_readers`] warns about).
+    Destroying {
+        /// Why the destruction is legitimate; logged with the bypass.
+        reason: &'a str,
+    },
+}
+
+/// `Some(floor)` iff REMOVING the live offsets of `tid` would take rows at or above some
+/// MV's read position — i.e. iff a `Removing` end-cap must be refused. `None` means
+/// nothing blocks: not a declared stream table, no MV reads it, or every live offset is
+/// already below the floor.
+///
+/// Bounds are GC's, reused exactly:
+/// - **Files** — [`MvFloor::min_offset`] (the cross-bucket minimum; per-file column stats
+///   are not per-bucket) vs the file's `loom_offset` MAX stat. A file with NO stat is HELD
+///   (fail-safe). A file straddling the floor cannot be partially end-capped without a
+///   rewrite, so it is REFUSED, not filtered.
+/// - **Inline rows** — per-bucket precise (`loom_bucket = b and loom_offset < floor_b`).
+///
+/// The `::bigint` cast lives OUTSIDE the scalar subquery for the same reason it does in
+/// `victim_data_files`: `max_value` is `text` holding EVERY column's bound (including
+/// string columns), and Postgres may reorder quals inside one `WHERE`.
+pub async fn removal_blocked(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    tid: i64,
+) -> Result<Option<MvFloor>> {
+    let Some(floor) = mv_floor(&mut *conn, table, tid).await? else {
+        return Ok(None);
+    };
+
+    // File tier: any LIVE file NOT provably below the floor blocks. `coalesce(_, false)`
+    // makes a missing `loom_offset` stat block too — the fail-safe direction.
+    let blocking_file: Option<i64> = sqlx::query_scalar!(
+        "select df.data_file_id from iceberg_mirror.data_file df \
+         where df.table_id = $1 and df.end_snapshot is null \
+           and not coalesce(( \
+                 select cs.max_value from iceberg_mirror.data_file_column_stat cs \
+                 where cs.data_file_id = df.data_file_id \
+                   and cs.column_name = 'loom_offset')::bigint < $2::bigint, false) \
+         limit 1",
+        tid,
+        floor.min_offset(),
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if blocking_file.is_some() {
+        return Ok(Some(floor));
+    }
+
+    // Inline tier: per-bucket precise. A live row blocks unless it is strictly below ITS
+    // bucket's floor; an unframed row (NULL bucket/offset) blocks — fail-safe. The
+    // `inline_<tid>` identifier is dynamic, so this is `AssertSqlSafe`; every literal
+    // comes from our own mirror, never user input (same as `delete_end_capped_inline_rows`).
+    //
+    // `select exists(...)` -> bool: a bare `select 1` yields int4 and would fail to decode.
+    if !crate::iceberg_inline::inline_table_exists(&mut *conn, tid).await? {
+        return Ok(None);
+    }
+    let below: String = {
+        let clauses: Vec<String> = floor
+            .per_bucket
+            .iter()
+            .filter(|(_, offset)| **offset > 0)
+            .map(|(bucket, offset)| format!("(loom_bucket = {bucket} and loom_offset < {offset})"))
+            .collect();
+        if clauses.is_empty() {
+            "false".to_owned()
+        } else {
+            format!("({})", clauses.join(" or "))
+        }
+    };
+    let inline = crate::iceberg_inline::inline_table_name(tid);
+    let blocking_row: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "select exists(select 1 from {inline} \
+         where end_snapshot is null and not coalesce({below}, false))"
+    )))
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if blocking_row {
+        return Ok(Some(floor));
+    }
+    Ok(None)
+}
+
+/// Refuse a `Removing` end-cap that would take offsets at or above any MV's read
+/// position. Runs on the CALLER'S connection — pass the transaction the write commits
+/// on, so a refusal and the write it guards are one unit: the caller's rollback undoes
+/// the write. (The read takes no row locks and loom runs READ COMMITTED, so this is NOT
+/// atomic against a concurrent `define_transform` registering a new reader; it is a
+/// floor observed at read time, not a lock on the reader set.)
+///
+/// `Reframing` short-circuits (no query at all). `Destroying` logs and proceeds.
+pub async fn guard_end_cap(
+    conn: &mut PgConnection,
+    table: &TableRef,
+    tid: i64,
+    intent: &EndCapIntent<'_>,
+) -> Result<()> {
+    match *intent {
+        EndCapIntent::Reframing => return Ok(()),
+        EndCapIntent::Destroying { reason } => {
+            tracing::info!(
+                schema = %table.schema, name = %table.name, tid, reason,
+                "end-cap bypasses the MV floor",
+            );
+            return Ok(());
+        }
+        EndCapIntent::Removing => {}
+    }
+    let Some(floor) = removal_blocked(&mut *conn, table, tid).await? else {
+        return Ok(());
+    };
+    Err(ControlPlaneError::Validation(format!(
+        "{MV_FLOOR_REFUSAL_PREFIX} {}.{} carries offsets a micro-batch MV has not read \
+         (floor {}, slowest {:?}); removing them would leave a hole in its delta",
+        table.schema,
+        table.name,
+        floor.min_offset(),
+        floor.slowest,
+    )))
 }
