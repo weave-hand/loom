@@ -701,6 +701,24 @@ loom_fixture_test(
     ],
 )
 
+rust_library(
+    name = "gc-test-support",
+    crate = "gc_test_support",
+    srcs = ["tests/gc_test_support.rs"],
+    crate_root = "tests/gc_test_support.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+    ],
+)
+
 loom_fixture_test(
     name = "iceberg-gc",
     crate = "iceberg_gc",
@@ -708,16 +726,31 @@ loom_fixture_test(
     crate_root = "tests/iceberg_gc.rs",
     deps = [
         "//src/testing:seed",
-        "//third-party:arrow-ipc",
+        ":gc-test-support",
         ":postgres",
         "//src/control-plane/core:core",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
         "//third-party:iceberg",
-        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
-        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "timetravel-intact",
+    crate = "timetravel_intact",
+    srcs = ["tests/timetravel_intact.rs"],
+    crate_root = "tests/timetravel_intact.rs",
+    edition = "2024",
+    deps = [
+        ":gc-test-support",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/testing:seed",
+        "//third-party:iceberg",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:uuid",
     ],
