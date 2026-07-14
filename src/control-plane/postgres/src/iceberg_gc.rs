@@ -36,14 +36,18 @@
 //! defense** — a lagging MV's end-capped bytes are not physically destroyed while
 //! it is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged
 //! with the laggard's name — plus `mv_floor` itself as a reusable primitive.
-//! It is NOT what stands between an MV and a data hole, and must not be described
-//! as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`) while an
-//! MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped row is
-//! already invisible to the MV before GC touches it — `gc_table` could never have
-//! removed a row an MV was still able to read. The hole is created at END-CAP
-//! time, by whichever path end-caps offsets an MV has not consumed; making those
-//! paths consult `mv_floor` first is the real fix, tracked as
-//! `#iss-end-cap-ignores-mv-floor` (docs/ISSUES.md) and not built here.
+//! This tier is NOT what stands between an MV and a data hole, and must not be
+//! described as one: GC only ever reclaims END-CAPPED rows (`end_snapshot <= H`)
+//! while an MV's delta reads LIVE rows at the CURRENT snapshot, so an end-capped
+//! row is already invisible to the MV before GC touches it — `gc_table` could
+//! never have removed a row an MV was still able to read. The hole is created at
+//! END-CAP time, by whichever path end-caps offsets an MV has not consumed. That
+//! guard now EXISTS, on the end-cap side where it belongs: every end-cap primitive
+//! requires an `EndCapIntent` and calls `crate::mv_floor::guard_end_cap`, which
+//! refuses a `Removing` end-cap the floor blocks (and three write-path refusals —
+//! stream-table overwrite, typed UPDATE/DELETE on a declared log table, and a
+//! micro-batch MV over a CDC source — remove the lossy paths outright). What this
+//! module's floor keeps doing is the byte-retention half above.
 //! For the overwhelming majority of tables — anything no micro-batch MV reads —
 //! the floor is `None` and every predicate below is byte-identical to the
 //! pre-floor behavior. A DROPPED incarnation's reclaim deliberately bypasses the

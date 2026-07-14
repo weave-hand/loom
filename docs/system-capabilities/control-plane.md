@@ -158,11 +158,22 @@ watermark row, including a registered-but-never-run MV, floors that bucket at
 is behind, and the hold is counted (`GcSummary.held_by_mv_floor`) and logged with
 the laggard's name. The escape hatch is `Transforms::delete_transform`, which
 deletes the MV's watermark rows in the same transaction as the def (a testkit
-contract certifies both the postgres adapter and the memory fake). The floor is
+contract certifies both the postgres adapter and the memory fake). That GC tier is
 **byte-retention defense plus a reusable primitive, not hole-freedom** — GC only
-reclaims end-capped rows, which an MV's current-snapshot delta already cannot
-see; the paths that end-cap unread offsets must call `mv_floor` themselves
-(`#iss-end-cap-ignores-mv-floor`). Full account: engine's **GC** section.
+reclaims end-capped rows, which an MV's current-snapshot delta already cannot see.
+The paths that **end-cap** unread offsets are where a hole is created, and they
+call `mv_floor` themselves now (#442): all five mirror end-cap primitives
+(`end_cap_files_by_path`, `end_cap_live_data_files`, `mark_dropped`,
+`end_cap_live_inline_rows`, `end_cap_inline_rows_by_id`) require an explicit
+**`EndCapIntent`** — `Reframing` (rows re-projected at the same `(bucket, offset)`:
+flush, plain compaction — no consult), `Removing` (the default; offsets leave the
+live set, so `guard_end_cap` refuses a blocked removal with the stable prefix
+`mv-floor refuses end-cap:`), or `Destroying { reason }` (the catalog drop —
+bypassed on purpose, logged). Three write-path refusals (a stream-table overwrite,
+a typed UPDATE/DELETE against a declared log table, and a micro-batch MV over a CDC
+source — the last guarded at both registration and declaration) are what actually
+remove the lossy paths; the seam is the type-level constraint future retention
+paths inherit. Full account: engine's **GC** and **end-cap seam** sections.
 
 Concurrent first-writes to a brand-new table are race-safe: `ensure_table` —
 the SELECT-live-then-INSERT that materializes the `iceberg_mirror.table` row for

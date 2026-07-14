@@ -477,24 +477,22 @@ its hold — and `define_transform` does the same for the *previous* output when
 redefinition moves an MV off it (or drops the micro-batch body), so a watermark
 key can never outlive every def that names it and floor its source forever.
 
-**What the floor does and does not deliver — read this before relying on it.**
-It is **byte-retention defense plus a reusable primitive**, not a guarantee that
-an MV cannot lose events. GC only ever reclaims **end-capped** rows/files
+**What the GC-tier floor does and does not deliver — read this before relying on
+it.** It is **byte-retention defense plus a reusable primitive**, not a guarantee
+that an MV cannot lose events. GC only ever reclaims **end-capped** rows/files
 (`end_snapshot <= H`), while an MV's delta reads **live** rows at the **current**
 snapshot (`engine-serving/src/mv_delta.rs`) — so an end-capped row is already
 invisible to the MV before GC touches it, and `gc_table` could never have removed
-a row an MV was still able to read. What the guard buys is that a lagging MV's
+a row an MV was still able to read. What the GC guard buys is that a lagging MV's
 end-capped **bytes are not destroyed while it is behind** (they stay on disk, the
-hold is counted and logged), and that `mv_floor` now exists as the primitive the
-paths that *do* create the harm must call. Those are the **end-cap-issuing**
-paths — the catalog drop today, and CDC changelog retention, stream small-file
-consolidation, and any truncation/replay surface tomorrow: end-capping an offset
-an MV has not consumed removes it from the MV's current-snapshot delta
-immediately, and no GC-tier guard can bring it back. Making those paths consult
-`mv_floor` **before** end-capping is tracked as `#iss-end-cap-ignores-mv-floor`;
-two smaller gaps the floor exposed are `#iss-mv-register-below-reclaimed-floor`
-(a newly registered MV floors at `0` over a source whose low offsets may already
-be gone, plus the floor-read/registration race) and
+hold is counted and logged), and that `mv_floor` exists as the primitive the paths
+that *do* create the harm must call. Those are the **end-cap-issuing** paths:
+end-capping an offset an MV has not consumed removes it from the MV's
+current-snapshot delta immediately, and no GC-tier guard can bring it back. That
+half now ships — see **The end-cap seam** below (#442). Two smaller gaps the floor
+exposed remain open: `#iss-mv-register-below-reclaimed-floor` (a newly registered
+MV floors at `0` over a source whose low offsets may already be gone, plus a
+floor-read/registration race that #442 narrowed but did not close) and
 `#iss-mv-floor-holds-pre-declaration-files` (files written before
 `declare_stream` carry no `loom_offset` stat and are held forever by the
 fail-safe).
@@ -519,6 +517,119 @@ deletion (plus a reference-path that fails to normalize against the warehouse
 root) is logged. No dry-run and no HTTP enqueue in v1 — schedules are the
 surface; `SweepSummary { objects_deleted, bytes_deleted, candidates_skipped_grace }`
 surfaces the counts on the RPC response and in logs.
+
+## The end-cap seam: `EndCapIntent` (#442)
+
+End-capping — setting `end_snapshot`, retiring a row/file from the live set — is
+where an MV hole is actually created. All five end-cap primitives in the mirror
+(`end_cap_files_by_path`, `end_cap_live_data_files`, `mark_dropped`,
+`end_cap_live_inline_rows`, `end_cap_inline_rows_by_id`) now **require** an
+explicit `&EndCapIntent` (`control-plane/postgres/src/mv_floor.rs`) and call
+`guard_end_cap` on the **caller's** transaction before writing, so a refusal and
+the write it guards are one unit (the caller's rollback undoes the write). Intent
+cannot be inferred from the SQL — flush and compaction end-cap offsets *above* the
+floor and re-project the same rows at the same `(bucket, offset)`, so a blanket
+"refuse any end-cap at or above the floor" would break them — hence the type
+forces each caller to say which case it is:
+
+- **`Reframing`** — the offsets survive: the same rows are re-projected into the
+  new live set at the same `(bucket, offset)`. Flush (inline rows → live Parquet)
+  and plain-coalesce compaction. No floor consult at all; no MV can miss a row
+  that never left the live set.
+- **`Removing`** — the offsets leave the live set, so the floor must be clear.
+  `removal_blocked` reuses GC's own bounds exactly: a **file** blocks unless its
+  `loom_offset` **max** stat is strictly below `MvFloor::min_offset` (a file with
+  no stat blocks — fail-safe; a file straddling the floor is refused, not
+  filtered, since it cannot be partially end-capped without a rewrite), and an
+  **inline row** blocks unless it is strictly below its own bucket's floor. A
+  blocked removal is refused with `ControlPlaneError::Validation` carrying the
+  stable prefix `mv-floor refuses end-cap:`. This is the **default** intent, so a
+  future caller that starts end-capping without thinking gets the guard.
+- **`Destroying { reason }`** — deliberate destruction; the floor is bypassed on
+  purpose and the reason logged. The catalog drop is the case: the operator
+  dropped the source, so its MVs are dead by definition, and wedging drop-GC on a
+  dead MV forever is strictly worse than stranding it (which
+  `stranded_mv_readers` warns about, naming the MVs).
+
+**Honest scope — what the seam is and is not.** With the three write-path refusals
+below in place there is **no production path** by which a `Removing` end-cap can
+touch a declared **log** stream table: *the refusals are the fix*. The seam is a
+**type-level constraint on future retention paths** — a new end-cap caller must
+name its intent, and the fail-safe default is `Removing` — and its **runtime**
+guard is load-bearing on **zero paths today** (the CDC fold is the one `Removing`
+end-cap that can meet a floor at all, and it pre-checks and skips before ever
+reaching the guard). It must not be described as what stands between live data and
+loss; the refusals do that.
+
+### Three refusals close the lossy paths (#442)
+
+- **An overwrite of a declared stream table is refused.**
+  `overwrite_parquet_snapshot` / `overwrite_parquet_snapshot_consuming`
+  (`iceberg_landing.rs`) now call `pg_refuse_stream_target` — the same
+  `stream-table target refused:` validation the transform write paths carry.
+  Previously the empty-body branch (`overwrite_truncate`) end-capped every live
+  data file **and** every live inline row with **no** stream check: a delete-all
+  against an MV-sourced log stream table silently destroyed its whole offset
+  range. The one legitimate overwriter of a framed base — the **CDC consolidate
+  fold** — gets its own private door, `overwrite_stream_base`, which is the sole
+  caller that bypasses the stream refusal and preserves framing.
+- **A typed UPDATE/DELETE against a declared log table is refused.**
+  `write_inline_delta` resolves the target's stream declaration *first*
+  (`pg_stream_meta_for_typed_write`) and rejects a declared **log** table with the
+  same stable-prefixed `Validation` (a 422). Previously it wrote an **unframed**
+  delta row (NULL `loom_bucket`/`loom_offset`), set `has_shadow`, and handed the
+  table to `consolidate_table`'s COW arm, which folds an offset-framed event log
+  **by identity** — end-capping every live file and re-projecting only the fold
+  winners. The refusal sits at the one point where all four routes into that state
+  converge (base-bound, view-bound, define-then-declare, declare-then-define), and
+  runs before `ensure_inline_schema`, so nothing is written and `has_shadow` is
+  never set.
+- **A micro-batch MV over a CDC source is refused — in both directions.** At
+  **registration** (`define_transform` → `pg_refuse_mv_over_cdc_source`: the
+  source is already a declared CDC table) and at **declaration**
+  (`reconcile_stream_mode` → `pg_refuse_cdc_over_mv_source`: a micro-batch MV
+  already sources the table). `mv_delta_scan` reads **log** sources only, so such
+  an MV could never run: its watermark could never advance and `mv_floor` would
+  pin its source at offset `0` forever, permanently declining that table's
+  consolidate fold. Both halves are required — a registration-only guard is
+  defeated by ordering (register the MV over a not-yet-existing source, then write
+  that source with `?mode=cdc`). Both lift when `#fut-mv-cdc-source` lands. The
+  residual *concurrent* interleave (the two guards hold no shared lock) is
+  `#iss-mv-cdc-declare-register-race`.
+
+### Consolidate skips and re-arms instead of poisoning the queue
+
+The CDC fold **is** a `Removing` end-cap (it retires every live file and
+re-projects only the fold winners), so it is the one path that can legitimately
+meet a floor. `consolidate_locked` (`engine-serving/src/consolidate.rs`)
+pre-checks with `mv_floor::removal_blocked` before reading a single file, and at
+the **commit boundary** matches the refusal **message**
+(`MV_FLOOR_REFUSAL_PREFIX`) rather than the error variant — because
+`ControlPlaneError::Validation` does **not** survive the catalog commit wrap (it
+arrives as `Backend`), and a reader can appear in the window between the
+pooled-connection pre-check and the commit. Either way the outcome is the same:
+warn (naming the laggard MV and its floor), clear the consolidate trigger, return
+`Ok(0)`. Never `Err` — `RetryPolicy::Retry` has no max-attempts, so an error would
+be a 60-second failure drumbeat forever — and never `Abandon`, which would leave
+the shadow tier permanently unfolded. The re-arm is write-proportional: the next
+`threshold` deltas enqueue a fresh job. Same posture `gc_locked` takes against the
+floor: hold, warn, succeed.
+
+A defensive **`StreamKind::Log` arm** in the consolidate dispatch (gated on
+`has_shadow`) catches any declared log table that *already* carries the flag — it
+warns, clears the trigger, and deliberately **leaves `has_shadow` set**.
+
+**Manual repair for a legacy shadowed log table.** Since `write_inline_delta` now
+refuses the typed mutation that sets the flag, a declared log table bearing
+`has_shadow` can only be one mutated *before* that refusal landed. Such a table
+**neither folds nor flushes** until an operator intervenes: the log arm refuses to
+fold it (folding an event log by identity is exactly the destruction being
+prevented), and the non-CDC flush stays suppressed while the shadow flag is set
+(flushing a tier we refuse to fold would be worse). The repair is manual and
+deliberate: inspect the unframed delta rows on `inline_<tid>` (NULL
+`loom_bucket`/`loom_offset`), decide what to do with them, then clear the flag —
+`delete from iceberg_mirror.shadow_flag where table_id = <tid>` — after which the
+table resumes flushing normally.
 
 ## Scheduler loop: the engine's first background task
 
@@ -595,14 +706,16 @@ and maintenance schedules.
 - `#fut-wire-governance-cache` — cache wire-fetched governance reads.
 - `#fut-iceberg-external-oracle` — an independent external Iceberg reader as
   a cross-check oracle.
-- `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards
-  `gc_locked` only; the paths that **end-cap** rows an MV has not read (drop
-  today; changelog retention / consolidation / truncation tomorrow) do not
-  consult `mv_floor`, so the GC-tier guard is byte-retention defense, not
-  hole-freedom.
 - `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
-  offset `0` over a source whose low offsets may already be reclaimed, and the
-  floor read sits outside the GC transaction (registration race).
+  offset `0` over a source whose low offsets may already be reclaimed, and
+  registration is not serialized against GC's per-table lock (a race #442
+  narrowed — the floor read now runs inside GC's transaction — but did not
+  close: READ COMMITTED, no row locks, and `define_transform`'s advisory lock is
+  a global constant disjoint from GC's per-table key).
+- `#iss-mv-cdc-declare-register-race` — the MV/CDC mutual exclusion is enforced
+  from both sides (registration and declaration), but the two guards share no
+  lock, so a genuinely concurrent `?mode=cdc` write and `define_transform` can
+  still interleave into an unrunnable MV over a CDC source.
 - `#iss-mv-floor-holds-pre-declaration-files` — files written before
   `declare_stream` carry no `loom_offset` stat, so the fail-safe guard holds
   them forever and inflates `held_by_mv_floor`.
