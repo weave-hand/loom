@@ -73,7 +73,9 @@ The register entry is wrong in five places. The closing PR must fix the record, 
 - `src/consolidate.rs` — CDC arm pre-checks the floor and skips-and-re-arms; uses the framed entrypoint; defensive `Log` arm.
 - `src/action_writer.rs` — `write_delta` and `overwrite_table` map `ControlPlaneError::Validation` → `EngineServingError::Validation` (without this the new refusals surface as **HTTP 500, not 422**).
 
-**Tests — new:** `postgres/tests/end_cap_intent.rs`, `postgres/tests/stream_write_refuse.rs`, `postgres/tests/mv_source_refuse.rs`, `engine-serving/tests/consolidate_mv_floor.rs` (+ four BUCK targets).
+**Tests — new:**
+- `postgres/tests/end_cap_seed.rs` — a **`rust_library`** (`//src/control-plane/postgres:end-cap-seed`), NOT a test target. The shared seed/assert helpers every new fixture test in this plan uses, and which `tests/mv_floor.rs` migrates onto in Task 7. Mirrors the established `//src/services/query-api:e2e-support` pattern (`query-api/BUCK:338-356`). **Operator decision: the seed trio is shared, not copied per file** — do not re-copy `tref`/`columns`/`batch`/`lineage` into any test file.
+- `postgres/tests/end_cap_intent.rs`, `postgres/tests/stream_write_refuse.rs`, `postgres/tests/mv_source_refuse.rs`, `engine-serving/tests/consolidate_mv_floor.rs` (+ four `loom_fixture_test` targets, each depending on `end-cap-seed`).
 
 **Tests — modified:** `postgres/tests/mv_floor.rs` (synthetic raw-SQL helper **deleted**; flush over-refusal tests added), `postgres/tests/stream_overwrite_framing.rs` (re-pointed at the framed entrypoint), `postgres/tests/iceberg_overwrite.rs:331` + `postgres/tests/dataset_view.rs:100` (signature updates).
 
@@ -242,6 +244,97 @@ git commit -m "refactor(mv-floor): read the floor on a connection, inside GC's t
 
 ---
 
+### Task 2s: the shared postgres test-seed library
+
+**Operator decision.** Every fixture test in this plan needs the same seed shapes. They are **shared through a library, not copied per file** — the `//src/services/query-api:e2e-support` pattern (`query-api/BUCK:338-356`), which CLAUDE.md names as the fix for exactly this copy-paste. Tasks 2a/2b/3/5/6 consume it; Task 7 migrates `tests/mv_floor.rs` onto it.
+
+**Files:**
+- Create: `src/control-plane/postgres/tests/end_cap_seed.rs`
+- Modify: `src/control-plane/postgres/BUCK` (a `rust_library` — **not** a `loom_fixture_test`)
+
+**Interfaces — Produces** (every later task imports from `end_cap_seed`):
+- `tref(schema, name) -> TableRef`
+- `columns() -> Vec<ColumnSpec>` — `(id: long NOT NULL, label: string NULLABLE)`. **The string column is load-bearing**: it puts a non-numeric `max_value` into `data_file_column_stat`, so the floor's file guard really runs against TEXT bounds and its `::bigint` cast must stay OUTSIDE the scalar subquery. `label` is **nullable** because Task 4's tombstone writes every non-id column NULL.
+- `batch(rows: i64) -> (SchemaRef, Vec<RecordBatch>)` — ids `0..rows`, labels `e0..`
+- `lineage(&TableRef) -> LineageEvent`
+- `Seeded { pool, catalog, src, tid }` and `seed_source(fx, cp, db, wh, rows, buckets: Option<i32>, inline: bool, mvs: &[(&str,&str)]) -> Seeded` — **lifted verbatim from `tests/mv_floor.rs:122-186`**, which is its current home. Keep its `#[expect(clippy::too_many_arguments, reason = ...)]`.
+- `register_mv(cp, name, source, output)` and `advance(cp, mv, source_tid, bucket, from, to)` — also lifted from `tests/mv_floor.rs:96-119`.
+- CDC shapes (Tasks 2b/6): `cdc_specs() -> Vec<ColumnSpec>` `(id: long, val: long)`; `row_batch(id, val)`; `id_only_batch(id)`; `framed_cdc_batch(id, val, bucket, offset)` (user cols then `loom_change_kind: Utf8`, `loom_bucket: Int32`, `loom_offset: Int64` — the order `augment_with_framing` builds); `FlooredCdc { pool, catalog, table, tid, _wh }` and `seed_floored_cdc(fx, cp, db) -> FlooredCdc`.
+- Assertions: `live_file_count(pool, tid) -> i64`, `data_file_count(pool, tid) -> i64`, `end_capped_inline_count(pool, tid) -> i64`, `current_snapshot_id(pool, table) -> i64`, `age_all_snapshots(pool)` — the last four lifted from `tests/mv_floor.rs:348-411`.
+
+**It is a `rust_library`, so it does NOT get `LOOM_TEST_LINT_ALLOWS`.** Give it the crate-level allow block the sibling support libraries carry (copy from `query-api/tests/e2e_support.rs:1-11`):
+
+```rust
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::let_underscore_must_use,
+    clippy::unused_result_ok,
+    clippy::map_err_ignore,
+    clippy::unreachable,
+    reason = "test/fixture harness code, not a production path"
+)]
+//! Shared seed/assert helpers for the end-cap-seam fixture tests
+//! (`iss-end-cap-ignores-mv-floor`) and for `tests/mv_floor.rs`.
+//!
+//! Every helper here was either lifted from `tests/mv_floor.rs` (its previous, and
+//! only, home) or is a seed shape more than one of the new tests needs. Per-test
+//! topologies stay LOCAL to their test file — this library carries what is genuinely
+//! shared, not everything.
+```
+
+Everything each helper needs is public (`land`, `land_cdc`, `flush_table`, `inline_append`, `current_inline_version`, `write_inline_delta`, `live_table_id`, `ensure_table`, `next_snapshot`, `mv_floor`, `local_sql_catalog`).
+
+BUCK — a `rust_library`, deps as the `mv-floor` target's (`BUCK:596-615`) plus `//third-party:iceberg` is **not** needed here:
+
+```python
+rust_library(
+    name = "end-cap-seed",
+    crate = "end_cap_seed",
+    srcs = ["tests/end_cap_seed.rs"],
+    crate_root = "tests/end_cap_seed.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)
+```
+
+- [ ] **Step 1: Write the library**
+
+Lift the helpers named above out of `tests/mv_floor.rs` into `tests/end_cap_seed.rs` and add the CDC shapes. **Do not modify `tests/mv_floor.rs` yet** — it keeps its own copies until Task 7, so the suite stays green throughout (`mv-floor` must not break in the middle of the plan). The temporary duplication is deliberate and is deleted in Task 7.
+
+Add the `rust_library` target above to `src/control-plane/postgres/BUCK`.
+
+- [ ] **Step 2: Verify it builds**
+
+Run: `buck2 build -v0 --console none //src/control-plane/postgres:end-cap-seed`
+Expected: exit 0, silent.
+
+Run: `buck2 build --console none --show-simple-output '//src/control-plane/postgres:end-cap-seed[clippy.txt]'`
+Then `cat` the printed path: it must be **empty**. A `rust_library` gets no test-lint exemption, so an unused import or a stray `expect` without the crate-level allow fails the gate here and not later.
+
+- [ ] **Step 3: Commit**
+
+```bash
+buck2 run //tools:prek -- run --all-files
+git add src/control-plane/postgres/tests/end_cap_seed.rs src/control-plane/postgres/BUCK
+git commit -m "test(postgres): shared seed library for the end-cap-seam fixtures"
+```
+
+---
+
 ### Task 2a: `EndCapIntent` + `guard_end_cap` — the seam, in one file
 
 The question an end-cap must answer is **not** "may I end-cap this row?" but "**may I remove these offsets from the live set?**". Flush and compaction end-cap offsets *above* the floor and re-project those same rows at the same `(bucket, offset)` — the rows never leave the live set, so no MV can miss them. A blanket "refuse any end-cap at or above the floor" breaks both. Intent must come from the **call site**.
@@ -270,157 +363,14 @@ Create `src/control-plane/postgres/tests/end_cap_intent.rs`. This task's tests d
 //! compaction — same rows re-projected at the same offsets) is not; a `Destroying`
 //! one (catalog drop) bypasses the floor on purpose.
 //!
-//! Seeded like `tests/mv_floor.rs::seed_source`: a declared LOG stream table of one
-//! bucket, six events landed to Parquet FILES, one registered micro-batch MV whose
-//! watermark is advanced to 3 — so offsets 3..6 are unread.
+//! Seeds come from the shared `end_cap_seed` library — a declared LOG stream table of
+//! one bucket with six events landed to Parquet FILES, one registered micro-batch MV,
+//! watermark advanced to 3, so offsets 3..6 are unread.
 
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{
-    ColumnSpec, ControlPlane, ControlPlaneError, DatasetId, EventType, LineageEvent, MvWatermarks,
-    RunId, TableRef, TransformBody, TransformDef, TransformName, WatermarkAdvance, mv_key,
-};
-use control_plane_postgres::PgControlPlane;
+use control_plane_core::{ControlPlaneError, mv_key};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::live_table_id;
 use control_plane_postgres::mv_floor::{EndCapIntent, guard_end_cap, removal_blocked};
-use loom_test_seed::local_sql_catalog;
-use time::OffsetDateTime;
-
-fn tref(schema: &str, name: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: name.into(),
-    }
-}
-
-/// `(id: long, label: string)`. The STRING column is load-bearing, exactly as in
-/// `tests/mv_floor.rs`: it puts a non-numeric `max_value` into `data_file_column_stat`,
-/// so `removal_blocked`'s file guard really runs against a stats table holding TEXT
-/// bounds and its `::bigint` cast must stay OUTSIDE the scalar subquery. With only a
-/// `long` column an inlined cast would pass and the hazard would go untested.
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "label".into(),
-            ty: "string".into(),
-            nullable: false,
-        },
-    ]
-}
-
-fn batch(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, false),
-    ]));
-    let ids: Vec<i64> = (0..rows).collect();
-    let labels: Vec<String> = (0..rows).map(|i| format!("e{i}")).collect();
-    let b = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(ids)),
-            Arc::new(StringArray::from(labels)),
-        ],
-    )
-    .expect("batch");
-    (schema, vec![b])
-}
-
-fn lineage(table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "end-cap-intent-test" }),
-    }
-}
-
-struct Seeded {
-    pool: sqlx::PgPool,
-    src: TableRef,
-    tid: i64,
-}
-
-/// A declared LOG stream table (1 bucket, 6 events, straight to Parquet FILES) with
-/// `mvs` registered against it, each watermark advanced to `watermark`.
-async fn seed(
-    fx: &PgFixture,
-    cp: &PgControlPlane,
-    db: &str,
-    wh: &str,
-    mvs: &[(&str, &str)],
-    watermark: i64,
-) -> Seeded {
-    let pool = fx.pool_for(db).await;
-    let catalog = local_sql_catalog(fx.pg_dsn(db), wh).await;
-    let src = tref("s", "events");
-    let (schema, batches) = batch(6);
-    land(
-        &pool,
-        &catalog,
-        &src,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0, // straight to Parquet, no inline tier
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(&src),
-        Some(1), // buckets => a declared LOG stream table
-    )
-    .await
-    .expect("land source");
-    for (name, output) in mvs {
-        cp.transforms()
-            .define_transform(TransformDef {
-                name: TransformName((*name).into()),
-                body: TransformBody::MicroBatch {
-                    source: src.clone(),
-                    output: tref("s", output),
-                    buckets: 1,
-                    sql: "select id from events".into(),
-                },
-                schedule: None,
-                on_input_commit: false,
-            })
-            .await
-            .expect("register mv");
-    }
-    let mut conn = pool.acquire().await.expect("conn");
-    let tid = live_table_id(&mut conn, &src.schema, &src.name)
-        .await
-        .expect("tid")
-        .expect("live tid");
-    drop(conn);
-    if watermark > 0 {
-        for (_, output) in mvs {
-            cp.advance_mv_watermark(
-                &mv_key(&tref("s", output)),
-                tid,
-                &[WatermarkAdvance {
-                    bucket: 0,
-                    from: 0,
-                    to: watermark,
-                }],
-            )
-            .await
-            .expect("advance watermark");
-        }
-    }
-    Seeded { pool, src, tid }
-}
+use end_cap_seed::{advance, seed_source, tref};
 
 /// The core block: files carrying offsets the MV has not read block a `Removing`
 /// end-cap, and `guard_end_cap` turns that into a `Validation` naming the laggard.
@@ -429,22 +379,26 @@ async fn removal_is_blocked_above_the_floor() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(
+    // inline = false => straight to Parquet FILES (the file tier of the guard).
+    let s = seed_source(
         fx,
         &cp,
         &db,
         &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
         &[("mv_a", "out_a")],
-        3,
     )
     .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
 
     let mut conn = s.pool.acquire().await.expect("conn");
-    let blocked = removal_blocked(&mut conn, &s.src, s.tid)
-        .await
-        .expect("removal_blocked");
     assert!(
-        blocked.is_some(),
+        removal_blocked(&mut conn, &s.src, s.tid)
+            .await
+            .expect("removal_blocked")
+            .is_some(),
         "offsets 3..6 are unread — a removal must be blocked"
     );
 
@@ -466,23 +420,26 @@ async fn removal_is_blocked_above_the_floor() {
     }
 }
 
-/// The over-refusal guard: the SAME state, declared `Reframing`, is NOT refused.
-/// This is what proves the seam distinguishes reframing from removal — it is the
-/// test that catches the naive "refuse any end-cap above the floor" implementation.
+/// The over-refusal guard: the SAME state, declared `Reframing`, is NOT refused. This is
+/// what proves the seam distinguishes reframing from removal — the test that catches the
+/// naive "refuse any end-cap above the floor" implementation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reframing_is_never_refused() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(
+    let s = seed_source(
         fx,
         &cp,
         &db,
         &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
         &[("mv_a", "out_a")],
-        3,
     )
     .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
 
     let mut conn = s.pool.acquire().await.expect("conn");
     guard_end_cap(&mut conn, &s.src, s.tid, &EndCapIntent::Reframing)
@@ -490,22 +447,25 @@ async fn reframing_is_never_refused() {
         .expect("a reframing end-cap must never consult the floor");
 }
 
-/// The drop bypass: `Destroying` proceeds on purpose (the operator dropped the source,
-/// so its MVs are dead by definition; wedging drop-GC on a dead MV forever is worse).
+/// The drop bypass: `Destroying` proceeds on purpose (the operator dropped the source, so
+/// its MVs are dead by definition; wedging drop-GC on a dead MV forever is worse).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn destroying_bypasses_the_floor() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(
+    let s = seed_source(
         fx,
         &cp,
         &db,
         &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
         &[("mv_a", "out_a")],
-        3,
     )
     .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
 
     let mut conn = s.pool.acquire().await.expect("conn");
     guard_end_cap(
@@ -520,15 +480,26 @@ async fn destroying_bypasses_the_floor() {
     .expect("a destroying end-cap bypasses the floor on purpose");
 }
 
-/// The fast path: a table no MV sources has no floor, so every intent is a no-op and
-/// a `Removing` end-cap proceeds byte-identically to the pre-seam behavior. This is
-/// what makes the seam free for every table in the tree that is not an MV source.
+/// The fast path: a table no MV sources has no floor, so every intent is a no-op and a
+/// `Removing` end-cap proceeds byte-identically to the pre-seam behavior. This is what
+/// makes the seam free for every table in the tree that is not an MV source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_table_no_mv_reads_is_never_refused() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(fx, &cp, &db, &wh.path().display().to_string(), &[], 0).await;
+    // No MVs registered => no reader => no floor.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
+        &[],
+    )
+    .await;
 
     let mut conn = s.pool.acquire().await.expect("conn");
     assert!(
@@ -549,15 +520,18 @@ async fn a_caught_up_mv_does_not_block_removal() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(
+    let s = seed_source(
         fx,
         &cp,
         &db,
         &wh.path().display().to_string(),
-        &[("mv_a", "out_a")],
         6,
+        Some(1),
+        false,
+        &[("mv_a", "out_a")],
     )
     .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 6).await;
 
     let mut conn = s.pool.acquire().await.expect("conn");
     assert!(
@@ -570,7 +544,7 @@ async fn a_caught_up_mv_does_not_block_removal() {
 }
 ```
 
-Add to `src/control-plane/postgres/BUCK` (the `mv-floor` target's deps at `BUCK:596-615`, minus `iceberg`):
+Add to `src/control-plane/postgres/BUCK`. It depends on the **`:end-cap-seed`** library from Task 2s — it needs no arrow/serde/time/uuid deps of its own, because every seed shape lives behind that library:
 
 ```python
 loom_fixture_test(
@@ -579,17 +553,12 @@ loom_fixture_test(
     srcs = ["tests/end_cap_intent.rs"],
     crate_root = "tests/end_cap_intent.rs",
     deps = [
-        "//src/testing:seed",
         ":postgres",
+        ":end-cap-seed",
         "//src/control-plane/core:core",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
-        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 ```
@@ -797,25 +766,7 @@ Structural adoption: every end-cap primitive gains `table: &TableRef` + `intent:
 
 These prove the guard fires *inside the real primitive*, on a real transaction.
 
-**Imports — one line, no duplicates.** This file's `iceberg_mirror` import must end up as exactly:
-`use control_plane_postgres::iceberg_mirror::{end_cap_live_data_files, ensure_table, live_table_id, next_snapshot};`
-(`ensure_table`/`next_snapshot` are also needed by Step 4's CDC seed — declare them once here.) Do **not** import `SnapshotId`: no body in this file names it as a type (`let at = next_snapshot(..)` infers it), and an unused import fails the clippy gate.
-
-Add this helper:
-
-```rust
-/// Live (`end_snapshot is null`) data-file rows for `tid`.
-async fn live_file_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    sqlx::query_scalar(
-        "select count(*) from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is null",
-    )
-    .bind(tid)
-    .fetch_one(pool)
-    .await
-    .expect("count live files")
-}
-```
+**Imports.** Add `use control_plane_postgres::iceberg_mirror::{end_cap_live_data_files, next_snapshot};` and extend the `end_cap_seed` import to `use end_cap_seed::{advance, live_file_count, seed_source, tref};`. **Do not** declare a local `live_file_count` — it lives in the seed library (Task 2s). **Do not** import `SnapshotId`: nothing in this file names it as a type (`let at = next_snapshot(..)` infers it), and an unused import fails the clippy gate.
 
 ```rust
 /// The primitive refuses, and the live set is untouched (the tx rolls back).
@@ -990,7 +941,9 @@ It already carries `#[expect(clippy::too_many_arguments, …)]`; extend the reas
 
 On the CDC base: it end-caps *all* live inline rows but re-projects only the `+I/+U/-D` subset (`filter_out_minus_u`), so a `-U` row does leave the *base*'s live set. It is still `Reframing`, and the argument must go in the code comment: the durable **changelog retains every row including `-U`**, and `mv_delta_scan` reads **log sources only** (`mv_delta.rs:72-82`) — it never reads a CDC base — so no MV's delta can miss a row this drops. Write that comment; do not leave it implicit.
 
-Add to `tests/end_cap_intent.rs` the regression test that would have caught this. It is constructible **without** a registered MV (Task 5 refuses that), because `advance_mv_watermark` is a bare CAS on `stream.mv_watermark` and does not check that a def exists — exactly the ghost-row state `iss-mv-watermark-ghost-rows` describes. The CDC seed shape is lifted from `src/services/worker/tests/stream_consolidate_job.rs:117-165` (declare CDC **before any write**, then inline writes, then flush):
+Add to `tests/end_cap_intent.rs` the regression test that would have caught this. It is constructible **without** a registered MV (Task 5 refuses that), because `advance_mv_watermark` is a bare CAS on `stream.mv_watermark` and does not check that a def exists — exactly the ghost-row state `iss-mv-watermark-ghost-rows` describes.
+
+**`seed_floored_cdc` lives in the `end_cap_seed` library** (Task 2s), not in this file — Task 6 Step 3b reuses it. Its shape is lifted from `src/services/worker/tests/stream_consolidate_job.rs:117-165`: declare CDC **before any write** (the physical schema must carry framing from the start), then `inline_append` + `write_inline_delta`, then plant the watermark row. For reference, this is the body Task 2s must have written into the library:
 
 ```rust
 // Additional imports for this test (the `iceberg_mirror` line is already declared in
@@ -1205,134 +1158,18 @@ Create `src/control-plane/postgres/tests/stream_write_refuse.rs`:
 //! * **E7** — a typed UPDATE/DELETE (`write_inline_delta`) against a declared LOG table,
 //!   which would set `has_shadow` and hand the table to the COW identity fold. (Task 4.)
 
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{
-    ColumnSpec, ControlPlaneError, DatasetId, EventType, LineageEvent, RunId, TableRef,
-};
+use control_plane_core::ControlPlaneError;
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
-use control_plane_postgres::iceberg_mirror::live_table_id;
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use loom_test_seed::local_sql_catalog;
-use time::OffsetDateTime;
-
-fn tref(schema: &str, name: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: name.into(),
-    }
-}
-
-/// `label` is NULLABLE: a `-D` tombstone (Task 4) writes every non-id column NULL.
-fn columns() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "label".into(),
-            ty: "string".into(),
-            nullable: true,
-        },
-    ]
-}
-
-fn batch(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, true),
-    ]));
-    let ids: Vec<i64> = (0..rows).collect();
-    let labels: Vec<String> = (0..rows).map(|i| format!("e{i}")).collect();
-    let b = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int64Array::from(ids)),
-            Arc::new(StringArray::from(labels)),
-        ],
-    )
-    .expect("batch");
-    (schema, vec![b])
-}
-
-fn lineage(table: &TableRef) -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(uuid::Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(table).dataset_ref()],
-        payload: serde_json::json!({ "source": "stream-write-refuse-test" }),
-    }
-}
-
-struct Seeded {
-    pool: sqlx::PgPool,
-    catalog: SqlCatalog,
-    src: TableRef,
-    tid: i64,
-}
-
-/// 6 rows straight to Parquet. `buckets = Some(1)` declares a LOG stream table;
-/// `None` leaves a plain batch table.
-async fn seed(fx: &PgFixture, db: &str, wh: &str, buckets: Option<i32>) -> Seeded {
-    let pool = fx.pool_for(db).await;
-    let catalog = local_sql_catalog(fx.pg_dsn(db), wh).await;
-    let src = tref("s", "events");
-    let (schema, batches) = batch(6);
-    land(
-        &pool,
-        &catalog,
-        &src,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(&src),
-        buckets,
-    )
-    .await
-    .expect("land source");
-    let mut conn = pool.acquire().await.expect("conn");
-    let tid = live_table_id(&mut conn, &src.schema, &src.name)
-        .await
-        .expect("tid")
-        .expect("live tid");
-    drop(conn);
-    Seeded {
-        pool,
-        catalog,
-        src,
-        tid,
-    }
-}
-
-async fn live_file_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    sqlx::query_scalar(
-        "select count(*) from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is null",
-    )
-    .bind(tid)
-    .fetch_one(pool)
-    .await
-    .expect("count live files")
-}
+use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
+use end_cap_seed::{columns, batch, lineage, live_file_count, seed_source};
 
 /// E6, the non-empty branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn overwrite_of_a_declared_stream_table_is_refused() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
+    let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(fx, &db, &wh.path().display().to_string(), Some(1)).await;
+    let s = seed_source(fx, &cp, &db, &wh.path().display().to_string(), 6, Some(1), false, &[]).await;
     let before = live_file_count(&s.pool, s.tid).await;
 
     let (_, batches) = batch(2);
@@ -1368,9 +1205,9 @@ async fn overwrite_of_a_declared_stream_table_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn truncate_of_a_declared_stream_table_is_refused() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
+    let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(fx, &db, &wh.path().display().to_string(), Some(1)).await;
+    let s = seed_source(fx, &cp, &db, &wh.path().display().to_string(), 6, Some(1), false, &[]).await;
     let before = live_file_count(&s.pool, s.tid).await;
     assert!(before > 0, "seed must leave live files");
 
@@ -1407,7 +1244,8 @@ async fn overwrite_of_a_plain_table_still_succeeds() {
     let fx = PgFixture::shared();
     let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    let s = seed(fx, &db, &wh.path().display().to_string(), None).await;
+    // buckets = None => a plain, undeclared batch table.
+    let s = seed_source(fx, &cp, &db, &wh.path().display().to_string(), 6, None, false, &[]).await;
 
     let (_, batches) = batch(2);
     overwrite_parquet_snapshot(
@@ -1424,7 +1262,7 @@ async fn overwrite_of_a_plain_table_still_succeeds() {
 }
 ```
 
-BUCK: a **`loom_fixture_test`** (it boots Postgres — a bare `rust_test` runs without the fixture env and fails), same dep list as `end-cap-intent`, named `stream-write-refuse` / crate `stream_write_refuse`.
+BUCK: a **`loom_fixture_test`** (it boots Postgres — a bare `rust_test` runs without the fixture env and fails), named `stream-write-refuse` / crate `stream_write_refuse`, with the **same dep list as `end-cap-intent`** (`:postgres`, `:end-cap-seed`, `//src/control-plane/core:core`, `//third-party:sqlx`, `//third-party:tempfile`, `//third-party:tokio`) plus `//third-party:arrow-array` and `//third-party:arrow-schema` (Task 4's tombstone batch is built inline in this file).
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -1993,27 +1831,23 @@ async fn declare_log_via_land(
 }
 ```
 
-`mv_source_refuse.rs` therefore needs a `columns()` / `batch()` / `lineage()` trio — **copy them verbatim from `tests/end_cap_intent.rs`** (`(id: long, label: string)`) — plus these imports:
+`columns()` / `batch()` / `lineage()` / `tref()` come from the **`end_cap_seed`** library (Task 2s) — do **not** re-declare them. Imports:
 
 ```rust
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, ControlPlaneError, DatasetId, EventType, LineageEvent, MergeEngine,
-    RunId, SnapshotId, StreamTables, TableRef, TransformBody, TransformDef, TransformName,
+    ControlPlane, ControlPlaneError, MergeEngine, SnapshotId, StreamTables, TableRef, TransformBody,
+    TransformDef, TransformName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{CdcDecl, InlineLimits, land, land_cdc};
 use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
+use end_cap_seed::{batch, columns, lineage, tref};
 use loom_test_seed::local_sql_catalog;
-use time::OffsetDateTime;
 ```
 
-BUCK: **`loom_fixture_test`** (it boots Postgres) named `mv-source-refuse` / crate `mv_source_refuse`, deps — the `end-cap-intent` list: `"//src/testing:seed"`, `":postgres"`, `"//src/control-plane/core:core"`, `"//third-party:arrow-array"`, `"//third-party:arrow-schema"`, `"//third-party:serde_json"`, `"//third-party:sqlx"`, `"//third-party:tempfile"`, `"//third-party:time"`, `"//third-party:tokio"`, `"//third-party:uuid"`.
+BUCK: **`loom_fixture_test`** named `mv-source-refuse` / crate `mv_source_refuse`, deps: `"//src/testing:seed"`, `":postgres"`, `":end-cap-seed"`, `"//src/control-plane/core:core"`, `"//third-party:sqlx"`, `"//third-party:tempfile"`, `"//third-party:tokio"`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -2109,9 +1943,11 @@ After Tasks 3-5 the fold is the only path that can still meet a floor (via a **g
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/consolidate_mv_floor.rs`. **Three seed facts a naive version gets wrong:**
-- The CDC base must be seeded so the fold can read framing. `IcebergWriter::seed_arrays` creates an *unframed* Iceberg table, so `declare_cdc` must come **before any write**, and the deltas must be flushed (`flush_table` writes framed Parquet). The canonical shape is `src/services/worker/tests/stream_consolidate_job.rs:117-165` — **model the seed on that file, not on `consolidate_lock.rs`**, which never writes to its CDC table and so proves nothing about the fold.
-- `write_inline_delta` must pass `consolidate_threshold: Some(1000)` — large enough that deltas accrue without enqueuing a job. With `None` (which `stream_consolidate_job.rs` passes) `bump_consolidate_trigger` never runs, **no `consolidate_trigger` row exists at all**, and the trigger assertion below fails with `RowNotFound`.
+Create `tests/consolidate_mv_floor.rs`. The seed is `end_cap_seed::seed_floored_cdc` (Task 2s) — an engine-serving test may depend on the postgres crate's test-support library exactly as query-api's e2e tests depend on `:e2e-support`.
+
+**Three seed facts a naive version gets wrong — they are already handled inside `seed_floored_cdc`, do not re-derive them:**
+- `declare_cdc` must come **before any write** (an unframed Iceberg table cannot be folded — the fold selects `loom_change_kind`/`loom_bucket`/`loom_offset`), and the deltas must be flushed so the base holds framed Parquet.
+- `write_inline_delta` must pass `consolidate_threshold: Some(1000)` — large enough that deltas accrue without enqueuing a job. With `None` `bump_consolidate_trigger` never runs, **no `consolidate_trigger` row exists at all**, and the trigger assertion below fails with `RowNotFound`. **Task 2s's `seed_floored_cdc` must therefore pass `Some(1000)`, not `None`.**
 - `consolidate_table(&cp, &sql_catalog, &pool, &table)` — control plane first, four args.
 
 ```rust
@@ -2122,159 +1958,9 @@ Create `tests/consolidate_mv_floor.rs`. **Three seed facts a naive version gets 
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{
-    ColumnSpec, EventType, LineageEvent, MergeEngine, MvWatermarks, RunId, StreamTables, TableRef,
-    WatermarkAdvance, mv_key,
-};
+use control_plane_core::{MvWatermarks, WatermarkAdvance, mv_key};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_flush::flush_table;
-use control_plane_postgres::iceberg_inline::{
-    current_inline_version, inline_append, write_inline_delta,
-};
-use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
-use loom_test_seed::local_sql_catalog;
-use uuid::Uuid;
-
-fn tref(schema: &str, name: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: name.into(),
-    }
-}
-
-fn specs() -> Vec<ColumnSpec> {
-    vec![
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "val".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-    ]
-}
-
-fn row_batch(id: i64, val: i64) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("val", DataType::Int64, false),
-    ]));
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![id])),
-            Arc::new(Int64Array::from(vec![val])),
-        ],
-    )
-    .expect("row batch")
-}
-
-fn id_only_batch(id: i64) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![id]))]).expect("id batch")
-}
-
-fn lineage() -> LineageEvent {
-    LineageEvent {
-        run_id: RunId(Uuid::new_v4()),
-        event_type: EventType::Complete,
-        event_time: time::OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![],
-        payload: serde_json::json!({ "source": "consolidate-mv-floor-test" }),
-    }
-}
-
-/// Live (`end_snapshot is null`) data-file rows for `tid`.
-async fn live_file_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    sqlx::query_scalar(
-        "select count(*) from iceberg_mirror.data_file \
-         where table_id = $1 and end_snapshot is null",
-    )
-    .bind(tid)
-    .fetch_one(pool)
-    .await
-    .expect("count live files")
-}
-
-struct Seeded {
-    cp: control_plane_postgres::PgControlPlane,
-    pool: sqlx::PgPool,
-    catalog: SqlCatalog,
-    table: TableRef,
-    tid: i64,
-    /// Held so the warehouse outlives the catalog for the whole test. Never
-    /// `std::mem::forget` it — `clippy::mem_forget` is in the enforced restriction group
-    /// and the test lint exemption covers only the panic-safety lints.
-    _wh: tempfile::TempDir,
-}
-
-/// A declared CDC table (keyed on `id`, 1 bucket) with an append + an update, FLUSHED to
-/// framed Parquet — so it is shadow-bearing and the CDC arm has a real fold to do.
-/// `consolidate_threshold: Some(1000)` makes `bump_consolidate_trigger` create the trigger
-/// row (accruing, never enqueuing), which the re-arm assertion reads.
-async fn seed(fx: &'static PgFixture, name: &str) -> Seeded {
-    let (cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let wh = tempfile::tempdir().expect("warehouse");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let table = tref("main", name);
-    let cols = specs();
-
-    let mut tx = pool.begin().await.expect("begin");
-    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
-    let tid = ensure_table(&mut tx, &table.schema, &table.name, at0)
-        .await
-        .expect("ensure_table");
-    tx.commit().await.expect("commit");
-    cp.declare_cdc(tid, 1, "id", MergeEngine::LastRow)
-        .await
-        .expect("declare_cdc");
-
-    inline_append(&pool, &table, &cols, &row_batch(1, 100), lineage(), None, None)
-        .await
-        .expect("seed append");
-    let v0 = current_inline_version(&pool, &table, &[cols[0].clone()], "id", &id_only_batch(1))
-        .await
-        .expect("version");
-    write_inline_delta(
-        &pool,
-        &table,
-        &cols,
-        "id",
-        false,
-        &row_batch(1, 200),
-        Some((&cols, &row_batch(1, 100))),
-        lineage(),
-        v0,
-        Some(1000), // create the trigger row; never enqueue
-        &[],
-    )
-    .await
-    .expect("cdc update delta");
-
-    flush_table(&catalog, &pool, &table, RunId(Uuid::new_v4()))
-        .await
-        .expect("flush")
-        .expect("flush produced a snapshot");
-
-    Seeded {
-        cp,
-        pool,
-        catalog,
-        table,
-        tid,
-        _wh: wh,
-    }
-}
+use end_cap_seed::{live_file_count, seed_floored_cdc, tref};
 
 /// A watermark row against the CDC source floors it: the fold returns `Ok(0)`, the live
 /// files are untouched, and the trigger is cleared so a later write can re-enqueue.
@@ -2339,7 +2025,7 @@ async fn an_unfloored_cdc_source_folds_unchanged() {
 }
 ```
 
-BUCK: a **`loom_fixture_test`** (already loaded at `src/services/engine-serving/BUCK:2`), named `consolidate-mv-floor` / crate `consolidate_mv_floor`, deps: `":engine-serving"`, `"//src/control-plane/core:core"`, `"//src/control-plane/postgres:postgres"`, `"//src/testing:seed"`, `"//third-party:arrow-array"`, `"//third-party:arrow-schema"`, `"//third-party:serde_json"`, `"//third-party:sqlx"`, `"//third-party:tempfile"`, `"//third-party:time"`, `"//third-party:tokio"`, `"//third-party:uuid"`.
+BUCK: a **`loom_fixture_test`** (already loaded at `src/services/engine-serving/BUCK:2`), named `consolidate-mv-floor` / crate `consolidate_mv_floor`, deps: `":engine-serving"`, `"//src/control-plane/core:core"`, `"//src/control-plane/postgres:postgres"`, `"//src/control-plane/postgres:end-cap-seed"`, `"//third-party:sqlx"`, `"//third-party:tokio"`.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -2497,12 +2183,16 @@ git commit -m "fix(consolidate): skip and re-arm when the MV floor blocks the CD
 
 ---
 
-### Task 7: Delete the synthetic end-cap helper; prove flush over the real path
+### Task 7: Migrate `mv_floor.rs` onto the seed library; delete the synthetic end-cap helper
 
-`tests/mv_floor.rs:362-372` carries a raw-SQL `end_cap_data_files` helper *precisely because no guarded API existed*. It does now.
+Two jobs, both in `tests/mv_floor.rs`:
+
+1. **Migrate it onto `end_cap_seed`** (the operator's decision in Task 2s). Task 2s lifted its helpers into the library but deliberately left this file's copies in place so the suite stayed green mid-plan. Now delete the local `tref` / `columns` / `batch` / `lineage` / `register_mv` / `advance` / `Seeded` / `seed_source` / `age_all_snapshots` / `end_capped_inline_count` / `data_file_count` / `current_snapshot_id` and `use end_cap_seed::{…}` instead. Add `":end-cap-seed"` to the `mv-floor` BUCK target's deps and drop the deps that only the moved helpers needed (`arrow-array`, `arrow-schema`, `serde_json`, `time`, `uuid`) **only if** nothing left in the file names them — check `[clippy.txt]` is empty rather than guessing. **This is the step that makes the duplication gate come back clean;** if `mv-floor` goes red here, the library's helper is not equivalent to the copy it replaced — fix the library, do not fork it back.
+2. **Delete the synthetic raw-SQL end-cap helper.** `tests/mv_floor.rs:362-372` carries `end_cap_data_files` *precisely because no guarded API existed*. It does now.
 
 **Files:**
 - Modify: `src/control-plane/postgres/tests/mv_floor.rs`
+- Modify: `src/control-plane/postgres/BUCK` (the `mv-floor` target's deps)
 
 - [ ] **Step 1: Replace the synthetic helper with the real primitive**
 
@@ -2594,7 +2284,9 @@ Run the `loom-complexity` skill with argument `diff` and the `loom-duplication` 
 
 Report any NEW hotspot over the census thresholds (cc > 15, cognitive > 15, MI < 20, SLOC > 100) or NEW cross-file duplication pair ≥ 20 lines. **Measure the same files on `origin/main` first** — `diff` mode reports on every touched file, so it surfaces pre-existing hotspots the branch did not create. Each finding must be fixed or explicitly justified in the PR description.
 
-Two are expected and justifiable rather than fixable: the four new test files share a `columns()`/`batch()`/`lineage()` seed shape (the intentional per-file seed divergence `tests/mv_floor.rs` already documents), and `overwrite_with_cap` gains a ninth argument (it already carries `#[expect(clippy::too_many_arguments)]`; extend the reason to name `framed`).
+**Duplication should come back CLEAN.** The operator's decision (Task 2s) was to share the seed trio through the `end-cap-seed` `rust_library` rather than copy it per file, and Task 7 migrates `tests/mv_floor.rs` onto it too — so a duplication finding among the new test files means the library was not actually adopted somewhere. Chase it; do not justify it.
+
+One complexity finding is expected and justifiable rather than fixable: `overwrite_with_cap` gains a ninth argument (it already carries `#[expect(clippy::too_many_arguments)]`; extend the reason to name `framed`).
 
 - [ ] **Step 3: Close the register item**
 
