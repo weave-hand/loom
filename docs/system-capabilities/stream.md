@@ -615,6 +615,25 @@ warning names the per-bucket laggard, and deleting the MV's transform def delete
 its watermark rows (releasing the floor) as the escape hatch. See engine's **GC**
 section for the full guard.
 
+**Registration bootstraps the floor to the source's surviving offsets
+(`#iss-mv-register-below-reclaimed-floor`, this PR).** A newly registered
+micro-batch MV no longer floors at `0` and silently under-reads a source whose
+low offsets are already gone. `define_transform` now takes `lock_key(source)` at
+the top of its transaction — the same per-table key GC/flush/consolidate
+serialize under — and **bootstraps** the MV's `stream.mv_watermark` rows to the
+source's earliest surviving `(bucket, min(loom_offset))` per bucket (rounded
+**down**), recorded in a new `start_offset` column (migration `0045`). That
+shared lock closes the window in which the floor read and GC's reclaim could
+otherwise straddle a registration. Because a bootstrap can seat a watermark
+*below* a bucket's first delta, the watermark CAS was relaxed to accept an
+undershooting start (`next_offset <= from`) and monotonicity is now
+**structural** — a kind-agnostic `to <= from => Validation` precondition in both
+backends refuses any non-advancing write. A redefinition that **moves an MV's
+source** but keeps its output releases the watermark rows the MV held on its
+**prior** source, so a stale reader can no longer floor a source the MV no
+longer reads — completing the registration→watermark reconciliation alongside
+the output-change release already documented above.
+
 **That GC tier is byte-retention defense, not hole-freedom** — read the
 distinction before relying on it. GC only reclaims **end-capped** rows
 (`end_snapshot <= H`), whereas a micro-batch delta reads **live** rows at the
@@ -788,14 +807,11 @@ from the continuous-query slice.
   physical Iceberg schema carries the loser's framing columns; the mirror-row
   race itself is correctly guarded (see *Declaration* above), only the
   Iceberg-create race is not.
-- `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
-  offset `0` even if the source's low offsets are already gone, and registration
-  is not serialized against GC's per-table lock (a race #443 narrowed — GC's
-  floor read now runs inside its own transaction — but did not close).
 - `#iss-mv-cdc-declare-register-race` — the MV/CDC mutual exclusion is guarded
-  from both sides, but the guards share no lock, so a concurrent `?mode=cdc`
-  write and `define_transform` can still interleave into an MV that can never
-  run over a CDC source.
+  from both sides; `define_transform` now takes the source's per-table lock, but
+  the ingest declaration path does not yet, so a concurrent `?mode=cdc` write and
+  `define_transform` can still interleave into an MV that can never run over a
+  CDC source.
 - `#iss-mv-floor-holds-pre-declaration-files` — data files written before
   `declare_stream` carry no `loom_offset` stat and are held forever by the
   floor's fail-safe, inflating `held_by_mv_floor`.
