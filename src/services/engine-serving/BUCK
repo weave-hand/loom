@@ -397,3 +397,23 @@ loom_fixture_test(
         "//third-party:uuid",
     ],
 )
+
+loom_fixture_test(
+    name = "cdc-consolidate-inline-source",
+    crate = "cdc_consolidate_inline_source",
+    srcs = ["tests/cdc_consolidate_inline_source.rs"],
+    crate_root = "tests/cdc_consolidate_inline_source.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/testing:seed",
+        "//third-party:arrow",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
+        "//third-party:uuid",
+    ],
+)

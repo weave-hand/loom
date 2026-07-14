@@ -216,9 +216,7 @@ async fn consolidate_locked(
         .await
         .map_err(to_serving)?;
     let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
-    let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
-        .await
-        .map_err(to_serving)?;
+    let has_files = !paths.is_empty();
 
     // ... UNION any still-live inline tail (un-flushed changes), so a consolidate
     // that runs without a preceding flush still folds correctly. `_full` keeps
@@ -230,8 +228,20 @@ async fn consolidate_locked(
         .await
         .map_err(to_serving)?;
 
+    // Register only the tiers that exist. The file tier is read LAZILY, behind
+    // `has_files`: `read_files_as_batches` calls `catalog.load_table` before it
+    // looks at the path list, and a CDC base that has never been flushed has no
+    // `iceberg_tables` row at all (the CDC declare pre-creates only the CHANGELOG
+    // table) — so reading an EMPTY file list still errored. Same guard the COW arm
+    // below already carries (`iss-consolidate-inline-only-base`, the sibling of the
+    // `mv_delta` fix in #436).
     let df_ctx = SessionContext::new();
-    register_batches(&df_ctx, "base_files", file_schema, file_batches).map_err(to_serving)?;
+    if has_files {
+        let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
+            .await
+            .map_err(to_serving)?;
+        register_batches(&df_ctx, "base_files", file_schema, file_batches).map_err(to_serving)?;
+    }
     let has_inline = if let Some((_, _, inline_batch)) = &inline {
         register_batches(
             &df_ctx,
@@ -251,15 +261,20 @@ async fn consolidate_locked(
         .collect::<Vec<_>>()
         .join(", ");
     let id_quoted = quote_ident(identity);
-    let union_sql = if has_inline {
-        format!(
-            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files \
-             union all \
-             select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
-        )
-    } else {
-        format!("select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files")
-    };
+    // One leg per registered tier — a base can legitimately be files-only (the
+    // post-flush fold), inline-only (never flushed), or both.
+    let mut legs: Vec<String> = Vec::new();
+    if has_files {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files"
+        ));
+    }
+    if has_inline {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
+        ));
+    }
+    let union_sql = legs.join(" union all ");
     // Per-engine winner ordering (winner = ROW_NUMBER rank 1). LastRow is the
     // unchanged default (byte-identical). Versioned orders by the quoted domain
     // version column desc, tie-broken by loom_offset desc (highest version wins;
