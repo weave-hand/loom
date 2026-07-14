@@ -572,7 +572,6 @@ where
         })
         .await;
     assert_eq!(seeded.len(), 2, "two batches => two snapshots");
-
     // current_snapshot is the last batch's snapshot.
     let cur = catalog
         .current_snapshot(&t)
@@ -602,7 +601,6 @@ where
         2,
         "two files live by the second batch"
     );
-
     // snapshots: ascending history, includes both batch snapshots, ends at current.
     let hist = catalog
         .snapshots(&t, PageReq::unbounded())
@@ -622,7 +620,6 @@ where
         cur.id,
         "history ends at the current snapshot"
     );
-
     // snapshot_as_of: exact latest time -> latest; a time strictly between the two
     // seeded snapshots -> the earlier; strictly before the first -> None.
     let s0 = hist.iter().find(|s| s.id == seeded[0].snapshot).unwrap();
@@ -783,9 +780,6 @@ where
     sorted.sort_by(|a, b| (&a.schema, &a.name).cmp(&(&b.schema, &b.name)));
     assert_eq!(listed.items, sorted, "(schema, name)-ordered");
     assert!(listed.items.contains(&t), "seeded table listed");
-
-    // snapshot_intact(at, horizon): the precise retention predicate, checked last because
-    // it drops the table (see the helper's own doc comment).
     catalog_contract_snapshot_intact(catalog, seeder, &t, s0.id, s1.id).await;
 }
 

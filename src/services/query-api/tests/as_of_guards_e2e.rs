@@ -42,14 +42,61 @@ use std::time::Duration;
 use arrow_array::{Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use axum::http::StatusCode;
-use control_plane_core::{ColumnSpec, ControlPlane, PageReq};
+use control_plane_core::{ColumnSpec, ControlPlane, PageReq, TableRef};
 use control_plane_postgres::PgControlPlane;
-use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_landing::overwrite_parquet_snapshot;
 use e2e_support::{
     InProcessServingEngine, TEST_GC_RETENTION, get_with_retention, grant_read, ids_i64 as ids,
     subject_with_role, tref, two_batch_thing_setup,
 };
+
+/// Overwrite `main.thing` with a single replacement row `{id: 9, name: "z"}` — a REAL
+/// rewrite that end-caps every existing row's files. `two_batch_thing_setup`'s own
+/// seeding only ever APPENDS, so this is the one place in the file that actually
+/// rewrites, backing assertion 7's genuinely end-capped read.
+async fn overwrite_thing_with_single_row(
+    pool: &sqlx::PgPool,
+    writer: &IcebergWriter,
+    thing: &TableRef,
+) {
+    let cols = [
+        ColumnSpec {
+            name: "id".into(),
+            ty: "long".into(),
+            nullable: false,
+        },
+        ColumnSpec {
+            name: "name".into(),
+            ty: "string".into(),
+            nullable: true,
+        },
+    ];
+    let arrow_schema = Arc::new(ArrowSchema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let replacement = RecordBatch::try_new(
+        arrow_schema,
+        vec![
+            Arc::new(Int64Array::from(vec![9_i64])),
+            Arc::new(StringArray::from(vec!["z"])),
+        ],
+    )
+    .expect("replacement batch");
+
+    overwrite_parquet_snapshot(
+        pool,
+        &writer.sql_catalog().await,
+        thing,
+        &cols,
+        vec![replacement],
+        None,
+        &[],
+    )
+    .await
+    .expect("overwrite");
+}
 
 /// Drive a `GET /objects/Thing...` (or `/datasets/...`) read at `retention` and assert its
 /// status. When `want_status` is 200, also assert the returned object-set id list; callers
@@ -209,42 +256,7 @@ async fn retention_horizon_guards_time_travel_selectors() {
     //    retention: S1's rows are now eligible for reclaim, so the read is refused. This is
     //    the case the file previously only CLAIMED to cover — `seed_arrays` appends, so
     //    assertion 1 above was never testing a rewritten table at all.
-    let cols = [
-        ColumnSpec {
-            name: "id".into(),
-            ty: "long".into(),
-            nullable: false,
-        },
-        ColumnSpec {
-            name: "name".into(),
-            ty: "string".into(),
-            nullable: true,
-        },
-    ];
-    let arrow_schema = Arc::new(ArrowSchema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    let replacement = RecordBatch::try_new(
-        arrow_schema,
-        vec![
-            Arc::new(Int64Array::from(vec![9_i64])),
-            Arc::new(StringArray::from(vec!["z"])),
-        ],
-    )
-    .expect("replacement batch");
-
-    overwrite_parquet_snapshot(
-        &pool,
-        &writer.sql_catalog().await,
-        &thing,
-        &cols,
-        vec![replacement],
-        None,
-        &[],
-    )
-    .await
-    .expect("overwrite");
+    overwrite_thing_with_single_row(&pool, &writer, &thing).await;
 
     assert_status_and_ids(
         &cp,
