@@ -6667,12 +6667,19 @@ pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks 
     );
 
     // --- monotonicity is STRUCTURAL, not a caller contract. `to > from` is produced by the
-    // worker's `framing_bounds`, but the CAS must not TRUST it: a garbled/hostile advance whose
-    // `to` sits below the committed watermark must be refused by the predicate itself, or it
-    // would REWIND the watermark inside the output-commit transaction and every later run would
-    // re-read and re-append the offsets in between (a double-write — exactly-once broken). The
-    // row is at 12 here; `{from: 900, to: 5}` satisfies `next_offset <= from` yet is not
-    // monotone, so the `next_offset < to` conjunct is the only thing refusing it. ---
+    // worker's `framing_bounds`, but the backends must not TRUST it: a garbled/hostile advance
+    // that does not strictly move forward must be refused by the mechanism itself, or it would
+    // REWIND (or freeze) the watermark inside the output-commit transaction and every later run
+    // would re-read and re-append the offsets in between (a double-write — exactly-once broken).
+    //
+    // Such an advance is MALFORMED, not a concurrency conflict, so it is `Validation`, not
+    // `Conflict`. The distinction is operational: `Conflict` means "a concurrent run beat me —
+    // roll back, the next run covers this delta", whereas a malformed advance is deterministic
+    // and fails identically on every retry. Both backends reject `to <= from` up front, before
+    // either CAS branch is chosen — which is also what makes `from == 0 => to >= 1` structural.
+    //
+    // The row is at 12 here; `{from: 900, to: 5}` satisfies `next_offset <= from` and would have
+    // moved the watermark BACK to 5 under a caller-trusting CAS. ---
     assert!(
         matches!(
             cp.advance_mv_watermark(
@@ -6685,13 +6692,92 @@ pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks 
                 }],
             )
             .await,
-            Err(ControlPlaneError::Conflict(_))
+            Err(ControlPlaneError::Validation(_))
         ),
-        "a non-monotone advance (to below the watermark) must Conflict, never rewind"
+        "a non-monotone advance (to below from) is malformed: Validation, never a rewind"
     );
     assert_eq!(
         cp.mv_watermarks(cas_mv, cas_tid).await.unwrap().get(&0),
         Some(&12),
         "the refused non-monotone advance left the watermark untouched"
+    );
+
+    // A ZERO-WIDTH advance (`to == from`) makes no forward progress and is refused the same way.
+    // Against the row at 12 this is the `from > 0` branch's degenerate case: accepting it would
+    // commit the MV's output while leaving the watermark where it was, so the next run re-reads
+    // and re-appends the same delta.
+    assert!(
+        matches!(
+            cp.advance_mv_watermark(
+                cas_mv,
+                cas_tid,
+                &[WatermarkAdvance {
+                    bucket: 0,
+                    from: 12,
+                    to: 12,
+                }],
+            )
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "a zero-width advance is malformed (Validation), not a Conflict"
+    );
+    assert_eq!(
+        cp.mv_watermarks(cas_mv, cas_tid).await.unwrap().get(&0),
+        Some(&12),
+        "the refused zero-width advance left the watermark untouched"
+    );
+
+    // --- the same, through the `from == 0` (bootstrap-insert) branch, which used to trust its
+    // caller outright. On an ABSENT row both backends once ACCEPTED `{from: 0, to: 0}` — planting
+    // a degenerate row that records no progress — and memory accepted `{from: 0, to: -1}` too (in
+    // postgres that one merely tripped the table's `next_offset >= 0` CHECK, i.e. a Backend error
+    // rather than a clean refusal). Neither may plant a row now.
+    //
+    // A row physically AT 0 is the sharper case (postgres accepted an advance from 0 to 0 against
+    // it, freezing the watermark while the output committed — exactly-once broken). It is
+    // postgres-only reachable — `mv_bootstrap` inserts it, memory has no bootstrap and an absent
+    // row already READS as 0 — so `postgres/tests/mv_watermarks.rs` pins it on a physical row. ---
+    let deg_mv = "main.degenerate_out";
+    let deg_tid = 9200;
+    for to in [0_i64, -1] {
+        let r = cp
+            .advance_mv_watermark(
+                deg_mv,
+                deg_tid,
+                &[WatermarkAdvance {
+                    bucket: 0,
+                    from: 0,
+                    to,
+                }],
+            )
+            .await;
+        assert!(
+            matches!(r, Err(ControlPlaneError::Validation(_))),
+            "a from=0 advance to {to} makes no forward progress: Validation; got {r:?}"
+        );
+        assert!(
+            !cp.mv_watermarks(deg_mv, deg_tid)
+                .await
+                .unwrap()
+                .contains_key(&0),
+            "the refused advance (to = {to}) planted no degenerate row"
+        );
+    }
+    // A genuine bootstrap through the same branch still works.
+    cp.advance_mv_watermark(
+        deg_mv,
+        deg_tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 1,
+        }],
+    )
+    .await
+    .expect("a strictly-forward bootstrap advance is still accepted");
+    assert_eq!(
+        cp.mv_watermarks(deg_mv, deg_tid).await.unwrap().get(&0),
+        Some(&1)
     );
 }

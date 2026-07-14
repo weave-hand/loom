@@ -284,7 +284,14 @@ loom_fixture_test(
     crate = "mv_watermarks",
     srcs = ["tests/mv_watermarks.rs"],
     crate_root = "tests/mv_watermarks.rs",
-    deps = [":postgres", "//src/control-plane/testkit:testkit", "//third-party:tokio"],
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/control-plane/testkit:testkit",
+        # The bootstrapped-at-zero test plants its watermark row with raw SQL.
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
 )
 
 loom_fixture_test(

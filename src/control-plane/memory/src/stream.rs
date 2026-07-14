@@ -121,16 +121,30 @@ impl MvWatermarks for MemoryControlPlane {
     ) -> Result<()> {
         let mut map = self.mv_watermarks.lock();
         for adv in advances {
+            // The same kind-agnostic precondition postgres applies before either CAS branch (see
+            // `pg_advance_mv_watermark` for the full argument): an advance must move the watermark
+            // strictly FORWARD, and one that does not is MALFORMED — `Validation`, not `Conflict`
+            // (a Conflict would claim a concurrent run raced it, inviting a retry that must fail
+            // identically). It is what keeps the two backends behaviourally identical on the
+            // degenerate inputs the bootstrap-insert arm below would otherwise accept, and what
+            // makes `adv.from == 0 => adv.to >= 1` structural.
+            if adv.to <= adv.from {
+                return Err(ControlPlaneError::Validation(format!(
+                    "mv watermark advance {}..{} is malformed (must move strictly forward: \
+                     to > from) : {mv} source {source_table_id} bucket {}",
+                    adv.from, adv.to, adv.bucket
+                )));
+            }
             let key = (mv.to_string(), source_table_id, adv.bucket);
             match map.get(&key).copied() {
                 // Mirrors the postgres CAS predicate in `pg_advance_mv_watermark` — read its
                 // comment for the full argument. In short: `current <= adv.from` (not `==`)
                 // because a rounded-down bootstrap can leave the row BELOW the delta's observed
-                // minimum offset; `current < adv.to` because that relaxation alone would let a
-                // non-monotone advance REWIND the watermark (`{from: 900, to: 5}` against a row
-                // at 100), re-appending the offsets in between on every later run. Together they
-                // make monotonicity structural rather than a caller contract, and still refuse a
-                // replay (the winner leaves `current = to`, failing both conjuncts).
+                // minimum offset; `current < adv.to` is defence in depth (redundant given the
+                // precondition above — `current <= from < to` — but kept, as in the postgres SQL,
+                // so the predicate still refuses a REWIND on its own if that precondition is ever
+                // refactored away). A replay is still refused: the winner leaves `current = to`,
+                // failing both conjuncts.
                 Some(current) if current <= adv.from && current < adv.to => {
                     map.insert(key, adv.to);
                 }

@@ -175,11 +175,16 @@ pub fn mv_key(output: &crate::TableRef) -> String {
 /// refuses anything above it: a watermark ahead of the delta means a concurrent run
 /// already covered it. `from == 0` is the bootstrap case (may insert the row).
 ///
-/// The CAS ALSO requires `next_offset < to`, so **monotonicity is enforced by the
-/// mechanism, not owed by the caller**: `to > from` happens to hold for every advance
-/// the worker's `framing_bounds` frames, but nothing between here and the backend
-/// validates it, and without that conjunct a `{from: 900, to: 5}` advance would REWIND
-/// a watermark at 100 and re-append the offsets in between forever.
+/// **Monotonicity is enforced by the mechanism, not owed by the caller.** Both backends
+/// reject `to <= from` UP FRONT — before either CAS branch — as `Validation` (a malformed
+/// advance, not a lost race: it is deterministic, so the run must abandon rather than
+/// retry). `to > from` happens to hold for every advance the worker's `framing_bounds`
+/// frames, but nothing between here and the backend validates it: without that check a
+/// `{from: 900, to: 5}` advance would REWIND a watermark at 100 and re-append the offsets
+/// in between forever, and a `{from: 0, to: 0}` advance against a bootstrapped row at 0
+/// would FREEZE the watermark while the MV's output committed — the same double-write.
+/// The CAS additionally keeps a `next_offset < to` conjunct as defence in depth (redundant
+/// given the precondition, deliberately kept).
 ///
 /// Accepting `<=` cashes in an assumption worth naming: `mv_delta_scan` (engine-serving)
 /// must read `loom_offset >= next_offset` **snapshot-consistently across both storage
@@ -192,7 +197,10 @@ pub fn mv_key(output: &crate::TableRef) -> String {
 ///
 /// (Aside, for anyone diffing the two backends: memory's `current <= from` arm and
 /// postgres's `where next_offset = 0` bootstrap predicate coincide for `from == 0` only
-/// because offsets are assumed non-negative — an assumption nothing in the type states.)
+/// because offsets are assumed non-negative — an assumption nothing in the type states.
+/// They used to DIVERGE on `{from: 0, to: 0}` against a row at 0; the `to > from`
+/// precondition is what makes them identical on every input, as the testkit contract
+/// certifies.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatermarkAdvance {
     pub bucket: i32,
@@ -213,9 +221,10 @@ pub trait MvWatermarks {
         mv: &str,
         source_table_id: i64,
     ) -> Result<std::collections::BTreeMap<i32, i64>>;
-    /// CAS-advance each bucket; any stale `from` is `Conflict` (all-or-nothing
-    /// is the postgres tx's job — this standalone surface applies in order and
-    /// stops at the first conflict).
+    /// CAS-advance each bucket; any stale `from` is `Conflict`, and an advance that
+    /// does not move strictly forward (`to <= from`) is `Validation` — malformed, not
+    /// raced (all-or-nothing is the postgres tx's job — this standalone surface applies
+    /// in order and stops at the first refusal).
     async fn advance_mv_watermark(
         &self,
         mv: &str,

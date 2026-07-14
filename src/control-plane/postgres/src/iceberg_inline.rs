@@ -121,6 +121,16 @@ pub async fn end_cap_live_inline_rows(
 /// The flush (both branches) passes `Reframing`: the rows it retires here are exactly the
 /// rows it re-projects into the new Parquet at the SAME `(loom_bucket, loom_offset)`.
 ///
+/// **The atomicity of the caller's commit is LOAD-BEARING for MV exactly-once.** This end-cap
+/// and the Parquet publish that supersedes these rows must land in ONE transaction, so that at
+/// every snapshot a row is live in exactly one storage tier and never in neither. The
+/// micro-batch watermark CAS ([`crate::stream::pg_advance_mv_watermark`] — read its inline
+/// argument before changing this) accepts an advance whose `from` sits ABOVE the committed
+/// watermark, on the strength of `mv_delta_scan` reading both tiers snapshot-consistently: an
+/// observed minimum above the watermark must PROVE the intervening offsets do not exist, not
+/// merely that they are transiently invisible. Split this commit and a row that is briefly in
+/// neither tier becomes a SILENT SKIP — the MV commits a delta that never contained it.
+///
 /// `pub` (not `pub(crate)`) so the fixture tests can drive the guarded primitive itself.
 pub async fn end_cap_inline_rows_by_id(
     conn: &mut PgConnection,
