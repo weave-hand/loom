@@ -1401,8 +1401,6 @@ loom_fixture_test(
         "//src/testing:seed",
         ":postgres",
         "//src/control-plane/core:core",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
         "//third-party:tokio",
         "//third-party:uuid",
     ],

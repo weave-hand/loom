@@ -13,116 +13,40 @@
 //! Reachable via the engine's `BuildVectorIndex` RPC, and note `overwrite_truncate`
 //! enqueues rebuild jobs *without* creating an Iceberg table.
 //!
-//! Seeding mirrors `vector_index_hnsw.rs`, except `InlineLimits` forces the inline
-//! branch (`inline_byte_limit: usize::MAX`) and disarms the byte-flush
-//! (`flush_byte_threshold: i64::MAX`), so no Parquet file is ever written.
+//! Seeded off `loom_test_seed`'s canonical `wh.docs` world, but with
+//! `seed_docs_world` (the type only, NO landing) + `hot_limits` — `seed_docs_table`
+//! forces its rows to Parquet, which is the one state these tests must avoid.
 
-use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
-
-use control_plane_core::{
-    ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
-    VectorIndexDef,
-};
+use control_plane_core::{IndexSpec, Metric, RunId};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
-use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::vector_index::build_vector_index;
+use loom_test_seed::{
+    VectorSeed, define_docs_index, hot_limits, land_vec4, land_vec4_declaring, seed_docs_world,
+};
 
-fn table() -> TableRef {
-    TableRef {
-        schema: "wh".into(),
-        name: "docs".into(),
-    }
-}
-
-/// Define the `Docs` type over `wh.docs` plus a `Flat` vector index on `embedding`.
-async fn define_docs(cp: &impl ControlPlane) {
-    cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Docs".into()),
-            table: table(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
-        .await
-        .expect("define_type");
-
-    cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
-        .await
-        .expect("define_vector_index");
-}
-
-/// Land three vectors INLINE ONLY: no Parquet file, and therefore no
-/// `iceberg_tables` row for the table. `stream_buckets` declares the table a
-/// stream table on this, its first write — the only legal moment (a landed batch
-/// table can never become one: `reconcile_stream_mode`).
-async fn land_inline_only(pool: &sqlx::PgPool, catalog: &SqlCatalog, stream_buckets: Option<i32>) {
-    let run = RunId(uuid::Uuid::new_v4());
-    let rows: &[(i64, [f32; 4])] = &[
-        (1, [1.0, 0.0, 0.0, 0.0]),
-        (2, [0.0, 1.0, 0.0, 0.0]),
-        (3, [0.0, 0.0, 1.0, 0.0]),
-    ];
-    let (schema, batches) = vec4_batches(rows);
-    land(
-        pool,
-        catalog,
-        &table(),
-        &vec4_columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: usize::MAX,
-            flush_byte_threshold: i64::MAX,
-        },
-        test_lineage(run, &table()),
-        stream_buckets,
-    )
-    .await
-    .expect("inline land (no flush, no Parquet)");
-}
+/// The three vectors every case indexes, landed INLINE ONLY.
+const ROWS: &[(i64, [f32; 4])] = &[
+    (1, [1.0, 0.0, 0.0, 0.0]),
+    (2, [0.0, 1.0, 0.0, 0.0]),
+    (3, [0.0, 0.0, 1.0, 0.0]),
+];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn build_over_an_inline_only_table_reads_the_hot_tier() {
     let fx = PgFixture::shared();
-    let (cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
-
-    define_docs(&cp).await;
-    land_inline_only(&pool, &catalog, None).await;
+    let (_cp, db) = fx.fresh_db().await;
+    let s: VectorSeed = seed_docs_world(fx, &db).await;
+    define_docs_index(&s, "by_flat", Metric::Cosine, IndexSpec::Flat).await;
+    land_vec4(&s, ROWS, hot_limits()).await;
 
     // Pre-fix this dies in one of the two `catalog.load_table` calls ("No such
     // table: wh.docs"), even though the file list is empty and every row is
     // sitting in the hot inline tier.
     let built = build_vector_index(
-        &catalog,
-        &pool,
-        &table(),
+        &s.catalog,
+        &s.pool,
+        &s.table,
         "by_flat",
         RunId(uuid::Uuid::new_v4()),
     )
@@ -140,28 +64,28 @@ async fn build_over_an_inline_only_table_reads_the_hot_tier() {
 }
 
 /// The build materializes the Iceberg table so it can mint the sidecar path — so it
-/// is the build, not the flush, that fixes the created Iceberg SCHEMA. For a declared
+/// is the BUILD, not the flush, that fixes the created Iceberg schema. For a declared
 /// stream table that schema must carry the three reserved framing columns, because a
 /// later `flush_table` writes FRAMED Parquet and its own `ensure_iceberg_table` no-ops
 /// on the already-created table. A build that created an unframed schema here would
-/// leave the flush appending framed files against a framing-free Iceberg schema.
+/// leave the flush appending framed files against a framing-free Iceberg schema
+/// (forcing `include_framing = false` fails this test with `schema evolution
+/// unsupported: column "loom_change_kind" was dropped`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_declared_stream_table_stays_flushable_after_an_inline_only_build() {
     let fx = PgFixture::shared();
-    let (cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
-
-    define_docs(&cp).await;
-    // Declared a stream table by its first (inline-only) write: its physical schema
-    // carries the log framing, which every subsequent Parquet write emits.
-    land_inline_only(&pool, &catalog, Some(4)).await;
+    let (_cp, db) = fx.fresh_db().await;
+    let s: VectorSeed = seed_docs_world(fx, &db).await;
+    define_docs_index(&s, "by_flat", Metric::Cosine, IndexSpec::Flat).await;
+    // Declare the stream AS PART OF the first write — the only legal moment
+    // (`reconcile_stream_mode` refuses to convert an already-landed batch table).
+    // Its physical schema now carries the log framing every Parquet write emits.
+    land_vec4_declaring(&s, ROWS, hot_limits(), Some(4)).await;
 
     let built = build_vector_index(
-        &catalog,
-        &pool,
-        &table(),
+        &s.catalog,
+        &s.pool,
+        &s.table,
         "by_flat",
         RunId(uuid::Uuid::new_v4()),
     )
@@ -170,7 +94,7 @@ async fn a_declared_stream_table_stays_flushable_after_an_inline_only_build() {
     assert_eq!(built.row_count, 3, "the three inline rows were indexed");
 
     // The Iceberg table the build created must accept the flush's framed Parquet.
-    let snap = flush_table(&catalog, &pool, &table(), RunId(uuid::Uuid::new_v4()))
+    let snap = flush_table(&s.catalog, &s.pool, &s.table, RunId(uuid::Uuid::new_v4()))
         .await
         .expect("flush after an inline-only build")
         .expect("the three live inline rows flushed into a Parquet snapshot");

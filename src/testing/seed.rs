@@ -329,10 +329,13 @@ pub struct VectorSeed {
     pub wh: tempfile::TempDir,
 }
 
-/// Seed the canonical `wh.docs` world: register the `Docs` type (identity
-/// `id`, `embedding vector(4)`, via the #304 seed DSL) and land cold rows
-/// 1..=4 (forced to Parquet) in the canonical two batches sharing one run id.
-pub async fn seed_docs_table(fx: &PgFixture, db: &str) -> VectorSeed {
+/// The canonical `wh.docs` world with its `Docs` type registered (identity `id`,
+/// `embedding vector(4)`, via the #304 seed DSL) and **no rows landed** — so the
+/// caller chooses the storage tier. [`seed_docs_table`] is this plus the cold
+/// (Parquet) landing; a test that needs an inline-only table lands its own rows
+/// with [`land_vec4`] and [`hot_limits`], which is the ONLY way to reach a table
+/// that has no Parquet file and hence no Iceberg `iceberg_tables` row.
+pub async fn seed_docs_world(fx: &PgFixture, db: &str) -> VectorSeed {
     let wh = tempfile::tempdir().expect("wh");
     let pool = fx.pool_for(db).await;
     let catalog = local_sql_catalog(fx.pg_dsn(db), &wh.path().display().to_string()).await;
@@ -352,6 +355,40 @@ pub async fn seed_docs_table(fx: &PgFixture, db: &str) -> VectorSeed {
         )
         .await
         .expect("define_type");
+
+    VectorSeed {
+        catalog,
+        pool,
+        cp,
+        table,
+        wh,
+    }
+}
+
+/// Declare a named vector index over the seeded world's `embedding` property.
+pub async fn define_docs_index(s: &VectorSeed, index: &str, metric: Metric, spec: IndexSpec) {
+    s.cp.ontology()
+        .define_vector_index(VectorIndexDef {
+            name: index.into(),
+            type_name: TypeName("Docs".into()),
+            property: "embedding".into(),
+            metric,
+            spec,
+        })
+        .await
+        .expect("define_vector_index");
+}
+
+/// [`seed_docs_world`] plus the cold landing: rows 1..=4 forced to Parquet, in
+/// the canonical two batches sharing one run id.
+pub async fn seed_docs_table(fx: &PgFixture, db: &str) -> VectorSeed {
+    let VectorSeed {
+        catalog,
+        pool,
+        cp,
+        table,
+        wh,
+    } = seed_docs_world(fx, db).await;
 
     let run = RunId(uuid::Uuid::new_v4());
     let rows_1_2: &[(i64, [f32; 4])] = &[(1, [1.0, 0.0, 0.0, 0.0]), (2, [0.0, 1.0, 0.0, 0.0])];
@@ -395,16 +432,7 @@ pub async fn seed_docs_vector(
     build: bool,
 ) -> VectorSeed {
     let s = seed_docs_table(fx, db).await;
-    s.cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: index.into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
-            metric,
-            spec,
-        })
-        .await
-        .expect("define_vector_index");
+    define_docs_index(&s, index, metric, spec).await;
     if build {
         let build_run = RunId(uuid::Uuid::new_v4());
         build_vector_index(&s.catalog, &s.pool, &s.table, index, build_run)
@@ -417,6 +445,19 @@ pub async fn seed_docs_vector(
 /// Land more vec4 rows into a seeded world (fresh run id, canonical lineage) —
 /// `hot_limits()` for the classic "row 5 inline after the covered snapshot".
 pub async fn land_vec4(s: &VectorSeed, rows: &[(i64, [f32; 4])], limits: InlineLimits) {
+    land_vec4_declaring(s, rows, limits, None).await;
+}
+
+/// [`land_vec4`], but `stream_buckets` declares the table a **stream table as part
+/// of this write**. That is the only legal moment to declare one — `reconcile_stream_mode`
+/// refuses to convert an already-landed batch table — so a test that needs a declared
+/// stream table must pass it here rather than calling `declare_stream` afterwards.
+pub async fn land_vec4_declaring(
+    s: &VectorSeed,
+    rows: &[(i64, [f32; 4])],
+    limits: InlineLimits,
+    stream_buckets: Option<i32>,
+) {
     let (schema, batches) = vec4_batches(rows);
     land(
         &s.pool,
@@ -427,7 +468,7 @@ pub async fn land_vec4(s: &VectorSeed, rows: &[(i64, [f32; 4])], limits: InlineL
         batches,
         limits,
         test_lineage(RunId(uuid::Uuid::new_v4()), &s.table),
-        None,
+        stream_buckets,
     )
     .await
     .expect("land vec4 rows");
