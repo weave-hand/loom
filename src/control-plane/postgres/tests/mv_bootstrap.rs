@@ -15,7 +15,8 @@ use control_plane_postgres::iceberg_mirror::end_cap_live_data_files;
 use control_plane_postgres::mv_bootstrap::earliest_surviving_offsets;
 use control_plane_postgres::mv_floor::{EndCapIntent, mv_floor};
 use end_cap_seed::{
-    advance, age_all_snapshots, current_snapshot_id, land_more, register_mv, seed_source, tref,
+    advance, age_all_snapshots, current_snapshot_id, land_more, register_mv, register_mv_result,
+    seed_source, tref,
 };
 
 const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -370,4 +371,86 @@ async fn redefining_the_same_output_does_not_reset_progress() {
         Some(5),
         "the MV resumes where it left off — the bootstrap did not reset it"
     );
+}
+
+/// `define_transform` must serialize against the SOURCE's per-table advisory lock — the one GC
+/// holds across BOTH its floor read and its reclaim. Without it, a registration commits inside
+/// GC's window and GC reclaims below the brand-new MV's floor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn define_transform_blocks_on_the_sources_table_lock() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        4,
+        Some(1),
+        true,
+        &[],
+    )
+    .await;
+
+    // Hold `lock_key(s.events)` by hand — exactly what `gc_table` does for the whole of its
+    // floor-read + reclaim.
+    let key = control_plane_postgres::iceberg_flush::lock_key(&s.src.schema, &s.src.name);
+    let mut holder = s.pool.begin().await.expect("tx");
+    sqlx::query(sqlx::AssertSqlSafe("select pg_advisory_xact_lock($1)"))
+        .bind(key)
+        .execute(&mut *holder)
+        .await
+        .expect("hold the source's table lock");
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(750),
+        register_mv_result(&cp, "mv_a", &s.src, &tref("s", "out_a")),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "define_transform did NOT take lock_key(source) — it committed while GC held the table \
+         lock, which is exactly the race this item closes"
+    );
+
+    holder.rollback().await.expect("release");
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        register_mv_result(&cp, "mv_a", &s.src, &tref("s", "out_a")),
+    )
+    .await
+    .expect("register once the lock is free")
+    .expect("register");
+}
+
+/// A registration and a concurrent commit on the SAME source must not deadlock: the commit path
+/// takes lock_key(table) then row-locks transforms.transform, so define_transform must take them
+/// in that same order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn registration_and_commit_do_not_deadlock() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        4,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+
+    // `join!` holds its futures across the await, so the output `TableRef` needs a binding
+    // that outlives the statement (a temporary inside the macro is dropped too early).
+    let out = tref("s", "out_a");
+    let (flush, define) = tokio::join!(
+        flush_table(&s.catalog, &s.pool, &s.src, RunId(uuid::Uuid::new_v4())),
+        register_mv_result(&cp, "mv_a", &s.src, &out),
+    );
+    flush.expect("flush must not deadlock against a concurrent registration");
+    define.expect("register must not deadlock against a concurrent flush");
 }

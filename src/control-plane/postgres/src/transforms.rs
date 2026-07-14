@@ -400,6 +400,23 @@ impl Transforms for PgControlPlane {
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        // Serialize this registration against its SOURCE table's flush / consolidate / GC. GC
+        // reads the MV floor and reclaims under `lock_key(source)` (`crate::iceberg_gc`), and
+        // READ COMMITTED gives that floor read no protection from a registration committing
+        // between it and the reclaim: the new MV's floor would simply not exist yet, and GC
+        // would reclaim below it. Holding the same key for this whole transaction makes the two
+        // mutually exclusive.
+        //
+        // ORDER IS LOAD-BEARING. The commit path takes `lock_key(table)` and THEN row-locks
+        // `transforms.transform` (`pg_fire_data_triggers`). Taking this here — at the top, before
+        // the `for update` below — puts us in that same order. After it would deadlock.
+        if let Some(src) = mv_source(&def.body) {
+            let key = crate::iceberg_flush::lock_key(&src.schema, &src.name);
+            sqlx::query!("select pg_advisory_xact_lock($1)", key)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+        }
         if let TransformBody::Typed { inputs, output, .. } = &def.body {
             let mut names: Vec<String> = inputs.clone();
             names.push(output.clone());
