@@ -954,7 +954,7 @@ async fn land_parquet_stream(
         let at = next_snapshot(&mut tx, None).await?;
         // The ensure's witness is the conversion guard's `pre_existing` (see
         // `ensure_table_witnessed`): `created == false` means this table is somebody
-        // else's — either long-live, or created by a writer that just won the race we
+        // else's — either long-lived, or created by a writer that just won the race we
         // lost inside the ensure. This sits INSIDE the retry loop, so a retried attempt
         // re-witnesses — correct, because attempt 1's row was rolled back with its tx.
         let (tid, created) =

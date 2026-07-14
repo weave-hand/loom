@@ -38,7 +38,16 @@ validated before any row is written:
   failure.
 - Redeclaring an existing table with a different bucket count is a
   `Conflict`; converting a pre-existing **batch** table to `stream`/`cdc` is a
-  `Validation` error (no retroactive conversion).
+  `Validation` error (no retroactive conversion). The guard's `pre_existing`
+  witness is derived from `ensure_table_witnessed`'s own return (`created:
+  bool`), not from a read taken before the ensure call: `ensure_table` silently
+  resolves a lost unique-index race to the WINNER's `table_id`, so a pre-read
+  could call another transaction's brand-new table "not existing" and let a
+  losing stream declare convert it. Both `reconcile_stream_mode` call sites
+  (`iceberg_inline::inline_append`, `iceberg_landing::land_parquet_stream`) now
+  derive `pre_existing` this way, so a stream declare that loses the mirror-row
+  create race sees the winner's table as pre-existing and is rejected rather
+  than converting it.
 - A request against a table already declared a **different kind** is rejected as
   `Validation`, in **either** direction (#432): `mode=cdc` against an existing
   `log` table, and `mode=stream` (log) against an existing `cdc` table — the
@@ -50,7 +59,20 @@ validated before any row is written:
   still reports the count `Conflict` first, in both directions.
 - A concurrent first-writer race is resolved by an `ON CONFLICT DO NOTHING`
   insert followed by a re-read; the loser's request is validated against
-  whatever the winner actually recorded.
+  whatever the winner actually recorded — and that re-read (`pg_stream_meta`,
+  no new SQL) now checks **everything** the count-equal redeclare arm already
+  checked, not just the bucket count: a disagreeing `kind` is a `Validation`
+  worded distinctly ("declared concurrently with a different stream kind") so
+  it stays distinguishable from the redeclare arm's own kind rejection, and a
+  disagreeing `merge_engine` or `bucket_key` (for a `Cdc` request) is a
+  `Conflict`/`Validation` respectively, mirroring the redeclare arm's guards.
+  The redeclare arm itself gained the matching `bucket_key` guard it was
+  missing (it already checked `kind` and `merge_engine`), so both arms are now
+  symmetric. All of this validation runs, and can reject, **before** the CDC
+  sub-branch's changelog writes (`ensure_table`/`pg_set_changelog_table_id`) —
+  a rejected declare performs no writes at all, where previously a losing CDC
+  declare could stamp `changelog_table_id` onto the winner's log row before
+  being rejected.
 
 Declaration runs **inside the write's own transaction**, so it commits iff the
 write does. For a fresh CDC declaration it also creates and registers the
@@ -684,11 +706,13 @@ from the continuous-query slice.
   bulk landing (a batch over `inline_byte_limit`) commits no notify, so a
   blocked `await_changelog` catches those writes only on its poll-fallback
   timer, not sub-second.
-- `#iss-stream-first-declare-race-kind` — the kind check is symmetric on the
-  count-equal redeclare arm, but the **first-declare** arm's post-`ON CONFLICT`
-  re-read compares only the bucket count, so two writers racing to declare a
-  brand-new table can still land a log request against a CDC winner's row (and
-  vice versa).
+- `#iss-iceberg-create-outside-tx-framing` — `ensure_iceberg_table`'s
+  create-if-absent runs outside and before the landing transaction, so a
+  batch land and a stream-declaring land racing to create the same brand-new
+  table can leave the winner's (batch) mirror row pointing at a table whose
+  physical Iceberg schema carries the loser's framing columns; the mirror-row
+  race itself is correctly guarded (see *Declaration* above), only the
+  Iceberg-create race is not.
 - `#iss-end-cap-ignores-mv-floor` — the MV read-position floor guards GC only;
   the paths that **end-cap** unread source offsets do not consult `mv_floor`, so
   an MV can still be starved by an end-cap (byte-retention defense ≠
