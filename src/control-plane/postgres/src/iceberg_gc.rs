@@ -70,7 +70,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use control_plane_core::{Result, TableRef};
-use sqlx::{AssertSqlSafe, PgPool};
+use sqlx::{AssertSqlSafe, PgPool, Row};
 use time::OffsetDateTime;
 
 use crate::backend;
@@ -262,7 +262,11 @@ async fn reclaim_live(
     };
     let victims = victim_data_files(tx, tid, h, file_guard).await?;
     let files = delete_data_files(tx, &victims.ids).await?;
-    let inline = delete_end_capped_inline_rows(tx, tid, h, floor, has_inline).await?;
+    let (inline, inline_max_end) =
+        delete_end_capped_inline_rows(tx, tid, h, floor, has_inline).await?;
+    // The watermark this run establishes for the live incarnation: the highest
+    // `end_snapshot` destroyed across BOTH reclaimable tiers.
+    bump_reclaimed_through(tx, tid, victims.max_end.max(inline_max_end)).await?;
     let held_by_mv_floor = candidates.saturating_sub(files.saturating_add(inline));
     Ok(LiveReclaim {
         paths: victims.paths,
@@ -299,6 +303,12 @@ async fn reclaim_dropped(
     for inc in dropped {
         let victims = victim_data_files(tx, inc.table_id, h, None).await?;
         let files = delete_data_files(tx, &victims.ids).await?;
+        // A dropped incarnation is still time-travellable until it is FULLY reclaimed, and
+        // its aged-out data files are reclaimed unguarded on every run — so a read inside
+        // it needs the same watermark evidence a live one does. (Once the incarnation is
+        // fully reclaimed below, its `table` row goes with it and the read 404s instead;
+        // the write is simply superseded, never wrong.)
+        bump_reclaimed_through(tx, inc.table_id, victims.max_end).await?;
         paths.extend(victims.paths);
         file_rows += files;
         if inc.drop_snapshot <= h {
@@ -360,6 +370,13 @@ async fn stranded_readers(
 struct Victims {
     ids: Vec<i64>,
     paths: Vec<String>,
+    /// The highest `end_snapshot` among these victims — the reclaim watermark this batch
+    /// contributes. `None` when the set is empty. It rides along with the materialized
+    /// victim set BY NECESSITY, not convenience: re-deriving it after the deletes would
+    /// re-evaluate the predicate below against a table whose `data_file_column_stat` rows
+    /// are already gone, and that predicate silently INVERTS when they are (the scalar
+    /// subquery goes NULL, so the `< $3` guard matches nothing). See this fn's doc.
+    max_end: Option<i64>,
 }
 
 /// The data files of `tid` reclaimable at horizon `h`
@@ -393,7 +410,8 @@ async fn victim_data_files(
     guard: Option<i64>,
 ) -> Result<Victims> {
     let rows = sqlx::query!(
-        "select df.data_file_id, df.path from iceberg_mirror.data_file df \
+        "select df.data_file_id, df.path, df.end_snapshot as \"end_snapshot!\" \
+         from iceberg_mirror.data_file df \
          where df.table_id = $1 and df.end_snapshot is not null and df.end_snapshot <= $2 \
            and ($3::bigint is null or ( \
                  select cs.max_value from iceberg_mirror.data_file_column_stat cs \
@@ -408,11 +426,17 @@ async fn victim_data_files(
     .map_err(backend)?;
     let mut ids = Vec::with_capacity(rows.len());
     let mut paths = Vec::with_capacity(rows.len());
+    let mut max_end: Option<i64> = None;
     for row in rows {
         ids.push(row.data_file_id);
         paths.push(row.path);
+        max_end = max_end.max(Some(row.end_snapshot));
     }
-    Ok(Victims { ids, paths })
+    Ok(Victims {
+        ids,
+        paths,
+        max_end,
+    })
 }
 
 /// Delete the `data_file` rows named by `ids` (stats child first, then the rows).
@@ -441,6 +465,38 @@ async fn delete_data_files(conn: &mut sqlx::PgConnection, ids: &[i64]) -> Result
     Ok(rows)
 }
 
+/// Advance an incarnation's reclaim watermark to the highest `end_snapshot` this run
+/// destroyed for it.
+///
+/// `greatest(...)` rather than a bare assignment, and a no-op on an empty victim set, so
+/// the watermark is MONOTONE: a later run that reclaims an older straggler (or reclaims
+/// nothing) can never lower it. `Catalog::snapshot_intact`'s soundness leans on that — a
+/// verdict must never flip from "incomplete" back to "complete" behind an already-refused
+/// read.
+///
+/// MUST run inside the caller's GC transaction, in the same commit as the deletes it
+/// describes. A watermark committed without its deletes 410s a read that is still
+/// complete (safe, merely conservative); deletes committed without their watermark SERVE
+/// an incomplete read (silent under-read). Both callers are already inside `gc_locked`'s
+/// `tx`.
+async fn bump_reclaimed_through(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    max_end: Option<i64>,
+) -> Result<()> {
+    let Some(e) = max_end else { return Ok(()) };
+    sqlx::query!(
+        "update iceberg_mirror.table \
+         set reclaimed_through = greatest(reclaimed_through, $2) where table_id = $1",
+        tid,
+        e,
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
 /// Does the physical `inline_<tid>` table exist? Probed ONCE per GC run and passed to
 /// the two callers that need it (`count_candidates`, `delete_end_capped_inline_rows`).
 async fn inline_table_exists(conn: &mut sqlx::PgConnection, tid: i64) -> Result<bool> {
@@ -453,42 +509,53 @@ async fn inline_table_exists(conn: &mut sqlx::PgConnection, tid: i64) -> Result<
     Ok(reg.is_some())
 }
 
-/// Delete end-capped inline rows (`end_snapshot <= h`) from `inline_<tid>` (`has_inline`
+/// Delete the live incarnation's end-capped inline rows under the per-bucket MV floor.
+/// Deletes rows with `end_snapshot <= h` from `inline_<tid>` (`has_inline`
 /// says whether that physical table exists — see `inline_table_exists`). With a floor, a
 /// row is reclaimable only strictly below ITS
 /// bucket's floor (inline rows carry `loom_bucket`/`loom_offset`, so this tier is
 /// per-bucket precise); a bucket at floor 0 contributes no clause (nothing in it is
 /// reclaimable); an unframed row (NULL bucket/offset — impossible on a stream table)
-/// is held. Returns the number of rows deleted.
+/// is held.
 ///
 /// The SQL is already dynamic (`AssertSqlSafe` + the `inline_<tid>` identifier), so the
 /// predicate is built from the floor map — the bucket/offset literals come from our own
 /// mirror, never from user input, exactly as `mv_delta_locked` builds its watermark
 /// predicate.
+///
+/// Returns `(rows_deleted, max_end_snapshot_deleted)` — the second is this tier's
+/// contribution to the reclaim watermark.
 async fn delete_end_capped_inline_rows(
     conn: &mut sqlx::PgConnection,
     tid: i64,
     h: i64,
     floor: Option<&MvFloor>,
     has_inline: bool,
-) -> Result<u64> {
+) -> Result<(u64, Option<i64>)> {
     if !has_inline {
-        return Ok(0);
+        return Ok((0, None));
     }
     let inline = inline_table_name(tid);
     let guard = match floor {
         None => String::new(),
         Some(f) => format!(" and {}", f.below_floor_pred()),
     };
+    // RETURNING (so `fetch_all`, not `execute`): the deleted rows' `end_snapshot`s are the
+    // watermark this tier contributes, and after the delete they are unrecoverable.
     let rows = sqlx::query(AssertSqlSafe(format!(
-        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard}"
+        "delete from {inline} where end_snapshot is not null and end_snapshot <= $1{guard} \
+         returning end_snapshot"
     )))
     .bind(h)
-    .execute(&mut *conn)
+    .fetch_all(&mut *conn)
     .await
-    .map_err(backend)?
-    .rows_affected();
-    Ok(rows)
+    .map_err(backend)?;
+    let mut max_end: Option<i64> = None;
+    for row in &rows {
+        let e: i64 = row.try_get("end_snapshot").map_err(backend)?;
+        max_end = max_end.max(Some(e));
+    }
+    Ok((u64::try_from(rows.len()).unwrap_or(0), max_end))
 }
 
 /// Age-eligible reclaim candidates for `tid` IGNORING the floor: data-file rows +

@@ -847,3 +847,156 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
         "table/column/data_file rows removed"
     );
 }
+
+/// Read the live incarnation's reclaim watermark straight from the mirror.
+async fn reclaimed_through(pool: &sqlx::PgPool, tid: i64) -> i64 {
+    sqlx::query_scalar::<_, i64>(
+        "select reclaimed_through from iceberg_mirror.table where table_id = $1",
+    )
+    .bind(tid)
+    .fetch_one(pool)
+    .await
+    .expect("reclaimed_through")
+}
+
+/// GC records the highest `end_snapshot` it destroyed, in the same commit as the
+/// deletes. Mirrors `gc_reclaims_aged_data_files_and_keeps_in_window`'s arrangement:
+/// A lands at s1 and is end-capped at s2 by the first overwrite; B lands at s2 and is
+/// end-capped at s3. Ageing ONLY s2 makes H = s2, so exactly A (end = s2) is reclaimed
+/// -> the watermark is s2. B (end = s3 > H) is untouched, so the watermark does not
+/// jump to s3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_records_the_reclaim_watermark() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let (schema, batches) = ipc_body(10);
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
+    )
+    .await
+    .expect("land");
+
+    let tid = live_tid(&pool, "wh", "t").await;
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        0,
+        "a freshly landed table has reclaimed nothing"
+    );
+
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(4)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
+    )
+    .await
+    .expect("ow s2");
+    let _s3 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(2)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
+    )
+    .await
+    .expect("ow s3");
+
+    age_snapshot(&pool, s2.0).await; // H = s2
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert_eq!(summary.data_file_rows, 1, "exactly A reclaimed");
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        s2.0,
+        "watermark == the end_snapshot of the reclaimed file A, not the tip"
+    );
+}
+
+/// The watermark never regresses. A second GC run that reclaims nothing must leave it
+/// alone (the `greatest(...)` in `bump_reclaimed_through`, and the no-op on an empty
+/// victim set). The read guard's soundness argument leans on monotonicity.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reclaim_watermark_is_monotone() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("wh");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let pool = fx.pool_for(&db).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let (schema, batches) = ipc_body(10);
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
+    )
+    .await
+    .expect("land");
+    let tid = live_tid(&pool, "wh", "t").await;
+
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(4)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
+    )
+    .await
+    .expect("ow s2");
+
+    age_all_snapshots(&pool).await;
+    gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc 1");
+    let after_first = reclaimed_through(&pool, tid).await;
+    assert_eq!(after_first, s2.0, "first run records A's end_snapshot");
+
+    // Second run: nothing left to reclaim (the only live file is end-capped by nobody).
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc 2");
+    assert_eq!(summary.data_file_rows, 0, "second run reclaims nothing");
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        after_first,
+        "a no-op run must not regress (or advance) the watermark"
+    );
+}
