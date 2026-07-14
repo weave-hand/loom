@@ -34,6 +34,7 @@ use crate::iceberg_schema_evolution::{SchemaPlan, classify_schema_change};
 use crate::iceberg_sql_catalog::{CommitExtras, InlineEndCap, SqlCatalog};
 use crate::iceberg_type::{iceberg_physical_type, mirror_column_type};
 use crate::iceberg_writer::append_batches_with_extras;
+use crate::mv_floor::EndCapIntent;
 use crate::stream::StreamDecl;
 
 /// A CDC (PK/identity-bearing) stream declaration: the requested bucket count and
@@ -447,7 +448,7 @@ async fn land_additive(
     if let Some(cfg) = &catalog.compact_trigger {
         crate::iceberg_compact::maybe_enqueue_compact(&mut tx, table, cfg).await?;
     }
-    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, at, &extras).await?;
+    crate::iceberg_sql_catalog::apply_commit_extras(&mut tx, table, at, &extras).await?;
     tx.commit().await.map_err(backend)?;
     Ok(at)
 }
@@ -755,13 +756,33 @@ pub async fn register_files(
             // an inline-written object (inline-only tables no-op the data-file end-cap;
             // file-only tables no-op the inline end-cap — each end-cap is independently
             // safe). Time travel is preserved (older snapshots still see the retired rows).
-            end_cap_live_data_files(conn, tid, at).await?;
-            crate::iceberg_inline::end_cap_live_inline_rows(conn, tid, at).await?;
+            //
+            // REMOVING: a replace consumes the old rows — whatever offsets they carried
+            // leave the live set. Both of this mode's callers already refuse a stream
+            // target outright (`pg_refuse_stream_target`), so the floor is `None` in
+            // practice; the intent is the honest declaration, not a behavior change.
+            end_cap_live_data_files(conn, table, tid, at, &EndCapIntent::Removing).await?;
+            crate::iceberg_inline::end_cap_live_inline_rows(
+                conn,
+                table,
+                tid,
+                at,
+                &EndCapIntent::Removing,
+            )
+            .await?;
         }
         WriteMode::Compact { expire_paths } => {
             // Subset-expire the named files; project the new ones below. Schema is
             // unchanged, so skip reconcile_and_project (it would require `columns`).
-            end_cap_files_by_path(conn, tid, expire_paths, at).await?;
+            //
+            // REFRAMING: compaction rewrites the very rows of `expire_paths` into the
+            // coalesced `files` projected two lines below, in this same transaction and
+            // at this same snapshot, carrying their `loom_bucket`/`loom_offset` values
+            // through unchanged. Nothing leaves the live set, so no MV can miss a row —
+            // consulting the floor here would refuse every compaction of a floored
+            // stream table for no benefit.
+            end_cap_files_by_path(conn, table, tid, expire_paths, at, &EndCapIntent::Reframing)
+                .await?;
             project_files(conn, tid, at, &projected_files(files)?).await?;
             stamp_schema_version(conn, tid, at).await?;
             return Ok(());
@@ -1263,10 +1284,23 @@ async fn overwrite_truncate(
     let conn = &mut *tx;
     let at = next_snapshot(conn, None).await?;
     let tid = ensure_table(conn, &table.schema, &table.name, at).await?;
-    end_cap_live_data_files(conn, tid, at).await?;
+    // REMOVING (all three caps): a truncating overwrite writes NO files back — every
+    // offset it end-caps leaves the live set for good, so an MV that has not read them
+    // would lose them. The floor refuses exactly that.
+    end_cap_live_data_files(conn, table, tid, at, &EndCapIntent::Removing).await?;
     match &consumed {
-        Some(cap) => end_cap_inline_rows_by_id(conn, cap.table_id, cap.row_ids, at).await?,
-        None => end_cap_live_inline_rows(conn, tid, at).await?,
+        Some(cap) => {
+            end_cap_inline_rows_by_id(
+                conn,
+                table,
+                cap.table_id,
+                cap.row_ids,
+                at,
+                &EndCapIntent::Removing,
+            )
+            .await?;
+        }
+        None => end_cap_live_inline_rows(conn, table, tid, at, &EndCapIntent::Removing).await?,
     }
     if let Some(ev) = lineage {
         pg_emit(&mut *conn, ev).await?;

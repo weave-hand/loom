@@ -18,6 +18,7 @@ use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parq
 use control_plane_postgres::iceberg_mirror::{
     end_cap_live_data_files, ensure_table, next_snapshot,
 };
+use control_plane_postgres::mv_floor::EndCapIntent;
 
 fn columns() -> Vec<ColumnSpec> {
     vec![ColumnSpec {
@@ -328,7 +329,7 @@ async fn overwrite_atomicity_leaves_prior_set_intact() {
         let conn = &mut *tx;
         let at = next_snapshot(conn, None).await.expect("snapshot");
         let tid = ensure_table(conn, "wh", "atomic", at).await.expect("table");
-        end_cap_live_data_files(conn, tid, at)
+        end_cap_live_data_files(conn, &t, tid, at, &EndCapIntent::Removing)
             .await
             .expect("end-cap");
         tx.rollback().await.expect("rollback");

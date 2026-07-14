@@ -624,6 +624,7 @@ loom_fixture_test(
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",
+        "//third-party:uuid",
     ],
 )
 

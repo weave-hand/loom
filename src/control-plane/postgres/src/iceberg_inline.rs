@@ -74,15 +74,26 @@ pub(crate) async fn inline_table_exists(conn: &mut PgConnection, table_id: i64) 
 /// where `end_snapshot is null`). Used by the overwrite/replace commit so a replace
 /// supersedes the inline tier as well as the file tier. No-op if the inline table was
 /// never created. Runs in the caller's transaction.
-pub(crate) async fn end_cap_live_inline_rows(
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written:
+/// a `Removing` end-cap of offsets a micro-batch MV has not read is REFUSED. The CDC
+/// flush passes `Reframing` — see `iceberg_flush::flush_locked_cdc` for why the `-U`
+/// rows it drops from the BASE cannot cost an MV a delta row.
+///
+/// `pub` (not `pub(crate)`) so the fixture tests can drive the guarded primitive itself.
+pub async fn end_cap_live_inline_rows(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     at: control_plane_core::SnapshotId,
+    intent: &crate::mv_floor::EndCapIntent<'_>,
 ) -> control_plane_core::Result<()> {
     // to_regclass returns NULL for a non-existent relation -> skip.
     if !inline_table_exists(conn, table_id).await? {
         return Ok(());
     }
+    crate::mv_floor::guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let sql = format!(
         "update {} set end_snapshot = {} where end_snapshot is null",
         inline_table_name(table_id),
@@ -104,12 +115,22 @@ pub(crate) async fn end_cap_live_inline_rows(
 /// Runtime sqlx (not a compile-time `query!`): the `inline_<table_id>` table
 /// name is a dynamic identifier and `any($1)` binds a row-id array — neither is
 /// expressible in a literal, schema-checked macro. Spliced via `AssertSqlSafe`.
-pub(crate) async fn end_cap_inline_rows_by_id(
+///
+/// `intent` declares WHY the caller is end-capping, and is checked against the MV
+/// read-position floor ([`crate::mv_floor::guard_end_cap`]) before anything is written.
+/// The flush (both branches) passes `Reframing`: the rows it retires here are exactly the
+/// rows it re-projects into the new Parquet at the SAME `(loom_bucket, loom_offset)`.
+///
+/// `pub` (not `pub(crate)`) so the fixture tests can drive the guarded primitive itself.
+pub async fn end_cap_inline_rows_by_id(
     conn: &mut PgConnection,
+    table: &TableRef,
     table_id: i64,
     row_ids: &[i64],
     at: SnapshotId,
+    intent: &crate::mv_floor::EndCapIntent<'_>,
 ) -> Result<()> {
+    crate::mv_floor::guard_end_cap(&mut *conn, table, table_id, intent).await?;
     let sql = format!(
         "update {} set end_snapshot = {} \
          where loom_row_id = any($1) and end_snapshot is null",

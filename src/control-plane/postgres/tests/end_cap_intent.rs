@@ -7,10 +7,12 @@
 //! one bucket with six events landed to Parquet FILES, one registered micro-batch MV,
 //! watermark advanced to 3, so offsets 3..6 are unread.
 
-use control_plane_core::{ControlPlaneError, mv_key};
+use control_plane_core::{ControlPlaneError, RunId, mv_key};
 use control_plane_postgres::fixture::PgFixture;
+use control_plane_postgres::iceberg_flush::flush_table;
+use control_plane_postgres::iceberg_mirror::{end_cap_live_data_files, next_snapshot};
 use control_plane_postgres::mv_floor::{EndCapIntent, guard_end_cap, removal_blocked};
-use end_cap_seed::{advance, seed_source, tref};
+use end_cap_seed::{advance, live_file_count, seed_floored_cdc, seed_source, tref};
 
 /// The core block: files carrying offsets the MV has not read block a `Removing`
 /// end-cap, and `guard_end_cap` turns that into a `Validation` naming the laggard.
@@ -264,4 +266,93 @@ async fn inline_tier_does_not_block_at_the_floor() {
     guard_end_cap(&mut conn, &s.src, s.tid, &EndCapIntent::Removing)
         .await
         .expect("a fully-consumed inline source is never refused");
+}
+
+// ---- the primitives themselves ---------------------------------------------
+//
+// The tests above drive `guard_end_cap` directly. These drive the guarded
+// PRIMITIVE on a real transaction — what makes the guard structural (an argument
+// of the signature) rather than a convention a new caller can forget.
+
+/// The primitive itself refuses, and the live set is untouched (the tx rolls back).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removing_end_cap_primitive_is_refused() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
+    let before = live_file_count(&s.pool, s.tid).await;
+    assert!(before > 0, "seed must leave live files");
+
+    let mut tx = s.pool.begin().await.expect("tx");
+    let at = next_snapshot(&mut tx, None).await.expect("snapshot");
+    end_cap_live_data_files(&mut tx, &s.src, s.tid, at, &EndCapIntent::Removing)
+        .await
+        .expect_err("the primitive itself must refuse");
+    drop(tx); // rolls back
+
+    assert_eq!(
+        live_file_count(&s.pool, s.tid).await,
+        before,
+        "a refused end-cap must leave the live set untouched"
+    );
+}
+
+/// The same primitive call, declared `Reframing`, commits — the over-refusal guard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reframing_end_cap_primitive_commits() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 3).await;
+
+    let mut tx = s.pool.begin().await.expect("tx");
+    let at = next_snapshot(&mut tx, None).await.expect("snapshot");
+    end_cap_live_data_files(&mut tx, &s.src, s.tid, at, &EndCapIntent::Reframing)
+        .await
+        .expect("a reframing end-cap must commit");
+    tx.commit().await.expect("commit");
+
+    assert_eq!(live_file_count(&s.pool, s.tid).await, 0);
+}
+
+/// A floored CDC table MUST still flush, because a flush is REFRAMING.
+///
+/// This is the regression test for the seam's worst near-miss: flush has TWO commits that
+/// end-cap inline rows (`iceberg_flush.rs`'s non-CDC append AND the CDC base append inside
+/// `flush_locked_cdc`), and `EndCapIntent`'s default is `Removing`. Miss either and a
+/// floored table can never flush again — and NO other test in the tree puts a floor on a
+/// CDC table, so the whole suite would stay green while shipping it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cdc_flush_with_a_floored_source_still_succeeds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let s = seed_floored_cdc(fx, &cp, &db).await;
+
+    flush_table(&s.catalog, &s.pool, &s.table, RunId(uuid::Uuid::new_v4()))
+        .await
+        .expect("a CDC flush is REFRAMING and must not be refused by the MV floor")
+        .expect("flush produced a snapshot");
 }
