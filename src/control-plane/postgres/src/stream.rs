@@ -257,30 +257,15 @@ pub async fn reconcile_stream_mode(
                     table.schema, table.name
                 )));
             }
+            // The declare itself is `insert … on conflict (table_id) do nothing`: it
+            // blocks against a concurrent uncommitted first-declare and no-ops if that
+            // writer won.
             match decl {
                 StreamDecl::Cdc {
                     bucket_key,
                     merge_engine,
                     ..
-                } => {
-                    pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?;
-                    // Register the changelog table's mirror row (its Iceberg metadata
-                    // was created by `land_cdc` before this tx, outside any commit) and
-                    // point the registry at it, reusing this write's `at` snapshot —
-                    // the changelog table's genesis shares the same snapshot as the
-                    // declaring write. Its columns are projected on first flush
-                    // append; an empty mirror row is a valid never-written table (no
-                    // user-facing changelog read in this slice).
-                    let clog = crate::iceberg_landing::changelog_table_ref(table);
-                    let clog_tid = crate::iceberg_mirror::ensure_table(
-                        &mut *conn,
-                        &clog.schema,
-                        &clog.name,
-                        at,
-                    )
-                    .await?;
-                    pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
-                }
+                } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
                 // Spelled out (not `_`) so a future `StreamDecl` variant fails closed
                 // the same way `requested_kind` above does: an exhaustive match here
                 // means adding a variant is a compile error, not a silent
@@ -292,7 +277,14 @@ pub async fn reconcile_stream_mode(
             // A concurrent first-writer may have won the declare (our ON CONFLICT DO
             // NOTHING then no-ops). Re-read what was ACTUALLY recorded and honour it,
             // so the rows we stamp always agree with the registry — checking bucket
-            // count, KIND, and (for a Cdc request) merge_engine and bucket_key.
+            // count, KIND, and (for a Cdc request) merge_engine and bucket_key. This
+            // MUST run, and reject, BEFORE any further write below: the CDC changelog
+            // registration is an UNCONDITIONAL write to this table_id's registry row,
+            // so a cdc declare that lost the race to a log winner would otherwise
+            // stamp `changelog_table_id` onto the winner's log row before this check
+            // could reject it (iss-stream-first-declare-race-kind Task 3 — the
+            // caller's rollback hides the damage today, but that is the caller's
+            // discipline, not this seam's).
             // Re-reading only the count (as this arm did before
             // iss-stream-first-declare-race-kind) let a log declare that lost the race
             // to a same-count cdc declare proceed against a `kind='cdc'` row, stamping
@@ -358,6 +350,22 @@ pub async fn reconcile_stream_mode(
                         table.schema, table.name, stored.bucket_key
                     )));
                 }
+            }
+            // Winner (or an agreeing redeclare of our own kind): register the
+            // changelog table's mirror row (its Iceberg metadata was created by
+            // `land_cdc` before this tx, outside any commit) and point the registry
+            // at it, reusing this write's `at` snapshot — the changelog table's
+            // genesis shares the same snapshot as the declaring write. Its columns
+            // are projected on first flush append; an empty mirror row is a valid
+            // never-written table. Runs ONLY after every guard above has passed, so a
+            // losing cdc declare can never stamp a winner's row (see the load-bearing
+            // note above).
+            if matches!(decl, StreamDecl::Cdc { .. }) {
+                let clog = crate::iceberg_landing::changelog_table_ref(table);
+                let clog_tid =
+                    crate::iceberg_mirror::ensure_table(&mut *conn, &clog.schema, &clog.name, at)
+                        .await?;
+                pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
             }
             Some(stored.bucket_count)
         }

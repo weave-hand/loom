@@ -290,19 +290,40 @@ async fn cdc_first_declare_losing_to_log_winner_is_validation_error() {
             SnapshotId(1),
         )
         .await;
+        // Read the winner's row on the LOSER's still-open transaction: any UPDATE the
+        // loser issued before bailing out is visible to itself here, and nowhere else
+        // (the rollback below erases it). This is the only way to observe the
+        // changelog stamp the pre-fix ordering performs.
+        //
+        // Two facts make this probe safe. (1) `reconcile_stream_mode`'s rejection is an
+        // APPLICATION error, not a DB error — no statement failed, so the transaction is
+        // not poisoned and still accepts queries. (2) `fetch_one` cannot hit RowNotFound:
+        // by this point the winner has committed its row.
+        let stamped: Option<i64> = sqlx::query_scalar(
+            "select changelog_table_id from stream.stream_table where table_id = $1",
+        )
+        .bind(TID)
+        .fetch_one(&mut *tx)
+        .await
+        .expect("read winner changelog_table_id on the loser tx");
         drop(tx.rollback().await);
-        res
+        (res, stamped)
     });
 
     await_declare_blocked(&pool).await;
     winner.commit().await.expect("commit winner");
 
-    let res = loser.await.expect("join loser");
+    let (res, stamped) = loser.await.expect("join loser");
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg))
                  if msg.contains("declared concurrently with a different stream kind")),
         "a cdc first-declare losing to a log winner with the same count must be rejected \
          by the FIRST-DECLARE arm, got {res:?}"
+    );
+    assert_eq!(
+        stamped, None,
+        "a losing cdc declare must bail out BEFORE writing changelog_table_id onto the \
+         winner's log row — the kind check has to precede the changelog writes"
     );
 }
 
