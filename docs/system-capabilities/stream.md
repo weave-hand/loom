@@ -481,9 +481,10 @@ bucket, the next offset to read. It is keyed by `mv_key(output)` —
 `"{schema}.{name}"` of the **output**, not the def name (`core/src/stream.rs:151`)
 — so the watermark survives a def rename/redefine exactly when the output
 table is kept (which is exactly when resuming is correct), and ad-hoc
-(nameless) micro-batch runs work with no special case. An absent row reads as
-offset `0`: a fresh MV's first micro-batch processes the source's whole
-existing log, so bootstrap and steady state are one code path. The core
+(nameless) micro-batch runs work with no special case. A fresh MV is
+bootstrapped at registration to its source's earliest surviving offset (see the
+registration-bootstrap section below), so an absent row is not the fresh-MV
+case; an absent row that does occur (an ad-hoc run) reads as offset `0`. The core
 `MvWatermarks` trait (`mv_watermarks`/`advance_mv_watermark`,
 `stream.rs:173`/`:181`) is implemented by the memory fake, a postgres adapter
 (`pg_mv_watermarks`/`pg_advance_mv_watermark`, `postgres/src/stream.rs:552`/
@@ -704,8 +705,9 @@ their own items:
 - **Multi-source MVs / stream-stream joins** — shipped as slice 5; see
   **Stream joins / delta-join analog** below.
 - **Backfill/replay control** — no watermark-reset API or `from`-offset
-  registration; v1 always starts at offset `0` and resumes from the committed
-  watermark, so a rebuild means a new output table.
+  registration; v1 starts at the source's earliest surviving offset
+  (bootstrapped at registration) and resumes from the committed watermark, so a
+  rebuild means a new output table.
 - **Parquet spill for oversized micro-batch outputs** — v1 output always
   lands on the inline tier (micro-batches are delta-sized by construction); a
   framed direct-Parquet output spill path is a follow-on.
