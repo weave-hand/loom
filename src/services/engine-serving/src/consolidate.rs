@@ -228,13 +228,26 @@ async fn consolidate_locked(
         .await
         .map_err(to_serving)?;
 
+    // Neither tier: nothing to fold. NOT a bare `return Ok(0)` — the consolidate
+    // trigger is armed (`enqueued = true`) by the enqueue that scheduled this job
+    // and only a completed consolidate clears it, so an early return that skipped
+    // the clear would latch the trigger forever and this table could never enqueue
+    // another `stream_consolidate`. Mirrors the COW arm's stale-flag self-heal.
+    if !has_files && inline.is_none() {
+        let mut conn = pool.acquire().await.map_err(to_serving)?;
+        clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
+        clear_consolidate_trigger(&mut conn, tid)
+            .await
+            .map_err(to_serving)?;
+        return Ok(0);
+    }
+
     // Register only the tiers that exist. The file tier is read LAZILY, behind
     // `has_files`: `read_files_as_batches` calls `catalog.load_table` before it
     // looks at the path list, and a CDC base that has never been flushed has no
     // `iceberg_tables` row at all (the CDC declare pre-creates only the CHANGELOG
     // table) — so reading an EMPTY file list still errored. Same guard the COW arm
-    // below already carries (`iss-consolidate-inline-only-base`, the sibling of the
-    // `mv_delta` fix in #436).
+    // below already carries (`iss-consolidate-inline-only-base`).
     let df_ctx = SessionContext::new();
     if has_files {
         let (file_schema, file_batches) = read_files_as_batches(catalog, table, &paths)
@@ -262,7 +275,8 @@ async fn consolidate_locked(
         .join(", ");
     let id_quoted = quote_ident(identity);
     // One leg per registered tier — a base can legitimately be files-only (the
-    // post-flush fold), inline-only (never flushed), or both.
+    // post-flush fold), inline-only (never flushed), or both. The neither-tier case
+    // returned above, so `legs` is never empty here.
     let mut legs: Vec<String> = Vec::new();
     if has_files {
         legs.push(format!(

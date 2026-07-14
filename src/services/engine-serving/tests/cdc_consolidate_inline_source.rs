@@ -27,7 +27,9 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_inline::{
     current_inline_version, inline_append, write_inline_delta,
 };
-use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
+use control_plane_postgres::iceberg_mirror::{
+    arm_consolidate_trigger, bump_consolidate_trigger, ensure_table, next_snapshot,
+};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
 use loom_test_seed::local_sql_catalog;
@@ -87,6 +89,21 @@ fn row(id: i64, val: i64) -> RecordBatch {
 fn id_batch(id: i64) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![id]))]).expect("id batch")
+}
+
+/// A ZERO-row `(id, val)` batch — `inline_append_decl` mints the snapshot and
+/// projects the mirror columns BEFORE its per-row insert loop, so appending this
+/// leaves a live, schema-bearing table with NO file tier and NO live inline row:
+/// the one shape that reaches the neither-tier arm.
+fn empty_batch() -> RecordBatch {
+    RecordBatch::try_new(
+        arrow_cols(),
+        vec![
+            Arc::new(Int64Array::from(Vec::<i64>::new())),
+            Arc::new(Int64Array::from(Vec::<i64>::new())),
+        ],
+    )
+    .expect("empty batch")
 }
 
 fn lin() -> LineageEvent {
@@ -233,5 +250,173 @@ async fn inline_only_cdc_base_consolidates_without_a_flush() {
     assert!(
         live.is_none(),
         "every folded inline row is end-capped, got {live:?}"
+    );
+}
+
+/// A CDC base with NEITHER tier — declared and snapshotted, but no Parquet file
+/// and no live inline row — is a clean no-op. The regression that matters is the
+/// SECOND half: the no-op must CLEAR the consolidate trigger. `arm_consolidate_trigger`
+/// sets `enqueued = true` and only a successful consolidate clears it, and the
+/// enqueue condition is `delta_count >= effective && !enqueued` — so a consolidate
+/// that fails and abandons latches the trigger FOREVER and the table can never
+/// enqueue another `stream_consolidate`, even after a flush would have made it work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn neither_tier_is_a_noop_that_unlatches_the_trigger() {
+    let fx = PgFixture::shared();
+    let (cp, pool, catalog, _wh) = setup(fx).await;
+    let table = tref("cdc", "empty");
+
+    let tid = declare_cdc_table(&cp, &pool, &table).await;
+    // Zero-row append: mints the snapshot and projects the mirror columns, but
+    // leaves NO file tier and NO live inline row.
+    inline_append(&pool, &table, &cols(), &empty_batch(), lin(), None, None)
+        .await
+        .expect("declare-only zero-row append");
+
+    // Put the table in exactly the state a real enqueue leaves it in: deltas
+    // accrued past the threshold, job armed.
+    let mut conn = pool.acquire().await.expect("acquire");
+    let armed = bump_consolidate_trigger(&mut conn, tid, 128, 128)
+        .await
+        .expect("bump");
+    assert!(
+        armed.delta_count >= armed.effective,
+        "sanity: the trigger is over threshold"
+    );
+    arm_consolidate_trigger(&mut conn, tid).await.expect("arm");
+    drop(conn);
+
+    let snap = engine_serving::consolidate_table(&cp, &catalog, &pool, &table)
+        .await
+        .expect("a base with neither tier is a no-op, not an error");
+    assert_eq!(snap, 0, "nothing to fold: no new snapshot");
+
+    // The wedge is gone: the trigger is disarmed AND its counter reset, so the
+    // next accrual can enqueue again.
+    let mut conn = pool.acquire().await.expect("acquire");
+    let after = bump_consolidate_trigger(&mut conn, tid, 1, 128)
+        .await
+        .expect("bump after the no-op");
+    assert!(
+        !after.enqueued,
+        "the no-op disarmed the trigger — a later consolidate can be enqueued again"
+    );
+    assert_eq!(
+        after.delta_count, 1,
+        "the no-op reset the delta counter; only the fresh bump is counted"
+    );
+}
+
+/// The preserved invariant: the CDC arm does NOT early-return when the inline tier
+/// is empty. A post-flush base is files-only, and folding it (re-writing the
+/// coalesced survivors) is legitimate work — Task 1's guard must not have turned
+/// that into a no-op.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn files_only_base_still_folds() {
+    let fx = PgFixture::shared();
+    let (cp, pool, catalog, _wh) = setup(fx).await;
+    let table = tref("cdc", "flushed");
+
+    declare_cdc_table(&cp, &pool, &table).await;
+    inline_append(&pool, &table, &cols(), &row(1, 100), lin(), None, None)
+        .await
+        .expect("seed inline append");
+    update(&pool, &table, 1, 100, 200).await;
+
+    // Flush moves the whole inline tier (the +I, the -U/+U pair) into Parquet, so
+    // the base is now files-only with nothing live inline.
+    control_plane_postgres::iceberg_flush::flush_table(
+        &catalog,
+        &pool,
+        &table,
+        RunId(uuid::Uuid::new_v4()),
+    )
+    .await
+    .expect("flush")
+    .expect("the inline rows were flushed to Parquet");
+
+    let snap = engine_serving::consolidate_table(&cp, &catalog, &pool, &table)
+        .await
+        .expect("a files-only CDC base still folds");
+    assert!(
+        snap > 0,
+        "the files-only fold committed a snapshot, got {snap}"
+    );
+
+    let ice = IcebergCatalog::new(pool.clone());
+    let files = ice
+        .files_with_stats(&table, SnapshotId(snap))
+        .await
+        .expect("files_with_stats");
+    let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+    let (_schema, batches) = read_files_as_batches(&catalog, &table, &paths)
+        .await
+        .expect("read the folded base");
+    assert_eq!(
+        rows_sorted(&batches),
+        vec![(1, 200)],
+        "the flushed change subset folds to one row per identity"
+    );
+}
+
+/// The spec's second preserved invariant: a fold whose every identity's winner is
+/// a `-D` yields ZERO rows, and the overwrite short-circuits to `overwrite_truncate`
+/// — which is mirror-only and therefore safe with no `iceberg_tables` row. This is
+/// the inline-only shape most likely to still reach the Iceberg catalog, so pin it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_only_all_tombstoned_fold_truncates() {
+    let fx = PgFixture::shared();
+    let (cp, pool, catalog, _wh) = setup(fx).await;
+    let table = tref("cdc", "all_deleted");
+
+    declare_cdc_table(&cp, &pool, &table).await;
+    inline_append(&pool, &table, &cols(), &row(1, 100), lin(), None, None)
+        .await
+        .expect("seed inline append");
+
+    // DELETE id=1 — a `-D` tombstone, the greatest-offset image for that identity,
+    // so the fold drops it and yields an EMPTY row set. No flush anywhere. A CDC
+    // delete's before-image carries the FULL prior row (its own columns, not just
+    // the id spec) — see `stream_cdc_emission.rs`'s `at_delete` for the same shape.
+    let witness = current_inline_version(&pool, &table, &id_spec(), "id", &id_batch(1))
+        .await
+        .expect("current_inline_version");
+    write_inline_delta(
+        &pool,
+        &table,
+        &id_spec(),
+        "id",
+        true,
+        &id_batch(1),
+        Some((&cols(), &row(1, 100))),
+        lin(),
+        witness,
+        None,
+        &[],
+    )
+    .await
+    .expect("cdc delete delta");
+
+    let snap = engine_serving::consolidate_table(&cp, &catalog, &pool, &table)
+        .await
+        .expect("an all-tombstoned inline-only fold truncates, it does not error");
+    assert!(snap > 0, "the truncate committed a snapshot, got {snap}");
+
+    let ice = IcebergCatalog::new(pool.clone());
+    let files = ice
+        .files_with_stats(&table, SnapshotId(snap))
+        .await
+        .expect("files_with_stats");
+    assert!(
+        files.is_empty(),
+        "every identity was tombstoned: the folded base holds no data file"
+    );
+    let live = ice
+        .inline_live_batch_full(&table, SnapshotId(snap))
+        .await
+        .expect("inline_live_batch_full");
+    assert!(
+        live.is_none(),
+        "the truncate end-capped the folded inline rows, got {live:?}"
     );
 }
