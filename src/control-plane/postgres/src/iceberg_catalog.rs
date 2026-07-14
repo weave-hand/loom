@@ -496,15 +496,26 @@ impl Catalog for IcebergCatalog {
         // Clause 1, read LAST (see the ordering note above): has anything visible at `at`
         // ALREADY been destroyed? Every reclaimed row had `end <= reclaimed_through`, and
         // was visible at `at` iff `at < end`. So `at >= watermark` proves none of them was.
-        let watermark = sqlx::query_scalar!(
+        //
+        // `fetch_optional`, not `fetch_one`: between the `resolve_table` above (a separate
+        // connection) and this read, GC can fully reclaim a dropped-and-unreclaimed
+        // incarnation, deleting its `iceberg_mirror.table` row. That degrades this read to
+        // the same `NotFound` `resolve_table` would have produced had GC won the race a
+        // moment earlier — an honest 404, not a `RowNotFound`-mapped-to-`Backend` 500. Both
+        // outcomes are fail-closed (neither serves data), so this is a contract fix, not a
+        // soundness one.
+        sqlx::query_scalar!(
             "select reclaimed_through as \"reclaimed_through!\" \
              from iceberg_mirror.table where table_id = $1",
             tid,
         )
-        .fetch_one(&mut *conn)
+        .fetch_optional(&mut *conn)
         .await
-        .map_err(backend)?;
-        Ok(at.0 >= watermark)
+        .map_err(backend)?
+        .map(|watermark| at.0 >= watermark)
+        .ok_or_else(|| {
+            ControlPlaneError::NotFound(format!("{}.{} @ {}", table.schema, table.name, at.0))
+        })
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

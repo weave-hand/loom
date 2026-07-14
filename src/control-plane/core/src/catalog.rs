@@ -174,6 +174,16 @@ pub trait Catalog {
     /// reclaims such a row bumps the watermark above `at` in the SAME commit, so a verdict
     /// can never flip from "incomplete" back to "complete".
     ///
+    /// Clause 2 is deliberately COARSER than GC's actual victim set: GC additionally holds
+    /// back any row above the MV read-position floor (`iceberg_gc`'s `victim_data_files`
+    /// `file_guard`, and `delete_end_capped_inline_rows`'s per-bucket floor), so a row GC
+    /// would currently spare can still satisfy `begin <= at < end <= horizon` and read as
+    /// "eligible" here. That only makes the verdict MORE conservative — it can turn a read
+    /// that would in fact have completed into a refused (`false`) one, never the reverse —
+    /// so it is safe. Do not "tighten" clause 2 to match GC's floors; that would be a real
+    /// regression in safety margin, trading a false negative for the possibility of a false
+    /// positive.
+    ///
     /// **Implementors: evaluate clause 2 BEFORE clause 1, and order the two reads in time.**
     /// The clauses are not commutative under concurrency. Checking the (cheaper) watermark
     /// first admits the exact under-read this guard exists to prevent: the watermark read
