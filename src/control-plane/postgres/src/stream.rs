@@ -44,7 +44,11 @@ pub enum StreamDecl {
 /// conversion of a PRE-EXISTING table → `Validation`; a bucket-count mismatch
 /// against an existing stream table → `Conflict`; a request against an
 /// already-declared table of a DIFFERENT kind (cdc-vs-log in either direction)
-/// → `Validation`.
+/// → `Validation`; for a `Cdc` redeclare against an already-declared cdc table,
+/// a disagreeing merge_engine → `Conflict`, or a disagreeing bucket_key →
+/// `Validation` (symmetric with the first-declare race guards below — an
+/// already-declared table's recorded bucket_key is as immutable as its
+/// merge_engine).
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
 /// it declares the stream (as a log or cdc table, per `decl`) and honours the
 /// recorded count (a concurrent first-writer may have won the declare — re-read
@@ -214,6 +218,33 @@ pub async fn reconcile_stream_mode(
                 return Err(ControlPlaneError::Conflict(format!(
                     "stream merge_engine mismatch for {}.{}: requested {requested_engine}, \
                      table has {existing_engine}",
+                    table.schema, table.name
+                )));
+            }
+            // Bucket-key immutability (iss-review follow-up finding 1): a `Cdc`
+            // redeclare where the existing row's bucket_key differs from the
+            // requested one must also be rejected — otherwise the declared intent
+            // is silently ignored (the write proceeds and `inline_append` re-reads
+            // the registry's bucket_key, so rows are bucketed by the FIRST
+            // declarer's key, not the redeclare's). Mirrors the shape of the
+            // merge_engine guard just above, but as a `Validation` (matching the
+            // first-declare arm's bucket_key rejection kind), worded WITHOUT
+            // "declared concurrently" so it stays distinguishable from that arm's
+            // race-specific message — this path is reached with no concurrency at
+            // all, on a plain sequential redeclare. `existing_meta` already carries
+            // `bucket_key` from the read at the top of this function: no new SQL.
+            if let StreamDecl::Cdc { bucket_key, .. } = decl
+                && existing_meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.bucket_key.as_deref() != Some(bucket_key.as_str()))
+            {
+                let existing_key = existing_meta
+                    .as_ref()
+                    .and_then(|m| m.bucket_key.as_deref())
+                    .unwrap_or("?");
+                return Err(ControlPlaneError::Validation(format!(
+                    "stream bucket_key mismatch for {}.{}: requested '{bucket_key}', \
+                     table has a different bucket_key ('{existing_key}')",
                     table.schema, table.name
                 )));
             }

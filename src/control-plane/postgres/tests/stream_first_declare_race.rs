@@ -54,33 +54,23 @@ async fn insert_stream_row(
     merge_engine: Option<&str>,
 ) -> Transaction<'static, Postgres> {
     let mut tx = pool.begin().await.expect("begin winner tx");
-    if let Some(engine) = merge_engine {
-        sqlx::query(
-            "insert into stream.stream_table \
-             (table_id, bucket_count, kind, bucket_key, merge_engine) \
-             values ($1, $2, $3, $4, $5)",
-        )
-        .bind(tid)
-        .bind(buckets)
-        .bind(kind)
-        .bind(bucket_key)
-        .bind(engine)
-        .execute(&mut *tx)
-        .await
-        .expect("winner insert");
-    } else {
-        sqlx::query(
-            "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key) \
-             values ($1, $2, $3, $4)",
-        )
-        .bind(tid)
-        .bind(buckets)
-        .bind(kind)
-        .bind(bucket_key)
-        .execute(&mut *tx)
-        .await
-        .expect("winner insert");
-    }
+    // A single insert, `merge_engine` bound as `Option<&str>`: `coalesce($5,
+    // 'last_row')` reproduces the column's own default (migrations/0040) when the
+    // caller passes `None`, so there is exactly one INSERT statement rather than
+    // two near-identical branches.
+    sqlx::query(
+        "insert into stream.stream_table \
+         (table_id, bucket_count, kind, bucket_key, merge_engine) \
+         values ($1, $2, $3, $4, coalesce($5, 'last_row'))",
+    )
+    .bind(tid)
+    .bind(buckets)
+    .bind(kind)
+    .bind(bucket_key)
+    .bind(merge_engine)
+    .execute(&mut *tx)
+    .await
+    .expect("winner insert");
     tx
 }
 
@@ -406,8 +396,67 @@ async fn cdc_first_declare_losing_to_different_bucket_key_winner_is_validation_e
 
     let res = loser.await.expect("join loser");
     assert!(
-        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("declared concurrently")),
+        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different bucket_key")),
         "a cdc first-declare losing to a winner with a DIFFERENT bucket_key and the \
          same count/merge_engine must be rejected by the FIRST-DECLARE arm, got {res:?}"
+    );
+}
+
+/// THE DEFECT (follow-up finding 1): the COUNT-EQUAL `(Some, Some)` redeclare arm
+/// checks `bucket_count`, `kind` and `merge_engine` but — asymmetrically with the
+/// first-declare arm above — NOT `bucket_key`. A `Cdc` redeclare of an
+/// already-declared CDC table with the SAME bucket count and merge_engine but a
+/// DIFFERENT bucket_key is silently accepted, and the declared intent is then
+/// ignored (`inline_append` re-reads the registry's bucket_key, so rows are
+/// bucketed by the FIRST declarer's key, not the redeclare's). No concurrency
+/// needed: a plain sequential declare-then-redeclare reaches the count-equal arm.
+/// Before the fix this asserts `Ok(Some(2))` (accepted).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cdc_redeclare_with_different_bucket_key_same_count_and_engine_is_validation_error() {
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    // First declare: cdc, bucket_key "id", default (last_row) engine, committed.
+    let mut tx = pool.begin().await.expect("begin first declare");
+    let effective = reconcile_stream_mode(
+        &mut tx,
+        TID,
+        &StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+        false,
+        &tref(),
+        SnapshotId(1),
+    )
+    .await
+    .expect("first cdc declare");
+    assert_eq!(effective, Some(2));
+    tx.commit().await.expect("commit first declare");
+
+    // Redeclare: same count, same engine, but a DIFFERENT bucket_key. This is a
+    // plain sequential call reaching the count-equal `(Some, Some)` arm (no
+    // concurrency/barrier needed).
+    let mut tx = pool.begin().await.expect("begin redeclare");
+    let res = reconcile_stream_mode(
+        &mut tx,
+        TID,
+        &StreamDecl::Cdc {
+            buckets: 2,
+            bucket_key: "other".into(),
+            merge_engine: MergeEngine::LastRow,
+        },
+        true,
+        &tref(),
+        SnapshotId(2),
+    )
+    .await;
+    drop(tx.rollback().await);
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different bucket_key")),
+        "a cdc redeclare with the same count/engine but a DIFFERENT bucket_key must be \
+         rejected by the COUNT-EQUAL arm, got {res:?}"
     );
 }
