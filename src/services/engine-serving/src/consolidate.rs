@@ -155,7 +155,7 @@ async fn register_file_tier(
 }
 
 /// The quoted, comma-joined user-column projection both folds select.
-fn col_list(user_cols: &[ColumnSpec]) -> String {
+fn quoted_col_list(user_cols: &[ColumnSpec]) -> String {
     user_cols
         .iter()
         .map(|c| quote_ident(&c.name))
@@ -318,7 +318,7 @@ async fn consolidate_locked(
         false
     };
 
-    let col_list = col_list(&base.user_cols);
+    let col_list = quoted_col_list(&base.user_cols);
     let id_quoted = quote_ident(identity);
     // One leg per registered tier — a base can legitimately be files-only (the
     // post-flush fold), inline-only (never flushed), or both. The neither-tier case
@@ -475,7 +475,7 @@ async fn consolidate_cow_locked(
     )
     .map_err(to_serving)?;
 
-    let col_list = col_list(&base.user_cols);
+    let col_list = quoted_col_list(&base.user_cols);
     let id_quoted = quote_ident(identity);
     // File tier synthesizes precedence 0 + a false tombstone; the inline tier uses
     // `begin_snapshot` / `loom_tombstone` — exactly `Precedence::Snapshot`'s column
