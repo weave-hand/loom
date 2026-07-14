@@ -1180,13 +1180,29 @@ pub async fn current_inline_version(
     read_max_version(&mut conn, tid, id_column, &id_cell).await
 }
 
-/// The table's FULL live column set from the mirror, as `ColumnSpec`s — the
+/// The table's full live **data** column set from the mirror, as `ColumnSpec`s — the
 /// authoritative inline-table shape, independent of the (possibly one-column)
 /// `columns` a given mutation passes. Selects the currently-live
 /// `iceberg_mirror.column` rows (`end_snapshot is null`), so no snapshot bound is
 /// needed. The stored `column_type` is the Iceberg physical name (e.g. `int`);
 /// convert it back to the canonical loom logical name the inline DDL / cell codec
 /// understand, exactly as `IcebergCatalog::schema` does.
+///
+/// RESERVED columns are EXCLUDED (`iceberg_catalog::is_reserved`). A declared stream
+/// table registers the three log-framing columns
+/// (`loom_change_kind`/`loom_bucket`/`loom_offset`) in `iceberg_mirror.column` too —
+/// that mirror set is the table's Iceberg *physical* schema. But `inline_ddl` emits
+/// those framing columns (and the MVCC bounds, `loom_row_id`, `loom_tombstone`) ITSELF,
+/// so handing them back to `ensure_inline_schema` would emit each one twice and the
+/// CREATE TABLE would die with `column "loom_change_kind" specified more than once`
+/// (SQLSTATE 42701 — which `is_duplicate_object_race` then swallows as a benign
+/// concurrent-create, leaving the caller with a misleading
+/// `relation "iceberg_mirror.inline_<tid>" does not exist` from the next ALTER).
+/// Reachable for a CDC table whose first land went straight to Parquet
+/// (`land_parquet_stream` registers framing but never provisions inline storage), so the
+/// first typed UPDATE/DELETE is what CREATEs `inline_<tid>`. Filtering here restores the
+/// invariant `inline_append_decl` already holds: `ensure_inline_schema` is given the DATA
+/// columns, and owns the reserved ones.
 ///
 /// AssertSqlSafe: static query against a fixed mirror table; the `.sqlx` cache
 /// cannot be regenerated in this env (initdb refuses to run as root).
@@ -1199,24 +1215,26 @@ async fn full_live_column_specs(conn: &mut PgConnection, tid: i64) -> Result<Vec
     .fetch_all(&mut *conn)
     .await
     .map_err(backend)?;
-    rows.into_iter()
-        .map(|r| {
-            let name: String = r.try_get("column_name").map_err(backend)?;
-            let column_type: String = r.try_get("column_type").map_err(backend)?;
-            let nullable: bool = r.try_get("nulls_allowed").map_err(backend)?;
-            let ty = logical_from_iceberg(&column_type)
-                .map(BaseType::canonical_name)
-                .ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        format!(
-                            "inline: mirror column type {column_type:?} has no loom logical type"
-                        )
+    let mut specs = Vec::with_capacity(rows.len());
+    for r in rows {
+        let name: String = r.try_get("column_name").map_err(backend)?;
+        // Reserved physical columns belong to `inline_ddl`, not to the data schema.
+        if crate::iceberg_catalog::is_reserved(&name) {
+            continue;
+        }
+        let column_type: String = r.try_get("column_type").map_err(backend)?;
+        let nullable: bool = r.try_get("nulls_allowed").map_err(backend)?;
+        let ty = logical_from_iceberg(&column_type)
+            .map(BaseType::canonical_name)
+            .ok_or_else(|| {
+                ControlPlaneError::Backend(
+                    format!("inline: mirror column type {column_type:?} has no loom logical type")
                         .into(),
-                    )
-                })?;
-            Ok(ColumnSpec { name, ty, nullable })
-        })
-        .collect()
+                )
+            })?;
+        specs.push(ColumnSpec { name, ty, nullable });
+    }
+    Ok(specs)
 }
 
 /// Write ONE inline delta row (a row-version or a tombstone) for a single identity,

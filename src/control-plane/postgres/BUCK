@@ -634,6 +634,24 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "cdc-parquet-typed-delta",
+    crate = "cdc_parquet_typed_delta",
+    srcs = ["tests/cdc_parquet_typed_delta.rs"],
+    crate_root = "tests/cdc_parquet_typed_delta.rs",
+    deps = [
+        "//src/testing:seed",
+        ":end-cap-seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "end-cap-intent",
     crate = "end_cap_intent",
     srcs = ["tests/end_cap_intent.rs"],
