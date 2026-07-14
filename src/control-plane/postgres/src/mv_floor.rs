@@ -205,10 +205,13 @@ async fn watermark_mvs(conn: &mut PgConnection, tid: i64) -> Result<Vec<String>>
 /// see [`guard_end_cap`]). All five end-cap primitives now require an [`EndCapIntent`]
 /// and call `guard_end_cap` before writing, across every end-cap-issuing call site in
 /// the tree, so a `Removing` end-cap that would take offsets a micro-batch MV has not
-/// read is refused in production today. `consolidate_table` does not yet turn that
-/// refusal into a clean skip-and-re-arm rather than a queue-poisoning error (the gRPC
-/// status code does not survive the wire — `worker/src/stream_mv.rs`'s `classify_*`
-/// uses the same idiom) — that wiring is a later task, tracked outside this module.
+/// read is refused in production today.
+///
+/// The prefix — not the error VARIANT — is the contract, because the variant does not
+/// survive the catalog boundary (`ControlPlaneError::Validation` arrives as `Backend`; see
+/// `engine-serving`'s `consolidate::is_mv_floor_refusal`, and the same idiom in
+/// `worker/src/stream_mv.rs`'s `classify_*` over gRPC). `consolidate_table` matches on it to
+/// turn the refusal into a clean skip-and-re-arm rather than a queue-poisoning error.
 pub const MV_FLOOR_REFUSAL_PREFIX: &str = "mv-floor refuses end-cap:";
 
 /// Why a caller is end-capping, for the [`guard_end_cap`]/[`removal_blocked`] seam

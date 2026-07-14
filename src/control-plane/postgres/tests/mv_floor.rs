@@ -190,9 +190,15 @@ const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
 /// the end-cap seam existed this was raw SQL, because no guarded API did.
 async fn end_cap_data_files(pool: &sqlx::PgPool, table: &TableRef, tid: i64, snap: i64) {
     let mut tx = pool.begin().await.expect("tx");
-    end_cap_live_data_files(&mut tx, table, tid, SnapshotId(snap), &EndCapIntent::Reframing)
-        .await
-        .expect("end-cap data files");
+    end_cap_live_data_files(
+        &mut tx,
+        table,
+        tid,
+        SnapshotId(snap),
+        &EndCapIntent::Reframing,
+    )
+    .await
+    .expect("end-cap data files");
     tx.commit().await.expect("commit");
 }
 

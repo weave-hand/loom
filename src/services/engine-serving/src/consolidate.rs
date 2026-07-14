@@ -164,6 +164,208 @@ fn quoted_col_list(user_cols: &[ColumnSpec]) -> String {
         .join(", ")
 }
 
+/// Decline this consolidate: warn, disarm the enqueue latch, report the no-op (`Ok(0)`).
+/// The shared body of all three skip paths — [`consolidate_locked`]'s MV-floor pre-check,
+/// its raced commit-boundary refusal, and [`consolidate_table`]'s defensive
+/// [`StreamKind::Log`] arm.
+///
+/// Decline, do NOT error: `RetryPolicy::Retry` has no max-attempts anywhere, so an `Err`
+/// on a skip is a permanent 60-second failure drumbeat, and `Abandon` leaves the shadow
+/// tier unfolded forever. [`clear_consolidate_trigger`] re-arms instead: the next
+/// `threshold` deltas enqueue a fresh job — a write-proportional backoff with no timers.
+/// Same posture `gc_locked` takes against the floor: hold, warn, succeed.
+///
+/// `has_shadow` is deliberately LEFT SET: the shadow tier really IS still unfolded, so the
+/// non-CDC flush must stay suppressed rather than flush a tier we refuse to fold. Only the
+/// trigger is cleared, so the `enqueued` latch does not leak and the job does not re-fire
+/// forever.
+async fn skip_and_rearm(
+    pool: &PgPool,
+    table: &TableRef,
+    tid: i64,
+    reason: &str,
+) -> Result<i64, EngineServingError> {
+    tracing::warn!(
+        schema = %table.schema,
+        name = %table.name,
+        tid,
+        reason,
+        "consolidate skipped",
+    );
+    let mut conn = pool.acquire().await.map_err(to_serving)?;
+    clear_consolidate_trigger(&mut conn, tid)
+        .await
+        .map_err(to_serving)?;
+    Ok(0)
+}
+
+/// Whether `tid` currently bears an unfolded inline shadow tier — the gate on both the
+/// COW fold and the defensive log arm.
+async fn is_shadowed(pool: &PgPool, tid: i64) -> Result<bool, EngineServingError> {
+    let mut conn = pool.acquire().await.map_err(to_serving)?;
+    has_shadow(&mut conn, tid).await.map_err(to_serving)
+}
+
+/// `Some(reason)` iff the MV read-position floor blocks the CDC fold — the pre-check
+/// [`consolidate_locked`] runs before reading a single file.
+///
+/// The fold is a `Removing` end-cap: it retires every live file and re-projects only the
+/// fold winners. If a micro-batch MV has not read some of those offsets, removing them
+/// leaves a hole in its delta — so decline, and say which MV is the laggard. Runs inside
+/// the caller's per-table advisory lock, but on a pooled connection OUTSIDE the fold's own
+/// commit transaction — which is why the raced refusal at the commit boundary is still
+/// possible (see [`is_mv_floor_refusal`]).
+async fn mv_floor_blocks(
+    pool: &PgPool,
+    table: &TableRef,
+    tid: i64,
+) -> Result<Option<String>, EngineServingError> {
+    let mut conn = pool.acquire().await.map_err(to_serving)?;
+    let blocked = removal_blocked(&mut conn, table, tid)
+        .await
+        .map_err(to_serving)?;
+    Ok(blocked.map(|floor| {
+        format!(
+            "the fold would remove offsets a micro-batch MV has not consumed \
+             (floor {}, slowest {:?})",
+            floor.min_offset(),
+            floor.slowest,
+        )
+    }))
+}
+
+/// Is `e` the MV-floor refusal raised by the fold's OWN in-tx `guard_end_cap`? A floor can
+/// appear BETWEEN [`mv_floor_blocks`] and the commit: the pre-check runs on a pooled
+/// connection outside the fold's commit transaction, and neither `advance_mv_watermark` nor
+/// `define_transform` takes the fold's advisory lock — so a new reader (or a fresh watermark
+/// row) can land in that window. Same decline, same re-arm; never a retryable error.
+///
+/// MATCH ON THE MESSAGE, NOT THE VARIANT. `guard_end_cap` raises
+/// `ControlPlaneError::Validation` inside `write_mirror`, but it does NOT survive the
+/// catalog boundary: `commit_mirror_in_tx` wraps it into `iceberg::Error{Unexpected}` and
+/// `append_parquet_snapshot` re-wraps THAT with `backend()`, so it arrives here as
+/// `Backend` — an `Err(ControlPlaneError::Validation(_))` arm would be dead code. The
+/// stable prefix is the contract (pinned by
+/// `postgres/tests/end_cap_intent.rs::the_floor_refusal_message_survives_the_commit_wrap`);
+/// it is the same message-sniffing idiom `worker/src/stream_mv.rs`'s `classify_*` uses over
+/// gRPC, where the status code is likewise flattened. It also covers the empty-batch
+/// `overwrite_truncate` branch, which never touches the catalog and so does return a real
+/// `Validation`.
+fn is_mv_floor_refusal(e: &control_plane_core::ControlPlaneError) -> bool {
+    e.to_string().contains(MV_FLOOR_REFUSAL_PREFIX)
+}
+
+/// Clear the CDC fold's two flags, post-commit. `has_shadow` unconditionally (unlike COW's
+/// `clear_has_shadow_if_quiescent`): it is never consulted on the CDC path — the flush gate
+/// short-circuits on `is_cdc` first. The consolidate trigger too, so the next accrual of CDC
+/// deltas can re-enqueue a `stream_consolidate` job (chosen over keying the re-arm off
+/// `has_shadow` alone: this table's own row is authoritative and explicit, and it stays
+/// correct even if a future change decouples the two flags).
+async fn clear_cdc_fold_flags(pool: &PgPool, tid: i64) -> Result<(), EngineServingError> {
+    let mut conn = pool.acquire().await.map_err(to_serving)?;
+    clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
+    clear_consolidate_trigger(&mut conn, tid)
+        .await
+        .map_err(to_serving)?;
+    Ok(())
+}
+
+/// The CDC fold's SQL over the tiers registered in the session: greatest-precedence row per
+/// identity wins (ROW_NUMBER rank 1), and a winner tombstoned by `-D` (a delete) is dropped
+/// so the identity does not resurrect in the folded base. The base's physical framing
+/// carries no `loom_tombstone` column (only the three reserved
+/// `loom_change_kind`/`loom_bucket`/`loom_offset` — see `framing_column_specs`), but every
+/// delete is written with `loom_change_kind = '-D'` (`write_cdc_row`), so that predicate is
+/// exactly equivalent to also checking tombstone.
+///
+/// One union leg per registered tier — a base can legitimately be files-only (the post-flush
+/// fold), inline-only (never flushed), or both; the caller returns early when it is neither,
+/// so `legs` is never empty here.
+///
+/// Per-engine winner ordering: `LastRow` is the unchanged default (byte-identical),
+/// `FirstRow` takes the smallest offset, and `Versioned` orders by the quoted domain version
+/// column desc, tie-broken by `loom_offset` desc (highest version wins; last-write-within-
+/// version wins). Its `nulls last` matches `build_merge_view`'s `.sort(false, false)` (DESC
+/// NULLS_LAST) so a nullable version column folds identically on read and after consolidate
+/// (a NULL version ranks lowest, never wins). `version_col` is `None` only for the
+/// offset-only engines — [`consolidate_table`] resolves it for `Versioned` before locking,
+/// so the `unwrap_or` is defense in depth, never taken.
+fn cdc_fold_sql(
+    user_cols: &[ColumnSpec],
+    identity: &str,
+    engine: control_plane_core::MergeEngine,
+    version_col: Option<&str>,
+    has_files: bool,
+    has_inline: bool,
+) -> String {
+    let col_list = quoted_col_list(user_cols);
+    let id_quoted = quote_ident(identity);
+    let mut legs: Vec<String> = Vec::new();
+    if has_files {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files"
+        ));
+    }
+    if has_inline {
+        legs.push(format!(
+            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
+        ));
+    }
+    let union_sql = legs.join(" union all ");
+    let order_clause = match engine {
+        control_plane_core::MergeEngine::LastRow => "loom_offset desc".to_string(),
+        control_plane_core::MergeEngine::FirstRow => "loom_offset asc".to_string(),
+        control_plane_core::MergeEngine::Versioned => {
+            let vcol = version_col.unwrap_or("loom_offset");
+            format!("{} desc nulls last, loom_offset desc", quote_ident(vcol))
+        }
+    };
+    format!(
+        "select {col_list}, loom_change_kind, loom_bucket, loom_offset from ( \
+             select *, row_number() over ( \
+                 partition by {id_quoted} order by {order_clause} \
+             ) as _rn \
+             from ({union_sql}) base_input \
+         ) t where _rn = 1 and loom_change_kind <> '-D'"
+    )
+}
+
+/// The domain version column a [`control_plane_core::MergeEngine::Versioned`] CDC table
+/// folds on; `None` for the offset-only engines. A declared versioned CDC table whose type
+/// has no version column is a mis-configuration — loud error, never a silent fold. Resolved
+/// BEFORE the fold takes its advisory lock.
+async fn version_col_for(
+    pool: &PgPool,
+    table: &TableRef,
+    tid: i64,
+    engine: control_plane_core::MergeEngine,
+) -> Result<Option<String>, EngineServingError> {
+    if !matches!(engine, control_plane_core::MergeEngine::Versioned) {
+        return Ok(None);
+    }
+    let vcol = control_plane_postgres::ontology::version_for_table(pool, table)
+        .await
+        .map_err(to_serving)?
+        .ok_or_else(|| {
+            EngineServingError::Engine(format!(
+                "cdc table {}.{} (tid {tid}) is merge_engine=versioned but its type has no \
+                 version column",
+                table.schema, table.name
+            ))
+        })?;
+    Ok(Some(vcol))
+}
+
+/// Why a declared log table must NEVER reach the COW identity fold: folding an
+/// offset-framed event log by identity end-caps every live file and re-projects only the
+/// fold winners, destroying offsets an MV has not read. `write_inline_delta` now refuses
+/// the typed mutation that sets `has_shadow` (`stream::pg_stream_meta_for_typed_write`), so
+/// a shadow-bearing log table can only be one mutated BEFORE that fix — a legacy table that
+/// needs MANUAL repair. Loud, and a no-op — never a fold. (`has_shadow` is left set; see
+/// [`skip_and_rearm`].)
+const LOG_SHADOW_SKIP: &str = "a declared log stream table carries has_shadow \
+     (a pre-existing typed mutation); it must not be folded by identity";
+
 /// Fold `table` down to one row per identity and re-enable its suppressed flush,
 /// dispatching per table kind (see the module doc). Returns the new base snapshot
 /// id, or `0` for a no-op: a table that is not live, not identity-bearing, or —
@@ -193,27 +395,7 @@ pub async fn consolidate_table(
                 ))
             })?;
 
-            // Resolve the domain version column for a Versioned engine (None for the
-            // offset-only engines). A declared versioned CDC table whose type has no
-            // version column is a mis-configuration — loud error, never a silent fold.
-            let version_col = if matches!(
-                meta.merge_engine,
-                control_plane_core::MergeEngine::Versioned
-            ) {
-                Some(
-                    control_plane_postgres::ontology::version_for_table(pool, table)
-                        .await
-                        .map_err(to_serving)?
-                        .ok_or_else(|| {
-                            EngineServingError::Engine(format!(
-                                "cdc table {}.{} (tid {tid}) is merge_engine=versioned but its type has no version column",
-                                table.schema, table.name
-                            ))
-                        })?,
-                )
-            } else {
-                None
-            };
+            let version_col = version_col_for(pool, table, tid, meta.merge_engine).await?;
 
             // Serialize the read(files+inline)+fold+overwrite window below against a
             // concurrent `flush_table`/`gc_table` on the SAME table: same per-table
@@ -240,37 +422,14 @@ pub async fn consolidate_table(
             lock.release().await;
             result
         }
-        // LOG arm (defensive) — a declared log table must NEVER reach the COW identity
-        // fold below: folding an offset-framed event log by identity end-caps every live
-        // file and re-projects only the fold winners, destroying offsets an MV has not
-        // read. `write_inline_delta` now refuses the typed mutation that sets `has_shadow`,
-        // so a shadow-bearing log table can only be one mutated BEFORE that fix. Loud, and
-        // a no-op — never a fold.
-        //
-        // Gated on `has_shadow`: without the gate this arm fires for every ORDINARY log
-        // table on every consolidate poll and spams the warning. The unshadowed case is
-        // the common one and is silent.
-        //
-        // `has_shadow` is deliberately LEFT SET: the shadow tier really is unfolded, and
-        // the non-CDC flush must stay suppressed rather than flush a tier we refuse to
-        // fold. Such a legacy table needs MANUAL repair. The trigger IS cleared, so the
-        // `enqueued` latch does not leak and the job does not re-fire forever.
+        // LOG arm (defensive) — see [`LOG_SHADOW_SKIP`]. Gated on `has_shadow`: without
+        // the gate this arm fires for every ORDINARY log table on every consolidate poll
+        // and spams the warning. The unshadowed case is the common one, and is silent.
         Some(meta) if meta.kind == StreamKind::Log => {
-            let mut conn = pool.acquire().await.map_err(to_serving)?;
-            if !has_shadow(&mut conn, tid).await.map_err(to_serving)? {
+            if !is_shadowed(pool, tid).await? {
                 return Ok(0); // the common case: an ordinary log table, nothing to do
             }
-            tracing::warn!(
-                schema = %table.schema,
-                name = %table.name,
-                tid,
-                "consolidate skipped: a declared log stream table carries has_shadow \
-                 (a pre-existing typed mutation); it must not be folded by identity",
-            );
-            clear_consolidate_trigger(&mut conn, tid)
-                .await
-                .map_err(to_serving)?;
-            Ok(0)
+            skip_and_rearm(pool, table, tid, LOG_SHADOW_SKIP).await
         }
         // COW arm — a non-CDC table folds ONLY when it both bears an identity and
         // is currently shadow-bearing. An identity-less table (no dedup key) or a
@@ -279,10 +438,7 @@ pub async fn consolidate_table(
             let Some(identity) = identity_for_table(pool, table).await.map_err(to_serving)? else {
                 return Ok(0);
             };
-            let mut conn = pool.acquire().await.map_err(to_serving)?;
-            let shadowed = has_shadow(&mut conn, tid).await.map_err(to_serving)?;
-            drop(conn);
-            if !shadowed {
+            if !is_shadowed(pool, tid).await? {
                 return Ok(0);
             }
             // Same per-table advisory lock the CDC arm and flush/GC take — serialize
@@ -304,38 +460,12 @@ async fn consolidate_locked(
     engine: control_plane_core::MergeEngine,
     version_col: Option<&str>,
 ) -> Result<i64, EngineServingError> {
-    // The fold is a `Removing` end-cap: it retires every live file and re-projects only
-    // the fold winners. If a micro-batch MV has not read some of those offsets, removing
-    // them leaves a hole in its delta — so decline, before reading a single file, and say
-    // which MV is the laggard.
-    //
-    // Decline, do NOT error: `RetryPolicy::Retry` has no max-attempts anywhere, so an
-    // `Err` here is a permanent 60-second failure drumbeat, and `Abandon` leaves the
-    // shadow tier unfolded forever. `clear_consolidate_trigger` re-arms instead: the next
-    // `threshold` deltas enqueue a fresh job — a write-proportional backoff with no
-    // timers. `has_shadow` stays SET (the shadow tier really IS still unfolded). Same
-    // posture `gc_locked` takes against the floor: hold, warn, succeed.
-    //
-    // This runs inside the per-table advisory lock the caller holds.
-    let mut conn = pool.acquire().await.map_err(to_serving)?;
-    if let Some(floor) = removal_blocked(&mut conn, table, tid)
-        .await
-        .map_err(to_serving)?
-    {
-        tracing::warn!(
-            schema = %table.schema,
-            name = %table.name,
-            tid,
-            floor = floor.min_offset(),
-            slowest = ?floor.slowest,
-            "consolidate skipped: the fold would remove offsets a micro-batch MV has not consumed",
-        );
-        clear_consolidate_trigger(&mut conn, tid)
-            .await
-            .map_err(to_serving)?;
-        return Ok(0);
+    // Decline before reading a single file if the MV floor blocks the fold — see
+    // [`mv_floor_blocks`] (why) and [`skip_and_rearm`] (why a decline, not an error). This
+    // runs inside the per-table advisory lock the caller holds.
+    if let Some(reason) = mv_floor_blocks(pool, table, tid).await? {
+        return skip_and_rearm(pool, table, tid, &reason).await;
     }
-    drop(conn);
 
     // The base's physical framed rows: live Parquet files ...
     let Some(base) = fold_base(pool, table).await? else {
@@ -360,11 +490,7 @@ async fn consolidate_locked(
     // the clear would latch the trigger forever and this table could never enqueue
     // another `stream_consolidate`. Mirrors the COW arm's stale-flag self-heal.
     if base.paths.is_empty() && inline.is_none() {
-        let mut conn = pool.acquire().await.map_err(to_serving)?;
-        clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
-        clear_consolidate_trigger(&mut conn, tid)
-            .await
-            .map_err(to_serving)?;
+        clear_cdc_fold_flags(pool, tid).await?;
         return Ok(0);
     }
 
@@ -384,54 +510,13 @@ async fn consolidate_locked(
         false
     };
 
-    let col_list = quoted_col_list(&base.user_cols);
-    let id_quoted = quote_ident(identity);
-    // One leg per registered tier — a base can legitimately be files-only (the
-    // post-flush fold), inline-only (never flushed), or both. The neither-tier case
-    // returned above, so `legs` is never empty here.
-    let mut legs: Vec<String> = Vec::new();
-    if has_files {
-        legs.push(format!(
-            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_files"
-        ));
-    }
-    if has_inline {
-        legs.push(format!(
-            "select {col_list}, loom_change_kind, loom_bucket, loom_offset from base_inline"
-        ));
-    }
-    let union_sql = legs.join(" union all ");
-    // Per-engine winner ordering (winner = ROW_NUMBER rank 1). LastRow is the
-    // unchanged default (byte-identical). Versioned orders by the quoted domain
-    // version column desc, tie-broken by loom_offset desc (highest version wins;
-    // last-write-within-version wins). FirstRow takes the smallest offset.
-    let order_clause = match engine {
-        control_plane_core::MergeEngine::LastRow => "loom_offset desc".to_string(),
-        control_plane_core::MergeEngine::FirstRow => "loom_offset asc".to_string(),
-        control_plane_core::MergeEngine::Versioned => {
-            // Unreachable: consolidate_stream resolves version_col for Versioned
-            // before locking. Defense in depth — fall back to loom_offset if ever None.
-            // `nulls last` matches `build_merge_view`'s `.sort(false, false)` (DESC
-            // NULLS_LAST) so a nullable version column folds identically on read and
-            // after consolidate (a NULL version ranks lowest, never wins).
-            let vcol = version_col.unwrap_or("loom_offset");
-            format!("{} desc nulls last, loom_offset desc", quote_ident(vcol))
-        }
-    };
-    // Greatest-precedence per identity wins; a winner tombstoned by `-D` (a
-    // delete) is dropped, so the identity does not resurrect in the folded base.
-    // The base's physical framing carries no `loom_tombstone` column (only the
-    // three reserved `loom_change_kind`/`loom_bucket`/`loom_offset` — see
-    // `framing_column_specs`), but every delete is written with
-    // `loom_change_kind = '-D'` (`write_cdc_row`), so this predicate is exactly
-    // equivalent to also checking tombstone.
-    let fold_sql = format!(
-        "select {col_list}, loom_change_kind, loom_bucket, loom_offset from ( \
-             select *, row_number() over ( \
-                 partition by {id_quoted} order by {order_clause} \
-             ) as _rn \
-             from ({union_sql}) base_input \
-         ) t where _rn = 1 and loom_change_kind <> '-D'"
+    let fold_sql = cdc_fold_sql(
+        &base.user_cols,
+        identity,
+        engine,
+        version_col,
+        has_files,
+        has_inline,
     );
 
     let df = df_ctx
@@ -465,53 +550,16 @@ async fn consolidate_locked(
     .await
     {
         Ok(s) => s,
-        // Raced: an MV floor appeared BETWEEN the pre-check above and this commit. The
-        // pre-check runs on a pooled connection outside the fold's commit transaction, and
-        // neither `advance_mv_watermark` nor `define_transform` takes the fold's advisory
-        // lock — so a new reader (or a fresh watermark row) can land in that window and the
-        // fold's own in-tx `guard_end_cap` then refuses. Same decline, same re-arm; never a
-        // retryable error.
-        //
-        // MATCH ON THE MESSAGE, NOT THE VARIANT. `guard_end_cap` raises
-        // `ControlPlaneError::Validation` inside `write_mirror`, but it does NOT survive the
-        // catalog boundary: `commit_mirror_in_tx` wraps it into `iceberg::Error{Unexpected}`
-        // and `append_parquet_snapshot` re-wraps THAT with `backend()`, so it arrives here as
-        // `Backend` — an `Err(ControlPlaneError::Validation(_))` arm would be dead code. The
-        // stable prefix is the contract (pinned by
-        // `postgres/tests/end_cap_intent.rs::the_floor_refusal_message_survives_the_commit_wrap`);
-        // it is the same message-sniffing idiom `worker/src/stream_mv.rs`'s `classify_*` uses
-        // over gRPC, where the status code is likewise flattened. It also covers the
-        // empty-batch `overwrite_truncate` branch, which never touches the catalog and so
-        // does return a real `Validation`.
-        Err(e) if e.to_string().contains(MV_FLOOR_REFUSAL_PREFIX) => {
-            tracing::warn!(
-                schema = %table.schema,
-                name = %table.name,
-                tid,
-                reason = %e,
-                "consolidate skipped: the MV floor moved under the fold",
-            );
-            let mut conn = pool.acquire().await.map_err(to_serving)?;
-            clear_consolidate_trigger(&mut conn, tid)
-                .await
-                .map_err(to_serving)?;
-            return Ok(0);
+        // Raced: an MV floor appeared BETWEEN the pre-check above and this commit — see
+        // [`is_mv_floor_refusal`]. Same decline, same re-arm; never a retryable error.
+        Err(e) if is_mv_floor_refusal(&e) => {
+            let reason = format!("the MV floor moved under the fold: {e}");
+            return skip_and_rearm(pool, table, tid, &reason).await;
         }
         Err(e) => return Err(to_serving(e)),
     };
 
-    let mut conn = pool.acquire().await.map_err(to_serving)?;
-    // Unconditional (unlike COW's `clear_has_shadow_if_quiescent`): `has_shadow` is
-    // never consulted on the CDC path — the flush gate short-circuits on `is_cdc` first.
-    clear_has_shadow(&mut conn, tid).await.map_err(to_serving)?;
-    // Disarm the consolidate trigger too, so the next accrual of CDC deltas can
-    // re-enqueue a `stream_consolidate` job (chosen over keying the re-arm off
-    // `has_shadow` alone: this table's own row is authoritative and explicit,
-    // and it stays correct even if a future change decouples the two flags).
-    clear_consolidate_trigger(&mut conn, tid)
-        .await
-        .map_err(to_serving)?;
-
+    clear_cdc_fold_flags(pool, tid).await?;
     Ok(snap.0)
 }
 

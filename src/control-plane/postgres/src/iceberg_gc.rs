@@ -118,6 +118,19 @@ pub async fn gc_table(
     result
 }
 
+/// One GC run, under the caller's per-table advisory lock.
+///
+/// **One transaction for the whole run** (step 2). The MV floor is read INSIDE it (2b)
+/// rather than on a separate pooled connection, which is what lets a CALLER-SIDE guard
+/// (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
+///
+/// It does NOT close the registration race, and must not be described as if it did: loom
+/// sets no isolation level, so this is READ COMMITTED — each statement takes a fresh
+/// snapshot, none of these reads lock a row, and `define_transform`'s advisory lock is a
+/// single GLOBAL constant, disjoint from GC's per-table key. A `define_transform` committing
+/// between the floor read and the reclaim is therefore still possible; the window is
+/// narrower, not gone. Closing it needs the registration to take the same per-table lock GC
+/// serializes under — that is `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
 async fn gc_locked(
     catalog: &SqlCatalog,
     pool: &PgPool,
@@ -132,18 +145,9 @@ async fn gc_locked(
         return Ok(GcSummary::default());
     };
 
-    // 2. One transaction for the whole run. The floor is read INSIDE it (2b) rather than
-    //    on a separate pooled connection, which is what lets a CALLER-SIDE guard
-    //    (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
-    //
-    //    It does NOT close the registration race, and must not be described as if it did:
-    //    loom sets no isolation level, so this is READ COMMITTED — each statement takes a
-    //    fresh snapshot, none of these reads lock a row, and `define_transform`'s advisory
-    //    lock is a single GLOBAL constant, disjoint from GC's per-table key. A
-    //    `define_transform` committing between the floor read and the reclaim is therefore
-    //    still possible; the window is narrower, not gone. Closing it needs the registration
-    //    to take the same per-table lock GC serializes under — that is
-    //    `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
+    // 2. Resolve the (maybe) live incarnation AND every dropped incarnation, on the run's
+    //    ONE transaction — see the fn doc for what that buys (an in-tx floor read) and for
+    //    the registration race it narrows but does NOT close.
     let mut tx = pool.begin().await.map_err(backend)?;
     let live = live_table_id(&mut tx, &table.schema, &table.name).await?;
     let dropped = dropped_table_ids(&mut tx, &table.schema, &table.name).await?;
