@@ -154,7 +154,7 @@ consolidation's fold (which needs every event, including `−U`, but never lets
 one win).
 
 **A CDC table's first typed UPDATE/DELETE could fail to provision inline
-storage at all (#442).** `write_inline_delta` (`iceberg_inline.rs`) provisions
+storage at all (#443).** `write_inline_delta` (`iceberg_inline.rs`) provisions
 `inline_<tid>` from `full_live_column_specs` — the table's live
 `iceberg_mirror.column` set, which for a declared stream table already
 includes the three framing columns above. `inline_ddl` separately hardcodes
@@ -624,7 +624,7 @@ could still read. The starvation is created by whichever path **end-caps** offse
 the MV has not consumed — those rows leave the MV's delta immediately, and no
 GC-tier guard can bring them back.
 
-**The end-cap side now ships too (#442).** Every end-cap primitive in the mirror
+**The end-cap side now ships too (#443).** Every end-cap primitive in the mirror
 requires an explicit **`EndCapIntent`** (`postgres/src/mv_floor.rs`) and calls
 `guard_end_cap` on the caller's transaction: `Reframing` (the same rows are
 re-projected at the same `(bucket, offset)` — flush, plain-coalesce compaction —
@@ -695,7 +695,7 @@ their own items:
   file stats and streaming (non-collecting) execution are follow-ons under
   `#fut-transform-followups`.
 - **Watermark-aware GC** — shipped: `gc_locked` holds reclaim of an MV source at
-  the per-bucket `mv_floor`, and the end-cap-side half shipped too (#442) — the
+  the per-bucket `mv_floor`, and the end-cap-side half shipped too (#443) — the
   `EndCapIntent` seam plus the three write-path refusals (see the retention
   section above).
 - **`/admin/views` sugar surface** — MVs register through the ordinary

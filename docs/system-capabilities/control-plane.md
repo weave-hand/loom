@@ -162,7 +162,7 @@ contract certifies both the postgres adapter and the memory fake). That GC tier 
 **byte-retention defense plus a reusable primitive, not hole-freedom** — GC only
 reclaims end-capped rows, which an MV's current-snapshot delta already cannot see.
 The paths that **end-cap** unread offsets are where a hole is created, and they
-call `mv_floor` themselves now (#442): all five mirror end-cap primitives
+call `mv_floor` themselves now (#443): all five mirror end-cap primitives
 (`end_cap_files_by_path`, `end_cap_live_data_files`, `mark_dropped`,
 `end_cap_live_inline_rows`, `end_cap_inline_rows_by_id`) require an explicit
 **`EndCapIntent`** — `Reframing` (rows re-projected at the same `(bucket, offset)`:

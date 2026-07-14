@@ -489,7 +489,7 @@ hold is counted and logged), and that `mv_floor` exists as the primitive the pat
 that *do* create the harm must call. Those are the **end-cap-issuing** paths:
 end-capping an offset an MV has not consumed removes it from the MV's
 current-snapshot delta immediately, and no GC-tier guard can bring it back. That
-half now ships — see **The end-cap seam** below (#442). Two smaller gaps the floor
+half now ships — see **The end-cap seam** below (#443). Two smaller gaps the floor
 exposed remain open: `#iss-mv-register-below-reclaimed-floor` (a newly registered
 MV floors at `0` over a source whose low offsets may already be gone, plus a
 floor-read/registration race that #442 narrowed but did not close) and
@@ -518,7 +518,7 @@ root) is logged. No dry-run and no HTTP enqueue in v1 — schedules are the
 surface; `SweepSummary { objects_deleted, bytes_deleted, candidates_skipped_grace }`
 surfaces the counts on the RPC response and in logs.
 
-## The end-cap seam: `EndCapIntent` (#442)
+## The end-cap seam: `EndCapIntent` (#443)
 
 End-capping — setting `end_snapshot`, retiring a row/file from the live set — is
 where an MV hole is actually created. All five end-cap primitives in the mirror
@@ -561,7 +561,7 @@ end-cap that can meet a floor at all, and it pre-checks and skips before ever
 reaching the guard). It must not be described as what stands between live data and
 loss; the refusals do that.
 
-### Three refusals close the lossy paths (#442)
+### Three refusals close the lossy paths (#443)
 
 - **An overwrite of a declared stream table is refused.**
   `overwrite_parquet_snapshot` / `overwrite_parquet_snapshot_consuming`
