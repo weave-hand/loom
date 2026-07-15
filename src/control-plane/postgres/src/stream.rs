@@ -775,7 +775,8 @@ pub async fn pg_mv_watermarks<'e, E: sqlx::PgExecutor<'e>>(
 }
 
 /// CAS-advance one bucket's watermark. `from == 0` may insert (bootstrap);
-/// `from > 0` only updates an existing row at exactly `from`. Zero rows
+/// `from > 0` only updates an existing row whose `next_offset` is at or below
+/// `from` (see the `<=` note inline, and `WatermarkAdvance` in core). Zero rows
 /// affected => `Conflict` — inside a transaction the caller's rollback then
 /// discards the whole output commit (the exactly-once mechanism). `AssertSqlSafe`:
 /// static queries (branched on `adv.from == 0`), sqlx regen unavailable in-env;
@@ -786,14 +787,68 @@ pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
     source_table_id: i64,
     adv: &control_plane_core::WatermarkAdvance,
 ) -> Result<()> {
+    // KIND-AGNOSTIC PRECONDITION, checked BEFORE either branch: an advance must move the watermark
+    // strictly FORWARD. `to <= from` is MALFORMED, not a race — hence `Validation`, never
+    // `Conflict`: a `Conflict` tells the caller "a concurrent run beat me, roll back and let the
+    // next run retry", but a malformed advance is deterministic and would fail identically on
+    // every retry, so the run must abandon rather than spin. (The worker abandons on both, but the
+    // message — and any operator staring at a Conflict rate — must not lie.)
+    //
+    // This closes the hole the `from == 0` branch left open. That branch's upsert matches a row
+    // whose `next_offset = 0`, so `{from: 0, to: 0}` against a REACHABLE row at 0 (`mv_bootstrap`
+    // plants one when the source's whole prefix survives) reported success while the watermark
+    // stayed at 0 — with the MV's output committing in the same transaction, so every later run
+    // re-read from 0 and re-appended it (exactly-once broken). `to >= 1` is not structurally
+    // guaranteed by anything upstream: `framing_bounds` (the worker) frames `to = max + 1 > min =
+    // from`, but the advance crosses a gRPC boundary (`engine/src/service.rs convert_advances`)
+    // that validates nothing. With `to > from` enforced here, `from == 0` implies `to >= 1`, and
+    // both branches inherit monotonicity — including the memory backend, which refused
+    // `{from: 0, to: 0}` and so DIVERGED from postgres on a reachable input.
+    //
+    // Nothing legitimate is refused: a real advance has `to = observed max + 1 > observed min =
+    // from`, and an empty delta produces NO advance at all (`worker/src/stream_mv.rs`).
+    if adv.to <= adv.from {
+        return Err(ControlPlaneError::Validation(format!(
+            "mv watermark advance {}..{} is malformed (must move strictly forward: to > from) : \
+             {mv} source {source_table_id} bucket {}",
+            adv.from, adv.to, adv.bucket
+        )));
+    }
     let sql = if adv.from == 0 {
         "insert into stream.mv_watermark (mv, source_table_id, bucket, next_offset) \
          values ($1, $2, $3, $4) \
          on conflict (mv, source_table_id, bucket) do update set next_offset = $4 \
          where stream.mv_watermark.next_offset = 0"
     } else {
+        // Two conjuncts, both load-bearing.
+        //
+        // `next_offset <= $5` (`from`), not `=`: a bootstrapped row (`crate::mv_bootstrap`) may
+        // sit BELOW the delta's observed minimum offset, because the bootstrap rounds down (a
+        // cross-bucket file stat bounds every bucket). Demanding equality would Conflict on that
+        // MV's every run, forever.
+        //
+        // `next_offset < $4` (`to`) is DEFENCE IN DEPTH — DO NOT DELETE IT AS DEAD. It is
+        // redundant *given the precondition above* (`next_offset <= from < to`), and only given
+        // it: relaxing the first conjunct to `<=` left nothing else refusing a REWIND
+        // (`{from: 900, to: 5}` against a watermark at 100 satisfies `100 <= 900` and would move
+        // it back to 5 — inside the output-commit tx — so every later run would re-read and
+        // re-append 5..900; exactly-once broken). It is free, and it keeps the SQL self-defending
+        // if the precondition is ever refactored away. It costs nothing legitimate: a real advance
+        // has `from >= next_offset` and `to` = observed max + 1 > observed min = `from`. Replay is
+        // still refused: the winner leaves `next_offset = to`, for which BOTH conjuncts fail.
+        //
+        // Nor can a run silently skip live rows: this rests on `mv_delta_scan`
+        // (`services/engine-serving/src/mv_delta.rs`) reading `loom_offset >= next_offset`
+        // SNAPSHOT-CONSISTENTLY ACROSS BOTH STORAGE TIERS, so a delta's observed minimum sitting
+        // above the watermark PROVES the offsets in between do not exist, rather than merely
+        // being transiently invisible. That holds because a flush end-caps the inline rows and
+        // publishes the Parquet file in ONE commit — at any snapshot a row is live in exactly one
+        // tier and never in neither. Under the old `=` predicate a transiently-invisible row
+        // would have caused a permanent, LOUD Conflict; under `<=` it is a SILENT SKIP. This
+        // assumption is now load-bearing: a future non-atomic flush would break exactly-once.
         "update stream.mv_watermark set next_offset = $4 \
-         where mv = $1 and source_table_id = $2 and bucket = $3 and next_offset = $5"
+         where mv = $1 and source_table_id = $2 and bucket = $3 \
+           and next_offset <= $5 and next_offset < $4"
     };
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql))
         .bind(mv)
@@ -806,9 +861,10 @@ pub async fn pg_advance_mv_watermark<'e, E: sqlx::PgExecutor<'e>>(
     let done = q.execute(ex).await.map_err(backend)?;
     if done.rows_affected() == 0 {
         return Err(ControlPlaneError::Conflict(format!(
-            "mv watermark advanced concurrently: {mv} source {source_table_id} \
-             bucket {} expected {}",
-            adv.bucket, adv.from
+            "mv watermark refused advance {}..{} : {mv} source {source_table_id} bucket {} — \
+             the watermark is either ABOVE `from` (a concurrent run already covered this delta) \
+             or at/above `to` (the advance is not monotone)",
+            adv.from, adv.to, adv.bucket
         )));
     }
     Ok(())

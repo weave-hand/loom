@@ -2,6 +2,18 @@
 //! Parquet snapshot and end-cap the inline rows, atomically. Library primitive —
 //! no trigger policy (see the spec). Serialized per table by a session advisory
 //! lock so two flushes can't both write Parquet for the same rows.
+//!
+//! **That "atomically" is LOAD-BEARING for micro-batch MV exactly-once — it is not just a
+//! tidiness property of this module.** Publishing the Parquet and end-capping the inline rows it
+//! supersedes in ONE commit is what makes a row live in exactly one tier at every snapshot, and
+//! never in neither. The MV watermark CAS ([`crate::stream::pg_advance_mv_watermark`] — read its
+//! inline argument BEFORE splitting, reordering, or retrying any part of this commit separately)
+//! accepts an advance whose `from` sits above the committed watermark, on the strength of
+//! `mv_delta_scan` (`services/engine-serving/src/mv_delta.rs`) reading both tiers
+//! snapshot-consistently: a delta's observed minimum above the watermark PROVES the offsets in
+//! between do not exist, rather than merely being transiently invisible. A non-atomic flush would
+//! turn a transiently-invisible row into a SILENT SKIP — the MV would commit a delta that never
+//! contained it, and advance past it forever.
 
 use std::sync::Arc;
 
@@ -412,8 +424,10 @@ fn compaction_event(table: &TableRef, run_id: RunId) -> LineageEvent {
 }
 
 /// 64-bit advisory-lock key from the table identity (stable per (schema, name)).
-/// `pub(crate)` so GC (`iceberg_gc`) takes the *same* key and serializes against flush.
-pub(crate) fn lock_key(schema: &str, name: &str) -> i64 {
+/// `pub` so GC (`iceberg_gc`) takes the *same* key and serializes against flush — and so a
+/// fixture test can compute the very key the registration bootstrap takes.
+#[must_use]
+pub fn lock_key(schema: &str, name: &str) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     schema.hash(&mut h);

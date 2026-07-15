@@ -128,13 +128,16 @@ pub async fn gc_table(
 /// rather than on a separate pooled connection, which is what lets a CALLER-SIDE guard
 /// (`mv_floor::guard_end_cap`) refuse in the same tx as the write it guards.
 ///
-/// It does NOT close the registration race, and must not be described as if it did: loom
-/// sets no isolation level, so this is READ COMMITTED — each statement takes a fresh
-/// snapshot, none of these reads lock a row, and `define_transform`'s advisory lock is a
-/// single GLOBAL constant, disjoint from GC's per-table key. A `define_transform` committing
-/// between the floor read and the reclaim is therefore still possible; the window is
-/// narrower, not gone. Closing it needs the registration to take the same per-table lock GC
-/// serializes under — that is `#iss-mv-register-below-reclaimed-floor`, which remains OPEN.
+/// **The transaction alone does NOT close the registration race — the CALLER'S per-table
+/// advisory lock is what closes it, and it only works because the registration takes the same
+/// key.** loom sets no isolation level, so this is READ COMMITTED: each statement takes a fresh
+/// snapshot and none of these reads locks a row, so nothing here would stop a
+/// `define_transform` from committing between the floor read (2b) and the reclaim, and GC
+/// from then reclaiming below the brand-new MV's floor. What excludes it is that
+/// `define_transform` now takes `lock_key(source)` for its whole transaction
+/// (`crate::transforms`) — the same key [`gc_table`] holds across this entire run. Removing
+/// that lock, or narrowing this one's scope to less than "floor read through reclaim",
+/// re-opens the race (`#iss-mv-register-below-reclaimed-floor`).
 async fn gc_locked(
     catalog: &SqlCatalog,
     pool: &PgPool,

@@ -384,6 +384,96 @@ fn decode_run(row: RunRow) -> Result<TransformRun> {
     })
 }
 
+/// Reconcile a micro-batch MV's watermark rows against its predecessor, inside the caller's
+/// `define_transform` transaction. Two disjoint steps, in this exact order:
+///
+/// 1. **Bootstrap the new source.** A brand-new MV has no watermark rows, so `mv_floor` would
+///    default it to 0 in every bucket and `mv_delta_scan` would define its first delta as "the
+///    source from 0" — pinning the source's GC floor at 0 until the MV first runs, and (worse)
+///    leaving the watermark CAS no row to advance, so the first run Conflicts and rolls back
+///    forever. Seed its start explicitly instead: the registration and the position it implies
+///    commit together, under the source's table lock the caller took at the top.
+///
+/// 2. **Release the predecessor's orphans.** A define is an UPSERT, and an MV's watermarks are
+///    keyed by its OUTPUT (`mv_key`), not by this def's name. So a redefinition that changes the
+///    output — or drops the micro-batch body altogether — leaves the PRIOR output's watermark
+///    rows referenced by no def at all: `delete_transform` keys on the def's CURRENT output and
+///    can never reach them, while `crate::mv_floor`'s reader set counts every mv holding
+///    watermark rows. The source would stay floored at the dead MV's last watermark forever.
+///    Release them here, the exact mirror of what `delete_transform` does. Redefining with the
+///    SAME output is deliberately untouched: the MV resumes where it left off.
+///
+/// The `for update` read of the prior body MUST stay after the source's table lock and
+/// `pg_refuse_mv_over_cdc_source` (the caller places this call there) to keep the commit path's
+/// lock order. Bootstrap (inserts for the NEW source) and release (deletes for the OLD
+/// output/source) touch disjoint rows, so bootstrap-first is safe.
+async fn reconcile_mv_watermarks(tx: &mut sqlx::PgConnection, def: &TransformDef) -> Result<()> {
+    if let Some(src) = mv_source(&def.body)
+        && let Some(out) = mv_output(&def.body)
+    {
+        crate::mv_bootstrap::bootstrap_mv_watermarks(&mut *tx, &mv_key(out), src).await?;
+    }
+    let new_mv = mv_output(&def.body).map(mv_key);
+    let prior = sqlx::query!(
+        "select body from transforms.transform where name = $1 for update",
+        def.name.0,
+    )
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(backend)?;
+    if let Some(row) = prior {
+        match de_body(row.body) {
+            Ok(
+                TransformBody::MicroBatch { output, source, .. }
+                | TransformBody::MicroBatchJoin { output, source, .. },
+            ) => {
+                let old_mv = mv_key(&output);
+                if new_mv.as_ref() != Some(&old_mv) {
+                    // (existing) the OUTPUT moved: the old key's rows are orphaned.
+                    sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(backend)?;
+                } else if mv_source(&def.body) != Some(&source) {
+                    // The SOURCE moved while the OUTPUT stayed: the `mv_key` is unchanged, so
+                    // the branch above did not fire, but the rows keyed
+                    // `(mv, OLD source_table_id, bucket)` are now referenced by no def.
+                    // `delete_transform` keys on the def's CURRENT source and can never reach
+                    // them, while `crate::mv_floor`'s reader set counts every mv holding a
+                    // watermark row against a source — so the old source would stay floored at
+                    // the departed MV's offsets forever.
+                    //
+                    // Keyed on the PRIOR source (not "everything that is not the current
+                    // source"): it names exactly the stale rows, and it is a no-op when the
+                    // source did not move — which is what keeps the resume case, and the
+                    // testkit contract's synthetic-tid redefinition, intact.
+                    if let Some(old_tid) =
+                        crate::iceberg_mirror::live_table_id(&mut *tx, &source.schema, &source.name)
+                            .await?
+                    {
+                        sqlx::query!(
+                            "delete from stream.mv_watermark \
+                             where mv = $1 and source_table_id = $2",
+                            old_mv,
+                            old_tid,
+                        )
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(backend)?;
+                    }
+                }
+            }
+            Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
+            Err(e) => tracing::warn!(
+                transform = %def.name.0,
+                error = %e,
+                "define_transform: undecodable prior body; redefining without watermark cleanup"
+            ),
+        }
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Transforms for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -400,6 +490,23 @@ impl Transforms for PgControlPlane {
             .execute(&mut *tx)
             .await
             .map_err(backend)?;
+        // Serialize this registration against its SOURCE table's flush / consolidate / GC. GC
+        // reads the MV floor and reclaims under `lock_key(source)` (`crate::iceberg_gc`), and
+        // READ COMMITTED gives that floor read no protection from a registration committing
+        // between it and the reclaim: the new MV's floor would simply not exist yet, and GC
+        // would reclaim below it. Holding the same key for this whole transaction makes the two
+        // mutually exclusive.
+        //
+        // ORDER IS LOAD-BEARING. The commit path takes `lock_key(table)` and THEN row-locks
+        // `transforms.transform` (`pg_fire_data_triggers`). Taking this here — at the top, before
+        // the `for update` below — puts us in that same order. After it would deadlock.
+        if let Some(src) = mv_source(&def.body) {
+            let key = crate::iceberg_flush::lock_key(&src.schema, &src.name);
+            sqlx::query!("select pg_advisory_xact_lock($1)", key)
+                .execute(&mut *tx)
+                .await
+                .map_err(backend)?;
+        }
         if let TransformBody::Typed { inputs, output, .. } = &def.body {
             let mut names: Vec<String> = inputs.clone();
             names.push(output.clone());
@@ -460,46 +567,11 @@ impl Transforms for PgControlPlane {
         if let Some(src) = mv_source(&def.body) {
             crate::stream::pg_refuse_mv_over_cdc_source(&mut tx, src).await?;
         }
-        // A define is an UPSERT, and an MV's watermarks are keyed by its OUTPUT
-        // (`mv_key`), not by this def's name. So a redefinition that changes the
-        // output — or drops the micro-batch body altogether — leaves the PRIOR
-        // output's watermark rows referenced by no def at all: `delete_transform`
-        // keys on the def's CURRENT output and can never reach them, while
-        // `crate::mv_floor`'s reader set counts every mv holding watermark rows.
-        // The source would stay floored at the dead MV's last watermark forever.
-        // Release them here, in the same transaction as the upsert — the exact
-        // mirror of what `delete_transform` does. Redefining with the SAME output
-        // is deliberately untouched: the MV resumes where it left off.
-        let new_mv = mv_output(&def.body).map(mv_key);
-        let prior = sqlx::query!(
-            "select body from transforms.transform where name = $1 for update",
-            def.name.0,
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(backend)?;
-        if let Some(row) = prior {
-            match de_body(row.body) {
-                Ok(
-                    TransformBody::MicroBatch { output, .. }
-                    | TransformBody::MicroBatchJoin { output, .. },
-                ) => {
-                    let old_mv = mv_key(&output);
-                    if new_mv.as_ref() != Some(&old_mv) {
-                        sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
-                            .execute(&mut *tx)
-                            .await
-                            .map_err(backend)?;
-                    }
-                }
-                Ok(TransformBody::Physical { .. } | TransformBody::Typed { .. }) => {}
-                Err(e) => tracing::warn!(
-                    transform = %def.name.0,
-                    error = %e,
-                    "define_transform: undecodable prior body; redefining without watermark cleanup"
-                ),
-            }
-        }
+        // Seed the new MV's start position and release any watermark rows a redefinition
+        // orphaned, in THIS transaction — see `reconcile_mv_watermarks`. Runs here, after the
+        // source table lock (top) and `pg_refuse_mv_over_cdc_source`, so its `for update` on
+        // `transforms.transform` stays in the commit path's lock order.
+        reconcile_mv_watermarks(&mut tx, &def).await?;
         sqlx::query!(
             "insert into transforms.transform (name, body, schedule, on_input_commit, next_run_at) \
              values ($1, $2, $3, $4, $5) \

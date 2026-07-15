@@ -121,9 +121,31 @@ impl MvWatermarks for MemoryControlPlane {
     ) -> Result<()> {
         let mut map = self.mv_watermarks.lock();
         for adv in advances {
+            // The same kind-agnostic precondition postgres applies before either CAS branch (see
+            // `pg_advance_mv_watermark` for the full argument): an advance must move the watermark
+            // strictly FORWARD, and one that does not is MALFORMED — `Validation`, not `Conflict`
+            // (a Conflict would claim a concurrent run raced it, inviting a retry that must fail
+            // identically). It is what keeps the two backends behaviourally identical on the
+            // degenerate inputs the bootstrap-insert arm below would otherwise accept, and what
+            // makes `adv.from == 0 => adv.to >= 1` structural.
+            if adv.to <= adv.from {
+                return Err(ControlPlaneError::Validation(format!(
+                    "mv watermark advance {}..{} is malformed (must move strictly forward: \
+                     to > from) : {mv} source {source_table_id} bucket {}",
+                    adv.from, adv.to, adv.bucket
+                )));
+            }
             let key = (mv.to_string(), source_table_id, adv.bucket);
             match map.get(&key).copied() {
-                Some(current) if current == adv.from => {
+                // Mirrors the postgres CAS predicate in `pg_advance_mv_watermark` — read its
+                // comment for the full argument. In short: `current <= adv.from` (not `==`)
+                // because a rounded-down bootstrap can leave the row BELOW the delta's observed
+                // minimum offset; `current < adv.to` is defence in depth (redundant given the
+                // precondition above — `current <= from < to` — but kept, as in the postgres SQL,
+                // so the predicate still refuses a REWIND on its own if that precondition is ever
+                // refactored away). A replay is still refused: the winner leaves `current = to`,
+                // failing both conjuncts.
+                Some(current) if current <= adv.from && current < adv.to => {
                     map.insert(key, adv.to);
                 }
                 None if adv.from == 0 => {
@@ -131,9 +153,11 @@ impl MvWatermarks for MemoryControlPlane {
                 }
                 current => {
                     return Err(ControlPlaneError::Conflict(format!(
-                        "mv watermark advanced concurrently: {mv} source {source_table_id} \
-                         bucket {} expected {} found {:?}",
-                        adv.bucket, adv.from, current
+                        "mv watermark refused advance {}..{} : {mv} source {source_table_id} \
+                         bucket {} — the watermark is either ABOVE `from` (a concurrent run \
+                         already covered this delta) or at/above `to` (the advance is not \
+                         monotone); found {:?}",
+                        adv.from, adv.to, adv.bucket, current
                     )));
                 }
             }

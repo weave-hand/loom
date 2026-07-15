@@ -481,9 +481,10 @@ bucket, the next offset to read. It is keyed by `mv_key(output)` —
 `"{schema}.{name}"` of the **output**, not the def name (`core/src/stream.rs:151`)
 — so the watermark survives a def rename/redefine exactly when the output
 table is kept (which is exactly when resuming is correct), and ad-hoc
-(nameless) micro-batch runs work with no special case. An absent row reads as
-offset `0`: a fresh MV's first micro-batch processes the source's whole
-existing log, so bootstrap and steady state are one code path. The core
+(nameless) micro-batch runs work with no special case. A fresh MV is
+bootstrapped at registration to its source's earliest surviving offset (see the
+registration-bootstrap section below), so an absent row is not the fresh-MV
+case; an absent row that does occur (an ad-hoc run) reads as offset `0`. The core
 `MvWatermarks` trait (`mv_watermarks`/`advance_mv_watermark`,
 `stream.rs:173`/`:181`) is implemented by the memory fake, a postgres adapter
 (`pg_mv_watermarks`/`pg_advance_mv_watermark`, `postgres/src/stream.rs:552`/
@@ -615,6 +616,25 @@ warning names the per-bucket laggard, and deleting the MV's transform def delete
 its watermark rows (releasing the floor) as the escape hatch. See engine's **GC**
 section for the full guard.
 
+**Registration bootstraps the floor to the source's surviving offsets
+(`#iss-mv-register-below-reclaimed-floor`, this PR).** A newly registered
+micro-batch MV no longer floors at `0` and silently under-reads a source whose
+low offsets are already gone. `define_transform` now takes `lock_key(source)` at
+the top of its transaction — the same per-table key GC/flush/consolidate
+serialize under — and **bootstraps** the MV's `stream.mv_watermark` rows to the
+source's earliest surviving `(bucket, min(loom_offset))` per bucket (rounded
+**down**), recorded in a new `start_offset` column (migration `0045`). That
+shared lock closes the window in which the floor read and GC's reclaim could
+otherwise straddle a registration. Because a bootstrap can seat a watermark
+*below* a bucket's first delta, the watermark CAS was relaxed to accept an
+undershooting start (`next_offset <= from`) and monotonicity is now
+**structural** — a kind-agnostic `to <= from => Validation` precondition in both
+backends refuses any non-advancing write. A redefinition that **moves an MV's
+source** but keeps its output releases the watermark rows the MV held on its
+**prior** source, so a stale reader can no longer floor a source the MV no
+longer reads — completing the registration→watermark reconciliation alongside
+the output-change release already documented above.
+
 **That GC tier is byte-retention defense, not hole-freedom** — read the
 distinction before relying on it. GC only reclaims **end-capped** rows
 (`end_snapshot <= H`), whereas a micro-batch delta reads **live** rows at the
@@ -685,8 +705,9 @@ their own items:
 - **Multi-source MVs / stream-stream joins** — shipped as slice 5; see
   **Stream joins / delta-join analog** below.
 - **Backfill/replay control** — no watermark-reset API or `from`-offset
-  registration; v1 always starts at offset `0` and resumes from the committed
-  watermark, so a rebuild means a new output table.
+  registration; v1 starts at the source's earliest surviving offset
+  (bootstrapped at registration) and resumes from the committed watermark, so a
+  rebuild means a new output table.
 - **Parquet spill for oversized micro-batch outputs** — v1 output always
   lands on the inline tier (micro-batches are delta-sized by construction); a
   framed direct-Parquet output spill path is a follow-on.
@@ -788,14 +809,11 @@ from the continuous-query slice.
   physical Iceberg schema carries the loser's framing columns; the mirror-row
   race itself is correctly guarded (see *Declaration* above), only the
   Iceberg-create race is not.
-- `#iss-mv-register-below-reclaimed-floor` — a newly registered MV floors at
-  offset `0` even if the source's low offsets are already gone, and registration
-  is not serialized against GC's per-table lock (a race #443 narrowed — GC's
-  floor read now runs inside its own transaction — but did not close).
 - `#iss-mv-cdc-declare-register-race` — the MV/CDC mutual exclusion is guarded
-  from both sides, but the guards share no lock, so a concurrent `?mode=cdc`
-  write and `define_transform` can still interleave into an MV that can never
-  run over a CDC source.
+  from both sides; `define_transform` now takes the source's per-table lock, but
+  the ingest declaration path does not yet, so a concurrent `?mode=cdc` write and
+  `define_transform` can still interleave into an MV that can never run over a
+  CDC source.
 - `#iss-mv-floor-holds-pre-declaration-files` — data files written before
   `declare_stream` carry no `loom_offset` stat and are held forever by the
   floor's fail-safe, inflating `held_by_mv_floor`.

@@ -167,8 +167,40 @@ pub fn mv_key(output: &crate::TableRef) -> String {
 }
 
 /// One bucket's watermark CAS: advance `bucket` from `from` to `to`. `from` is
-/// the offset the delta was read at (0 = no row yet); a mismatch means a
-/// concurrent run already covered the delta.
+/// the LOWEST offset the delta actually carried for this bucket (`framing_bounds`
+/// in the worker), which is at or above the committed watermark — equal to it when
+/// the delta is gapless from it, and strictly above it when the offsets in between
+/// no longer survive (a GC'd prefix, or a rounded-down bootstrap — `mv_bootstrap`
+/// in the postgres adapter). The CAS therefore accepts `next_offset <= from` and
+/// refuses anything above it: a watermark ahead of the delta means a concurrent run
+/// already covered it. `from == 0` is the bootstrap case (may insert the row).
+///
+/// **Monotonicity is enforced by the mechanism, not owed by the caller.** Both backends
+/// reject `to <= from` UP FRONT — before either CAS branch — as `Validation` (a malformed
+/// advance, not a lost race: it is deterministic, so the run must abandon rather than
+/// retry). `to > from` happens to hold for every advance the worker's `framing_bounds`
+/// frames, but nothing between here and the backend validates it: without that check a
+/// `{from: 900, to: 5}` advance would REWIND a watermark at 100 and re-append the offsets
+/// in between forever, and a `{from: 0, to: 0}` advance against a bootstrapped row at 0
+/// would FREEZE the watermark while the MV's output committed — the same double-write.
+/// The CAS additionally keeps a `next_offset < to` conjunct as defence in depth (redundant
+/// given the precondition, deliberately kept).
+///
+/// Accepting `<=` cashes in an assumption worth naming: `mv_delta_scan` (engine-serving)
+/// must read `loom_offset >= next_offset` **snapshot-consistently across both storage
+/// tiers**, so that a delta's observed minimum sitting above the watermark PROVES the
+/// offsets in between do not exist rather than merely being transiently invisible. A
+/// flush end-caps the inline rows and publishes the Parquet file in one commit, so a row
+/// is always live in exactly one tier. Under the old `=` predicate a transiently-invisible
+/// row would have been a loud, permanent Conflict; under `<=` it would be a SILENT SKIP —
+/// so a future non-atomic flush would break exactly-once here.
+///
+/// (Aside, for anyone diffing the two backends: memory's `current <= from` arm and
+/// postgres's `where next_offset = 0` bootstrap predicate coincide for `from == 0` only
+/// because offsets are assumed non-negative — an assumption nothing in the type states.
+/// They used to DIVERGE on `{from: 0, to: 0}` against a row at 0; the `to > from`
+/// precondition is what makes them identical on every input, as the testkit contract
+/// certifies.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatermarkAdvance {
     pub bucket: i32,
@@ -189,9 +221,10 @@ pub trait MvWatermarks {
         mv: &str,
         source_table_id: i64,
     ) -> Result<std::collections::BTreeMap<i32, i64>>;
-    /// CAS-advance each bucket; any stale `from` is `Conflict` (all-or-nothing
-    /// is the postgres tx's job — this standalone surface applies in order and
-    /// stops at the first conflict).
+    /// CAS-advance each bucket; any stale `from` is `Conflict`, and an advance that
+    /// does not move strictly forward (`to <= from`) is `Validation` — malformed, not
+    /// raced (all-or-nothing is the postgres tx's job — this standalone surface applies
+    /// in order and stops at the first refusal).
     async fn advance_mv_watermark(
         &self,
         mv: &str,

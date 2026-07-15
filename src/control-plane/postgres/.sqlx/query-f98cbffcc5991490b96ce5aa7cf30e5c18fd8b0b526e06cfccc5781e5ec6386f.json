@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into stream.mv_watermark (mv, source_table_id, bucket, next_offset, start_offset) values ($1, $2, $3, $4, $4) on conflict (mv, source_table_id, bucket) do nothing",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f98cbffcc5991490b96ce5aa7cf30e5c18fd8b0b526e06cfccc5781e5ec6386f"
+}

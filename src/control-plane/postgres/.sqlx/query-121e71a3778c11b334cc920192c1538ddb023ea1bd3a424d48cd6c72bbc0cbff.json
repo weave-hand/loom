@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "delete from stream.mv_watermark where mv = $1 and source_table_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "121e71a3778c11b334cc920192c1538ddb023ea1bd3a424d48cd6c72bbc0cbff"
+}

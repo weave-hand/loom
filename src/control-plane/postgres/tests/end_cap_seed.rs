@@ -110,7 +110,16 @@ pub fn lineage(table: &TableRef) -> LineageEvent {
 /// (`on_input_commit: false`), so landing into the source never auto-fires a run:
 /// tests drive the watermark by hand. Registration alone is what the floor keys
 /// off — an MV that never runs must pin its source at 0.
-pub async fn register_mv(cp: &PgControlPlane, name: &str, source: &TableRef, output: &TableRef) {
+///
+/// `register_mv_result` surfaces the error — for tests that assert on a BLOCKING
+/// registration or on a refusal rather than on success; `register_mv` is the thin
+/// `expect`ing wrapper over it, so there is exactly ONE definition of the MV def.
+pub async fn register_mv_result(
+    cp: &PgControlPlane,
+    name: &str,
+    source: &TableRef,
+    output: &TableRef,
+) -> control_plane_core::Result<()> {
     cp.transforms()
         .define_transform(TransformDef {
             name: TransformName(name.into()),
@@ -123,6 +132,11 @@ pub async fn register_mv(cp: &PgControlPlane, name: &str, source: &TableRef, out
             schedule: None,
             on_input_commit: false,
         })
+        .await
+}
+
+pub async fn register_mv(cp: &PgControlPlane, name: &str, source: &TableRef, output: &TableRef) {
+    register_mv_result(cp, name, source, output)
         .await
         .expect("register mv");
 }
@@ -207,6 +221,38 @@ pub async fn seed_source(
         src,
         tid,
     }
+}
+
+/// Land `rows` MORE events into a source — the "a surviving range exists above the
+/// reclaimed prefix" half of the bootstrap tests. Offsets continue from the stream
+/// allocator's high-water mark, so these rows sit strictly above anything GC has taken.
+/// Also used to CREATE a second source: `land` declares the stream on first land (that is
+/// how [`seed_source`] creates `s.events`), so landing into a fresh `TableRef` is enough.
+pub async fn land_more(
+    pool: &sqlx::PgPool,
+    catalog: &SqlCatalog,
+    src: &TableRef,
+    rows: i64,
+    buckets: Option<i32>,
+    inline: bool,
+) {
+    let (schema, batches) = batch(rows);
+    land(
+        pool,
+        catalog,
+        src,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: if inline { 1 << 20 } else { 0 },
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(src),
+        buckets,
+    )
+    .await
+    .expect("land more");
 }
 
 // ---- CDC seed shapes (Tasks 2b/6) ------------------------------------------
