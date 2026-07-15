@@ -10,7 +10,7 @@ Postgres, so services program against `core` and tests get a faithful fake. This
 document describes what those concerns can do today, the guarantees they carry,
 and the design decisions behind them.
 
-_As of 403f7a6a._
+_As of 168e27c9._
 
 ## The concern library, transactions, and hardening
 
@@ -174,6 +174,26 @@ a typed UPDATE/DELETE against a declared log table, and a micro-batch MV over a 
 source — the last guarded at both registration and declaration) are what actually
 remove the lossy paths; the seam is the type-level constraint future retention
 paths inherit. Full account: engine's **GC** and **end-cap seam** sections.
+
+GC also now records what it has physically destroyed, not just what it destroys.
+`iceberg_mirror.table.reclaimed_through` (migration `0045`) is a per-**incarnation**
+watermark — the highest `end_snapshot` GC has reclaimed for that `table_id` — bumped
+inside `reclaim_live`/`reclaim_dropped` in the SAME transaction as the deletes it
+records (both the data-file and inline tiers feed it via
+`victims.max_end.max(inline_max_end)`), so it can never observe a delete GC has not
+yet committed and can never lag a commit that has. It is deliberately
+**monotone**: `bump_reclaimed_through` takes a `greatest(reclaimed_through, $2)`, so
+a run that reclaims nothing can never lower it. Before this, reclaimed-ness was
+recorded nowhere — every predicate had to be computed off *surviving* mirror rows,
+which is what forced query-api's time-travel retention guard to fall back to a
+table-independent `at < H` proxy (see [query-api.md](query-api.md) → *Time-travel
+reads*). The migration backfills existing tables to the current snapshot tip rather
+than `0`, since GC may already have run against them and "nothing of mine has been
+reclaimed" is a claim the migration cannot make; a fresh table starts at `0` and
+gets full precision immediately. `Catalog::snapshot_intact(table, at, horizon)` is
+the read-side consumer: a two-clause conjunction (the watermark above, plus a
+surviving-row eligibility check) that lets a below-horizon read of a table whose
+visible rows were never end-capped serve instead of refusing unconditionally.
 
 Concurrent first-writes to a brand-new table are race-safe: `ensure_table` —
 the SELECT-live-then-INSERT that materializes the `iceberg_mirror.table` row for

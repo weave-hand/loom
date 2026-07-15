@@ -5,16 +5,7 @@
 //! inline rows are physically reclaimed, in-window rows are protected, an
 //! unaged table is a no-op, and GC serializes with a concurrent flush.
 
-use loom_test_seed::local_sql_catalog;
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
-use std::time::Duration;
-
-use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, RunId, TableRef,
-};
+use control_plane_core::{Catalog, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -22,146 +13,19 @@ use control_plane_postgres::iceberg_gc::{GcSummary, gc_table};
 use control_plane_postgres::iceberg_inline::inline_append;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land, overwrite_parquet_snapshot};
 use control_plane_postgres::vector_index::{VectorIndexRow, insert_vector_index};
+use gc_test_support::{
+    SEVEN_DAYS, advance, age_all_snapshots, age_snapshot, batch, columns, harness,
+    inline_table_exists, inline_trigger_count, ipc_body, land_first_batch, lineage, live_tid,
+    local_path, mirror_row_counts, reclaimed_through, two_generation_bucketed_stream_table,
+};
 use iceberg::{Catalog as _, NamespaceIdent, TableIdent};
-use time::OffsetDateTime;
-
-const SEVEN_DAYS: Duration = Duration::from_secs(7 * 24 * 3600);
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![ColumnSpec {
-        name: "id".into(),
-        ty: "long".into(),
-        nullable: false,
-    }]
-}
-
-/// A schema + batch of `rows` rows (`id: long` = `0..rows`), for `land`. `land`
-/// now takes pre-decoded batches directly, so this reuses `batch` rather than
-/// round-tripping through an Arrow IPC encode/decode.
-fn ipc_body(rows: i64) -> (Arc<Schema>, Vec<RecordBatch>) {
-    let b = batch(rows);
-    (b.schema(), vec![b])
-}
-
-/// A bare `id: long` record batch of ids `0..rows`.
-fn batch(rows: i64) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    RecordBatch::try_new(
-        schema,
-        vec![Arc::new(Int64Array::from((0..rows).collect::<Vec<_>>()))],
-    )
-    .expect("batch")
-}
-
-fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
-    let out = TableRef {
-        schema: schema.into(),
-        name: name.into(),
-    };
-    LineageEvent {
-        run_id: run,
-        event_type: EventType::Complete,
-        event_time: OffsetDateTime::now_utc(),
-        inputs: vec![],
-        outputs: vec![DatasetId::from(&out).dataset_ref()],
-        payload: serde_json::json!({ "source": "test" }),
-    }
-}
-
-/// Strip a `file://` URL to a local filesystem path.
-fn local_path(file_url: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(file_url.strip_prefix("file://").unwrap_or(file_url))
-}
-
-/// Backdate snapshot `snap_id`'s `snapshot_time` so it looks aged out of the window.
-async fn age_snapshot(pool: &sqlx::PgPool, snap_id: i64) {
-    let old = OffsetDateTime::now_utc() - time::Duration::days(365);
-    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1 where snapshot_id = $2")
-        .bind(old)
-        .bind(snap_id)
-        .execute(pool)
-        .await
-        .expect("age snapshot");
-}
-
-/// Backdate EVERY snapshot so the whole history looks aged out (H = max snapshot id).
-async fn age_all_snapshots(pool: &sqlx::PgPool) {
-    let old = OffsetDateTime::now_utc() - time::Duration::days(365);
-    sqlx::query("update iceberg_mirror.snapshot set snapshot_time = $1")
-        .bind(old)
-        .execute(pool)
-        .await
-        .expect("age all snapshots");
-}
-
-/// The currently-live `table_id` for `(ns, name)` (fixture-side, before a drop).
-/// `iceberg_mirror.table` is spelled unquoted to match the crate's own SQL (the
-/// keyword parses fine after the schema qualifier — the committed `.sqlx` cache
-/// proves real Postgres accepts it).
-async fn live_tid(pool: &sqlx::PgPool, ns: &str, name: &str) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "select table_id from iceberg_mirror.table \
-         where table_namespace = $1 and table_name = $2 and end_snapshot is null",
-    )
-    .bind(ns)
-    .bind(name)
-    .fetch_one(pool)
-    .await
-    .expect("live tid")
-}
-
-/// Count of `table`/`column`/`data_file` mirror rows for a specific `table_id`
-/// (used to assert a dropped incarnation's metadata is fully gone). Returns
-/// (table_rows, column_rows, data_file_rows).
-async fn mirror_row_counts(pool: &sqlx::PgPool, tid: i64) -> (i64, i64, i64) {
-    let t: i64 =
-        sqlx::query_scalar("select count(*) from iceberg_mirror.table where table_id = $1")
-            .bind(tid)
-            .fetch_one(pool)
-            .await
-            .expect("t count");
-    let c: i64 =
-        sqlx::query_scalar("select count(*) from iceberg_mirror.column where table_id = $1")
-            .bind(tid)
-            .fetch_one(pool)
-            .await
-            .expect("c count");
-    let d: i64 =
-        sqlx::query_scalar("select count(*) from iceberg_mirror.data_file where table_id = $1")
-            .bind(tid)
-            .fetch_one(pool)
-            .await
-            .expect("d count");
-    (t, c, d)
-}
-
-/// Count of `iceberg_mirror.inline_trigger` rows for a specific `table_id`.
-async fn inline_trigger_count(pool: &sqlx::PgPool, tid: i64) -> i64 {
-    sqlx::query_scalar("select count(*) from iceberg_mirror.inline_trigger where table_id = $1")
-        .bind(tid)
-        .fetch_one(pool)
-        .await
-        .expect("inline_trigger count")
-}
-
-/// True if the physical `iceberg_mirror.inline_<tid>` table still exists.
-async fn inline_table_exists(pool: &sqlx::PgPool, tid: i64) -> bool {
-    let name = format!("iceberg_mirror.inline_{tid}");
-    let reg: Option<String> = sqlx::query_scalar("select to_regclass($1)::text")
-        .bind(&name)
-        .fetch_one(pool)
-        .await
-        .expect("to_regclass");
-    reg.is_some()
-}
+use loom_test_seed::local_sql_catalog;
 
 /// The delete seam removes the object and is idempotent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn delete_file_removes_object_and_is_idempotent() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let (_cp, _db, wh, catalog, _pool) = harness(fx).await;
 
     let obj = wh.path().join("victim.parquet");
     std::fs::write(&obj, b"bytes").expect("write object");
@@ -186,33 +50,7 @@ async fn delete_file_removes_object_and_is_idempotent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
-    let ice = IcebergCatalog::new(pool.clone());
-    let t = TableRef {
-        schema: "wh".into(),
-        name: "t".into(),
-    };
-
-    let (schema, batches) = ipc_body(10);
-    let s1 = land(
-        &pool,
-        &catalog,
-        &t,
-        &columns(),
-        schema,
-        batches,
-        InlineLimits {
-            inline_byte_limit: 0,
-            flush_byte_threshold: i64::MAX,
-        },
-        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
-        None,
-    )
-    .await
-    .expect("land");
+    let (_wh, catalog, ice, pool, t, s1) = land_first_batch(fx, 10).await;
     let a_path = local_path(&ice.files_with_stats(&t, s1).await.expect("files@s1")[0].path);
 
     let s2 = overwrite_parquet_snapshot(
@@ -289,10 +127,7 @@ async fn gc_reclaims_aged_data_files_and_keeps_in_window() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_aged_inline_rows() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
         schema: "wh".into(),
@@ -335,10 +170,7 @@ async fn gc_reclaims_aged_inline_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_is_a_noop_when_nothing_aged_out() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
         schema: "wh".into(),
@@ -380,11 +212,8 @@ async fn gc_is_a_noop_when_nothing_aged_out() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn gc_serializes_with_concurrent_flush() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog_g = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let (_cp, db, wh, catalog_g, pool) = harness(fx).await;
     let catalog_f = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
     let t = TableRef {
         schema: "wh".into(),
         name: "race".into(),
@@ -478,10 +307,7 @@ async fn gc_serializes_with_concurrent_flush() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_a_dropped_table() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
         schema: "wh".into(),
@@ -564,10 +390,7 @@ async fn gc_reclaims_a_dropped_table() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_preserves_a_within_window_dropped_table() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
         schema: "wh".into(),
@@ -630,10 +453,7 @@ async fn gc_preserves_a_within_window_dropped_table() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_isolates_dropped_from_recreated_incarnation() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let ice = IcebergCatalog::new(pool.clone());
     let t = TableRef {
         schema: "wh".into(),
@@ -716,10 +536,7 @@ async fn gc_isolates_dropped_from_recreated_incarnation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let t = TableRef {
         schema: "wh".into(),
         name: "twice".into(),
@@ -765,10 +582,7 @@ async fn gc_on_fully_reclaimed_dropped_name_is_a_noop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gc_reclaims_a_dropped_table_with_vector_index() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let wh = tempfile::tempdir().expect("wh");
-    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
-    let pool = fx.pool_for(&db).await;
+    let (_cp, _db, wh, catalog, pool) = harness(fx).await;
     let t = TableRef {
         schema: "wh".into(),
         name: "indexed".into(),
@@ -845,5 +659,163 @@ async fn gc_reclaims_a_dropped_table_with_vector_index() {
         mirror_row_counts(&pool, tid).await,
         (0, 0, 0),
         "table/column/data_file rows removed"
+    );
+}
+
+/// GC records the highest `end_snapshot` it destroyed, in the same commit as the
+/// deletes. Mirrors `gc_reclaims_aged_data_files_and_keeps_in_window`'s arrangement:
+/// A lands at s1 and is end-capped at s2 by the first overwrite; B lands at s2 and is
+/// end-capped at s3. Ageing ONLY s2 makes H = s2, so exactly A (end = s2) is reclaimed
+/// -> the watermark is s2. B (end = s3 > H) is untouched, so the watermark does not
+/// jump to s3.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gc_records_the_reclaim_watermark() {
+    let fx = PgFixture::shared();
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
+    let t = TableRef {
+        schema: "wh".into(),
+        name: "t".into(),
+    };
+
+    let (schema, batches) = ipc_body(10);
+    land(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        schema,
+        batches,
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(RunId(uuid::Uuid::new_v4()), "wh", "t"),
+        None,
+    )
+    .await
+    .expect("land");
+
+    let tid = live_tid(&pool, "wh", "t").await;
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        0,
+        "a freshly landed table has reclaimed nothing"
+    );
+
+    let s2 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(4)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
+    )
+    .await
+    .expect("ow s2");
+    let _s3 = overwrite_parquet_snapshot(
+        &pool,
+        &catalog,
+        &t,
+        &columns(),
+        vec![batch(2)],
+        Some(&lineage(RunId(uuid::Uuid::new_v4()), "wh", "t")),
+        &[],
+    )
+    .await
+    .expect("ow s3");
+
+    age_snapshot(&pool, s2.0).await; // H = s2
+
+    let summary = gc_table(&catalog, &pool, &t, SEVEN_DAYS).await.expect("gc");
+    assert_eq!(summary.data_file_rows, 1, "exactly A reclaimed");
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        s2.0,
+        "watermark == the end_snapshot of the reclaimed file A, not the tip"
+    );
+}
+
+/// The watermark never regresses — even when a LATER run reclaims an OLDER straggler
+/// than an earlier run already reclaimed (the `greatest(...)` branch of
+/// `bump_reclaimed_through`), and even when a run reclaims nothing at all (the
+/// early-return no-op on an empty victim set). The read guard's soundness argument
+/// leans on monotonicity holding in BOTH cases.
+///
+/// Constructing the "older straggler" case needs the per-bucket MV floor
+/// (`crate::mv_floor`): within one bucket, offset order == chronological order ==
+/// `end_snapshot` order, so a single bucket alone can never surface an older
+/// straggler after a newer reclaim — the floor guard only ever releases higher
+/// offsets over time. Two INDEPENDENT buckets decouple that: bucket 0 races ahead
+/// (both its generations reclaimed run 1, pinning the watermark at the newer
+/// generation's `end_snapshot`) while bucket 1 lags completely behind (both its
+/// generations held); when bucket 1's floor then advances just enough to release
+/// ONLY its first (oldest, lowest-`end_snapshot`) generation, run 2 reclaims a row
+/// strictly older than what run 1 already recorded — the one shape a bare
+/// `set reclaimed_through = $2` would get wrong.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reclaim_watermark_is_monotone() {
+    let fx = PgFixture::shared();
+    // Arrangement: `wh.t` as a 2-bucket declared stream table with two generations
+    // already landed-and-flushed (gen 1 -> older `s1`, gen 2 -> newer `s2`), an MV
+    // `mv_a` registered over it with bucket 0's floor pre-advanced past both
+    // generations and bucket 1's left untouched, and the whole history aged (H = s2).
+    // See `two_generation_bucketed_stream_table`'s own doc comment for the full shape.
+    let (cp, pool, catalog, t, tid, _s1, s2, mv) = two_generation_bucketed_stream_table(fx).await;
+
+    // Run 1: bucket 0's both rows (offsets 0 and 1, end_snapshot s1 and s2) are
+    // strictly below its floor (2) and reclaimed; bucket 1's both rows (floor 0)
+    // are held. The watermark becomes s2 — the NEWER generation, because bucket 0's
+    // own second row supplied it, not because every older row was swept first.
+    let first = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc run 1");
+    assert_eq!(first.inline_rows, 2, "bucket 0's two generations reclaimed");
+    assert_eq!(first.held_by_mv_floor, 2, "bucket 1's two generations held");
+    let after_first = reclaimed_through(&pool, tid).await;
+    assert_eq!(
+        after_first, s2,
+        "run 1 records the newer generation's end_snapshot"
+    );
+
+    // Advance bucket 1's floor just enough to release ONLY its oldest row (offset 0,
+    // end_snapshot s1) — its offset-1 row (end_snapshot s2) stays held.
+    advance(&cp, &mv, tid, 1, 0, 1).await;
+
+    // Run 2 reclaims exactly that one row: end_snapshot s1, STRICTLY OLDER than the
+    // watermark run 1 already recorded (s2). The crux assertion: the watermark must
+    // not regress to s1.
+    let second = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc run 2");
+    assert_eq!(
+        second.inline_rows, 1,
+        "exactly bucket 1's oldest (offset 0) row is reclaimed this run"
+    );
+    assert_eq!(
+        second.held_by_mv_floor, 1,
+        "bucket 1's offset-1 row (end_snapshot s2) is still held"
+    );
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        s2,
+        "run 2 reclaimed an OLDER straggler (end_snapshot s1 < s2) — the watermark \
+         must stay at s2, not regress to s1. A bare `set reclaimed_through = $2` \
+         (instead of `greatest(...)`) would fail this assertion."
+    );
+
+    // Run 3: nothing left to reclaim (bucket 1's last row is still held) — the
+    // early-return no-op path must also not disturb the watermark.
+    let third = gc_table(&catalog, &pool, &t, SEVEN_DAYS)
+        .await
+        .expect("gc run 3");
+    assert_eq!(
+        third.inline_rows, 0,
+        "nothing left below either bucket's floor"
+    );
+    assert_eq!(
+        reclaimed_through(&pool, tid).await,
+        s2,
+        "a no-op run must not regress (or advance) the watermark"
     );
 }

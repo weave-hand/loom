@@ -449,23 +449,28 @@ async fn resolve_read_snapshot(
     Ok(Some(id))
 }
 
-/// Reject a resolved as-of snapshot older than the GC retention horizon.
+/// Reject a resolved as-of snapshot whose data may already be — or may at any moment be —
+/// physically reclaimed.
 ///
-/// Pure contract guard: gone iff `at < H`, where
-/// `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention` — the
-/// exact horizon `iceberg_gc` reclaims under (shared derivation:
-/// `Catalog::snapshot_horizon`). `at >= H` is provably complete (a
-/// reclaimable row has `end <= H`, visible only when `at < end`).
-/// Deterministic by design: enforced from config + snapshot timestamps
-/// whether or not GC has actually run (reclaimed-ness is not recorded
-/// anywhere).
+/// Two tiers, cheapest first:
 ///
-/// This is intentionally conservative — a below-horizon read of a table
-/// unchanged since `at` is still complete yet 410s; see
-/// `iss-timetravel-quiet-table-overconservative` (loom's single global
-/// snapshot sequence makes a per-table exemption via `current_snapshot`
-/// impossible, since it tracks the global tip, not the table's own last
-/// write).
+/// 1. `at >= H` (where `H = max(snapshot_id) WHERE snapshot_time < now() - gc_retention`,
+///    the exact horizon `iceberg_gc` reclaims under — shared derivation, so guard and
+///    reclaimer cannot drift): provably complete with no further query, because a
+///    reclaimable row has `end <= H <= at` and so was never visible at `at`. The
+///    overwhelmingly common case; unchanged.
+/// 2. Below `H`, ask the catalog the REAL question (`Catalog::snapshot_intact`): has
+///    anything visible at `at` already been reclaimed, or is anything visible at `at`
+///    eligible to be? Only if neither holds is the read served.
+///
+/// Tier 2 is the fix for `iss-timetravel-quiet-table-overconservative`. The old guard
+/// stopped at tier 1 and 410'd everything below `H` — including an append-only table,
+/// which end-caps nothing and whose old snapshots are therefore complete FOREVER.
+///
+/// It is emphatically NOT a "quiet table" exemption ("nothing written since `at`"). That
+/// proxy is unsound in the other direction: a governed delete-all end-caps every row and
+/// writes none, so the table looks quiet while the read would return zero rows. See
+/// `snapshot_intact`'s contract and `postgres/tests/timetravel_intact.rs::truncate_is_not_quiet`.
 pub(crate) async fn ensure_within_retention(
     catalog: &(dyn control_plane_core::Catalog + Send + Sync),
     gc_retention: std::time::Duration,
@@ -482,9 +487,17 @@ pub(crate) async fn ensure_within_retention(
     if at >= h {
         return Ok(());
     }
+    if catalog
+        .snapshot_intact(table, at, h)
+        .await
+        .map_err(QueryError::ControlPlane)?
+    {
+        return Ok(());
+    }
     Err(QueryError::AsOfGone(format!(
-        "{}.{} snapshot {} is older than the GC retention horizon ({}); its data may \
-         already be reclaimed — pick a snapshot >= {} or widen LOOM_GC_RETENTION_SECS",
+        "{}.{} snapshot {} is older than the GC retention horizon ({}) and its data has \
+         been — or may at any moment be — reclaimed; pick a snapshot >= {} or widen \
+         LOOM_GC_RETENTION_SECS",
         table.schema, table.name, at.0, h.0, h.0
     )))
 }

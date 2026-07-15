@@ -3,7 +3,7 @@ use control_plane_core::{
     BaseType, Catalog, ColumnDef, ControlPlaneError, FileRef, Page, PageReq, Result, Snapshot,
     SnapshotId, TableRef, TableSchema, ViewDef, validate_view_shape, view_definition_event,
 };
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use time::OffsetDateTime;
 
 use control_plane_core::snapshot::ColumnStat;
@@ -303,6 +303,75 @@ impl IcebergCatalog {
     }
 }
 
+/// `snapshot_intact` clause 2, data-file tier: is anything visible at `at` ELIGIBLE for
+/// reclaim? `begin <= at` (visible) and `at < end <= horizon` (end-capped above the read
+/// but at or below the horizon, i.e. GC may take it at any moment).
+async fn data_file_eligible(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    horizon: SnapshotId,
+) -> Result<bool> {
+    sqlx::query_scalar!(
+        "select exists(select 1 from iceberg_mirror.data_file \
+         where table_id = $1 and begin_snapshot <= $2 \
+           and end_snapshot is not null and end_snapshot > $2 and end_snapshot <= $3) \
+         as \"eligible!\"",
+        tid,
+        at.0,
+        horizon.0,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
+/// `snapshot_intact` clause 2, inline tier. `inline_<tid>` is a DYNAMIC relation, so this
+/// one cannot be a compile-time `query!` — probe for it, then splice the (trusted,
+/// i64-derived) identifier and bind the values, exactly as `iceberg_gc` does. `false` when
+/// the table has no inline tier at all.
+async fn inline_eligible(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    at: SnapshotId,
+    horizon: SnapshotId,
+) -> Result<bool> {
+    if !crate::iceberg_inline::inline_table_exists(conn, tid).await? {
+        return Ok(false);
+    }
+    let inline = crate::iceberg_inline::inline_table_name(tid);
+    sqlx::query_scalar(AssertSqlSafe(format!(
+        "select exists(select 1 from {inline} \
+         where begin_snapshot <= $1 \
+           and end_snapshot is not null and end_snapshot > $1 and end_snapshot <= $2)"
+    )))
+    .bind(at.0)
+    .bind(horizon.0)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
+/// `snapshot_intact` clause 1: the GC reclaim watermark for `tid`, or `None` if the table
+/// row itself is gone.
+///
+/// `fetch_optional`, not `fetch_one`: between `resolve_table` (a separate connection) and
+/// this read, GC can fully reclaim a dropped-and-unreclaimed incarnation, deleting its
+/// `iceberg_mirror.table` row. That degrades this read to the same `NotFound`
+/// `resolve_table` would have produced had GC won the race a moment earlier — an honest
+/// 404, not a `RowNotFound`-mapped-to-`Backend` 500. Both outcomes are fail-closed (neither
+/// serves data), so this is a contract fix, not a soundness one.
+async fn reclaimed_through(conn: &mut sqlx::PgConnection, tid: i64) -> Result<Option<i64>> {
+    sqlx::query_scalar!(
+        "select reclaimed_through as \"reclaimed_through!\" \
+         from iceberg_mirror.table where table_id = $1",
+        tid,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(backend)
+}
+
 #[async_trait]
 impl Catalog for IcebergCatalog {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -409,6 +478,70 @@ impl Catalog for IcebergCatalog {
         Ok(crate::iceberg_mirror::horizon_before(&self.pool, cutoff)
             .await?
             .map(SnapshotId))
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn snapshot_intact(
+        &self,
+        table: &TableRef,
+        at: SnapshotId,
+        horizon: SnapshotId,
+    ) -> Result<bool> {
+        let resolved; // borrow gymnastics: delegate view -> base
+        let (table, _projection) = match fetch_view(&self.pool, table).await? {
+            Some(v) => {
+                resolved = v.base;
+                (&resolved, v.columns)
+            }
+            None => (table, None),
+        };
+        // Per-INCARNATION: the table_id live at `at`, which for a dropped-but-unreclaimed
+        // incarnation is that incarnation, not the recreated one. `NotFound` here is the
+        // fully-reclaimed case, and it is the one place the evidence self-destructs safely
+        // (the read degrades to 404, which is honest).
+        let tid = self.resolve_table(table, at).await?;
+
+        // ORDER IS LOAD-BEARING: clause 2 (the surviving-row evidence) is read FIRST, and
+        // the clause-1 watermark LAST, on one connection so the reads are strictly ordered
+        // in time. Do not "simplify" by checking the cheap watermark first.
+        //
+        // Each statement runs on its own snapshot (loom sets no isolation level, so this is
+        // READ COMMITTED), and GC commits its deletes and its watermark bump ATOMICALLY.
+        // Reading the watermark first is therefore unsound: it could return 0, GC could then
+        // commit (destroying a row visible at `at` AND bumping the watermark past `at`), and
+        // the later evidence read would find nothing eligible — because it was already
+        // destroyed — and we would serve an incomplete read. That is precisely the silent
+        // under-read this whole guard exists to prevent.
+        //
+        // Evidence-then-watermark is a complete detector, because the watermark is monotone
+        // and GC's two effects land together:
+        //   - GC commits BEFORE the evidence read -> the watermark read (later still) sees
+        //     the bump -> clause 1 fires.
+        //   - GC commits AFTER the evidence read -> the row was still there, end-capped at
+        //     or below the horizon, when we looked -> clause 2 fires.
+        // There is no third case. (A `REPEATABLE READ` transaction would also close it, at
+        // the cost of an isolation change; ordering is cheaper and needs no new machinery.)
+        //
+        // The three reads below are split into helpers for readability, but they all take
+        // this SAME `&mut conn` and must stay called in THIS order — data-file eligibility,
+        // then inline eligibility, then the watermark — to preserve the evidence-before-
+        // watermark ordering argued above.
+        let mut conn = self.pool.acquire().await.map_err(backend)?;
+
+        if data_file_eligible(&mut conn, tid, at, horizon).await? {
+            return Ok(false);
+        }
+
+        if inline_eligible(&mut conn, tid, at, horizon).await? {
+            return Ok(false);
+        }
+
+        reclaimed_through(&mut conn, tid)
+            .await?
+            .map(|watermark| at.0 >= watermark)
+            .ok_or_else(|| {
+                ControlPlaneError::NotFound(format!("{}.{} @ {}", table.schema, table.name, at.0))
+            })
     }
 
     #[tracing::instrument(skip(self), level = "debug")]

@@ -961,11 +961,11 @@ pub async fn clear_has_shadow(conn: &mut sqlx::PgConnection, tid: i64) -> Result
 /// AssertSqlSafe: `tid` is bound as `$1`; the `inline_<tid>` relation name is a
 /// dynamic identifier spliced via [`inline_table_name`] (the slice-1 precedent —
 /// see [`quote_ident`]'s doc for why splicing an internally-generated identifier
-/// is safe here). Guarded by [`inline_relation_exists`] so a table with no inline
+/// is safe here). Guarded by [`inline_table_exists`] so a table with no inline
 /// storage yet (a shadowed table always has one, but stay panic-free) reads as
 /// "trivially quiescent" instead of erroring on `relation ... does not exist`.
 pub async fn clear_has_shadow_if_quiescent(conn: &mut PgConnection, tid: i64) -> Result<bool> {
-    if !inline_relation_exists(&mut *conn, tid).await? {
+    if !inline_table_exists(&mut *conn, tid).await? {
         // No inline relation at all: trivially no live shadow delta can exist.
         // Fall back to the unconditional clear, reporting whether the flag was
         // actually set beforehand (clear_has_shadow itself is `Result<()>`).
@@ -1041,21 +1041,6 @@ fn extract_id_cell(columns: &[ColumnSpec], id_column: &str, batch: &RecordBatch)
     cell_from_arrow(batch, idx, 0, &spec.ty)
 }
 
-/// True if the physical `inline_<tid>` relation exists. A file-only object (landed
-/// as Parquet, no inline write yet) has none — `to_regclass` returns NULL for an
-/// absent relation. Shared by the read guards so an absent inline tier reads as
-/// "no rows" instead of erroring with `relation ... does not exist`.
-async fn inline_relation_exists(conn: &mut PgConnection, tid: i64) -> Result<bool> {
-    let exists: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-        "select to_regclass('{}')::text",
-        inline_table_name(tid)
-    )))
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(backend)?;
-    Ok(exists.is_some())
-}
-
 /// `coalesce(max(begin_snapshot), 0)` over the LIVE inline rows of one identity —
 /// the identity's current inline version (0 when it has no live inline row).
 ///
@@ -1073,7 +1058,7 @@ async fn read_max_version(
     // `has_live_inline_rows`/`inline_live_batch` do so this returns 0 rather than
     // erroring — this is what makes the file-only first-mutation path (reached via
     // `current_inline_version`) safe.
-    if !inline_relation_exists(&mut *conn, tid).await? {
+    if !inline_table_exists(&mut *conn, tid).await? {
         return Ok(0);
     }
     // A SQL NULL id makes `"id" = $1` silently false, so `max` reads 0 and the CAS

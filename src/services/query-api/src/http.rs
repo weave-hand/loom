@@ -73,9 +73,13 @@ pub struct AppState {
     pub action_engine: Arc<dyn ActionEngine>,
     pub default_limit: u32,
     /// GC retention window (`LOOM_GC_RETENTION_SECS`). Time-travel reads use it
-    /// to reject selectors resolving past the retention horizon (410) — the same
-    /// window `gc_table` reclaims under, so guard and reclaimer agree by
-    /// construction.
+    /// to derive the retention horizon `H` (the same window `gc_table` reclaims
+    /// under, so guard and reclaimer agree by construction). At or above `H` a
+    /// selector is provably complete with no query. Below `H`, the guard asks
+    /// `Catalog::snapshot_intact` the real question — has anything visible at the
+    /// selector already been reclaimed, or is anything visible eligible to be —
+    /// and 410s only then; a below-`H` read of a table whose visible rows were
+    /// never end-capped (e.g. append-only) now serves.
     pub gc_retention: std::time::Duration,
     /// Deployment naming bridge: resolves a `DatasetRef` back to its governed
     /// `Table`/`Type` (or External) so the `/lineage` reads can ACL-filter per node.
@@ -322,7 +326,7 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
         (status = 200, description = "Target snapshot + column schema", body = DatasetDetailResponse),
         (status = 400, description = "Malformed as_of/as_of_snapshot selector"),
         (status = 404, description = "Unknown table, or selector resolves to no live/prior snapshot, or a dataset the caller may not read (indistinguishable — no existence oracle)"),
-        (status = 410, description = "Selector resolves to a snapshot older than the GC retention horizon (data may be reclaimed)"),
+        (status = 410, description = "The snapshot's data has been — or may at any moment be — reclaimed (below the retention horizon AND end-capped); a below-horizon selector over an append-only/intact table is not affected"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
@@ -562,7 +566,7 @@ async fn enqueue_gc(
         (status = 400, description = "Bad filter, _ids, or pagination (no declared identity, denied/masked identity, _ids + pagination together, a malformed cursor, or a malformed/mutually-exclusive as_of selector)"),
         (status = 403, description = "Forbidden by ACL policy"),
         (status = 404, description = "Unknown type, or the requested as-of snapshot/timestamp resolves to no live snapshot"),
-        (status = 410, description = "Selector resolves to a snapshot older than the GC retention horizon (data may be reclaimed)"),
+        (status = 410, description = "The snapshot's data has been — or may at any moment be — reclaimed (below the retention horizon AND end-capped); a below-horizon selector over an append-only/intact table is not affected"),
     ),
     security(("bearer_auth" = [])),
     tag = "objects",
