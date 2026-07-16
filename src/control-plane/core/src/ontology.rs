@@ -35,6 +35,40 @@ pub struct PropertyDef {
     pub constraints: crate::constraints::PropertyConstraints,
 }
 
+impl PropertyDef {
+    /// An optional (`required: false`), unconstrained property. Plain construction —
+    /// no validation, no I/O (that stays with [`Ontology::define_type`]).
+    ///
+    /// ```
+    /// use control_plane_core::PropertyDef;
+    /// let p = PropertyDef::new("email", "EmailAddress").required();
+    /// assert!(p.required);
+    /// ```
+    pub fn new(name: impl Into<String>, ty: impl Into<String>) -> PropertyDef {
+        PropertyDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: false,
+            constraints: crate::constraints::PropertyConstraints::default(),
+        }
+    }
+
+    /// Mark this property required.
+    pub fn required(mut self) -> PropertyDef {
+        self.required = true;
+        self
+    }
+
+    /// Attach per-value validation constraints.
+    pub fn constrained(
+        mut self,
+        constraints: crate::constraints::PropertyConstraints,
+    ) -> PropertyDef {
+        self.constraints = constraints;
+        self
+    }
+}
+
 /// An ontology object type: a named, propertied view bound to a physical table.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ObjectType {

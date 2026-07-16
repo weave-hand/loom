@@ -7,6 +7,35 @@ use control_plane_core::{
 };
 
 #[test]
+fn property_def_new_is_optional_and_unconstrained() {
+    let p = PropertyDef::new("email", "EmailAddress");
+    assert_eq!(p.name, "email");
+    assert_eq!(p.ty, "EmailAddress");
+    assert!(!p.required);
+    assert!(p.constraints.is_empty());
+}
+
+#[test]
+fn property_def_required_sets_the_flag() {
+    let p = PropertyDef::new("id", "Long").required();
+    assert!(p.required);
+}
+
+#[test]
+fn property_def_constrained_carries_constraints() {
+    let c = PropertyConstraints {
+        length: Some(LengthConstraint {
+            min: None,
+            max: Some(255),
+        }),
+        ..PropertyConstraints::default()
+    };
+    let p = PropertyDef::new("email", "EmailAddress").constrained(c.clone());
+    assert_eq!(p.constraints, c);
+    assert!(!p.required, "constrained must not change requiredness");
+}
+
+#[test]
 fn object_type_builder_matches_literal() {
     let built = ObjectType::build("Widget", ("main", "widget"))
         .prop_req("id", "Long")
