@@ -180,7 +180,7 @@ fn link_def_fk_builds_a_foreign_key_link() {
 
 #[test]
 fn link_backing_join_table_builds_a_mapping_backing() {
-    let b = LinkBacking::join_table(("wh", "doc_tag"), "id", "doc_id", "tag_id", "id");
+    let b = LinkBacking::join_table(("wh", "doc_tag"), "doc_pk", "doc_id", "tag_id", "tag_pk");
     assert_eq!(
         b,
         LinkBacking::JoinTable {
@@ -188,10 +188,10 @@ fn link_backing_join_table_builds_a_mapping_backing() {
                 schema: "wh".to_string(),
                 name: "doc_tag".to_string()
             },
-            from_key: "id".to_string(),
+            from_key: "doc_pk".to_string(),
             from_column: "doc_id".to_string(),
             to_column: "tag_id".to_string(),
-            to_key: "id".to_string(),
+            to_key: "tag_pk".to_string(),
         }
     );
 }
@@ -203,7 +203,7 @@ fn link_def_new_takes_an_explicit_backing() {
         "Doc",
         "Tag",
         Cardinality::Many,
-        LinkBacking::join_table(("wh", "doc_tag"), "id", "doc_id", "tag_id", "id"),
+        LinkBacking::join_table(("wh", "doc_tag"), "doc_pk", "doc_id", "tag_id", "tag_pk"),
     );
     assert_eq!(l.cardinality, Cardinality::Many);
     assert!(matches!(l.backing, LinkBacking::JoinTable { .. }));
