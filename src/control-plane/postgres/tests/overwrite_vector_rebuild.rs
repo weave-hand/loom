@@ -8,8 +8,8 @@
 use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
-    BUILD_VECTOR_INDEX_JOB_KIND, ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId,
-    TableRef, TypeName, VectorIndexDef,
+    BUILD_VECTOR_INDEX_JOB_KIND, ControlPlane, IndexSpec, Metric, ObjectType, RunId, TableRef,
+    VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -39,39 +39,25 @@ async fn setup(
     };
 
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Docs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Docs", ("wh", "docs"))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
     for name in index_names {
         cp.ontology()
-            .define_vector_index(VectorIndexDef {
-                name: (*name).into(),
-                type_name: TypeName("Docs".into()),
-                property: "embedding".into(),
-                metric: Metric::Cosine,
-                spec: IndexSpec::Flat,
-            })
+            .define_vector_index(VectorIndexDef::new(
+                *name,
+                "Docs",
+                "embedding",
+                Metric::Cosine,
+                IndexSpec::Flat,
+            ))
             .await
             .expect("define_vector_index");
     }

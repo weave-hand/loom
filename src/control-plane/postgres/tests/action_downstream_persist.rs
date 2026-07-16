@@ -1,6 +1,5 @@
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, JobTemplate, ObjectType, Ontology, ParamDef, PropertyDef,
-    TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, JobTemplate, ObjectType, Ontology, ParamDef, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use serde_json::json;
@@ -11,22 +10,12 @@ async fn action_downstream_round_trips() {
     let cp = fixture.fresh_control_plane().await;
 
     // A target type must exist before an action can reference it.
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        table: TableRef {
-            schema: "public".into(),
-            name: "widget".into(),
-        },
-        identity: Some("sku".into()),
-        version: None,
-        properties: vec![PropertyDef {
-            name: "sku".into(),
-            ty: "String".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("public", "widget"))
+            .prop_req("sku", "String")
+            .identity("sku")
+            .done(),
+    )
     .await
     .expect("define Widget type");
 
@@ -34,12 +23,7 @@ async fn action_downstream_round_trips() {
         ActionName("createWidget".into()),
         TypeName("Widget".into()),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "sku".into(),
-            ty: "String".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("sku", "String").required()],
         vec![],
     )
     .downstream(vec![

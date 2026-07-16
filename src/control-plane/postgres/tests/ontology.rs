@@ -14,8 +14,7 @@ async fn postgres_passes_ontology_contract() {
 #[tokio::test]
 async fn corrupt_cardinality_token_fails_loud() {
     use control_plane_core::{
-        Cardinality, ControlPlane, ControlPlaneError, LinkBacking, LinkDef, ObjectType, PageReq,
-        TypeName,
+        Cardinality, ControlPlane, ControlPlaneError, LinkDef, ObjectType, PageReq, TypeName,
     };
     let fixture = control_plane_postgres::fixture::PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
@@ -31,16 +30,14 @@ async fn corrupt_cardinality_token_fails_loud() {
             .expect("define_type");
     }
     cp.ontology()
-        .define_link(LinkDef {
-            name: "a_to_b".into(),
-            from: TypeName("A".into()),
-            to: TypeName("B".into()),
-            cardinality: Cardinality::One,
-            backing: LinkBacking::ForeignKey {
-                from_column: "id".into(),
-                to_column: "id".into(),
-            },
-        })
+        .define_link(LinkDef::fk(
+            "a_to_b",
+            "A",
+            "B",
+            Cardinality::One,
+            "id",
+            "id",
+        ))
         .await
         .expect("define_link");
     // Corrupt the persisted token behind the adapter's back.

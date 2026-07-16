@@ -30,23 +30,13 @@ async fn postgres_passes_type_table_binding_contract() {
 
 #[tokio::test]
 async fn postgres_binding_edge_is_source_guarded() {
-    use control_plane_core::{ObjectType, Ontology, TableRef, TypeName};
+    use control_plane_core::{ObjectType, Ontology};
 
     let fixture = PgFixture::shared();
     let (cp, db) = fixture.fresh_db().await;
     let pool = fixture.pool_for(&db).await;
 
-    let otype = |schema: &str, table: &str| ObjectType {
-        name: TypeName("GuardX".into()),
-        properties: vec![],
-        derived: vec![],
-        table: TableRef {
-            schema: schema.into(),
-            name: table.into(),
-        },
-        identity: None,
-        version: None,
-    };
+    let otype = |schema: &str, table: &str| ObjectType::build("GuardX", (schema, table)).done();
 
     // Count binding events whose output node is loom:type/GuardX.
     let count = || async {

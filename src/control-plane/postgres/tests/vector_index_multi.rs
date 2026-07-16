@@ -9,8 +9,8 @@ use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef,
-    TypeName, VectorIndexDef, VectorKey,
+    ColumnSpec, ControlPlane, IndexSpec, Metric, ObjectType, RunId, TableRef, VectorIndexDef,
+    VectorKey,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
@@ -71,53 +71,39 @@ async fn two_named_indexes_on_one_property_build_and_search_independently() {
 
     // Define the Document type with id + embedding(8) properties.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Document".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(8)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Document", ("wh", "document"))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(8)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
     // Declare two named indexes on the same property with different kinds and metrics.
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_sim".into(),
-            type_name: TypeName("Document".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Hnsw {
+        .define_vector_index(VectorIndexDef::new(
+            "by_sim",
+            "Document",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Hnsw {
                 m: Some(16),
                 ef_construction: Some(200),
             },
-        })
+        ))
         .await
         .expect("define by_sim");
 
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_cluster".into(),
-            type_name: TypeName("Document".into()),
-            property: "embedding".into(),
-            metric: Metric::L2,
-            spec: IndexSpec::IvfFlat { nlist: Some(4) },
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_cluster",
+            "Document",
+            "embedding",
+            Metric::L2,
+            IndexSpec::IvfFlat { nlist: Some(4) },
+        ))
         .await
         .expect("define by_cluster");
 

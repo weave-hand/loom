@@ -6,8 +6,8 @@
 use loom_test_seed::{local_sql_catalog, test_lineage, vec4_batches, vec4_columns};
 
 use control_plane_core::{
-    Catalog, ControlPlane, IndexSpec, Metric, ObjectType, PageReq, PropertyDef, RunId, TableRef,
-    TypeName, VectorIndex, VectorIndexDef,
+    Catalog, ControlPlane, IndexSpec, Metric, ObjectType, PageReq, RunId, TableRef, VectorIndex,
+    VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -34,39 +34,25 @@ async fn build_covers_all_rows_live_at_s() {
 
     // 1. Register the object type with the ontology (identity = "id").
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Docs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Docs", ("wh", "docs"))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
     // 1b. Declare a named flat index on the embedding property.
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_flat",
+            "Docs",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define_vector_index");
 
