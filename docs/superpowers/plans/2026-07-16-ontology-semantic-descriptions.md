@@ -1138,6 +1138,74 @@ git commit -m "feat(query-api): carry ontology descriptions into generated OpenA
 
 ---
 
+### Task 18b: The admin write surface
+
+**Added mid-execution (operator decision).** The spec and this plan both missed it: Tasks 13–18
+persist a description and read it back, but nothing lets a **user set one**. `POST /admin/models`
+is the ontology's write path (mounted by `standalone`, i.e. the shipped `loom` binary), and it
+builds its `ObjectType` from a hand-written DTO that would silently drop any `description` a
+caller sent. Without this task the feature is unusable in a real deployment.
+
+**Files:**
+- Modify: `src/services/runtime/src/admin.rs` (`DefineModelReq` :509, `PropReq` :492, `DerivedReq` :439, `VectorIndexReq` :602, and the handlers that map them to domain structs)
+- Test: `src/services/runtime/tests/` — follow the existing admin-route test pattern in that directory
+
+**Interfaces:**
+- Consumes: Task 13's `description` field + `.described()`.
+- Produces: `description` accepted on `POST /admin/models` (type, each property, each derived property) and on the vector-index route.
+
+**What is already free — do NOT rebuild it.** `/admin/links` (`define_link_route` :786) and
+`/admin/actions` (`define_action_route` :858) deserialize **`LinkDef` and `ActionDef` directly**
+(`Json<serde_json::Value>` → `serde_json::from_value`). Once Task 13 adds the field with
+`#[serde(default)]`, those two routes accept `description` — for the link, the action, AND its
+params — with **no code change**. Add a test proving it; do not add DTOs for them.
+
+- [ ] **Step 1: Write the failing tests**
+
+Two things to pin, following the existing admin-route test conventions in `src/services/runtime/tests/`:
+1. `POST /admin/models` with a `description` on the type and on a property → `GET` it back (or read via the control plane) and see the prose persisted.
+2. `POST /admin/links` with a `description` → persisted. This one should pass **without any
+   production change** (it is the free serde path) — it is a regression guard proving the free
+   path is real, not a red test. Say so in your report rather than "fixing" it.
+
+- [ ] **Step 2: Run to verify (1) fails**
+
+Run: `buck2 test --console simple //src/services/runtime/...`
+Expected: the `/admin/models` test FAILS (the DTO drops the field); the `/admin/links` test PASSES.
+
+- [ ] **Step 3: Add the DTO fields**
+
+In `src/services/runtime/src/admin.rs`, add to `DefineModelReq`, `PropReq`, `DerivedReq`, and `VectorIndexReq`:
+
+```rust
+    /// Optional human-readable prose describing this entity. Pure annotation.
+    #[serde(default)]
+    description: Option<String>,
+```
+
+Then thread each into the domain struct the handler builds. The handlers construct
+`ObjectType`/`PropertyDef`/`DerivedPropertyDef`/`VectorIndexDef` as **struct literals** (~:541,
+:556, :565, :691) — that is deliberate, and Task 13 will already have forced you to put
+`description: None` there. Replace those `None`s with the DTO's value.
+
+`#[serde(default)]` (not `skip_serializing_if` — these are Deserialize-only) keeps every existing
+caller working: a request with no `description` key still deserializes.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `buck2 test --console simple //src/services/runtime/...`
+Expected: both tests pass; the pre-existing admin tests are unchanged.
+
+- [ ] **Step 5: Commit**
+
+```bash
+buck2 run //tools:prek -- run --all-files
+git add src/services/runtime/
+git commit -m "feat(runtime): accept ontology descriptions on the admin write path"
+```
+
+---
+
 ### Task 19: Registers, capability doc, the PR
 
 **Files:**
