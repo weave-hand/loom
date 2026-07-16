@@ -388,6 +388,24 @@ pub struct DerivedPropertyDef {
     pub agg: Aggregation,
 }
 
+impl DerivedPropertyDef {
+    /// A computed property: aggregate `agg` over the rows reachable via the link named
+    /// `link`. Plain construction — the define path validates the aggregation/result types.
+    pub fn new(
+        name: impl Into<String>,
+        ty: impl Into<String>,
+        link: impl Into<String>,
+        agg: Aggregation,
+    ) -> DerivedPropertyDef {
+        DerivedPropertyDef {
+            name: name.into(),
+            ty: ty.into(),
+            link: link.into(),
+            agg,
+        }
+    }
+}
+
 /// The result-type expectation of an aggregation, resolved against the target
 /// column's base type. Pairs the acceptance predicate ([`ResultExpectation::accepts`])
 /// with the human description ([`ResultExpectation::description`]) used in violation
@@ -545,6 +563,28 @@ pub struct ParamDef {
 }
 
 impl ParamDef {
+    /// An optional (`required: false`) parameter binding the property of the same name.
+    pub fn new(name: impl Into<String>, ty: impl Into<String>) -> ParamDef {
+        ParamDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: false,
+            binds: None,
+        }
+    }
+
+    /// Mark this parameter required.
+    pub fn required(mut self) -> ParamDef {
+        self.required = true;
+        self
+    }
+
+    /// Rename this parameter away from the property it writes.
+    pub fn binds(mut self, property: impl Into<String>) -> ParamDef {
+        self.binds = Some(property.into());
+        self
+    }
+
     /// The property this parameter writes: its explicit `binds`, else its own `name`.
     #[must_use]
     pub fn binds_property(&self) -> &str {
@@ -564,6 +604,26 @@ pub struct VectorIndexDef {
     pub property: String,
     pub metric: Metric,
     pub spec: IndexSpec,
+}
+
+impl VectorIndexDef {
+    /// A named vector index on `type_name.property`. Dimension is NOT restated — it is
+    /// derived from the property's `vector(N)` type at define time.
+    pub fn new(
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        property: impl Into<String>,
+        metric: Metric,
+        spec: IndexSpec,
+    ) -> VectorIndexDef {
+        VectorIndexDef {
+            name: name.into(),
+            type_name: TypeName(type_name.into()),
+            property: property.into(),
+            metric,
+            spec,
+        }
+    }
 }
 
 /// The source of a property's [`Assignment`]: either a fixed constant (the JSON wire form of a

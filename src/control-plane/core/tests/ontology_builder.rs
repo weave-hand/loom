@@ -3,8 +3,8 @@
 
 use control_plane_core::{
     ActionDef, ActionKind, ActionName, Aggregation, Assignment, Cardinality, DerivedPropertyDef,
-    LengthConstraint, LinkBacking, LinkDef, ObjectType, ParamDef, PropertyConstraints, PropertyDef,
-    TableRef, TypeName,
+    IndexSpec, LengthConstraint, LinkBacking, LinkDef, Metric, ObjectType, ParamDef,
+    PropertyConstraints, PropertyDef, TableRef, TypeName, VectorIndexDef,
 };
 
 #[test]
@@ -207,4 +207,46 @@ fn link_def_new_takes_an_explicit_backing() {
     );
     assert_eq!(l.cardinality, Cardinality::Many);
     assert!(matches!(l.backing, LinkBacking::JoinTable { .. }));
+}
+
+#[test]
+fn derived_property_def_new_carries_its_aggregation() {
+    let d = DerivedPropertyDef::new("orderCount", "Long", "orders", Aggregation::Count);
+    assert_eq!(d.name, "orderCount");
+    assert_eq!(d.ty, "Long");
+    assert_eq!(d.link, "orders");
+    assert_eq!(d.agg, Aggregation::Count);
+}
+
+#[test]
+fn param_def_new_is_optional_and_self_binding() {
+    let p = ParamDef::new("email", "EmailAddress");
+    assert!(!p.required);
+    assert_eq!(p.binds, None);
+    assert_eq!(p.binds_property(), "email");
+}
+
+#[test]
+fn param_def_required_and_binds() {
+    let p = ParamDef::new("email", "EmailAddress")
+        .required()
+        .binds("email_address");
+    assert!(p.required);
+    assert_eq!(p.binds_property(), "email_address");
+}
+
+#[test]
+fn vector_index_def_new_carries_metric_and_spec() {
+    let v = VectorIndexDef::new(
+        "byEmbedding",
+        "Doc",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    );
+    assert_eq!(v.name, "byEmbedding");
+    assert_eq!(v.type_name, TypeName("Doc".to_string()));
+    assert_eq!(v.property, "embedding");
+    assert_eq!(v.metric, Metric::Cosine);
+    assert_eq!(v.spec, IndexSpec::Flat);
 }
