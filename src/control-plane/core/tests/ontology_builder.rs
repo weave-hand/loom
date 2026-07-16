@@ -2,8 +2,9 @@
 //! builder output == literal, field for field, including ordering.
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Aggregation, Assignment, DerivedPropertyDef,
-    LengthConstraint, ObjectType, ParamDef, PropertyConstraints, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, Aggregation, Assignment, Cardinality, DerivedPropertyDef,
+    LengthConstraint, LinkBacking, LinkDef, ObjectType, ParamDef, PropertyConstraints, PropertyDef,
+    TableRef, TypeName,
 };
 
 #[test]
@@ -152,4 +153,58 @@ fn action_def_builder_binds_and_assignment_hooks() {
         vec![Assignment::constant("status", serde_json::json!("active"))]
     );
     assert_eq!(a.steps[0].kind, ActionKind::Update);
+}
+
+#[test]
+fn link_def_fk_builds_a_foreign_key_link() {
+    let l = LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    );
+    assert_eq!(l.name, "customer");
+    assert_eq!(l.from, TypeName("Order".to_string()));
+    assert_eq!(l.to, TypeName("Customer".to_string()));
+    assert_eq!(l.cardinality, Cardinality::One);
+    assert_eq!(
+        l.backing,
+        LinkBacking::ForeignKey {
+            from_column: "customer_id".to_string(),
+            to_column: "id".to_string()
+        }
+    );
+}
+
+#[test]
+fn link_backing_join_table_builds_a_mapping_backing() {
+    let b = LinkBacking::join_table(("wh", "doc_tag"), "id", "doc_id", "tag_id", "id");
+    assert_eq!(
+        b,
+        LinkBacking::JoinTable {
+            table: TableRef {
+                schema: "wh".to_string(),
+                name: "doc_tag".to_string()
+            },
+            from_key: "id".to_string(),
+            from_column: "doc_id".to_string(),
+            to_column: "tag_id".to_string(),
+            to_key: "id".to_string(),
+        }
+    );
+}
+
+#[test]
+fn link_def_new_takes_an_explicit_backing() {
+    let l = LinkDef::new(
+        "tags",
+        "Doc",
+        "Tag",
+        Cardinality::Many,
+        LinkBacking::join_table(("wh", "doc_tag"), "id", "doc_id", "tag_id", "id"),
+    );
+    assert_eq!(l.cardinality, Cardinality::Many);
+    assert!(matches!(l.backing, LinkBacking::JoinTable { .. }));
 }

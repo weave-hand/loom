@@ -281,6 +281,35 @@ impl LinkBacking {
             },
         }
     }
+
+    /// A direct equijoin backing: `from_table.from_column = to_table.to_column`.
+    pub fn fk(from_column: impl Into<String>, to_column: impl Into<String>) -> LinkBacking {
+        LinkBacking::ForeignKey {
+            from_column: from_column.into(),
+            to_column: to_column.into(),
+        }
+    }
+
+    /// A many-to-many backing through the mapping table `table` (a `(schema, name)` pair —
+    /// a tuple, not two args, to stay under the enforced `too_many_arguments` ceiling).
+    pub fn join_table(
+        table: (impl Into<String>, impl Into<String>),
+        from_key: impl Into<String>,
+        from_column: impl Into<String>,
+        to_column: impl Into<String>,
+        to_key: impl Into<String>,
+    ) -> LinkBacking {
+        LinkBacking::JoinTable {
+            table: TableRef {
+                schema: table.0.into(),
+                name: table.1.into(),
+            },
+            from_key: from_key.into(),
+            from_column: from_column.into(),
+            to_column: to_column.into(),
+            to_key: to_key.into(),
+        }
+    }
 }
 
 /// A directed link between two types (e.g. `Order.customer -> Customer`).
@@ -291,6 +320,50 @@ pub struct LinkDef {
     pub to: TypeName,
     pub cardinality: Cardinality,
     pub backing: LinkBacking,
+}
+
+impl LinkDef {
+    /// A directed link with an explicit physical `backing`. Plain construction — no
+    /// validation, no I/O (that stays with [`Ontology::define_link`]).
+    pub fn new(
+        name: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        cardinality: Cardinality,
+        backing: LinkBacking,
+    ) -> LinkDef {
+        LinkDef {
+            name: name.into(),
+            from: TypeName(from.into()),
+            to: TypeName(to.into()),
+            cardinality,
+            backing,
+        }
+    }
+
+    /// The common case: a link backed by a direct foreign-key equijoin.
+    ///
+    /// ```
+    /// use control_plane_core::{Cardinality, LinkDef};
+    /// let l = LinkDef::fk("customer", "Order", "Customer", Cardinality::One, "customer_id", "id");
+    /// assert_eq!(l.name, "customer");
+    /// ```
+    pub fn fk(
+        name: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        cardinality: Cardinality,
+        from_column: impl Into<String>,
+        to_column: impl Into<String>,
+    ) -> LinkDef {
+        LinkDef::new(
+            name,
+            from,
+            to,
+            cardinality,
+            LinkBacking::fk(from_column, to_column),
+        )
+    }
 }
 
 /// How a derived property aggregates over its link's target rows. The `String` is the
