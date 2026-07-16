@@ -1,10 +1,13 @@
 //! The standalone composite: boot the embedded Postgres once and run engine
-//! (tonic/UDS) + ingest (HTTP) + query-api (HTTP) as tasks in one runtime.
+//! (tonic/UDS) + ingest (HTTP) + query-api (HTTP) + the queue worker as tasks in
+//! one runtime. Without the worker nothing drains the queue, so flush, GC,
+//! compaction, transforms and micro-batch MVs would never run.
 use std::future::Future;
 use std::sync::Arc;
 
 use control_plane_core::ControlPlane;
 use tokio::task::{JoinError, JoinSet};
+use tokio_util::sync::CancellationToken;
 
 type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 
@@ -80,9 +83,10 @@ pub async fn run(
     outcome
 }
 
-/// Run the three services over an already-booted control-plane `pool` until
-/// `shutdown` fires or a serve task exits. PG lifecycle is the caller's concern
-/// (see [`run`]); every error path here just returns, and the caller stops PG.
+/// Run the services (engine, ingest, query-api, worker) over an already-booted
+/// control-plane `pool` until `shutdown` fires or a serve task exits. PG lifecycle
+/// is the caller's concern (see [`run`]); every error path here just returns, and
+/// the caller stops PG.
 async fn serve_composite(
     cfg: service_runtime::Config,
     addrs: StandaloneAddrs,
@@ -120,7 +124,7 @@ async fn serve_composite(
         }
     };
 
-    // All three serve loops live in one JoinSet so we can react to whichever exits
+    // Every serve loop lives in one JoinSet so we can react to whichever exits
     // first — a spontaneous error as well as a clean shutdown — instead of waiting
     // for all of them (a stuck-open `join!` was the error-cascade gap).
     let mut tasks: JoinSet<(&'static str, Result<(), BoxErr>)> = JoinSet::new();
@@ -156,6 +160,41 @@ async fn serve_composite(
             Some(Ok((_, Ok(())))) | None => Err("engine exited before signalling ready".into()),
         };
     }
+
+    // Worker: dials the engine we just brought up, over the same UDS query-api uses.
+    // The write store comes from `cfg.object_store` — already resolved by
+    // `Config::from_map` with its LOOM_DATA_PATH fallback — rather than
+    // `ObjectStoreConfig::parse_from_env`, which REQUIRES LOOM_WAREHOUSE_URI. The
+    // deployed `loom` binary's embedded mode sets only LOOM_DATA_PATH, so re-parsing
+    // the env here would fail on exactly the default single-binary configuration.
+    let worker_rt = worker::runtime::WorkerRuntime {
+        socket: addrs.engine_socket.clone(),
+        // A fresh id per process: the composite never reads the live environment,
+        // so LOOM_WORKER_ID is deliberately not consulted.
+        worker_id: uuid::Uuid::new_v4().to_string(),
+        lease: cfg.lock_timeout,
+        write: Arc::new(service_runtime::build_write_store(&cfg.object_store)?),
+        jobs: tuning.jobs.clone(),
+        compact_threshold_bytes: tuning.compact_threshold_bytes,
+    };
+
+    // Bridge the composite's watch-channel shutdown to the worker's CancellationToken.
+    let worker_cancel = CancellationToken::new();
+    let cancel_src = worker_cancel.clone();
+    let worker_sd = sub(sd_rx.clone());
+    tokio::spawn(async move {
+        worker_sd.await;
+        cancel_src.cancel();
+    });
+
+    tasks.spawn(async move {
+        (
+            "worker",
+            worker::runtime::run_worker(worker_rt, worker_cancel)
+                .await
+                .map_err(Into::into),
+        )
+    });
 
     // Bind both HTTP listeners, then spawn their serves into the same set.
     let ingest_listener = tokio::net::TcpListener::bind(addrs.ingest).await?;

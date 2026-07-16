@@ -1,11 +1,13 @@
 //! End-to-end: the standalone composite boots embedded PG, serves engine+ingest+
-//! query-api together, round-trips a dataset (ingest POST -> query-api GET over the
-//! engine UDS), and shuts down cleanly on signal.
+//! query-api+worker together, round-trips a dataset (ingest POST -> query-api GET
+//! over the engine UDS), drains a queued job through its in-process worker, and
+//! shuts down cleanly on signal.
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
+use control_plane_core::{NewJob, Queue};
 use e2e_support::{define_widget, grant_read, session_token, subject_with_role};
 use standalone::StandaloneAddrs;
 
@@ -118,7 +120,7 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
     let pool = service_runtime::build_pool(&cfg_direct.db)
         .await
         .expect("direct pool");
-    let cp = service_runtime::control_plane(pool, cfg_direct.lock_timeout);
+    let cp = service_runtime::control_plane(pool.clone(), cfg_direct.lock_timeout);
     let (_subj, role) = subject_with_role(&cp, "reader").await;
     let token = session_token(&cp, "reader").await;
 
@@ -159,6 +161,53 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
         .and_then(|o| o.as_array())
         .expect("objects array");
     assert_eq!(objects.len(), 2, "expected 2 landed widgets, got {body}");
+
+    // (3.5) The composite runs a worker in-process, so a queued job drains.
+    //       Only `Queue::complete` deletes the row (postgres/src/queue.rs:108); Retry
+    //       leaves state='available' and Abandon leaves state='failed' (:120-140), so
+    //       "row gone" means the handler returned Ok — an abandoned or retry-looping
+    //       job fails this test rather than passing it.
+    //       The flush itself is a NO-OP: ingest's POST goes through the landing
+    //       materializer to Parquet and never writes the inline tier, so `main.widget`
+    //       has no live inline rows and `flush_locked` returns Ok(None). That is enough
+    //       — the point is that the loop dequeues, dispatches, and completes at all.
+    let job = cp
+        .enqueue(NewJob {
+            kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
+            payload: serde_json::json!({ "schema": "main", "name": "widget" }),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .expect("enqueue flush_table job");
+
+    let drained = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let n: i64 = sqlx::query_scalar("select count(*) from queue.jobs where id = $1")
+                .bind(job.0)
+                .fetch_one(&pool)
+                .await
+                .expect("count queued job");
+            if n == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    if drained.is_err() {
+        let row: Option<(String, i32, Option<String>)> =
+            sqlx::query_as("select state, attempts, last_error from queue.jobs where id = $1")
+                .bind(job.0)
+                .fetch_optional(&pool)
+                .await
+                .expect("read job state");
+        panic!(
+            "the flush_table job was never drained in 60s; (state, attempts, last_error) = {row:?} \
+             — state='available' with attempts=0 means nothing dequeued it (no worker composed); \
+             state='failed' means a worker ran it and abandoned it"
+        );
+    }
 
     // (4) Graceful shutdown: signal -> composite returns Ok, embedded PG stopped cleanly.
     shutdown_tx.send(()).unwrap();
