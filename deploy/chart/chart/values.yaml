@@ -41,6 +41,27 @@ queryApi:
   # object-store PVC. Setting this overrides that default (use with RWX).
   affinity: {}
 
+# Worker: drains the queue (flush, GC, compaction, orphan sweep, transforms,
+# stream consolidate, micro-batch MVs). Runs as its OWN Deployment with its own
+# engine sidecar — the worker is a zero-pool wire client and reaches the engine
+# only over a pod-local unix socket, so it must be co-located with one. Its
+# replicas are therefore independent of queryApi.replicas. Without this workload
+# nothing drains the queue and jobs accumulate forever.
+worker:
+  image:
+    repository: ghcr.io/weave-hand/loom-worker
+    tag: latest
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  # Like query-api, the worker is co-scheduled onto ingest's node by default so it
+  # can mount the shared ReadWriteOnce object-store PVC. Setting this overrides
+  # that default (use with an RWX storageClassName, or with S3).
+  affinity: {}
+
 # Engine: runs as a SIDECAR in the query-api pod (not a standalone Deployment).
 # query-api is a pure wire client and reads over the engine's Arrow Flight
 # service via a shared unix-domain socket (socketPath, on the socketDir emptyDir

@@ -139,6 +139,25 @@ set (Config::from_env requires it) but is overridden by LOOM_WAREHOUSE_URI.
 {{- end -}}
 
 {{/*
+Worker-only warehouse env. `loom.objectStoreEnv` emits LOOM_WAREHOUSE_URI only in
+the S3 case; the zero-pool worker's `ObjectStoreConfig::parse_from_env` REQUIRES it
+(it is postgres-free, so it has no Config/data_path to fall back on — see
+src/services/store-config/src/lib.rs), and worker-bin parses it EAGERLY at startup.
+So a file://-warehouse worker must be handed it explicitly or the container
+crash-loops on a default install. Emitted only when S3 is off — with S3 on,
+objectStoreEnv already set it.
+
+Deliberately a separate helper rather than a branch inside loom.objectStoreEnv:
+folding it in there would change the rendered env of ingest/query-api/engine.
+*/}}
+{{- define "loom.workerWarehouseEnv" -}}
+{{- if not .Values.objectStore.s3.enabled }}
+- name: LOOM_WAREHOUSE_URI
+  value: {{ printf "file://%s" .Values.objectStore.mountPath | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
 On-boot migration env: emitted on the service containers only when
 migrations.mode == onBoot. Each pod applies the schema at startup (sqlx advisory
 lock serialises concurrent pods).
