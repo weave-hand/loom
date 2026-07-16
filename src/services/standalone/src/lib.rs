@@ -129,72 +129,20 @@ async fn serve_composite(
     // for all of them (a stuck-open `join!` was the error-cascade gap).
     let mut tasks: JoinSet<(&'static str, Result<(), BoxErr>)> = JoinSet::new();
 
-    // Engine first: bind UDS synchronously, spawn, await engine-ready.
-    drop(std::fs::remove_file(&addrs.engine_socket));
-    let engine_listener = tokio::net::UnixListener::bind(&addrs.engine_socket)?;
-    let (eng_ready_tx, eng_ready_rx) = tokio::sync::oneshot::channel();
-    let engine_cfg = cfg.clone();
-    let engine_pool = pool.clone();
-    let engine_sd = sub(sd_rx.clone());
-    tasks.spawn(async move {
-        (
-            "engine",
-            engine::run(
-                engine_listener,
-                &engine_cfg,
-                engine_pool,
-                engine_tuning,
-                eng_ready_tx,
-                engine_sd,
-            )
-            .await,
-        )
-    });
-
-    // If the engine dies before signalling ready, surface its real error (not the
-    // generic "exited before ready" string). The caller stops PG on this return.
-    if eng_ready_rx.await.is_err() {
-        return match tasks.join_next().await {
-            Some(Ok((_, Err(e)))) => Err(format!("engine failed before ready: {e}").into()),
-            Some(Err(e)) => Err(Box::new(e)),
-            Some(Ok((_, Ok(())))) | None => Err("engine exited before signalling ready".into()),
-        };
-    }
+    // Engine first: everything else dials its socket, so it must be serving before
+    // they start.
+    spawn_engine_awaiting_ready(
+        &mut tasks,
+        &cfg,
+        &pool,
+        engine_tuning,
+        &addrs.engine_socket,
+        sub(sd_rx.clone()),
+    )
+    .await?;
 
     // Worker: dials the engine we just brought up, over the same UDS query-api uses.
-    // The write store comes from `cfg.object_store` — already resolved by
-    // `Config::from_map` with its LOOM_DATA_PATH fallback — rather than
-    // `ObjectStoreConfig::parse_from_env`, which REQUIRES LOOM_WAREHOUSE_URI. The
-    // deployed `loom` binary's embedded mode sets only LOOM_DATA_PATH, so re-parsing
-    // the env here would fail on exactly the default single-binary configuration.
-    let worker_rt = worker::runtime::WorkerRuntime {
-        socket: addrs.engine_socket.clone(),
-        // A fresh id per process: the composite never reads the live environment,
-        // so LOOM_WORKER_ID is deliberately not consulted.
-        worker_id: uuid::Uuid::new_v4().to_string(),
-        lease: cfg.lock_timeout,
-        write: Arc::new(service_runtime::build_write_store(&cfg.object_store)?),
-        jobs: tuning.jobs.clone(),
-        compact_threshold_bytes: tuning.compact_threshold_bytes,
-    };
-
-    // Bridge the composite's watch-channel shutdown to the worker's CancellationToken.
-    let worker_cancel = CancellationToken::new();
-    let cancel_src = worker_cancel.clone();
-    let worker_sd = sub(sd_rx.clone());
-    tokio::spawn(async move {
-        worker_sd.await;
-        cancel_src.cancel();
-    });
-
-    tasks.spawn(async move {
-        (
-            "worker",
-            worker::runtime::run_worker(worker_rt, worker_cancel)
-                .await
-                .map_err(Into::into),
-        )
-    });
+    spawn_worker(&mut tasks, &cfg, &addrs, &tuning, sub(sd_rx.clone()))?;
 
     // Bind both HTTP listeners, then spawn their serves into the same set.
     let ingest_listener = tokio::net::TcpListener::bind(addrs.ingest).await?;
@@ -256,6 +204,99 @@ async fn serve_composite(
         record(&mut outcome, joined);
     }
     outcome
+}
+
+/// Bind the engine's UDS, spawn `engine::run` into `tasks`, and return only once
+/// it has signalled ready — every other service dials this socket, so none may
+/// start before it is serving. Split out of [`serve_composite`] alongside
+/// [`spawn_worker`] so that function reads as one `spawn_*` per service.
+///
+/// If the engine dies before signalling ready, its real error is surfaced rather
+/// than the generic "exited before ready" string. PG lifecycle stays the caller's
+/// concern: every error path here just returns.
+async fn spawn_engine_awaiting_ready(
+    tasks: &mut JoinSet<(&'static str, Result<(), BoxErr>)>,
+    cfg: &service_runtime::Config,
+    pool: &sqlx::PgPool,
+    engine_tuning: engine::EngineTuning,
+    socket: &str,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), BoxErr> {
+    drop(std::fs::remove_file(socket)); // remove stale socket (missing is fine)
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let engine_cfg = cfg.clone();
+    let engine_pool = pool.clone();
+    tasks.spawn(async move {
+        (
+            "engine",
+            engine::run(
+                listener,
+                &engine_cfg,
+                engine_pool,
+                engine_tuning,
+                ready_tx,
+                shutdown,
+            )
+            .await,
+        )
+    });
+
+    if ready_rx.await.is_err() {
+        return match tasks.join_next().await {
+            Some(Ok((_, Err(e)))) => Err(format!("engine failed before ready: {e}").into()),
+            Some(Err(e)) => Err(Box::new(e)),
+            Some(Ok((_, Ok(())))) | None => Err("engine exited before signalling ready".into()),
+        };
+    }
+    Ok(())
+}
+
+/// Build the in-process worker and spawn it into `tasks`, bridging `shutdown`
+/// (the composite's watch-channel fan-out) to the `CancellationToken` the worker
+/// loop consumes. Split out of [`serve_composite`], whose job is wiring services
+/// together rather than knowing how a worker is assembled.
+///
+/// The write store comes from `cfg.object_store` — already resolved by
+/// `Config::from_map` with its `LOOM_DATA_PATH` fallback — rather than
+/// `ObjectStoreConfig::parse_from_env`, which REQUIRES `LOOM_WAREHOUSE_URI`. The
+/// deployed `loom` binary's embedded mode sets only `LOOM_DATA_PATH`, so
+/// re-parsing the env here would fail on exactly the default single-binary
+/// configuration.
+fn spawn_worker(
+    tasks: &mut JoinSet<(&'static str, Result<(), BoxErr>)>,
+    cfg: &service_runtime::Config,
+    addrs: &StandaloneAddrs,
+    tuning: &StandaloneTuning,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), BoxErr> {
+    let rt = worker::runtime::WorkerRuntime {
+        socket: addrs.engine_socket.clone(),
+        // A fresh id per process: the composite never reads the live environment,
+        // so LOOM_WORKER_ID is deliberately not consulted.
+        worker_id: uuid::Uuid::new_v4().to_string(),
+        lease: cfg.lock_timeout,
+        write: Arc::new(service_runtime::build_write_store(&cfg.object_store)?),
+        jobs: tuning.jobs.clone(),
+        compact_threshold_bytes: tuning.compact_threshold_bytes,
+    };
+
+    let cancel = CancellationToken::new();
+    let cancel_src = cancel.clone();
+    tokio::spawn(async move {
+        shutdown.await;
+        cancel_src.cancel();
+    });
+
+    tasks.spawn(async move {
+        (
+            "worker",
+            worker::runtime::run_worker(rt, cancel)
+                .await
+                .map_err(Into::into),
+        )
+    });
+    Ok(())
 }
 
 /// Fold a finished serve task into the running outcome, keeping the first error
