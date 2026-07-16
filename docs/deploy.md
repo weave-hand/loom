@@ -19,6 +19,7 @@ _Capabilities as of 4861433b._
 | ingest service | `deploy//images/ingest:image` | `ghcr.io/weave-hand/loom-ingest` |
 | query-api service | `deploy//images/query-api:image` | `ghcr.io/weave-hand/loom-query-api` |
 | engine service | `deploy//images/engine:image` | `ghcr.io/weave-hand/loom-engine` |
+| worker | `deploy//images/worker:image` | `ghcr.io/weave-hand/loom-worker` |
 | Helm chart | `deploy//chart:chart` | `oci://ghcr.io/weave-hand/charts/loom` |
 | standalone binary | `//src/services/standalone:loom` | not published (build locally) |
 
@@ -35,7 +36,38 @@ query-api pod**, sharing a Unix socket (`engine.socketPath` on an emptyDir,
 wired via `LOOM_ENGINE_SOCKET`). All containers run as
 non-root (uid 65532) with the binary at the image entrypoint. Package versions
 are pinned in the committed `apko.lock.json`; refresh with `apko lock apko.yaml`
-when an `apko.yaml` changes.
+when an `apko.yaml` changes (buck2 can fetch the pinned tool:
+`buck2 run homelab//buck2/bin:apko -- lock apko.yaml`). A lockfile embeds a
+checksum of its own `apko.yaml`, so locks are **not** interchangeable between
+images even when the package sets match — generate, never copy.
+
+### The worker (#449)
+
+The **worker** drains the job queue — `flush_table`, `gc_table`, `compact_table`,
+`sweep_orphans`, `transform`, `typed-transform`, `stream_consolidate`,
+`stream_mv`, `build_vector_index`. Nothing else does: without one running, those
+jobs are enqueued and accumulate forever, so transform, compaction, GC and
+micro-batch MVs never happen. It reaches the engine **only over a pod-local Unix
+socket**, so it must always be co-located with an engine.
+
+Both deploy paths run one:
+
+- **Chart** — a `loom-worker` Deployment carrying its **own engine sidecar** over
+  a shared `engine-sock` emptyDir; structurally the query-api pod minus the HTTP
+  surface. `worker.replicas` is therefore independent of `queryApi.replicas`, and
+  transform/compaction compute stays out of the serving pod. Like query-api it is
+  co-scheduled onto ingest's node by default so it can mount the ReadWriteOnce
+  object-store PVC (override `worker.affinity` with an RWX class, or use S3).
+- **Standalone `loom`** — composed **in-process** as a task in the same runtime,
+  dialing the composite's internal engine socket after engine-ready.
+
+The worker container carries **no database credentials**: it is a zero-pool wire
+client and the engine owns Postgres (only the sidecar gets `LOOM_DB_*`). It does
+need `LOOM_WAREHOUSE_URI` explicitly even in the default file:// mode — unlike the
+pooled services it has no `Config`/`LOOM_DATA_PATH` fallback — which the chart
+supplies via the worker-only `loom.workerWarehouseEnv` helper. It has no probes:
+the image is binary-only and it exposes no port, so it fails loud and restarts if
+the socket is absent, exactly like the engine sidecar.
 
 ## Images: build & push manually
 
