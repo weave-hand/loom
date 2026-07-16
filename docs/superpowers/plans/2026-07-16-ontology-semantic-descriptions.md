@@ -4,7 +4,7 @@
 
 **Goal:** Give every declarable ontology entity an optional human-readable `description`, carried from `define_*` through both control-plane adapters to the JSON and OpenAPI read surfaces.
 
-**Architecture:** Two strictly-ordered PRs. **PR 1 (Tasks 1–12)** is a pure constructor refactor with no `description` in it: each of the 7 ontology structs gains a plain constructor + chainable modifiers (the idiom `ObjectType::build`/`ActionDef::build` already establish), and the 705 test/testkit struct literals migrate onto them. **PR 2 (Tasks 13–19)** adds `description: Option<String>` to those 7 structs, one nullable-add migration, postgres persistence, and the read surface. PR 1 is what makes PR 2's field ~free at call sites.
+**Architecture:** Two strictly-ordered **phases**, landing as **one PR with cleanly separated commits** (operator decision — see Global Constraints). **Phase 1 (Tasks 1–12)** is a pure constructor refactor with no `description` in it: each of the 7 ontology structs gains a plain constructor + chainable modifiers (the idiom `ObjectType::build`/`ActionDef::build` already establish), and the 705 test/testkit struct literals migrate onto them. **Phase 2 (Tasks 13–19)** adds `description: Option<String>` to those 7 structs, one nullable-add migration, postgres persistence, and the read surface. Phase 1 is what makes Phase 2's field ~free at call sites.
 
 **Tech Stack:** Rust, buck2, sqlx (compile-time macros + committed `.sqlx`), axum, utoipa, Postgres.
 
@@ -22,10 +22,11 @@ Every task's requirements implicitly include this section.
 - **Clippy is pedantic + restriction.** Relevant here: **`too_many_arguments` is ENFORCED (threshold 7)** — it is not in `CLIPPY_ALLOWS`, which is why `LinkBacking::join_table` exists rather than a 9-arg `LinkDef::join_table`. `must_use_candidate` and `too_many_lines` ARE allowed, so builder methods need no `#[must_use]` (match the existing `ObjectTypeBuilder`, which has none). To silence a lint locally use `#[expect(lint, reason = "...")]` — a bare `#[allow]` trips `allow_attributes_without_reason`.
 - **Commits follow Conventional Commits** (enforced by the `conventional-commit` hook at commit-msg stage).
 - **Branch:** `work/fut-ontology-semantic-descriptions`, based on `origin/main`. Local `main` is routinely stale — never diff against it.
+- **ONE PR, separated commits** (operator decision, supersedes the spec's "two PRs"). Everything lands on the single branch above; the refactor phase and the feature phase stay separate *commits* so the PR is reviewable commit-by-commit. **No PR is opened until Task 19.** Phase 1's gate (Task 12b) is a green full suite, not a merge — nothing waits on a human between Tasks 12b and 13.
 
 ## File Structure
 
-**PR 1 — constructors**
+**Phase 1 — constructors**
 
 | File | Responsibility |
 |---|---|
@@ -33,12 +34,12 @@ Every task's requirements implicitly include this section.
 | `src/control-plane/core/tests/ontology_builder.rs` (modify) | Constructor tests. Already the home of `ObjectType::build` tests; the `//src/control-plane/core:ontology-builder` target. |
 | ~90 files under `src/**/tests/`, `testkit/src/lib.rs`, 5 production files (migrate) | Literal → constructor migration, batched per crate (Tasks 5–12). |
 
-**PR 2 — feature**
+**Phase 2 — feature**
 
 | File | Responsibility |
 |---|---|
 | `src/control-plane/core/src/ontology.rs` (modify) | `description` field on 7 structs + `.described()` on each constructor. |
-| `src/control-plane/postgres/migrations/0029_ontology_description.sql` (create) | Nullable `description` column on 7 `ontology.*` tables. |
+| `src/control-plane/postgres/migrations/0047_ontology_description.sql` (create) | Nullable `description` column on 7 `ontology.*` tables. |
 | `src/control-plane/postgres/.sqlx/` (regenerate) | Committed offline query cache; `sqlx-cache-check` enforces freshness. |
 | `src/control-plane/postgres/src/ontology.rs` (modify) | `description` in each `define_*` insert and each row→struct mapping. |
 | `src/control-plane/testkit/src/lib.rs` (modify) | `ontology_contract` description assertions — one contract, both adapters. |
@@ -48,7 +49,7 @@ Every task's requirements implicitly include this section.
 
 ---
 
-# PR 1 — Constructors (no `description` anywhere)
+# Phase 1 — Constructors (no `description` anywhere)
 
 ## The migration rule (Tasks 5–12 all use this)
 
@@ -469,7 +470,7 @@ git commit -m "refactor(core): add derived-property, param and vector-index cons
 
 **Interfaces:**
 - Consumes: `PropertyDef::new` (Task 1), `ObjectTypeBuilder` (existing).
-- Produces: `ObjectTypeBuilder::add_prop(p: PropertyDef) -> ObjectTypeBuilder` — appends a pre-built `PropertyDef`, so a type whose properties need the full `PropertyDef` surface (constraints, or PR 2's description) can still be built fluently. Used by Tasks 5–12.
+- Produces: `ObjectTypeBuilder::add_prop(p: PropertyDef) -> ObjectTypeBuilder` — appends a pre-built `PropertyDef`, so a type whose properties need the full `PropertyDef` surface (constraints, or phase 2's description) can still be built fluently. Used by Tasks 5–12.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -550,7 +551,7 @@ Every one of these tasks has the **same 5 steps**, differing only in scope. Re-r
 
 > Site counts are from the spec's census and are approximate for the two query-api splits — the split is by file theme, not by exact count. If a task's file list turns out not to partition cleanly, adjust the boundary and note it; do not leave a file unmigrated.
 
-### Task 12b: PR 1 gate
+### Task 12b: Phase 1 gate
 
 - [ ] **Step 1: Confirm no ontology struct literals remain outside `core/src/ontology.rs`**
 
@@ -565,35 +566,23 @@ Expected: **no output**. Any hit is either a missed literal (migrate it) or a pa
 Run: `buck2 test --console none -j 8 //src/...`
 Expected: `Tests finished: Pass N. Fail 0`. **`-j 8` is mandatory** — the postgres fixture has 8 boot-slots and an uncapped run starves them into 120s timeouts.
 
-- [ ] **Step 3: Open PR 1**
+- [ ] **Step 3: Confirm the phase boundary is clean, then continue**
+
+No PR is opened here — this is a **commit-boundary gate**, not a merge gate (operator decision: one PR, separated commits).
+
+Run: `git log --oneline 03fb33bf..HEAD`
+Expected: only `refactor(...)`/`test(...)` commits — **no `feat(`, and no `description` anywhere in the phase**. Verify with:
 
 ```bash
-git push -u origin work/fut-ontology-semantic-descriptions
-gh pr create --title "refactor(ontology): construct ontology structs via constructors" --body "$(cat <<'EOF'
-Pure refactor, no behavior change. Prepares `road-ontology-semantic-descriptions`
-by giving all 7 ontology structs a plain constructor + chainable modifiers and
-migrating the 705 test/testkit struct literals onto them, so the upcoming
-`description` field (and the next field after it) costs ~nothing at call sites.
-
-Spec: `docs/superpowers/specs/2026-07-16-ontology-semantic-descriptions-design.md`
-
-Review note: the risk in this diff is semantic, not structural — a
-`PropertyDef { required: true }` migrated to `PropertyDef::new(..)` without
-`.required()` compiles clean and silently inverts a test. It was migrated
-file-by-file and reviewed line-by-line for exactly this.
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-https://claude.ai/code/session_01RTXmJiJhj1awb1tg9iFf38
-EOF
-)"
+git diff 03fb33bf..HEAD -- src/ | grep -n "description" || echo "CLEAN: no description in phase 1"
 ```
+Expected: `CLEAN: no description in phase 1`. A hit means the field leaked early and the phase separation this PR's reviewability depends on is broken — fix before Task 13.
 
-**PR 1 must be merged before Task 13.** PR 2 rebases onto it.
+Proceed directly to Task 13. Nothing waits on a human here.
 
 ---
 
-# PR 2 — The feature
+# Phase 2 — The feature
 
 ### Task 13: `description` field + `.described()` on the 7 structs
 
@@ -739,7 +728,7 @@ git commit -m "feat(core): add description to ontology domain structs"
 ### Task 14: Migration + `.sqlx` regen
 
 **Files:**
-- Create: `src/control-plane/postgres/migrations/0029_ontology_description.sql`
+- Create: `src/control-plane/postgres/migrations/0047_ontology_description.sql`
 - Modify: `src/control-plane/postgres/.sqlx/` (regenerated)
 
 **Interfaces:**
@@ -748,12 +737,14 @@ git commit -m "feat(core): add description to ontology domain structs"
 
 - [ ] **Step 1: Confirm the migration number is free**
 
-Run: `ls src/control-plane/postgres/migrations/ | tail -3`
-Expected: highest is `0028_auth_lockout.sql` ⇒ `0029` is free. **If `0029` is taken** (a concurrent PR landed one), use the next free number and rename. Two PRs taking the same number turns every fixture red at once — the `embedded-migrations-unit` test is the tell.
+Run: `git fetch origin && ls src/control-plane/postgres/migrations/ | tail -3`
+Expected: highest is `0046_iceberg_reclaimed_through.sql` ⇒ `0047` is free.
+
+**If `0047` is taken, use the next free number and rename — do not proceed.** This is not hypothetical: `c1f855d2` on `main` is literally *"fix(migrations): renumber colliding 0045 → 0046 (unbreak main)"*. Two concurrent PRs both taking the next number collide on merge and turn **every** fixture red at once; the `embedded-migrations-unit` failure is the tell. Re-check against freshly-fetched `origin/main`, not a stale local checkout.
 
 - [ ] **Step 2: Write the migration**
 
-Create `src/control-plane/postgres/migrations/0029_ontology_description.sql`:
+Create `src/control-plane/postgres/migrations/0047_ontology_description.sql`:
 
 ```sql
 -- Optional human-readable prose on every declarable ontology entity. Pure annotation:
@@ -780,7 +771,7 @@ Expected: PASS (the migration applies cleanly against a fresh hermetic postgres)
 
 ```bash
 buck2 run //tools:prek -- run --all-files
-git add src/control-plane/postgres/migrations/0029_ontology_description.sql
+git add src/control-plane/postgres/migrations/0047_ontology_description.sql
 git commit -m "feat(postgres): add ontology description columns"
 ```
 
@@ -1147,7 +1138,7 @@ git commit -m "feat(query-api): carry ontology descriptions into generated OpenA
 
 ---
 
-### Task 19: Registers, capability doc, PR 2
+### Task 19: Registers, capability doc, the PR
 
 **Files:**
 - Modify: `docs/ROADMAP.md` (remove `road-ontology-semantic-descriptions`)
@@ -1180,17 +1171,30 @@ buck2 test --console none -j 8 //src/...
 ```
 Expected: `docs.sh validate: OK` and `Tests finished: Pass N. Fail 0`
 
-- [ ] **Step 5: Commit and open PR 2**
+- [ ] **Step 5: Commit and open THE PR**
+
+One PR for both phases, with the refactor and the feature as separate commits.
 
 ```bash
 buck2 run //tools:prek -- run --all-files
 git add docs/
 git commit -m "docs: close road-ontology-semantic-descriptions"
-git push
+git push -u origin work/fut-ontology-semantic-descriptions
 gh pr create --title "feat(ontology): semantic description fields across the ontology" --body "$(cat <<'EOF'
 Optional human-readable `description` on all 7 declarable ontology entities,
 persisted on the `define_*` path and surfaced on `GET /ontology/types/{name}`
 and in the generated OpenAPI document.
+
+**Read this commit-by-commit.** It is two phases:
+
+1. `refactor(*)` / `test(*)` — a pure, behavior-preserving refactor giving the 7
+   ontology structs plain constructors and migrating 705 test/testkit struct
+   literals onto them. No `description` appears in this phase at all. It exists
+   so the field (and the next one) costs ~nothing at call sites.
+2. `feat(*)` — the actual feature: the field, migration 0047, persistence, and
+   the read surface. ~8 files.
+
+Notes:
 
 - No engine-wire `.proto` change: ontology structs cross that wire as serde-JSON
   strings, so `serde(default, skip_serializing_if)` makes old payloads decode and
@@ -1199,6 +1203,11 @@ and in the generated OpenAPI document.
   shared `ontology_contract` (memory + postgres).
 - Derived properties and vector indexes are persist-only: neither is on any read
   surface today. Tracked as `fut-ontology-derived-index-read-surface`.
+
+Review note on phase 1: its risk is semantic, not structural — a
+`PropertyDef { required: true }` migrated to `PropertyDef::new(..)` without
+`.required()` compiles clean and silently inverts a test. It was migrated
+file-by-file and reviewed line-by-line for exactly this.
 
 Spec: `docs/superpowers/specs/2026-07-16-ontology-semantic-descriptions-design.md`
 Closes `road-ontology-semantic-descriptions`.
