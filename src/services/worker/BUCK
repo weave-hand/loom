@@ -1,7 +1,9 @@
 load("//src:loom_test.bzl", "rust_test")
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
 
-# The worker library exposes the flush handler so the e2e test can import it.
+# The worker library exposes the flush handler so the e2e test can import it, and
+# `runtime::run_worker` — the whole process composition — so `worker-bin` and the
+# standalone composite share one code path instead of duplicating it.
 rust_library(
     name = "worker",
     crate = "worker",
@@ -10,6 +12,7 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/control-plane/worker:worker",
         "//src/loom-config:loom-config",
         "//src/services/datafusion-io:datafusion-io",
         "//src/services/engine-wire:engine-wire",
@@ -20,6 +23,7 @@ rust_library(
         "//third-party:serde",
         "//third-party:serde_json",
         "//third-party:time",
+        "//third-party:tokio-util",
         "//third-party:tracing",
         "//third-party:uuid",
     ],

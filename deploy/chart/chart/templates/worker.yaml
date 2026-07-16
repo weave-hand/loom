@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loom.fullname" . }}-worker
+  labels:
+    {{- include "loom.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "loom.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "loom.labels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "loom.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        # The worker is a zero-pool wire client: it drains the queue over the
+        # engine sidecar's control + Flight services on the shared unix socket,
+        # and deliberately carries NO database credentials (the engine owns PG).
+        - name: worker
+          image: {{ include "loom.image" .Values.worker.image | quote }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy | default "IfNotPresent" }}
+          # CWD on the writable /tmp emptyDir (read-only rootfs otherwise).
+          workingDir: /tmp
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          # No probes: the image is binary-only (no shell, no coreutils), so an
+          # exec probe has nothing to run (#356), and the worker exposes no port
+          # to tcpSocket-probe. It fails loud and restarts if the engine socket
+          # is absent — the same posture as the engine sidecar next door.
+          env:
+            - name: LOOM_ENGINE_SOCKET
+              value: {{ .Values.engine.socketPath | quote }}
+            # Stable per-pod queue-lease identity; the binary otherwise mints a
+            # fresh uuid on every restart.
+            - name: LOOM_WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- include "loom.objectStoreEnv" . | nindent 12 }}
+            {{- include "loom.workerWarehouseEnv" . | nindent 12 }}
+            - name: LOOM_LOCK_TIMEOUT_MS
+              value: {{ .Values.lockTimeoutMs | quote }}
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+          volumeMounts:
+            {{- if not .Values.objectStore.s3.enabled }}
+            - name: data
+              mountPath: {{ .Values.objectStore.mountPath }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+            - name: engine-sock
+              mountPath: {{ .Values.engine.socketDir | quote }}
+          {{- with .Values.worker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        # Engine sidecar: same role as in the query-api pod — serves the control
+        # plane + Flight over the shared UDS and owns the Postgres connection. It
+        # reads the same warehouse as the worker, so it mounts the same volume.
+        - name: engine
+          image: {{ include "loom.image" .Values.engine.image | quote }}
+          imagePullPolicy: {{ .Values.engine.image.pullPolicy | default "IfNotPresent" }}
+          workingDir: /tmp
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            # The engine serves on the unix socket, not TCP, but service_runtime's
+            # Config::from_env still parses LOOM_BIND_ADDR — give it a placeholder.
+            - name: LOOM_BIND_ADDR
+              value: "127.0.0.1:{{ .Values.engine.port }}"
+            {{- include "loom.objectStoreEnv" . | nindent 12 }}
+            - name: LOOM_LOCK_TIMEOUT_MS
+              value: {{ .Values.lockTimeoutMs | quote }}
+            - name: HOME
+              value: /tmp
+            - name: TMPDIR
+              value: /tmp
+            - name: LOOM_ENGINE_SOCKET
+              value: {{ .Values.engine.socketPath | quote }}
+            {{- include "loom.dbEnv" . | nindent 12 }}
+            {{- include "loom.migrateOnBootEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- if not .Values.objectStore.s3.enabled }}
+            - name: data
+              mountPath: {{ .Values.objectStore.mountPath }}
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+            - name: engine-sock
+              mountPath: {{ .Values.engine.socketDir | quote }}
+          {{- with .Values.engine.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        {{- if not .Values.objectStore.s3.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "loom.fullname" . }}-data
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+        # Shared socket dir for the worker ⇄ engine-sidecar UDS.
+        - name: engine-sock
+          emptyDir: {}
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.worker.affinity }}
+      affinity:
+        {{- toYaml .Values.worker.affinity | nindent 8 }}
+      {{- else if not .Values.objectStore.s3.enabled }}
+      # Default: co-schedule onto the same node as ingest so both pods can mount
+      # the shared ReadWriteOnce object-store PVC. Override worker.affinity (and
+      # use an RWX storageClassName) to spread across nodes. Skipped under S3 —
+      # each pod reaches the warehouse over egress, so no co-scheduling is needed.
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "loom.selectorLabels" . | nindent 18 }}
+                  app.kubernetes.io/component: ingest
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

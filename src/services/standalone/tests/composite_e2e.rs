@@ -1,11 +1,13 @@
 //! End-to-end: the standalone composite boots embedded PG, serves engine+ingest+
-//! query-api together, round-trips a dataset (ingest POST -> query-api GET over the
-//! engine UDS), and shuts down cleanly on signal.
+//! query-api+worker together, round-trips a dataset (ingest POST -> query-api GET
+//! over the engine UDS), drains a queued job through its in-process worker, and
+//! shuts down cleanly on signal.
 use std::sync::Arc;
 use std::time::Duration;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
+use control_plane_core::{NewJob, Queue};
 use e2e_support::{define_widget, grant_read, session_token, subject_with_role};
 use standalone::StandaloneAddrs;
 
@@ -72,6 +74,104 @@ fn widget_ipc() -> Vec<u8> {
     buf
 }
 
+/// POST the widget batch at the composite's ingest port and assert it lands —
+/// proving the ingest composition (HTTP -> materializer -> Iceberg write ->
+/// snapshot commit on the shared PG).
+async fn land_widgets_via_ingest(
+    client: &reqwest::Client,
+    ingest: std::net::SocketAddr,
+    token: &str,
+) {
+    let land = client
+        .post(format!("http://{ingest}/datasets/main/widget"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/vnd.apache.arrow.stream")
+        .body(widget_ipc())
+        .send()
+        .await
+        .expect("ingest POST");
+    assert!(
+        land.status().is_success(),
+        "ingest landing failed: {}",
+        land.status()
+    );
+}
+
+/// GET `/objects/Widget` from the composite's query-api port and assert both
+/// landed rows come back — proving the query-api -> engine UDS serving wiring
+/// reads what ingest wrote through the one shared catalog.
+async fn assert_reads_back_widgets(
+    client: &reqwest::Client,
+    qapi: std::net::SocketAddr,
+    token: &str,
+) {
+    let read = client
+        .get(format!("http://{qapi}/objects/Widget"))
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .expect("query-api GET");
+    assert_eq!(read.status(), reqwest::StatusCode::OK, "read status");
+    let body: serde_json::Value = read.json().await.expect("json body");
+    let objects = body
+        .get("objects")
+        .and_then(|o| o.as_array())
+        .expect("objects array");
+    assert_eq!(objects.len(), 2, "expected 2 landed widgets, got {body}");
+}
+
+/// Enqueue a `flush_table` job for the landed `main.widget` and assert the
+/// composite's in-process worker drains it.
+///
+/// "Drained" is "the row is gone": only `Queue::complete` deletes it
+/// (postgres/src/queue.rs:108) — Retry leaves `state='available'` and Abandon
+/// leaves `state='failed'` (:120-140) — so an abandoned or retry-looping job
+/// fails this rather than passing it.
+///
+/// The flush itself is a NO-OP: ingest's POST goes through the landing
+/// materializer to Parquet and never writes the inline tier, so `main.widget` has
+/// no live inline rows and `flush_locked` returns `Ok(None)`. That is enough —
+/// the point is that the loop dequeues, dispatches, and completes at all.
+async fn assert_queued_job_drains(cp: &impl Queue, pool: &sqlx::PgPool) {
+    let job = cp
+        .enqueue(NewJob {
+            kind: control_plane_core::FLUSH_JOB_KIND.to_string(),
+            payload: serde_json::json!({ "schema": "main", "name": "widget" }),
+            run_at: None,
+            priority: 0,
+        })
+        .await
+        .expect("enqueue flush_table job");
+
+    let drained = tokio::time::timeout(Duration::from_secs(60), async {
+        loop {
+            let n: i64 = sqlx::query_scalar("select count(*) from queue.jobs where id = $1")
+                .bind(job.0)
+                .fetch_one(pool)
+                .await
+                .expect("count queued job");
+            if n == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    })
+    .await;
+    if drained.is_err() {
+        let row: Option<(String, i32, Option<String>)> =
+            sqlx::query_as("select state, attempts, last_error from queue.jobs where id = $1")
+                .bind(job.0)
+                .fetch_optional(pool)
+                .await
+                .expect("read job state");
+        panic!(
+            "the flush_table job was never drained in 60s; (state, attempts, last_error) = {row:?} \
+             — state='available' with attempts=0 means nothing dequeued it (no worker composed); \
+             state='failed' means a worker ran it and abandoned it"
+        );
+    }
+}
+
 #[tokio::test]
 async fn composite_round_trips_and_shuts_down_cleanly() {
     let tmp = tempfile::tempdir().unwrap();
@@ -118,7 +218,7 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
     let pool = service_runtime::build_pool(&cfg_direct.db)
         .await
         .expect("direct pool");
-    let cp = service_runtime::control_plane(pool, cfg_direct.lock_timeout);
+    let cp = service_runtime::control_plane(pool.clone(), cfg_direct.lock_timeout);
     let (_subj, role) = subject_with_role(&cp, "reader").await;
     let token = session_token(&cp, "reader").await;
 
@@ -126,19 +226,7 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
 
     // (1) Ingest POST lands `main.widget` over HTTP — proves the ingest composition
     //     (HTTP -> materializer -> Iceberg write -> snapshot commit on the shared PG).
-    let land = client
-        .post(format!("http://{ingest}/datasets/main/widget"))
-        .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/vnd.apache.arrow.stream")
-        .body(widget_ipc())
-        .send()
-        .await
-        .expect("ingest POST");
-    assert!(
-        land.status().is_success(),
-        "ingest landing failed: {}",
-        land.status()
-    );
+    land_widgets_via_ingest(&client, ingest, &token).await;
 
     // (2) Define the Widget ontology type over the landed `main.widget` table + grant read.
     define_widget(&cp).await;
@@ -146,19 +234,10 @@ async fn composite_round_trips_and_shuts_down_cleanly() {
 
     // (3) query-api GET /objects/Widget — proves the query-api -> engine UDS serving
     //     wiring, reading back the rows ingest just landed through the one shared catalog.
-    let read = client
-        .get(format!("http://{qapi}/objects/Widget"))
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .expect("query-api GET");
-    assert_eq!(read.status(), reqwest::StatusCode::OK, "read status");
-    let body: serde_json::Value = read.json().await.expect("json body");
-    let objects = body
-        .get("objects")
-        .and_then(|o| o.as_array())
-        .expect("objects array");
-    assert_eq!(objects.len(), 2, "expected 2 landed widgets, got {body}");
+    assert_reads_back_widgets(&client, qapi, &token).await;
+
+    // (3.5) The composite runs a worker in-process, so a queued job drains.
+    assert_queued_job_drains(&cp, &pool).await;
 
     // (4) Graceful shutdown: signal -> composite returns Ok, embedded PG stopped cleanly.
     shutdown_tx.send(()).unwrap();
