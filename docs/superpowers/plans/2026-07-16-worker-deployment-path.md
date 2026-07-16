@@ -138,7 +138,7 @@ impl StandaloneTuning {
 
 - [ ] **Step 5: Add the buck deps**
 
-In `src/services/standalone/BUCK`, add to the `standalone` `rust_library` `deps` (keep the list alphabetically sorted as it is today):
+In `src/services/standalone/BUCK`, add to the `standalone` `rust_library` `deps` (the list is **not** strictly sorted today — `runtime` precedes `managed-postgres` at `:12-19` — so match the surrounding grouping rather than imposing a new order):
 
 ```python
         "//src/services/datafusion-io:datafusion-io",
@@ -182,7 +182,7 @@ git commit -m "feat(standalone): carry worker job config in StandaloneTuning"
 
 The acceptance task. **This is the test that fails on `main` today** — nothing drains a queued job in any composed deployment.
 
-**Why extend `composite_e2e.rs` rather than add a new test file:** the drain assertion needs a booted composite, a direct control-plane pool, and a landed table — `composite_e2e.rs` already has all three. A new fixture test would re-copy `embedded_config` (~24 lines) and the boot harness (~20 lines), which is exactly the cross-file duplication the metric gate rejects (≥20 lines). Reuse the existing test.
+**Why extend `composite_e2e.rs` rather than add a new test file:** the drain assertion needs a **landed table** *and* a booted composite with a direct control-plane pool, and `composite_e2e.rs` is the only test that has both. There is no shared `embedded_config` helper to reach for (query-api's `e2e_support` exports seeding/HTTP helpers only, and `composite_error_path.rs:22-44` already carries its own divergent near-copy). The cost, which the plan accepts: `composite_e2e` becomes a four-concern test, so its module doc must be updated to say so (Step 1).
 
 **Files:**
 - Modify: `src/services/standalone/src/lib.rs` (spawn the worker task in `serve_composite`)
@@ -244,17 +244,34 @@ Then insert this block **after** step (3)'s `assert_eq!(objects.len(), 2, ...)` 
         }
     })
     .await;
-    assert!(
-        drained.is_ok(),
-        "the flush_table job was never drained in 60s — no worker is composed into the standalone composite"
-    );
+    if drained.is_err() {
+        // Distinguish "nothing dequeued it" from "a worker took it and abandoned it":
+        // Retry leaves state='available', Abandon leaves state='failed', and only
+        // `complete` deletes the row (src/control-plane/postgres/src/queue.rs:108-140).
+        let state: Option<(String, i32, Option<String>)> =
+            sqlx::query_as("select state, attempts, last_error from queue.jobs where id = $1")
+                .bind(job.0)
+                .fetch_optional(&pool)
+                .await
+                .expect("read job state");
+        panic!(
+            "the flush_table job was never drained in 60s; (state, attempts, last_error) = {state:?} \
+             (state='available' with attempts=0 => nothing dequeued it, i.e. no worker is composed; \
+             state='failed' => a worker ran it and abandoned it; \
+             attempts>0 with state='available' => it is retry-looping)"
+        );
+    }
 ```
+
+Columns verified against `src/control-plane/postgres/migrations/0001_queue.sql:3-17`: `state text not null`, `attempts int not null default 0`, `last_error text` (nullable).
 
 Also update the module doc at the top of the file (line 1-3) to mention that the composite drains queued jobs.
 
 **On `job.0`:** `JobId(pub Uuid)` (`src/control-plane/core/src/queue.rs:15`) — the field is public, and `src/control-plane/postgres/src/queue.rs:108` binds `id.0` the same way.
 
-**On the job kind:** `main.widget` is landed by step (1) via ingest with a small payload, so it is inline-backed (under the 16 MiB `inline_byte_limit`), and `flush_table` will do real work and succeed. If `handle_flush` turns out to error on this table, do **not** paper over it — read the handler and pick the correct payload; a job that fails and retries is not a drained job.
+**On the job kind — verified, no hedge needed.** `main.widget` is landed by step (1) via ingest with a two-row payload, far under the 16 MiB `inline_byte_limit` (`src/services/ingest/src/config.rs:64`), so it is inline-backed and `flush_table` does real work. And `handle_flush` **cannot** error on this table even if it were empty: `flush_locked` maps a missing snapshot to the empty case (`Err(ControlPlaneError::NotFound(_)) => return Ok(None)`, `iceberg_flush.rs:89-93`) and the RPC passes the `Option` straight through (`engine/src/service.rs:379-381`) — no inline rows ⇒ `Ok(None)` ⇒ the job completes.
+
+**No competing job.** `inline_append` auto-enqueues a flush only when a write crosses `flush_byte_threshold`, defaulted to 64 MiB (`ingest/src/config.rs:65`; trigger at `iceberg_inline.rs:772-802`). The test's batch is nowhere near it, so there is no pre-existing undrained job on `main` and nothing races the test's job. `enqueue` is a plain insert with no dedup, so the test's job always gets its own uuid.
 
 - [ ] **Step 2: Run test to verify it fails**
 
