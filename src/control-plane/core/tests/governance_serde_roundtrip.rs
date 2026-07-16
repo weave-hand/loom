@@ -5,8 +5,8 @@
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, Aggregation, Cardinality, CompareOp, Decision,
     DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, Metric, ObjectType, Page, PageReq,
-    ParamDef, Policy, PolicyTarget, PropertyDef, RowFilter, ScalarValue, SubjectId, TableRef,
-    TypeName, VectorIndexDef,
+    ParamDef, Policy, PolicyTarget, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
 };
 
 fn roundtrip<T>(v: &T)
@@ -49,39 +49,26 @@ fn acl_payloads_roundtrip() {
 
 #[test]
 fn ontology_payloads_roundtrip() {
-    let ty = ObjectType {
-        name: TypeName("customer".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "int".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![DerivedPropertyDef {
-            name: "order_count".into(),
-            ty: "int".into(),
-            link: "orders".into(),
-            agg: Aggregation::Count,
-        }],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    };
+    let ty = ObjectType::build("customer", ("main", "customer"))
+        .prop_req("id", "int")
+        .derived(DerivedPropertyDef::new(
+            "order_count",
+            "int",
+            "orders",
+            Aggregation::Count,
+        ))
+        .identity("id")
+        .done();
     roundtrip(&ty);
     roundtrip(&Page {
-        items: vec![LinkDef {
-            name: "orders".into(),
-            from: TypeName("customer".into()),
-            to: TypeName("order".into()),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::ForeignKey {
-                from_column: "id".into(),
-                to_column: "customer_id".into(),
-            },
-        }],
+        items: vec![LinkDef::fk(
+            "orders",
+            "customer",
+            "order",
+            Cardinality::Many,
+            "id",
+            "customer_id",
+        )],
         next: None,
     });
     roundtrip(&ActionDef::single_step(
@@ -97,28 +84,18 @@ fn ontology_payloads_roundtrip() {
         TypeName("order".into()),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "amount".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "note".into(),
-                ty: "String".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("amount", "Long").required(),
+            ParamDef::new("note", "String"),
         ],
         vec![],
     ));
-    roundtrip(&VectorIndexDef {
-        name: "emb_idx".into(),
-        type_name: TypeName("customer".into()),
-        property: "embedding".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Flat,
-    });
+    roundtrip(&VectorIndexDef::new(
+        "emb_idx",
+        "customer",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    ));
     // Non-default IndexSpec variants.
     roundtrip(&IndexSpec::IvfFlat { nlist: Some(128) });
     roundtrip(&IndexSpec::IvfFlat { nlist: None });
@@ -131,16 +108,13 @@ fn ontology_payloads_roundtrip() {
         ef_construction: None,
     });
     // JoinTable LinkBacking variant.
-    roundtrip(&LinkBacking::JoinTable {
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer_group".into(),
-        },
-        from_key: "id".into(),
-        from_column: "customer_id".into(),
-        to_column: "group_id".into(),
-        to_key: "id".into(),
-    });
+    roundtrip(&LinkBacking::join_table(
+        ("main", "customer_group"),
+        "id",
+        "customer_id",
+        "group_id",
+        "id",
+    ));
     // Non-Count Aggregation variants.
     roundtrip(&Aggregation::Sum("amount".into()));
     roundtrip(&Aggregation::Avg("score".into()));

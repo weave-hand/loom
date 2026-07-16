@@ -13,12 +13,7 @@ fn single_step_serializes_flat() {
         ActionName("createWidget".into()),
         tn("Widget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![Assignment::constant("status", serde_json::json!("active"))],
     );
     let v = serde_json::to_value(&a).expect("serialize");

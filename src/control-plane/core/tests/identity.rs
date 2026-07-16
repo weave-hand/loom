@@ -109,14 +109,7 @@ use control_plane_core::{
 };
 
 fn otype(name: &str, schema: &str, table: &str) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        properties: vec![],
-        derived: vec![],
-        table: tref(schema, table),
-        identity: None,
-        version: None,
-    }
+    ObjectType::build(name, (schema, table)).done()
 }
 
 #[test]
