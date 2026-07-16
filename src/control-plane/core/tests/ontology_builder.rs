@@ -250,3 +250,22 @@ fn vector_index_def_new_carries_metric_and_spec() {
     assert_eq!(v.metric, Metric::Cosine);
     assert_eq!(v.spec, IndexSpec::Flat);
 }
+
+#[test]
+fn add_prop_appends_a_prebuilt_property_in_order() {
+    let t = ObjectType::build("Customer", ("wh", "customers"))
+        .prop_req("id", "Long")
+        .add_prop(PropertyDef::new("email", "EmailAddress").required())
+        .prop("note", "String")
+        .identity("id")
+        .done();
+
+    let names: Vec<&str> = t.properties.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["id", "email", "note"],
+        "add_prop must append in call order"
+    );
+    assert!(t.properties[1].required);
+    assert_eq!(t.identity.as_deref(), Some("id"));
+}

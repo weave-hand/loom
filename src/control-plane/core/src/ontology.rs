@@ -167,6 +167,13 @@ impl ObjectTypeBuilder {
         self
     }
 
+    /// Append an already-built [`PropertyDef`] — the escape hatch for properties needing
+    /// the full surface (constraints, description) rather than the `prop`/`prop_req` shorthands.
+    pub fn add_prop(mut self, prop: PropertyDef) -> Self {
+        self.inner.properties.push(prop);
+        self
+    }
+
     /// Append a derived (aggregate-over-link) property. Passthrough — the
     /// [`DerivedPropertyDef`] literal is already minimal.
     pub fn derived(mut self, def: DerivedPropertyDef) -> Self {
