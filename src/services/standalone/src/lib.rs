@@ -15,29 +15,47 @@ pub struct StandaloneAddrs {
     pub engine_socket: String,
 }
 
-/// Env-derived tunables the composite passes to its services: the auth TTLs and
-/// the engine write-path byte thresholds. Parsed once from the main's env
-/// snapshot (fail-loud on malformed values) and handed into [`run`]; the
-/// composite itself never reads the live environment.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Env-derived tunables the composite passes to its services: the auth TTLs, the
+/// engine write-path byte thresholds, and the in-process worker's job config.
+/// Parsed once from the main's env snapshot (fail-loud on malformed values) and
+/// handed into [`run`]; the composite itself never reads the live environment.
+///
+/// Not `Copy`/`Eq`: `jobs.write` is a `WriteConfig`, which holds an `f64` and is
+/// `Clone`-only.
+#[derive(Clone, Debug)]
 pub struct StandaloneTuning {
     pub session_ttl: std::time::Duration,
     pub max_ttl: std::time::Duration,
     pub lockout: service_runtime::LockoutPolicy,
     pub engine: engine::EngineTuning,
+    /// Worker loop + write-path config for the in-process worker. Composed
+    /// defaults < file < env, exactly as `worker-bin` does it.
+    pub jobs: datafusion_io::JobConfig,
+    /// Compaction size threshold, `LOOM_COMPACT_THRESHOLD_BYTES` (default 128 MiB).
+    /// Mirrors `src/services/worker/src/main.rs:53-54`.
+    pub compact_threshold_bytes: i64,
 }
 
 impl StandaloneTuning {
     /// Parse from the env snapshot. Absent keys take the documented defaults
-    /// (24h session TTL, 90-day token cap, 16 MiB inline / 64 MiB flush).
+    /// (24h session TTL, 90-day token cap, 16 MiB inline / 64 MiB flush,
+    /// 5s worker poll, 128 MiB compaction threshold).
     pub fn from_map(
         vars: &std::collections::HashMap<String, String>,
     ) -> Result<Self, service_runtime::ConfigError> {
+        let mut compact_threshold_bytes: i64 = 128 * 1024 * 1024;
+        service_runtime::overlay_opt(
+            vars,
+            "LOOM_COMPACT_THRESHOLD_BYTES",
+            &mut compact_threshold_bytes,
+        )?;
         Ok(StandaloneTuning {
             session_ttl: service_runtime::session_ttl(vars)?,
             max_ttl: service_runtime::service_token_max_ttl(vars)?,
             lockout: service_runtime::login_lockout(vars)?,
             engine: engine::EngineTuning::from_map(vars)?,
+            jobs: service_runtime::load(vars)?,
+            compact_threshold_bytes,
         })
     }
 }
@@ -84,6 +102,10 @@ async fn serve_composite(
         lockout: tuning.lockout,
     };
     let max_ttl = tuning.max_ttl;
+    // `StandaloneTuning` is no longer `Copy` (it carries a `WriteConfig`), so take
+    // the engine's tuning out before the spawn below moves `tuning`.
+    // `engine::EngineTuning` IS `Copy`, so this is a copy.
+    let engine_tuning = tuning.engine;
 
     // One shutdown source fanned out to all three servers via a watch channel.
     // The sender stays in this frame so BOTH an external shutdown signal AND the
@@ -117,7 +139,7 @@ async fn serve_composite(
                 engine_listener,
                 &engine_cfg,
                 engine_pool,
-                tuning.engine,
+                engine_tuning,
                 eng_ready_tx,
                 engine_sd,
             )

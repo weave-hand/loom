@@ -5,7 +5,7 @@
 //! already depends on `loom-config` — the reverse edge would cycle.
 use crate::WriteConfig;
 
-#[derive(Default, serde::Deserialize)]
+#[derive(Default, Clone, Debug, serde::Deserialize)]
 #[serde(default)]
 pub struct JobConfig {
     pub worker: loom_config::WorkerTuning,

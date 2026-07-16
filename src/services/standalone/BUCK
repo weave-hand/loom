@@ -9,6 +9,7 @@ rust_library(
     edition = "2024",
     deps = [
         "//src/control-plane/core:core",
+        "//src/services/datafusion-io:datafusion-io",
         "//src/services/engine:engine",
         "//src/services/ingest:ingest",
         "//src/services/query-api:query-api",
