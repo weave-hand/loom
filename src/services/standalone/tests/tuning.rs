@@ -48,5 +48,12 @@ fn worker_job_config_overlays_from_env() {
 fn malformed_compact_threshold_is_startup_error() {
     let mut vars: HashMap<String, String> = HashMap::new();
     vars.insert("LOOM_COMPACT_THRESHOLD_BYTES".into(), "big".into());
-    assert!(StandaloneTuning::from_map(&vars).is_err());
+    let err = StandaloneTuning::from_map(&vars).unwrap_err();
+    // Attribute the error to THIS var, like `malformed_ttl_is_startup_error` does:
+    // a bare `is_err()` would still pass if a reorder of `from_map` made some other
+    // field fail first, so it would stop proving the threshold is parsed fail-loud.
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_COMPACT_THRESHOLD_BYTES")
+    );
 }
