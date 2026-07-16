@@ -10,7 +10,7 @@ submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
 below). The deployable targets live in their own `deploy//` buck2 cell
 (deliberately off the normal `//src` CI sweep — see below).
 
-_Capabilities as of 4861433b._
+_Capabilities as of 649b69f1._
 
 ## What ships
 

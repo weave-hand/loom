@@ -104,7 +104,10 @@ echo "$OUT" | hasnt 'ui-config'
 # at 8 spaces of indent; nested keys are deeper, so the next `- name: ` at that exact
 # indent is the sidecar boundary).
 worker_deploy() { echo "$1" | awk '/^kind: Deployment$/{d=1} d && /component: worker/{p=1} p; /^---$/{if(p)exit}'; }
-worker_container() { worker_deploy "$1" | awk '/^        - name: worker$/{f=1;next} f && /^        - name: /{exit} f'; }
+# Stop at the sidecar's leading comment block too, not just its `- name:` — otherwise
+# those 8-space `#` lines land inside "the worker container" and a future comment
+# mentioning LOOM_DB_ would fail the zero-pool assertion spuriously.
+worker_container() { worker_deploy "$1" | awk '/^        - name: worker$/{f=1;next} f && (/^        - name: /||/^        #/){exit} f'; }
 
 echo "== worker: Deployment renders with worker + engine containers =="
 OUT="$(helm template loom "$CHART")"
@@ -122,6 +125,15 @@ echo "== worker: LOOM_WAREHOUSE_URI is set in BOTH warehouse modes =="
 worker_container "$OUT" | has 'LOOM_WAREHOUSE_URI'
 worker_container "$OUT" | has 'file:///var/lib/loom/data'
 worker_container "$S3OUT" | has 's3://b'
+
+echo "== worker: workerWarehouseEnv did not leak onto the pod's engine sidecar =="
+# The `without_worker` guard above drops the WHOLE worker document, so it cannot
+# see this pod's own engine sidecar — which is pooled and must still fall back to
+# LOOM_DATA_PATH. Exactly one LOOM_WAREHOUSE_URI in the file:// worker pod: the
+# worker container's. Without this, pasting the helper onto the sidecar would
+# render the var on a pooled container and no assertion would fail.
+[ "$(worker_deploy "$OUT" | grep -c 'name: LOOM_WAREHOUSE_URI')" = "1" ] \
+  || fail "workerWarehouseEnv leaked past the worker container"
 
 echo "== worker: container carries NO DB credentials (zero-pool) =="
 # Only the engine sidecar talks to PG.
