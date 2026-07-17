@@ -18,8 +18,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, ActionDef, ActionName, Auth, Catalog, ControlPlane, ControlPlaneError, Effect,
-    Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, PolicyTarget, PropertyDef, Queue,
-    RoleId, SubjectId, TableRef, Transforms, Tx, TypeName, VectorIndexDef,
+    Lineage, LinkDef, ObjectType, Ontology, Page, PageReq, PolicyTarget, Queue, RoleId, SubjectId,
+    TableRef, Transforms, Tx, TypeName, VectorIndexDef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -197,30 +197,11 @@ impl ControlPlane for GatedControlPlane {
 }
 
 fn widget_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Widget", ("main", "widget"))
+        .prop_req("id", "Long")
+        .prop("name", "String")
+        .identity("id")
+        .done()
 }
 
 /// Seed the real memory control plane: "Widget" (granted to "reader") and
@@ -230,19 +211,9 @@ fn widget_type() -> ObjectType {
 async fn seeded() -> GatedControlPlane {
     let mem = MemoryControlPlane::new(Duration::from_millis(300));
     mem.define_type(widget_type()).await.unwrap();
-    mem.define_type(ObjectType {
-        name: TypeName("Nope".into()),
-        properties: vec![],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "nope".into(),
-        },
-        identity: None,
-        version: None,
-    })
-    .await
-    .unwrap();
+    mem.define_type(ObjectType::build("Nope", ("main", "nope")).done())
+        .await
+        .unwrap();
 
     let reader = RoleId("reader".into());
     let reader_all = RoleId("reader_all".into());

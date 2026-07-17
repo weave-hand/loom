@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, TypeName};
+use control_plane_core::{Cardinality, LinkDef, ObjectType, Ontology};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -63,54 +63,45 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         .await;
 
     // Customer declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-        derived: vec![],
-        table: cust.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.clone(), cust.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // Order declares identity `order_id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            prop("order_id", "Long", true),
-            prop("customer_id", "Long", true),
-            prop("status", "String", false),
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: Some("order_id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.clone(), ord.name.clone()))
+            .add_prop(prop("order_id", "Long", true))
+            .add_prop(prop("customer_id", "Long", true))
+            .add_prop(prop("status", "String", false))
+            .identity("order_id")
+            .done(),
+    )
     .await
     .unwrap();
     // Plain: a type with NO declared identity, backed by the customer table.
-    cp.define_type(ObjectType {
-        name: TypeName("Plain".into()),
-        properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-        derived: vec![],
-        table: cust.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Plain", (cust.schema.clone(), cust.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", false))
+            .done(),
+    )
     .await
     .unwrap();
 
     // Customer -> Order over the FK (customer.id = orders.customer_id).
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 

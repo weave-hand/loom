@@ -6,8 +6,7 @@ use std::sync::Arc;
 
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, Cardinality, ControlPlane, ControlPlaneError,
-    LinkBacking, LinkDef, ObjectType, PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId,
-    SubjectId, TableRef, TypeName,
+    LinkBacking, LinkDef, ObjectType, PageReq, ParamDef, PolicyTarget, RoleId, SubjectId, TypeName,
 };
 use control_plane_postgres::fixture::PgFixture;
 use e2e_support::{connect_gov_client, spawn_engine};
@@ -39,57 +38,42 @@ async fn seed(
         (&group, "group"),
     ] {
         cp.ontology()
-            .define_type(ObjectType {
-                name: name.clone(),
-                properties: vec![PropertyDef {
-                    name: "id".into(),
-                    ty: "long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                }],
-                derived: vec![],
-                table: TableRef {
-                    schema: "main".into(),
-                    name: table.into(),
-                },
-                identity: Some("id".into()),
-                version: None,
-            })
+            .define_type(
+                ObjectType::build(name.0.clone(), ("main", table))
+                    .prop_req("id", "long")
+                    .identity("id")
+                    .done(),
+            )
             .await
             .expect("define_type");
     }
     // FK link: customer -> order (one-to-many).
     cp.ontology()
-        .define_link(LinkDef {
-            name: "orders".into(),
-            from: customer.clone(),
-            to: order.clone(),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::ForeignKey {
-                from_column: "id".into(),
-                to_column: "customer_id".into(),
-            },
-        })
+        .define_link(LinkDef::fk(
+            "orders",
+            customer.0.clone(),
+            order.0.clone(),
+            Cardinality::Many,
+            "id",
+            "customer_id",
+        ))
         .await
         .expect("define_link fk");
     // JoinTable link: customer <-> group (many-to-many via membership table).
     cp.ontology()
-        .define_link(LinkDef {
-            name: "memberships".into(),
-            from: customer.clone(),
-            to: group.clone(),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::JoinTable {
-                table: TableRef {
-                    schema: "main".into(),
-                    name: "customer_group".into(),
-                },
-                from_key: "id".into(),
-                from_column: "customer_id".into(),
-                to_column: "group_id".into(),
-                to_key: "id".into(),
-            },
-        })
+        .define_link(LinkDef::new(
+            "memberships",
+            customer.0.clone(),
+            group.0.clone(),
+            Cardinality::Many,
+            LinkBacking::join_table(
+                ("main", "customer_group"),
+                "id",
+                "customer_id",
+                "group_id",
+                "id",
+            ),
+        ))
         .await
         .expect("define_link join_table");
     // Action with parameters (covers ParamDef wire payload + get_action RPC).
@@ -99,18 +83,8 @@ async fn seed(
             customer.clone(),
             ActionKind::Insert,
             vec![
-                ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "email".into(),
-                    ty: "String".into(),
-                    required: false,
-                    binds: None,
-                },
+                ParamDef::new("name", "String").required(),
+                ParamDef::new("email", "String"),
             ],
             vec![],
         ))

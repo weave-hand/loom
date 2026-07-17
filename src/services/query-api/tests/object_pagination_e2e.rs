@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Aggregation, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef, ObjectType, Ontology,
-    TypeName,
+    Aggregation, Cardinality, DerivedPropertyDef, LinkDef, ObjectType, Ontology,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -45,39 +44,35 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![prop("id", "Long", true), prop("amount", "Long", false)],
-        derived: vec![],
-        table: ord.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.clone(), ord.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("amount", "Long", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // Plain: no declared identity, backed by the same table.
-    cp.define_type(ObjectType {
-        name: TypeName("Plain".into()),
-        properties: vec![prop("id", "Long", true), prop("amount", "Long", false)],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Plain", (ord.schema.clone(), ord.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("amount", "Long", false))
+            .done(),
+    )
     .await
     .unwrap();
     // DoubleId: identity declared as a `Double` logical type — not one the cursor
     // round-trips (`sqlvalue_to_id_string` only handles Int/Text losslessly). The guard
     // in `read_object_page` must reject this before compiling/executing, so the
     // underlying `amount` column's physical type (long) never matters for this fixture.
-    cp.define_type(ObjectType {
-        name: TypeName("DoubleId".into()),
-        properties: vec![prop("id", "Long", true), prop("amount", "Double", false)],
-        derived: vec![],
-        table: ord.clone(),
-        identity: Some("amount".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("DoubleId", (ord.schema.clone(), ord.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("amount", "Double", false))
+            .identity("amount")
+            .done(),
+    )
     .await
     .unwrap();
 
@@ -279,42 +274,38 @@ async fn setup_with_derived(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![prop("id", "Long", true), prop("customer_id", "Long", true)],
-        derived: vec![],
-        table: ord.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.clone(), ord.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("customer_id", "Long", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![DerivedPropertyDef {
-            name: "orderCount".into(),
-            ty: "Long".into(),
-            link: "orders".into(),
-            agg: Aggregation::Count,
-        }],
-        table: cust.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.clone(), cust.name.clone()))
+            .add_prop(prop("id", "Long", true))
+            .derived(DerivedPropertyDef::new(
+                "orderCount",
+                "Long",
+                "orders",
+                Aggregation::Count,
+            ))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 

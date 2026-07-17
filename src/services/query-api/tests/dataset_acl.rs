@@ -64,14 +64,7 @@ async fn backing_type_grant_makes_table_readable_via_fallback() {
     // name, properties, derived, table, identity: Option<String>, version: Option<String>.
     // The fallback only reads `ty.table`/`ty.name`, so empty props / no identity suffice.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Event".into()),
-            properties: vec![],
-            derived: vec![],
-            table: tref("main", "events"),
-            identity: None,
-            version: None,
-        })
+        .define_type(ObjectType::build("Event", ("main", "events")).done())
         .await
         .unwrap();
     let (subj, role) = subject_in_role(&cp, "typed").await;

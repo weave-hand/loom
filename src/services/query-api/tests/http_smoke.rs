@@ -8,8 +8,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, Effect, ObjectType, Ontology, PolicyTarget, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -67,22 +66,11 @@ impl ActionEngine for StubAction {
 /// A control plane with the `Order` type and an analyst granted `Read` on it.
 async fn seeded_control_plane() -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "orders".into(),
-        },
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "orders"))
+            .prop_req("id", "Long")
+            .done(),
+    )
     .await
     .unwrap();
     let analyst = SubjectId("analyst".into());

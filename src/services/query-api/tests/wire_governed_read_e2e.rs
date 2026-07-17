@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use control_plane_core::{
     Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, Ontology, Policy, PolicyTarget,
-    PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    RoleId, RowFilter, ScalarValue, SubjectId, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -45,36 +45,13 @@ async fn governed_read_parity_over_wire() {
         .await;
 
     // 2. Ontology: type Order -> main.orders.
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "secret".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "orders".into(),
-        },
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "orders"))
+            .prop_req("id", "Long")
+            .prop("status", "String")
+            .prop("secret", "String")
+            .done(),
+    )
     .await
     .unwrap();
 

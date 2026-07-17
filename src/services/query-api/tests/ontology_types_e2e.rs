@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use control_plane_core::{ObjectType, Ontology, TypeName};
+use control_plane_core::{ObjectType, Ontology};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{InProcessServingEngine, get, prop, tref};
+use e2e_support::{InProcessServingEngine, get, prop};
 
 /// Define two object types (`customer`, `orders`), each backed by its own table. No
 /// data needs to be seeded — the endpoint only reads ontology metadata.
@@ -17,24 +17,20 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine) {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: tref("main", "customer"),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("customer", ("main", "customer"))
+            .add_prop(prop("id", "Long", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("orders".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: tref("main", "orders"),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("orders", ("main", "orders"))
+            .add_prop(prop("id", "Long", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 

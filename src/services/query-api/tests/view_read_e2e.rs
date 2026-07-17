@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, Effect, LinkBacking, LinkDef,
-    ObjectType, PolicyTarget, RoleId, RowFilter, ScalarValue, TableRef, TypeName, ViewDef,
+    Acl, Action, Cardinality, Catalog, CompareOp, ControlPlane, Effect, LinkDef, ObjectType,
+    PolicyTarget, RoleId, RowFilter, ScalarValue, TableRef, ViewDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -376,16 +376,14 @@ async fn link_traversal_through_view_bound_type_stays_in_view() {
         .await
         .unwrap();
     cp.ontology()
-        .define_link(LinkDef {
-            name: "customer".into(),
-            from: TypeName("Order".into()),
-            to: TypeName("CustomerEu".into()),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::ForeignKey {
-                from_column: "customer_id".into(),
-                to_column: "id".into(),
-            },
-        })
+        .define_link(LinkDef::fk(
+            "customer",
+            "Order",
+            "CustomerEu",
+            Cardinality::Many,
+            "customer_id",
+            "id",
+        ))
         .await
         .unwrap();
 

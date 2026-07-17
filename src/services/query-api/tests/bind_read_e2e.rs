@@ -3,8 +3,8 @@
 //! loom's two layers (landing + model) meet.
 
 use control_plane_core::{
-    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, PropertyDef, RoleId, SubjectId,
-    TableRef, TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, SubjectId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -53,33 +53,11 @@ async fn landed_then_bound_dataset_is_queryable() {
     bind(
         &iceberg_cat,
         &cp,
-        ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "email".into(),
-                    ty: "EmailAddress".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "amount".into(),
-                    ty: "Double".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            table: table.clone(),
-            identity: None,
-            version: None,
-        },
+        ObjectType::build("Customer", (table.schema.clone(), table.name.clone()))
+            .prop_req("id", "Long")
+            .prop("email", "EmailAddress")
+            .prop("amount", "Double")
+            .done(),
     )
     .await
     .unwrap();

@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, PropertyDef, SubjectId, TableRef,
-    TypeName,
+    Cardinality, LinkDef, ObjectType, Ontology, PropertyDef, SubjectId, TableRef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -67,53 +66,38 @@ impl ActionEngine for StubAction {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// An ontology with `Customer` and `Order` and one FK link `Order.customer -> Customer`.
 async fn seeded_control_plane() -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customers".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", ("main", "customers"))
+            .add_prop(prop("id", "Long", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![prop("id", "Long", true), prop("note", "String", false)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "orders".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "orders"))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("note", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "customer".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("Customer".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "customer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    ))
     .await
     .unwrap();
     cp

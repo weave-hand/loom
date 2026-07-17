@@ -7,8 +7,8 @@
 //! first exercise of the rendered `ILIKE ... ESCAPE '\'` SQL against DataFusion.
 
 use control_plane_core::{
-    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId,
-    SubjectId, TableRef, TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, RoleId, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -57,33 +57,13 @@ async fn setup(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "amount".into(),
-                ty: "Double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "active".into(),
-                ty: "Boolean".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.clone(), ord.name.clone()))
+            .prop_req("id", "Long")
+            .prop("amount", "Double")
+            .prop("active", "Boolean")
+            .done(),
+    )
     .await
     .unwrap();
 
@@ -325,33 +305,13 @@ async fn setup_ranges_and_text(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "amount".into(),
-                ty: "Double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.clone(), ord.name.clone()))
+            .prop_req("id", "Long")
+            .prop("amount", "Double")
+            .prop_req("name", "String")
+            .done(),
+    )
     .await
     .unwrap();
 

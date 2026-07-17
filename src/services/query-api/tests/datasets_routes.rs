@@ -464,17 +464,7 @@ async fn datasets_list_is_empty_for_ungranted_subject() {
 async fn type_grant_lists_backing_table() {
     let (cp, _) = seeded();
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Event".into()),
-            properties: vec![],
-            derived: vec![],
-            table: TableRef {
-                schema: "main".into(),
-                name: "events".into(),
-            },
-            identity: None,
-            version: None,
-        })
+        .define_type(ObjectType::build("Event", ("main", "events")).done())
         .await
         .unwrap();
     let subj = SubjectId("analyst".into());

@@ -4,37 +4,23 @@
 
 use std::collections::HashSet;
 
-use control_plane_core::{ObjectType, PropertyDef, TableRef, TypeName};
+use control_plane_core::{ObjectType, PropertyDef};
 use query_api::governed::{GovernedType, Projection};
 use query_api::handler::QueryError;
 use query_api::serving::{Rows, SqlValue};
 
 fn prop(name: &str, ty: &str) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    PropertyDef::new(name, ty)
 }
 
 fn governed(denied: &[&str], masked: &[&str]) -> GovernedType {
     GovernedType {
-        otype: ObjectType {
-            name: TypeName("Order".into()),
-            properties: vec![
-                prop("id", "Long"),
-                prop("status", "String"),
-                prop("secret", "String"),
-            ],
-            derived: vec![],
-            table: TableRef {
-                schema: "main".into(),
-                name: "orders".into(),
-            },
-            identity: Some("id".into()),
-            version: None,
-        },
+        otype: ObjectType::build("Order", ("main", "orders"))
+            .add_prop(prop("id", "Long"))
+            .add_prop(prop("status", "String"))
+            .add_prop(prop("secret", "String"))
+            .identity("id")
+            .done(),
         row_filters: vec![],
         denied: denied
             .iter()
