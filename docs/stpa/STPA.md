@@ -1,4 +1,4 @@
-# STPA Control Analysis: weave-hand/loom @ fc04722
+# STPA Control Analysis: weave-hand/loom @ 0d12c60
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
@@ -15,7 +15,7 @@ Read top-down: **Losses** are outcomes we must never cause; **Hazards** are syst
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** control-plane (queue, catalog, ontology, ACL, lineage), postgres adapter, worker loop (flush, GC, compact, transform, typed-transform, build_vector_index, stream_consolidate, stream_mv, sweep_orphans), ingest (landing, materializer, model-binding), query-api (governed object reads, typed insert/update/delete, governed links, lineage ACL-filtered reads, Flight export, external SQL wire slice 2, subscribe/changes feed, graph queries, action downstream with write-then-enqueue, catalog views, per-dataset catalog ACL gating, computed action assignments), engine (DataFusion serving over Flight SQL, vector search, flush, GC, consolidate, merge-on-read, mv_delta, mv_enrich, GovernedTableProvider physical enforcement, EndCapIntent write-path refusals, compaction auto-trigger), service runtime (auth, admin provisioning, service accounts, login lockout, password lifecycle), CDC merge engines (LastRow, FirstRow, Versioned), action downstream (write-then-enqueue), scheduled maintenance (cron GC/compaction), standalone composite, UI (Yew WASM), OCI deploy
+- **Built:** control-plane (queue, catalog, ontology, ACL, lineage), postgres adapter, worker loop (flush, GC, compact, transform, typed-transform, build_vector_index, stream_consolidate, stream_mv, sweep_orphans), ingest (landing, materializer, model-binding), query-api (governed object reads, typed insert/update/delete, governed links, lineage ACL-filtered reads, Flight export, external SQL wire slice 2, subscribe/changes feed, graph queries, action downstream with write-then-enqueue, catalog views, per-dataset catalog ACL gating, computed action assignments), engine (DataFusion serving over Flight SQL, vector search, flush, GC, consolidate, merge-on-read, mv_delta, mv_enrich, GovernedTableProvider physical enforcement, EndCapIntent write-path refusals, compaction auto-trigger), service runtime (auth, admin provisioning, service accounts, login lockout, password lifecycle), CDC merge engines (LastRow, FirstRow, Versioned), action downstream (write-then-enqueue), scheduled maintenance (cron GC/compaction), standalone composite, dedicated worker deployment (binary + Helm), UI (Yew WASM), OCI deploy
 - **Designed-only:** ontology versioning/migration, distributed DataFusion / Ballista, aggregate-class merge engines (Aggregation, PartialUpdate)
 </details>
 
@@ -185,13 +185,14 @@ flowchart TD
 | `policy-fetch.stale` | `acl` → `query-api`: policy rows for subject+target | stale | load_policy fetches policy rows in a separate query after the acl.check gate; a concurrent revoke between the two calls means the query runs with a policy the subject no longer holds | high | stale-policy, phantom-rows | governed.rs:103 |
 
 <details>
-<summary><b>Not UCAs</b>: 43 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 45 examined and rejected</summary>
 
 - **EndCapIntent write-path refusals**: stream-table overwrite, typed UPDATE/DELETE on log tables, and MV-over-CDC are refused at the control-plane type level via EndCapIntent (Reframing/Removing/Destroying), preventing unsafe write combinations
 - **Flight export governed SQL**: FlightExportService runs the governed SQL path (GovernedStatementQuery) through the same ACL prologue as object reads; the Arrow stream carries the same row/column governance as the JSON path
 - **Flight export with revoked token mid-stream**: the auth gate runs once at request start; a token revoked during streaming does not interrupt the in-flight response — bounded by the query's execution time, not a persistent access leak
 - **GovernedTableProvider physical enforcement**: external SQL wire's governed catalog is enforced physically in the engine via GovernedTableProvider (engine-serving/src/governed.rs:176) — row filters, column denial, and column masking are pushed into DataFusion predicates, not just omitted from SQL generation
 - **MV enrich full-scan fallback**: when distinct lookup keys exceed MAX_LOOKUP_KEYS (10,000), the worker falls back to a full enrich table scan — always correct, only more expensive
+- **MV registration bootstrap at surviving offsets**: define_transform takes the source table's lock_key advisory lock and bootstraps watermarks to the source's earliest surviving offsets; a concurrent GC cannot reclaim below the new floor (postgres/src/mv_bootstrap.rs)
 - **MV watermark-aware GC floor holds**: GC's reclaim of MV sources is bounded by per-bucket mv_floor (postgres/src/iceberg_gc.rs:138); holds are counted, logged, and escapable via delete_transform
 - **Maintenance firing dedup suppression**: if an available job of the same (kind, payload) exists, the schedule clock advances but no duplicate job is enqueued — the existing job covers the work
 - **Per-dataset catalog ACL gating**: GET /datasets, GET /datasets/{s}/{t}, and preview reads are per-dataset ACL-gated under DatasetVisibility (dataset_acl.rs), closing the prior catalog/lineage governance asymmetry
@@ -224,6 +225,7 @@ flowchart TD
 - **queue.enqueue with oversized payload**: Postgres TEXT column accepts arbitrary length; an oversized payload is a capacity concern, not a correctness one, and is bounded by the HTTP body limit upstream
 - **queue.fail with exhausted retries**: RetryPolicy caps retries; a job that exceeds the cap transitions to 'dead' — visible in the queue table for manual intervention
 - **service-token mint with max_ttl**: token TTL is capped by LOOM_SERVICE_TOKEN_MAX_TTL (default 90d); a request above the cap is rejected 400 — no immortal tokens
+- **snapshot_intact evidence-then-watermark read ordering**: time-travel retention check reads evidence (surviving rows) before the monotone reclaimed_through watermark on the same connection; concurrent GC between the two reads cannot produce a false intact verdict (iceberg_catalog.rs:506)
 - **stream feed engine fault mid-stream**: subscribe.rs closes the NDJSON stream on engine fault; the client sees a closed stream (HTTP 200 body ends) and resumes from its last cursor — no silent data loss
 - **transform conformance gate**: typed transforms check output conformance BEFORE any rows are written; a non-conforming result writes/commits nothing (worker/src/transform.rs:304)
 - **transform duplicate input name**: run_wire_transform rejects duplicate input registration names up front; DataFusion shadowing is prevented (worker/src/transform.rs:239)
@@ -240,7 +242,6 @@ flowchart TD
 - MV CDC declare-register race: concurrent CDC declaration and MV registration can interleave into a wedged state — both guards hold no shared lock (#iss-mv-cdc-declare-register-race)
 - MV LookupOn verification: v1 does not parse the standing query's SQL to verify that the declared join columns match the actual equijoin — a mismatch silently drops join partners (stream_mv_job.rs:34)
 - MV floor holds pre-declaration files: pre-declaration data files (no loom_offset stat) are held forever by the MV floor fail-safe (#iss-mv-floor-holds-pre-declaration-files)
-- MV registration below reclaimed floor: a newly registered MV floors at offset 0 over a source whose low offsets may already be reclaimed — registration is not serialized against GC (#iss-mv-register-below-reclaimed-floor)
 - MV watermark ghost rows: an in-flight micro-batch run can re-create watermark rows for a deleted def — the CAS advance neither takes the define lock nor re-checks registration (#iss-mv-watermark-ghost-rows)
 - Multi-writer ingest: concurrent ingest to the same table can produce conflicting snapshots; is last-writer-wins acceptable or does the catalog need compare-and-swap?
 - Ontology migration: how are in-flight queries handled when a type's backing table is replaced (schema evolution)?
