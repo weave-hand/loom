@@ -113,6 +113,9 @@ pub struct PropertyView {
     /// The ontology's LOGICAL type name (e.g. `Long`), not the physical column type.
     pub ty: String,
     pub required: bool,
+    /// Optional human-readable prose. Omitted from the response when the entity carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Documentation shape for one link in a type-detail response. The physical backing
@@ -126,6 +129,9 @@ pub struct LinkView {
     pub to: String,
     /// `one` | `many`.
     pub cardinality: String,
+    /// Optional human-readable prose. Omitted from the response when the entity carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Documentation shape for the `GET /ontology/types/{name}` type-detail response.
@@ -142,6 +148,9 @@ pub struct TypeDetailResponse {
     pub links: Vec<LinkView>,
     /// Inbound links (`to` = this type).
     pub links_to: Vec<LinkView>,
+    /// Optional human-readable prose. Omitted from the response when the entity carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Documentation shape for one entry in the `GET /datasets` list. A physical table is

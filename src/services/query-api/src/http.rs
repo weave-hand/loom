@@ -166,16 +166,34 @@ fn dataset_not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, "dataset not found").into_response()
 }
 
+/// Insert `description` into a hand-built `json!` object when present, so an absent
+/// description is omitted entirely rather than emitted as `null`. `serde_json::Value`
+/// has no top-level indexing guarantee for an arbitrary key, so this goes through
+/// `as_object_mut` rather than `v["description"] = ..` (which clippy's
+/// `indexing_slicing` restriction flags even though the map-insert form can't panic).
+fn set_description(v: &mut serde_json::Value, description: Option<&String>) {
+    if let Some(d) = description
+        && let Some(map) = v.as_object_mut()
+    {
+        map.insert(
+            "description".to_string(),
+            serde_json::Value::String(d.clone()),
+        );
+    }
+}
+
 /// Render one `LinkDef` as the `LinkView` documentation shape (`cardinality` as its
 /// persisted token). The physical `backing` stays server-side — this is ontology
 /// metadata for callers, not storage detail.
 fn link_view_json(l: &LinkDef) -> serde_json::Value {
-    serde_json::json!({
+    let mut v = serde_json::json!({
         "name": l.name,
         "from": l.from.0,
         "to": l.to.0,
         "cardinality": l.cardinality.as_str(),
-    })
+    });
+    set_description(&mut v, l.description.as_ref());
+    v
 }
 
 /// Per-type ontology detail: properties, identity, backing table, and link adjacency.
@@ -216,17 +234,22 @@ async fn get_ontology_type(
     let properties: Vec<serde_json::Value> = ty
         .properties
         .iter()
-        .map(|p| serde_json::json!({ "name": p.name, "ty": p.ty, "required": p.required }))
+        .map(|p| {
+            let mut v = serde_json::json!({ "name": p.name, "ty": p.ty, "required": p.required });
+            set_description(&mut v, p.description.as_ref());
+            v
+        })
         .collect();
-    Json(serde_json::json!({
+    let mut body = serde_json::json!({
         "name": ty.name.0,
         "table": { "schema": ty.table.schema, "name": ty.table.name },
         "identity": ty.identity,
         "properties": properties,
         "links": links.iter().map(link_view_json).collect::<Vec<_>>(),
         "links_to": links_to.iter().map(link_view_json).collect::<Vec<_>>(),
-    }))
-    .into_response()
+    });
+    set_description(&mut body, ty.description.as_ref());
+    Json(body).into_response()
 }
 
 /// List every table live in the Iceberg mirror, `(schema, name)`-ordered.

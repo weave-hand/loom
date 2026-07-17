@@ -70,6 +70,35 @@ fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
     if required { p.required() } else { p }
 }
 
+/// A single `Doc` type carrying a description on the type itself, on one property
+/// (`id`, described) alongside one without (`body`, undescribed), and on its one
+/// outbound self-link (`parent`, described). Separate from `seeded_control_plane` so
+/// the latter's exact-array oracle (no `description` keys) stays undisturbed.
+async fn seeded_described() -> MemoryControlPlane {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.define_type(
+        ObjectType::build("Doc", ("main", "docs"))
+            .described("A document.")
+            .add_prop(
+                PropertyDef::new("id", "Long")
+                    .required()
+                    .described("The document id."),
+            )
+            .prop("body", "String")
+            .identity("id")
+            .done(),
+    )
+    .await
+    .unwrap();
+    cp.define_link(
+        LinkDef::fk("parent", "Doc", "Doc", Cardinality::One, "parent_id", "id")
+            .described("The parent document."),
+    )
+    .await
+    .unwrap();
+    cp
+}
+
 /// An ontology with `Customer` and `Order` and one FK link `Order.customer -> Customer`.
 async fn seeded_control_plane() -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
@@ -172,4 +201,25 @@ async fn unknown_type_is_404() {
     let app = app(seeded_control_plane().await);
     let (status, _) = get(&app, "/ontology/types/no-such-type").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_carries_descriptions() {
+    let app = app(seeded_described().await);
+
+    let (status, json) = get(&app, "/ontology/types/Doc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["description"], "A document.");
+    assert_eq!(json["properties"][0]["description"], "The document id.");
+    assert_eq!(json["links"][0]["description"], "The parent document.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_omits_absent_descriptions() {
+    let app = app(seeded_described().await);
+
+    let (status, json) = get(&app, "/ontology/types/Doc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["properties"][1]["name"], "body");
+    assert!(json["properties"][1].get("description").is_none());
 }
