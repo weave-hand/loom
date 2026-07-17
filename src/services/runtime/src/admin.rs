@@ -443,6 +443,9 @@ struct DerivedReq {
     /// The link the aggregation traverses.
     link: String,
     agg: AggReq,
+    /// Optional human-readable prose describing this entity. Pure annotation.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 fn to_constraints(c: Option<ConstraintsReq>) -> PropertyConstraints {
@@ -497,6 +500,9 @@ struct PropReq {
     /// Per-value constraints enforced by the land and action gates (422 on violation).
     #[serde(default)]
     constraints: Option<ConstraintsReq>,
+    /// Optional human-readable prose describing this entity. Pure annotation.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(serde::Deserialize, utoipa::ToSchema)]
@@ -520,6 +526,9 @@ struct DefineModelReq {
     /// `bind` seam's catalog-aware check.
     #[serde(default)]
     derived: Vec<DerivedReq>,
+    /// Optional human-readable prose describing this entity. Pure annotation.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// Define a model (ontology type) over an existing table.
@@ -543,8 +552,7 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 ty: d.ty,
                 link: d.link,
                 agg,
-                // No `description` on the request DTO yet — Task 18b wires it through.
-                description: None,
+                description: d.description,
             }),
             Err(e) => {
                 return (
@@ -569,15 +577,13 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 ty: p.ty,
                 required: p.required,
                 constraints: to_constraints(p.constraints),
-                // No `description` on the request DTO yet — Task 18b wires it through.
-                description: None,
+                description: p.description,
             })
             .collect(),
         derived,
         identity: req.identity,
         version: None,
-        // No `description` on the request DTO yet — Task 18b wires it through.
-        description: None,
+        description: req.description,
     };
     match st.cp.ontology().define_type(otype).await {
         Ok(()) => (
@@ -615,6 +621,9 @@ struct VectorIndexReq {
     /// Defaults to `{"kind": "flat"}`.
     #[serde(default)]
     spec: Option<VectorIndexSpecReq>,
+    /// Optional human-readable prose describing this entity. Pure annotation.
+    #[serde(default)]
+    description: Option<String>,
 }
 
 /// Admin-wire spec parsing. Deliberately NOT `IndexSpec::from_label` — that
@@ -700,8 +709,7 @@ async fn define_vector_index_route(
         property: req.property,
         metric,
         spec,
-        // No `description` on the request DTO yet — Task 18b wires it through.
-        description: None,
+        description: req.description,
     };
     match st.cp.ontology().define_vector_index(def).await {
         Ok(()) => (

@@ -1201,6 +1201,70 @@ async fn define_model_with_derived_and_constraints_roundtrips() {
     assert_eq!(status_p.constraints.length.as_ref().unwrap().max, Some(16));
 }
 
+#[tokio::test]
+async fn define_model_carries_descriptions() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, "root").await;
+    let body = r#"{
+        "name": "Order",
+        "table": {"schema": "main", "name": "orders"},
+        "identity": "id",
+        "description": "Customer orders",
+        "properties": [
+            {"name": "id", "ty": "Int", "required": true, "description": "The order id"},
+            {"name": "qty", "ty": "Integer"}
+        ],
+        "derived": [
+            {"name": "line_count", "ty": "Int", "link": "lines", "agg": {"kind": "count"},
+             "description": "How many lines"}
+        ]
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/models", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let t = cp.get_type(&TypeName("Order".into())).await.unwrap();
+    assert_eq!(t.description.as_deref(), Some("Customer orders"));
+    let id = t.properties.iter().find(|p| p.name == "id").unwrap();
+    assert_eq!(id.description.as_deref(), Some("The order id"));
+    // Undescribed property in the same body reads back None — not blanket-filled.
+    let qty = t.properties.iter().find(|p| p.name == "qty").unwrap();
+    assert_eq!(qty.description, None);
+    assert_eq!(t.derived[0].description.as_deref(), Some("How many lines"));
+}
+
+#[tokio::test]
+async fn define_link_carries_description() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    seed_types(&cp).await;
+    let body = r#"{
+        "name": "gadgets",
+        "from": "Widget",
+        "to": "Gadget",
+        "cardinality": "Many",
+        "backing": {"ForeignKey": {"from_column": "id", "to_column": "widget_id"}},
+        "description": "Widget's gadgets"
+    }"#;
+    let (status, _) = send(
+        app(cp.clone()),
+        req_json("POST", "/admin/links", &token, body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let links = cp
+        .links(
+            &TypeName("Widget".into()),
+            control_plane_core::PageReq::unbounded(),
+        )
+        .await
+        .unwrap();
+    let link = links.items.iter().find(|l| l.name == "gadgets").unwrap();
+    assert_eq!(link.description.as_deref(), Some("Widget's gadgets"));
+}
+
 async fn seed_vector_type(cp: &MemoryControlPlane) {
     cp.define_type(
         ObjectType::build("Doc", ("main", "doc"))
