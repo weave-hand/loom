@@ -88,14 +88,32 @@ fn vector_schema(n: u32) -> RefOr<Schema> {
 /// The schema for a property's logical type. An unrecognized logical type falls back to a
 /// free-form string (mirrors `render`'s never-fail-a-permitted-read posture). A non-required
 /// property is nullable.
-pub(crate) fn property_schema(ty: &str, required: bool) -> RefOr<Schema> {
-    match resolve_logical(ty) {
+pub(crate) fn property_schema(
+    ty: &str,
+    required: bool,
+    description: Option<&str>,
+) -> RefOr<Schema> {
+    let base = match resolve_logical(ty) {
         Some(bt) => base_type_to_schema(bt, !required),
         None => RefOr::T(Schema::Object(
             ObjectBuilder::new()
                 .schema_type(SchemaType::Type(Type::String))
                 .build(),
         )),
+    };
+    let Some(desc) = description else { return base };
+    // Fold the property's prose into the schema's description, preserving any existing
+    // note (e.g. Long's "int64 encoded as a decimal string") in parentheses.
+    match base {
+        RefOr::T(Schema::Object(mut obj)) => {
+            let combined = match obj.description.take() {
+                Some(existing) => format!("{desc} ({existing})"),
+                None => desc.to_string(),
+            };
+            obj.description = Some(combined);
+            RefOr::T(Schema::Object(obj))
+        }
+        other => other, // arrays (vector) etc. — no description slot we model; leave as-is
     }
 }
 
@@ -125,8 +143,14 @@ fn json_response(schema: RefOr<Schema>, description: &str) -> utoipa::openapi::R
 /// The component (read) schema for a type: properties by codec, identity `required`.
 fn type_component_schema(ty: &ObjectType) -> RefOr<Schema> {
     let mut b = ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object));
+    if let Some(d) = &ty.description {
+        b = b.description(Some(d.clone()));
+    }
     for p in &ty.properties {
-        b = b.property(p.name.clone(), property_schema(&p.ty, p.required));
+        b = b.property(
+            p.name.clone(),
+            property_schema(&p.ty, p.required, p.description.as_deref()),
+        );
     }
     if let Some(id) = &ty.identity {
         b = b.required(id.clone());
@@ -228,11 +252,20 @@ fn get_objects_op(ty: &ObjectType) -> Operation {
 /// knobs `_direction` (forward|inverse), `_shape` (objects|association), and `_ids`
 /// (source object-set), plus a filter parameter per source property (bare key) and per
 /// target property (`<link>.<prop>` key) — the keys `resolve_chain_filters` resolves.
-fn link_op(from_ty: &ObjectType, link_name: &str, to_ty: &ObjectType) -> Operation {
+fn link_op(
+    from_ty: &ObjectType,
+    link_name: &str,
+    to_ty: &ObjectType,
+    description: Option<&str>,
+) -> Operation {
     let from = &from_ty.name.0;
     let to = &to_ty.name.0;
-    let mut op = OperationBuilder::new()
-        .summary(Some(format!("Traverse {from}.{link_name} -> {to}")))
+    let mut op =
+        OperationBuilder::new().summary(Some(format!("Traverse {from}.{link_name} -> {to}")));
+    if let Some(d) = description {
+        op = op.description(Some(d.to_string()));
+    }
+    let mut op = op
         .tag(from.clone())
         .security(bearer())
         .parameter(query_param(
@@ -282,7 +315,10 @@ fn link_op(from_ty: &ObjectType, link_name: &str, to_ty: &ObjectType) -> Operati
 fn action_request_schema(action: &ActionDef) -> RefOr<Schema> {
     let mut b = ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object));
     for p in action.steps.iter().flat_map(|s| &s.parameters) {
-        b = b.property(p.name.clone(), property_schema(&p.ty, p.required));
+        b = b.property(
+            p.name.clone(),
+            property_schema(&p.ty, p.required, p.description.as_deref()),
+        );
     }
     let mut required = BTreeSet::new();
     for p in action.steps.iter().flat_map(|s| &s.parameters) {
@@ -350,6 +386,9 @@ fn action_op(action: &ActionDef, primary: &ActionStep) -> Operation {
         )
         .build();
     let mut op = OperationBuilder::new().summary(Some(summary));
+    if let Some(d) = &action.description {
+        op = op.description(Some(d.clone()));
+    }
     let mut tagged = BTreeSet::new();
     for step in &action.steps {
         if tagged.insert(step.target.0.as_str()) {
@@ -410,7 +449,10 @@ pub fn ontology_openapi(
         };
         pb = pb.path(
             format!("/objects/{}/links/{}", l.from.0, l.name),
-            PathItem::new(HttpMethod::Get, link_op(from_ty, &l.name, to_ty)),
+            PathItem::new(
+                HttpMethod::Get,
+                link_op(from_ty, &l.name, to_ty, l.description.as_deref()),
+            ),
         );
     }
     for a in actions {

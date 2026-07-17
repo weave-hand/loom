@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use control_plane_core::{
     ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkDef, ObjectType,
-    ParamDef, TypeName,
+    ParamDef, PropertyDef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::openapi_gen::{base_type_to_schema, ontology_openapi};
@@ -462,6 +462,49 @@ fn get_op_documents_filter_and_pagination_params() {
             .contains("startswith"),
         "filter grammar documented: {}",
         email["description"]
+    );
+}
+
+#[test]
+fn generated_document_carries_ontology_descriptions() {
+    let doc_ty = ObjectType::build("Doc", ("main", "docs"))
+        .described("A document in the corpus")
+        .add_prop(
+            PropertyDef::new("id", "Long")
+                .required()
+                .described("The document's id"),
+        )
+        .prop("body", "String")
+        .identity("id")
+        .done();
+    let create = ActionDef::build("createDoc", "Doc", ActionKind::Insert)
+        .described("Registers a new document")
+        .param_req("id", "Long")
+        .done();
+    let link = LinkDef::fk("parent", "Doc", "Doc", Cardinality::One, "parent_id", "id")
+        .described("The document this one was split from");
+
+    let (paths, schemas) = ontology_openapi(&[doc_ty], &[link], &[create]);
+
+    let doc = serde_json::to_value(schemas.get("Doc").expect("Doc schema")).unwrap();
+    assert_eq!(doc["description"], "A document in the corpus");
+    // Combined: property prose + the preserved Long encoding note.
+    assert_eq!(
+        doc["properties"]["id"]["description"],
+        "The document's id (int64 encoded as a decimal string)"
+    );
+    assert!(
+        doc["properties"]["body"].get("description").is_none(),
+        "an undescribed property carries no description key: {}",
+        doc["properties"]["body"]
+    );
+    assert_eq!(
+        op_json(&paths, "/actions/createDoc", "post")["description"],
+        "Registers a new document"
+    );
+    assert_eq!(
+        op_json(&paths, "/objects/Doc/links/parent", "get")["description"],
+        "The document this one was split from"
     );
 }
 
