@@ -295,6 +295,27 @@ column absent from the declared properties is SKIPPED here and left to the inges
 target defers (the read path keeps omitting a missing link), so a type carrying a
 derived property can still be defined before its link/target exist (#398).
 
+Every declarable ontology entity carries an optional human-readable
+`description`: object types, properties, links, actions, action params, derived
+properties, and vector indexes. It is a nullable `text` column on each of the
+seven `ontology.*` tables (migration `0047`), written by the `define_*` upsert
+and hydrated on every `get`/`list`, so a redefine that omits the description
+**clears** it — the same replace-not-merge semantics as the rest of a type. The
+field is pure annotation: nothing in the engine plans or executes on it; it feeds
+the read surfaces below and is the substrate for a future ontology-browsing UI
+and schema search. It costs nothing on the engine-wire — the ontology structs
+cross that boundary as serde-JSON strings, and the field's `#[serde(default,
+skip_serializing_if)]` means an old payload decodes to `None` and a `None`
+re-encodes byte-identically, so no `.proto` changed. Descriptions are **set**
+through the admin write path (`POST /admin/models` for the type/properties/derived
+properties and the vector-index route; `POST /admin/links` and `POST /admin/actions`
+accept them for free, deserializing a `LinkDef`/`ActionDef` directly) and **read**
+on `GET /ontology/types/{name}` (type, properties, links) and in the generated
+OpenAPI document (type schema, property schemas, action and link operations) — a
+described `long` property combines its prose with the wire-encoding note it
+already carried. Derived-property and vector-index descriptions persist but have
+no read surface yet (`#fut-ontology-derived-index-read-surface`).
+
 Actions are the governed write path. Part 1 delivered named `ActionDef`s invoked
 via `POST /actions/{name}` — the first live `Action::Write` enforcement — as an
 insert-only typed write validated against the type contract; invoke-time
@@ -596,6 +617,7 @@ lives entirely in the service layer.
 - `#fut-compaction-incremental` — incremental (append-delta) compaction output
 - `#fut-compaction-auto-trigger` — automatic compaction triggering
 - `#fut-fgac-subject-attribute` — fine-grained subject-attribute access control
+- `#fut-ontology-derived-index-read-surface` — surface derived-property and vector-index descriptions on reads
 - `#fut-cow-inline-shadow` — remaining scalable-COW slices (tombstone-aware consolidation)
 - `#fut-cow-file-granular` — file-granular copy-on-write
 - `#fut-cow-identity-change` — identity-change / upsert mutations
