@@ -149,3 +149,47 @@ fn some_description_round_trips() {
     let back: PropertyDef = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
     assert_eq!(back, p);
 }
+
+// `ActionDef`'s serde goes through the `ActionDefRepr` bridge, whose `Flat` arm (the
+// single-bind-less-step wire shape) rebuilds the `ActionDef` via `ActionDef::single_step`
+// — a constructor that sets `description: None`. Carrying the description across that arm
+// therefore relies on an explicit assignment the compiler cannot force. These two tests
+// are that assignment's only regression guard.
+#[test]
+fn action_def_description_survives_the_flat_bridge() {
+    let action = ActionDef::single_step(
+        ActionName("createCustomer".into()),
+        TypeName("customer".into()),
+        ActionKind::Insert,
+        vec![],
+        vec![],
+    )
+    .described("Registers a new customer");
+    assert_eq!(
+        action.description.as_deref(),
+        Some("Registers a new customer")
+    );
+
+    let json = serde_json::to_string(&action).unwrap();
+    // A single bind-less step serializes to the flat shape, not the stepped one — so this
+    // exercises the `Flat` arm specifically, the one that rebuilds via `single_step`.
+    assert!(
+        !json.contains("\"steps\""),
+        "expected the flat wire shape, got: {json}"
+    );
+    let back: ActionDef = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, action, "description dropped crossing the flat bridge");
+}
+
+#[test]
+fn action_def_flat_json_with_description_decodes() {
+    // A hand-written flat payload carrying a description must decode with it intact — the
+    // wire-compat direction (an old flat payload gaining the new optional key).
+    let json = r#"{"name":"createCustomer","target":"customer","kind":"insert","description":"Registers a new customer"}"#;
+    let action: ActionDef = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        action.description.as_deref(),
+        Some("Registers a new customer")
+    );
+    assert_eq!(action.steps.len(), 1, "flat payload is one implicit step");
+}
