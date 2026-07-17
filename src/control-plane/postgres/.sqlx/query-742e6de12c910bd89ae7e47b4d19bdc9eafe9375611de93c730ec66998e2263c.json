@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, from_type, to_type, cardinality, backing_kind, from_column, to_column, from_key, to_key, join_table_schema, join_table_name from ontology.link where to_type = $1",
+  "query": "select name, from_type, to_type, cardinality, backing_kind, from_column, to_column, from_key, to_key, join_table_schema, join_table_name, description from ontology.link where to_type = $1",
   "describe": {
     "columns": [
       {
@@ -123,6 +123,17 @@
             "name": "join_table_name"
           }
         }
+      },
+      {
+        "ordinal": 11,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.link",
+            "name": "description"
+          }
+        }
       }
     ],
     "parameters": {
@@ -141,8 +152,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "efaf9958142ec4ac658d6465f44cbe7d3ae9500d2a78ed729a013f01adb57463"
+  "hash": "742e6de12c910bd89ae7e47b4d19bdc9eafe9375611de93c730ec66998e2263c"
 }

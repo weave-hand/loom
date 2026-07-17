@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.action (name, description) values ($1, $2) on conflict (name) do update set description = excluded.description",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f5cfde7fc77eb913e303aafcfc94edf5bee314b10e6ebe57d0e9aec386c9d731"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, ty, required, binds from ontology.action_param where action_name = $1 and step_ordinal = $2 order by ordinal",
+  "query": "select name, ty, required, constraints, description from ontology.property where type_name = $1 order by ordinal",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
+            "table": "ontology.property",
             "name": "name"
           }
         }
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
+            "table": "ontology.property",
             "name": "ty"
           }
         }
@@ -31,35 +31,46 @@
         "type_info": "Bool",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
+            "table": "ontology.property",
             "name": "required"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "binds",
+        "name": "constraints",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "ontology.property",
+            "name": "constraints"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "description",
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "ontology.action_param",
-            "name": "binds"
+            "table": "ontology.property",
+            "name": "description"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
-        "Int4"
+        "Text"
       ]
     },
     "nullable": [
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "bf2ecb07a78866aaeb2ab5c1a5b832998e6c6bafcd8dbc618f2bb1dea65058f6"
+  "hash": "e60a90df1f83f5caf7764bf5e7e054cd06eacd3b5119453ab80b86572f37ac41"
 }

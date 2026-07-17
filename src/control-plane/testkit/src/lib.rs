@@ -2175,6 +2175,237 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .is_ok(),
         "re-defined action readable"
     );
+
+    // --- descriptions: round-trip on all 7 declarable entities, undescribed
+    // siblings stay None, and redefining without a description clears it. ---
+
+    // object_type + property + derived_property, described and undescribed
+    // siblings in the same define so redefine-replaces semantics don't erase
+    // one while asserting the other.
+    let described_type = ObjectType::build("DescribedType", ("main", "described_type"))
+        .add_prop(
+            PropertyDef::new("id", "Long")
+                .required()
+                .described("The primary key"),
+        )
+        .prop("plain", "String")
+        .derived(
+            DerivedPropertyDef::new("cnt", "Long", "widgets", Aggregation::Count)
+                .described("Count of related widgets"),
+        )
+        .derived(DerivedPropertyDef::new(
+            "plainCount",
+            "Long",
+            "widgets",
+            Aggregation::Count,
+        ))
+        .described("A type with a description")
+        .done();
+    o.define_type(described_type.clone())
+        .await
+        .expect("define DescribedType");
+    let got_described = o.get_type(&tn("DescribedType")).await.unwrap();
+    assert_eq!(
+        got_described.description.as_deref(),
+        Some("A type with a description"),
+        "object_type description round-trips"
+    );
+    assert_eq!(
+        got_described.properties[0].description.as_deref(),
+        Some("The primary key"),
+        "property description round-trips"
+    );
+    assert_eq!(
+        got_described.properties[1].description, None,
+        "undescribed property sibling stays None"
+    );
+    assert_eq!(
+        got_described.derived[0].description.as_deref(),
+        Some("Count of related widgets"),
+        "derived_property description round-trips"
+    );
+    assert_eq!(
+        got_described.derived[1].description, None,
+        "undescribed derived_property sibling stays None"
+    );
+
+    // A type defined without `.described(...)` stays None (reusing Order, already
+    // seeded and redefined several times above with no description attached).
+    assert_eq!(
+        o.get_type(&tn("Order")).await.unwrap().description,
+        None,
+        "type with no description stays None"
+    );
+
+    // link: described + undescribed sibling, both self-links on DescribedType.
+    let described_link = LinkDef::fk(
+        "described_link",
+        "DescribedType",
+        "DescribedType",
+        Cardinality::One,
+        "id",
+        "id",
+    )
+    .described("A described self-link");
+    let plain_link = LinkDef::fk(
+        "plain_link",
+        "DescribedType",
+        "DescribedType",
+        Cardinality::One,
+        "id",
+        "id",
+    );
+    o.define_link(described_link.clone())
+        .await
+        .expect("define described link");
+    o.define_link(plain_link.clone())
+        .await
+        .expect("define plain link");
+    let described_type_links = o
+        .links(&tn("DescribedType"), PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(
+        described_type_links
+            .iter()
+            .find(|l| l.name == "described_link")
+            .expect("described_link present")
+            .description
+            .as_deref(),
+        Some("A described self-link"),
+        "link description round-trips"
+    );
+    assert_eq!(
+        described_type_links
+            .iter()
+            .find(|l| l.name == "plain_link")
+            .expect("plain_link present")
+            .description,
+        None,
+        "undescribed link sibling stays None"
+    );
+
+    // action + action_param: described + undescribed sibling param in one action.
+    let described_action = ActionDef::single_step(
+        ActionName("describedAction".into()),
+        tn("DescribedType"),
+        ActionKind::Insert,
+        vec![
+            ParamDef::new("id", "Long")
+                .required()
+                .described("The id param"),
+            ParamDef::new("plain", "String"),
+        ],
+        vec![],
+    )
+    .described("An action with a description");
+    o.define_action(described_action.clone())
+        .await
+        .expect("define described action");
+    let got_described_action = o
+        .get_action(&ActionName("describedAction".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        got_described_action, described_action,
+        "action + param descriptions round-trip"
+    );
+    assert_eq!(
+        got_described_action.description.as_deref(),
+        Some("An action with a description"),
+        "action description round-trips"
+    );
+    assert_eq!(
+        got_described_action.steps[0].parameters[0]
+            .description
+            .as_deref(),
+        Some("The id param"),
+        "action_param description round-trips"
+    );
+    assert_eq!(
+        got_described_action.steps[0].parameters[1].description, None,
+        "undescribed action_param sibling stays None"
+    );
+
+    // An action defined without `.described(...)` stays None.
+    let plain_action = ActionDef::single_step(
+        ActionName("plainAction".into()),
+        tn("DescribedType"),
+        ActionKind::Insert,
+        vec![ParamDef::new("id", "Long").required()],
+        vec![],
+    );
+    o.define_action(plain_action.clone())
+        .await
+        .expect("define plain action");
+    assert_eq!(
+        o.get_action(&ActionName("plainAction".into()))
+            .await
+            .unwrap()
+            .description,
+        None,
+        "action with no description stays None"
+    );
+
+    // vector_index_definition: described + undescribed sibling on Document
+    // (already seeded above with an `embedding` vector property).
+    let described_index = VectorIndexDef::new(
+        "by_sim_described",
+        "Document",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    )
+    .described("A described vector index");
+    let plain_index = VectorIndexDef::new(
+        "by_plain",
+        "Document",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    );
+    o.define_vector_index(described_index.clone())
+        .await
+        .expect("define described index");
+    o.define_vector_index(plain_index.clone())
+        .await
+        .expect("define plain index");
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_sim_described")
+            .await
+            .unwrap(),
+        Some(described_index),
+        "vector_index_definition description round-trips"
+    );
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_plain")
+            .await
+            .unwrap()
+            .and_then(|v| v.description),
+        None,
+        "undescribed vector_index_definition sibling stays None"
+    );
+
+    // --- clear-on-redefine: redefining without `.described(...)` clears a
+    // previously-set description (type + property together, since `define_type`
+    // replaces both in the same write). ---
+    let cleared_type = ObjectType::build("DescribedType", ("main", "described_type"))
+        .add_prop(PropertyDef::new("id", "Long").required())
+        .prop("plain", "String")
+        .done();
+    o.define_type(cleared_type)
+        .await
+        .expect("redefine DescribedType without description");
+    let got_cleared = o.get_type(&tn("DescribedType")).await.unwrap();
+    assert_eq!(
+        got_cleared.description, None,
+        "redefining without a description clears the type's description"
+    );
+    assert_eq!(
+        got_cleared.properties[0].description, None,
+        "redefining without a description clears the property's description"
+    );
 }
 
 /// Contract for the `Acl` ops. `a` must be freshly empty.

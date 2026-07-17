@@ -33,16 +33,18 @@ impl Ontology for PgControlPlane {
             None => true,
         };
         sqlx::query!(
-            "insert into ontology.object_type (name, table_schema, table_name, identity, version) \
-             values ($1, $2, $3, $4, $5) \
+            "insert into ontology.object_type \
+               (name, table_schema, table_name, identity, version, description) \
+             values ($1, $2, $3, $4, $5, $6) \
              on conflict (name) do update set table_schema = excluded.table_schema, \
                  table_name = excluded.table_name, identity = excluded.identity, \
-                 version = excluded.version",
+                 version = excluded.version, description = excluded.description",
             ty.name.0,
             ty.table.schema,
             ty.table.name,
             ty.identity,
             ty.version,
+            ty.description,
         )
         .execute(&mut *tx)
         .await
@@ -66,14 +68,16 @@ impl Ontology for PgControlPlane {
                 )
             };
             sqlx::query!(
-                "insert into ontology.property (type_name, ordinal, name, ty, required, constraints) \
-                 values ($1, $2, $3, $4, $5, $6)",
+                "insert into ontology.property \
+                   (type_name, ordinal, name, ty, required, constraints, description) \
+                 values ($1, $2, $3, $4, $5, $6, $7)",
                 ty.name.0,
                 i as i32,
                 p.name,
                 p.ty,
                 p.required,
                 constraints,
+                p.description,
             )
             .execute(&mut *tx)
             .await
@@ -90,8 +94,8 @@ impl Ontology for PgControlPlane {
             let (kind, column) = agg_parts(&d.agg);
             sqlx::query!(
                 "insert into ontology.derived_property \
-                 (type_name, ordinal, name, ty, link_name, agg_kind, agg_column) \
-                 values ($1, $2, $3, $4, $5, $6, $7)",
+                 (type_name, ordinal, name, ty, link_name, agg_kind, agg_column, description) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8)",
                 ty.name.0,
                 i as i32,
                 d.name,
@@ -99,6 +103,7 @@ impl Ontology for PgControlPlane {
                 d.link,
                 kind,
                 column,
+                d.description,
             )
             .execute(&mut *tx)
             .await
@@ -128,14 +133,14 @@ impl Ontology for PgControlPlane {
         sqlx::query!(
             "insert into ontology.link \
                (name, from_type, to_type, cardinality, backing_kind, from_column, \
-                to_column, from_key, to_key, join_table_schema, join_table_name) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
+                to_column, from_key, to_key, join_table_schema, join_table_name, description) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              on conflict (name, from_type) do update set \
                to_type = excluded.to_type, cardinality = excluded.cardinality, \
                backing_kind = excluded.backing_kind, from_column = excluded.from_column, \
                to_column = excluded.to_column, from_key = excluded.from_key, \
                to_key = excluded.to_key, join_table_schema = excluded.join_table_schema, \
-               join_table_name = excluded.join_table_name",
+               join_table_name = excluded.join_table_name, description = excluded.description",
             link.name,
             link.from.0,
             link.to.0,
@@ -147,6 +152,7 @@ impl Ontology for PgControlPlane {
             bc.to_key,
             bc.join_schema,
             bc.join_name,
+            link.description,
         )
         .execute(&self.pool)
         .await
@@ -197,7 +203,8 @@ impl Ontology for PgControlPlane {
 
     async fn get_type(&self, name: &TypeName) -> Result<ObjectType> {
         let row = sqlx::query!(
-            "select table_schema, table_name, identity, version from ontology.object_type where name = $1",
+            "select table_schema, table_name, identity, version, description \
+             from ontology.object_type where name = $1",
             name.0,
         )
         .fetch_optional(&self.pool)
@@ -205,7 +212,7 @@ impl Ontology for PgControlPlane {
         .map_err(backend)?
         .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
         let prop_rows = sqlx::query!(
-            "select name, ty, required, constraints from ontology.property \
+            "select name, ty, required, constraints, description from ontology.property \
              where type_name = $1 order by ordinal",
             name.0,
         )
@@ -224,13 +231,12 @@ impl Ontology for PgControlPlane {
                 ty: r.ty,
                 required: r.required,
                 constraints,
-                // No `description` column yet — Task 15 replaces this with the real read.
-                description: None,
+                description: r.description,
             });
         }
         let derived_rows = sqlx::query!(
-            "select name, ty, link_name, agg_kind, agg_column from ontology.derived_property \
-             where type_name = $1 order by ordinal",
+            "select name, ty, link_name, agg_kind, agg_column, description \
+             from ontology.derived_property where type_name = $1 order by ordinal",
             name.0,
         )
         .fetch_all(&self.pool)
@@ -243,8 +249,7 @@ impl Ontology for PgControlPlane {
                 ty: r.ty,
                 link: r.link_name,
                 agg: rebuild_agg(&r.agg_kind, r.agg_column)?,
-                // No `description` column yet — Task 15 replaces this with the real read.
-                description: None,
+                description: r.description,
             });
         }
         Ok(ObjectType {
@@ -257,8 +262,7 @@ impl Ontology for PgControlPlane {
             derived,
             identity: row.identity,
             version: row.version,
-            // No `description` column yet — Task 15 replaces this with the real read.
-            description: None,
+            description: row.description,
         })
     }
 
@@ -281,7 +285,7 @@ impl Ontology for PgControlPlane {
         let rows = sqlx::query_as!(
             LinkRow,
             "select name, from_type, to_type, cardinality, backing_kind, from_column, \
-                    to_column, from_key, to_key, join_table_schema, join_table_name \
+                    to_column, from_key, to_key, join_table_schema, join_table_name, description \
              from ontology.link where from_type = $1",
             name.0,
         )
@@ -298,7 +302,7 @@ impl Ontology for PgControlPlane {
         let rows = sqlx::query_as!(
             LinkRow,
             "select name, from_type, to_type, cardinality, backing_kind, from_column, \
-                    to_column, from_key, to_key, join_table_schema, join_table_name \
+                    to_column, from_key, to_key, join_table_schema, join_table_name, description \
              from ontology.link where to_type = $1",
             name.0,
         )
@@ -359,10 +363,14 @@ impl Ontology for PgControlPlane {
                 )));
             }
         }
-        // The `action` row now carries only `name`; target_type/kind live per-step.
+        // The `action` row carries `name` + `description`; target_type/kind live per-step.
+        // Upsert (not `on conflict do nothing`) so a redefine's description — including
+        // clearing it to NULL — always takes.
         sqlx::query!(
-            "insert into ontology.action (name) values ($1) on conflict (name) do nothing",
+            "insert into ontology.action (name, description) values ($1, $2) \
+             on conflict (name) do update set description = excluded.description",
             action.name.0,
+            action.description,
         )
         .execute(&mut *tx)
         .await
@@ -390,10 +398,10 @@ impl Ontology for PgControlPlane {
         .execute(&mut *tx)
         .await
         .map_err(backend)?;
-        // The action-row insert is `on conflict do nothing`, so a redefine never
-        // deletes the parent row and the FK `on delete cascade` here never fires —
-        // the explicit delete is what keeps downstream idempotent on redefine (mirrors
-        // the action_assignment/action_param/action_step deletes above).
+        // The action-row insert upserts (`on conflict do update set description`), so a
+        // redefine never deletes the parent row and the FK `on delete cascade` here never
+        // fires — the explicit delete is what keeps downstream idempotent on redefine
+        // (mirrors the action_assignment/action_param/action_step deletes above).
         sqlx::query!(
             "delete from ontology.action_downstream where action_name = $1",
             action.name.0,
@@ -418,8 +426,8 @@ impl Ontology for PgControlPlane {
             for (i, p) in step.parameters.iter().enumerate() {
                 sqlx::query!(
                     "insert into ontology.action_param \
-                     (action_name, step_ordinal, ordinal, name, ty, required, binds) \
-                     values ($1, $2, $3, $4, $5, $6, $7)",
+                     (action_name, step_ordinal, ordinal, name, ty, required, binds, description) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8)",
                     action.name.0,
                     step_ordinal,
                     i as i32,
@@ -427,6 +435,7 @@ impl Ontology for PgControlPlane {
                     p.ty,
                     p.required,
                     p.binds,
+                    p.description,
                 )
                 .execute(&mut *tx)
                 .await
@@ -494,10 +503,16 @@ impl Ontology for PgControlPlane {
     }
 
     async fn get_action(&self, name: &ActionName) -> Result<ActionDef> {
-        // The `action` row now carries only `name`; existence is the NotFound gate.
-        if !action_exists(&self.pool, &name.0).await? {
-            return Err(ControlPlaneError::NotFound(name.0.clone()));
-        }
+        // The `action` row carries `name` + `description`; the row's presence is the
+        // NotFound gate, and its description feeds the final `ActionDef`.
+        let action_row = sqlx::query!(
+            "select description from ontology.action where name = $1",
+            name.0,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(backend)?
+        .ok_or_else(|| ControlPlaneError::NotFound(name.0.clone()))?;
         let step_rows = sqlx::query!(
             "select ordinal, target_type, kind, bind from ontology.action_step \
              where action_name = $1 order by ordinal",
@@ -509,7 +524,7 @@ impl Ontology for PgControlPlane {
         let mut steps = Vec::with_capacity(step_rows.len());
         for sr in step_rows {
             let params = sqlx::query!(
-                "select name, ty, required, binds from ontology.action_param \
+                "select name, ty, required, binds, description from ontology.action_param \
                  where action_name = $1 and step_ordinal = $2 order by ordinal",
                 name.0,
                 sr.ordinal,
@@ -536,8 +551,7 @@ impl Ontology for PgControlPlane {
                         ty: r.ty,
                         required: r.required,
                         binds: r.binds,
-                        // No `description` column yet — Task 15 replaces this with the real read.
-                        description: None,
+                        description: r.description,
                     })
                     .collect(),
                 assignments: assignment_rows
@@ -579,8 +593,7 @@ impl Ontology for PgControlPlane {
             name: name.clone(),
             steps,
             downstream,
-            // No `description` column yet — Task 15 replaces this with the real read.
-            description: None,
+            description: action_row.description,
         })
     }
 
@@ -626,12 +639,14 @@ impl Ontology for PgControlPlane {
         let (kind, nlist, m, ef) = def.spec.as_cols();
         sqlx::query!(
             "insert into ontology.vector_index_definition \
-               (type_name, name, property_name, metric, index_kind, nlist, m, ef_construction) \
-             values ($1, $2, $3, $4, $5, $6, $7, $8) \
+               (type_name, name, property_name, metric, index_kind, nlist, m, ef_construction, \
+                description) \
+             values ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
              on conflict (type_name, name) do update set \
                property_name = excluded.property_name, metric = excluded.metric, \
                index_kind = excluded.index_kind, nlist = excluded.nlist, \
-               m = excluded.m, ef_construction = excluded.ef_construction",
+               m = excluded.m, ef_construction = excluded.ef_construction, \
+               description = excluded.description",
             def.type_name.0,
             def.name,
             def.property,
@@ -640,6 +655,7 @@ impl Ontology for PgControlPlane {
             nlist.map(|v| v as i32),
             m.map(|v| v as i32),
             ef.map(|v| v as i32),
+            def.description,
         )
         .execute(&self.pool)
         .await
@@ -657,7 +673,8 @@ impl Ontology for PgControlPlane {
 
     async fn vector_indexes_for(&self, type_name: &TypeName) -> Result<Vec<VectorIndexDef>> {
         let rows = sqlx::query!(
-            "select name, property_name, metric, index_kind, nlist, m, ef_construction \
+            "select name, property_name, metric, index_kind, nlist, m, ef_construction, \
+                    description \
              from ontology.vector_index_definition where type_name = $1",
             type_name.0,
         )
@@ -677,8 +694,7 @@ impl Ontology for PgControlPlane {
                     r.m.map(|v| v as u32),
                     r.ef_construction.map(|v| v as u32),
                 )?,
-                // No `description` column yet — Task 15 replaces this with the real read.
-                description: None,
+                description: r.description,
             });
         }
         Ok(out)
@@ -776,7 +792,7 @@ pub async fn vector_index_def_row(
     name: &str,
 ) -> Result<Option<VectorIndexDef>> {
     let row = sqlx::query!(
-        "select property_name, metric, index_kind, nlist, m, ef_construction \
+        "select property_name, metric, index_kind, nlist, m, ef_construction, description \
          from ontology.vector_index_definition where type_name = $1 and name = $2",
         type_name,
         name,
@@ -796,8 +812,7 @@ pub async fn vector_index_def_row(
             r.m.map(|v| v as u32),
             r.ef_construction.map(|v| v as u32),
         )?,
-        // No `description` column yet — Task 15 replaces this with the real read.
-        description: None,
+        description: r.description,
     }))
 }
 
@@ -878,20 +893,6 @@ pub(crate) async fn object_type_exists(ex: impl sqlx::PgExecutor<'_>, name: &str
     .unwrap_or(false))
 }
 
-/// True if an action named `name` exists. The `action` row now carries only its
-/// name (target_type/kind moved to `action_step` in 0030), so existence is the
-/// sole NotFound gate for `get_action`.
-pub(crate) async fn action_exists(ex: impl sqlx::PgExecutor<'_>, name: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar!(
-        "select exists (select 1 from ontology.action where name = $1)",
-        name,
-    )
-    .fetch_one(ex)
-    .await
-    .map_err(backend)?
-    .unwrap_or(false))
-}
-
 /// One `ontology.link` row. `links` and `links_to` run the same projection,
 /// differing only in which endpoint column they filter on — `query_as!` into
 /// this named row lets them share one mapping (`link_defs`).
@@ -907,6 +908,7 @@ struct LinkRow {
     to_key: Option<String>,
     join_table_schema: Option<String>,
     join_table_name: Option<String>,
+    description: Option<String>,
 }
 
 /// Map fetched link rows into a full (unpaginated) `Page<LinkDef>` — the
@@ -928,8 +930,7 @@ fn link_defs(rows: Vec<LinkRow>) -> Result<Page<LinkDef>> {
                 r.join_table_schema,
                 r.join_table_name,
             ),
-            // No `description` column yet — Task 15 replaces this with the real read.
-            description: None,
+            description: r.description,
         });
     }
     Ok(Page::from_full(out))
