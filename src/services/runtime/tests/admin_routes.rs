@@ -9,8 +9,8 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
-    ADMIN_ROLE, Acl, Aggregation, Auth, Cardinality, DerivedPropertyDef, LinkBacking, LinkDef,
-    NewUser, ObjectType, Ontology, RoleId, SubjectId, TypeName,
+    ADMIN_ROLE, Acl, Aggregation, Auth, Cardinality, DerivedPropertyDef, LinkDef, NewUser,
+    ObjectType, Ontology, RoleId, SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -348,24 +348,22 @@ async fn seed_order_customer_link(cp: &MemoryControlPlane, with_derived: bool) {
         .prop_req("customer_id", "Long")
         .identity("id");
     if with_derived {
-        order = order.derived(DerivedPropertyDef {
-            name: "customerCount".into(),
-            ty: "Long".into(),
-            link: "customer".into(),
-            agg: Aggregation::Count,
-        });
+        order = order.derived(DerivedPropertyDef::new(
+            "customerCount",
+            "Long",
+            "customer",
+            Aggregation::Count,
+        ));
     }
     cp.define_type(order.done()).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "customer".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("Customer".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "customer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    ))
     .await
     .unwrap();
 }

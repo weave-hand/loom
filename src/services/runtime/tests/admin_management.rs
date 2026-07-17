@@ -674,17 +674,7 @@ async fn typed_define_grants_no_table() {
     // Seed the Src/Dst ontology types the typed body references (define validates them).
     for name in ["Src", "Dst"] {
         cp.ontology()
-            .define_type(ObjectType {
-                name: TypeName(name.into()),
-                properties: vec![],
-                derived: vec![],
-                table: control_plane_core::TableRef {
-                    schema: "onto".into(),
-                    name: name.to_lowercase(),
-                },
-                identity: None,
-                version: None,
-            })
+            .define_type(ObjectType::build(name, ("onto", name.to_lowercase())).done())
             .await
             .unwrap();
     }
