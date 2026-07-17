@@ -112,47 +112,42 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         .await;
 
     // Person declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // Team declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Team".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("active", "Boolean", true),
-        ],
-        derived: vec![],
-        table: team.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Team", (team.schema.as_str(), team.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .add_prop(prop("active", "Boolean", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
     // `memberOf`: Person -> Team via the membership join-table. This is the ONLY link
     // declared -- `~memberOf` (its inverse) is resolved purely from this definition.
-    cp.define_link(LinkDef {
-        name: "memberOf".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Team".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: membership.clone(),
-            from_key: "id".into(),
-            from_column: "person_id".into(),
-            to_column: "team_id".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "memberOf",
+        "Person",
+        "Team",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (membership.schema.as_str(), membership.name.as_str()),
+            "id",
+            "person_id",
+            "team_id",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
 

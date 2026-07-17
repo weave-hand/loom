@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Effect, LinkDef, ObjectType, Ontology, PolicyTarget, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
@@ -40,87 +40,34 @@ impl ServingEngine for GraphServing {
 }
 
 fn person_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "person".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Person", ("main", "person"))
+        .prop_req("id", "Long")
+        .prop("name", "Text");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
 fn company_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Company".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "company".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Company", ("main", "company"))
+        .prop_req("id", "Long")
+        .identity("id")
+        .done()
 }
 
 fn team_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Team".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "team".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Team", ("main", "team"))
+        .prop_req("id", "Long")
+        .identity("id")
+        .done()
 }
 
 fn secret_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Secret".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "secret".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Secret", ("main", "secret"))
+        .prop_req("id", "Long")
+        .identity("id")
+        .done()
 }
 
 /// Seed a control plane: Person with a `knows` FK self-link (Person -> Person), an
@@ -133,67 +80,57 @@ async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId) {
     cp.define_type(company_type()).await.unwrap();
     cp.define_type(team_type()).await.unwrap();
     // Self-link: from == to == Person.
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
     // Non-self link: Person -> Company.
-    cp.define_link(LinkDef {
-        name: "employer".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "employer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "employer",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "employer_id",
+        "id",
+    ))
     .await
     .unwrap();
     // Cyclic pair: Person -> Team -> Person.
-    cp.define_link(LinkDef {
-        name: "memberOf".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Team".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "team_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "memberOf",
+        "Person",
+        "Team",
+        Cardinality::One,
+        "team_id",
+        "id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "hasMember".into(),
-        from: TypeName("Team".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "team_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "hasMember",
+        "Team",
+        "Person",
+        Cardinality::Many,
+        "id",
+        "team_id",
+    ))
     .await
     .unwrap();
     // Non-cyclic tail: Person -> Company (so memberOf,worksAt does not return to Person).
-    cp.define_link(LinkDef {
-        name: "worksAt".into(),
-        from: TypeName("Team".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "company_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "worksAt",
+        "Team",
+        "Company",
+        Cardinality::One,
+        "company_id",
+        "id",
+    ))
     .await
     .unwrap();
 
@@ -504,16 +441,14 @@ async fn inverse_hop_matching_two_inbound_links_is_ambiguous() {
     // Read gate). Added on the `cp` in-test so the shared `seeded` fixture is not perturbed.
     let (cp, subj) = seeded(person_type(Some("id".into()))).await;
     for from in ["Team", "Company"] {
-        cp.define_link(LinkDef {
-            name: "sharesWith".into(),
-            from: TypeName(from.into()),
-            to: TypeName("Person".into()),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::ForeignKey {
-                from_column: "id".into(),
-                to_column: "shares_id".into(),
-            },
-        })
+        cp.define_link(LinkDef::fk(
+            "sharesWith",
+            from,
+            "Person",
+            Cardinality::Many,
+            "id",
+            "shares_id",
+        ))
         .await
         .unwrap();
     }
@@ -546,16 +481,14 @@ async fn forbidden_inverse_landing_type() {
     // on Secret (deny-by-default). Type + link defined in-test to leave `seeded` untouched.
     let (cp, subj) = seeded(person_type(Some("id".into()))).await;
     cp.define_type(secret_type()).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "watches".into(),
-        from: TypeName("Secret".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "watches_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "watches",
+        "Secret",
+        "Person",
+        Cardinality::Many,
+        "id",
+        "watches_id",
+    ))
     .await
     .unwrap();
     let serving = GraphServing { rows: vec![] };

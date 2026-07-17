@@ -62,29 +62,28 @@ async fn setup(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: knows.clone(),
-            from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (knows.schema.as_str(), knows.name.as_str()),
+            "id",
+            "a",
+            "b",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
 
@@ -139,33 +138,29 @@ async fn setup_active(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("active", "Boolean", true),
-        ],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .add_prop(prop("active", "Boolean", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: knows.clone(),
-            from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (knows.schema.as_str(), knows.name.as_str()),
+            "id",
+            "a",
+            "b",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
 

@@ -4,8 +4,8 @@
 
 use control_plane_core::{
     Acl, Action, Aggregation, Cardinality, CompareOp, ControlPlane, DerivedPropertyDef, Effect,
-    LinkBacking, LinkDef, ObjectType, Ontology, Policy, PolicyTarget, PropertyDef, RoleId,
-    RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
+    LinkDef, ObjectType, Ontology, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -61,80 +61,44 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "customer_id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "amount".into(),
-                ty: "Double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.as_str(), ord.name.as_str()))
+            .prop_req("id", "Long")
+            .prop_req("customer_id", "Long")
+            .prop("amount", "Double")
+            .prop("status", "String")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![
-            DerivedPropertyDef {
-                name: "orderCount".into(),
-                ty: "Long".into(),
-                link: "orders".into(),
-                agg: Aggregation::Count,
-            },
-            DerivedPropertyDef {
-                name: "totalSpend".into(),
-                ty: "Double".into(),
-                link: "orders".into(),
-                agg: Aggregation::Sum("amount".into()),
-            },
-        ],
-        table: cust.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.as_str(), cust.name.as_str()))
+            .prop_req("id", "Long")
+            .derived(DerivedPropertyDef::new(
+                "orderCount",
+                "Long",
+                "orders",
+                Aggregation::Count,
+            ))
+            .derived(DerivedPropertyDef::new(
+                "totalSpend",
+                "Double",
+                "orders",
+                Aggregation::Sum("amount".into()),
+            ))
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 

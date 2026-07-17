@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    RoleId, SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{GraphUnionQuery, QueryDeps, QueryError, Subject, read_graph_reach_union};
@@ -36,49 +36,20 @@ impl ServingEngine for GraphServing {
 }
 
 fn person_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "person".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Person", ("main", "person"))
+        .prop_req("id", "Long")
+        .prop("name", "Text");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
 fn company_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Company".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "company".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Company", ("main", "company"))
+        .prop_req("id", "Long")
+        .identity("id")
+        .done()
 }
 
 /// Seed: Person with a `knows` FK self-link and a `colleagues` join-table self-link (both
@@ -88,46 +59,33 @@ async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId) {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     cp.define_type(person).await.unwrap();
     cp.define_type(company_type()).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "colleagues".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: TableRef {
-                schema: "main".into(),
-                name: "colleagues".into(),
-            },
-            from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "colleagues",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        LinkBacking::join_table(("main", "colleagues"), "id", "a", "b", "id"),
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "employer".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "employer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "employer",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "employer_id",
+        "id",
+    ))
     .await
     .unwrap();
 

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, PolicyTarget,
-    PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Effect, LinkDef, ObjectType, Ontology, PolicyTarget, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
@@ -39,57 +39,21 @@ impl ServingEngine for GraphServing {
 }
 
 fn person_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "person".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Person", ("main", "person"))
+        .prop_req("id", "Long")
+        .prop("name", "Text");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
 fn company_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Company".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "company".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Company", ("main", "company"))
+        .prop_req("id", "Long")
+        .prop("name", "Text")
+        .identity("id")
+        .done()
 }
 
 /// Seed: Person with a `knows` FK self-link, plus a `worksAt` FK link Person -> Company (the tail
@@ -98,28 +62,24 @@ async fn seeded(person: ObjectType, grant_company: bool) -> (MemoryControlPlane,
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     cp.define_type(person).await.unwrap();
     cp.define_type(company_type()).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "worksAt".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "worksat_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "worksAt",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "worksat_id",
+        "id",
+    ))
     .await
     .unwrap();
 

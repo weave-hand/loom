@@ -3,8 +3,7 @@
 
 use control_plane_core::{
     Acl, Action, Cardinality, CompareOp, ControlPlane, Effect, LinkBacking, LinkDef, ObjectType,
-    Ontology, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId,
-    TableRef, TypeName,
+    Ontology, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -75,75 +74,33 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "region".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: cust.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.as_str(), cust.name.as_str()))
+            .prop_req("id", "Long")
+            .prop("region", "String")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "customer_id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "amount".into(),
-                ty: "Double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "secret".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.as_str(), ord.name.as_str()))
+            .prop_req("id", "Long")
+            .prop_req("customer_id", "Long")
+            .prop("amount", "Double")
+            .prop("secret", "String")
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 
@@ -438,19 +395,19 @@ async fn many_to_many_dedups_shared_targets() {
         )
         .await;
 
-    cp.define_link(LinkDef {
-        name: "shared".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: map.clone(),
-            from_key: "id".into(),
-            from_column: "customer_id".into(),
-            to_column: "order_id".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "shared",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (map.schema.as_str(), map.name.as_str()),
+            "id",
+            "customer_id",
+            "order_id",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
 

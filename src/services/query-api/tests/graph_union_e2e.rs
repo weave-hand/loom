@@ -84,49 +84,43 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("active", "Boolean", true),
-            prop("knows_id", "Long", false),
-        ],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .add_prop(prop("active", "Boolean", true))
+            .add_prop(prop("knows_id", "Long", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
     // `knows`: FK self-link Person -> Person via knows_id.
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
     // `colleagues`: join-table self-link Person -> Person.
-    cp.define_link(LinkDef {
-        name: "colleagues".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: colleagues.clone(),
-            from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "colleagues",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (colleagues.schema.as_str(), colleagues.name.as_str()),
+            "id",
+            "a",
+            "b",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
 

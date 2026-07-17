@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use control_plane_core::{
     Acl, Action, ActionDef, ActionName, CompareOp, ControlPlaneError, Effect, LinkDef, ObjectType,
-    Ontology, Page, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
-    SubjectId, TableRef, TypeName, VectorIndexDef,
+    Ontology, Page, PageReq, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId,
+    TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::governed::{OnMissing, resolve_governed};
@@ -91,36 +91,12 @@ impl Ontology for MissingType {
 }
 
 fn order_type() -> ObjectType {
-    ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "secret".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "orders".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Order", ("main", "orders"))
+        .prop_req("id", "Long")
+        .prop("status", "String")
+        .prop("secret", "String")
+        .identity("id")
+        .done()
 }
 
 async fn seeded() -> (MemoryControlPlane, SubjectId) {
@@ -170,19 +146,9 @@ async fn granted_but_missing_type_maps_per_on_missing() {
     // purely to satisfy that check. The `resolve_governed` calls below are given the
     // `MissingType` ontology stub instead of `&cp`, so at read time the type genuinely
     // resolves to `NotFound` — the granted-but-missing state `OnMissing` maps.
-    cp.define_type(ObjectType {
-        name: TypeName("Ghost".into()),
-        properties: vec![],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "ghost".into(),
-        },
-        identity: None,
-        version: None,
-    })
-    .await
-    .unwrap();
+    cp.define_type(ObjectType::build("Ghost", ("main", "ghost")).done())
+        .await
+        .unwrap();
     cp.grant(
         &reader,
         Action::Read,

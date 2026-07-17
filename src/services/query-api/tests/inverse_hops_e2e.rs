@@ -5,8 +5,8 @@
 //! deterministic error and an unknown inbound link is UnknownLink.
 
 use control_plane_core::{
-    Acl, Action, Cardinality, ControlPlane, Effect, LinkBacking, LinkDef, Ontology, PolicyTarget,
-    RoleId, SubjectId, TypeName,
+    Acl, Action, Cardinality, ControlPlane, Effect, LinkDef, Ontology, PolicyTarget, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -194,16 +194,14 @@ async fn ambiguous_inbound_link_is_rejected() {
     // links named `lineItems` are inbound to LineItem (from Order and from Customer).
     // (Keying is (name, from), so both persist.) An inverse hop over `lineItems` from
     // LineItem can't pick one deterministically -> AmbiguousLink.
-    cp.define_link(LinkDef {
-        name: "lineItems".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("LineItem".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "order_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "lineItems",
+        "Customer",
+        "LineItem",
+        Cardinality::Many,
+        "id",
+        "order_id",
+    ))
     .await
     .unwrap();
 

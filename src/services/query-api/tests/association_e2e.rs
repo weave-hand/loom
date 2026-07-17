@@ -104,123 +104,104 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         .await;
 
     // Customer declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-        derived: vec![],
-        table: cust.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.as_str(), cust.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // Order declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("customer_id", "Long", true),
-            prop("status", "String", false),
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.as_str(), ord.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("customer_id", "Long", true))
+            .add_prop(prop("status", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // LineItem declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("LineItem".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("order_id", "Long", true),
-            prop("sku", "String", false),
-        ],
-        derived: vec![],
-        table: li.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("LineItem", (li.schema.as_str(), li.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("order_id", "Long", true))
+            .add_prop(prop("sku", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     // Region: a type with NO declared identity, to drive the NoIdentity -> 400 path.
     // Backed by the customer table (region column doubles as its own "objects").
-    cp.define_type(ObjectType {
-        name: TypeName("Region".into()),
-        properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-        derived: vec![],
-        table: cust.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Region", (cust.schema.as_str(), cust.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", false))
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "lineItems".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("LineItem".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "order_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "lineItems",
+        "Order",
+        "LineItem",
+        Cardinality::Many,
+        "id",
+        "order_id",
+    ))
     .await
     .unwrap();
     // Join-table link Customer -> LineItem (a second, distinct path to the same targets).
-    cp.define_link(LinkDef {
-        name: "directItems".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("LineItem".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: cust_li.clone(),
-            from_key: "id".into(),
-            from_column: "customer_id".into(),
-            to_column: "line_item_id".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "directItems",
+        "Customer",
+        "LineItem",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (cust_li.schema.as_str(), cust_li.name.as_str()),
+            "id",
+            "customer_id",
+            "line_item_id",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
     // A link from a no-identity type (Region) to Order, to drive NoIdentity on the source.
-    cp.define_link(LinkDef {
-        name: "regionOrders".into(),
-        from: TypeName("Region".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "regionOrders",
+        "Region",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
     // A link from Customer to the no-identity Region type, to drive NoIdentity on target.
-    cp.define_link(LinkDef {
-        name: "asRegion".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Region".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "asRegion",
+        "Customer",
+        "Region",
+        Cardinality::One,
+        "id",
+        "id",
+    ))
     .await
     .unwrap();
 

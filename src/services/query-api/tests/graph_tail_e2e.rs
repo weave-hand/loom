@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use control_plane_core::{
-    Acl, Action, Cardinality, CompareOp, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
-    PolicyTarget, RowFilter, ScalarValue, TypeName,
+    Acl, Action, Cardinality, CompareOp, LinkDef, ObjectType, Ontology, Policy, PolicyTarget,
+    RowFilter, ScalarValue, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -100,84 +100,69 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("active", "Boolean", true),
-            prop("knows_id", "Long", false),
-            prop("worksat_id", "Long", false),
-        ],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .add_prop(prop("active", "Boolean", true))
+            .add_prop(prop("knows_id", "Long", false))
+            .add_prop(prop("worksat_id", "Long", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Company".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("cname", "String", false),
-            prop("city_id", "Long", false),
-        ],
-        derived: vec![],
-        table: company.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Company", (company.schema.as_str(), company.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("cname", "String", false))
+            .add_prop(prop("city_id", "Long", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("City".into()),
-        properties: vec![prop("id", "Long", true), prop("cname", "String", false)],
-        derived: vec![],
-        table: city.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("City", (city.schema.as_str(), city.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("cname", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
     // knows: FK self-link Person -> Person via knows_id.
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
     // worksAt: FK link Person -> Company via worksat_id.
-    cp.define_link(LinkDef {
-        name: "worksAt".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "worksat_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "worksAt",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "worksat_id",
+        "id",
+    ))
     .await
     .unwrap();
     // locatedIn: FK link Company -> City via city_id.
-    cp.define_link(LinkDef {
-        name: "locatedIn".into(),
-        from: TypeName("Company".into()),
-        to: TypeName("City".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "city_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "locatedIn",
+        "Company",
+        "City",
+        Cardinality::One,
+        "city_id",
+        "id",
+    ))
     .await
     .unwrap();
 
