@@ -31,9 +31,8 @@ use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, Auth, Cardinality,
     ControlPlane, ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent,
-    LinkBacking, LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget,
-    PropertyDef, RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget, PropertyDef,
+    RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -66,12 +65,8 @@ pub fn tref(s: &str, n: &str) -> TableRef {
 }
 
 pub fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// No-op atomic write engine: the read-only graph route never touches it, but
@@ -602,110 +597,51 @@ pub async fn setup_iceberg(
     let ord = tref("main", "orders");
     let li = tref("main", "line_items");
 
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "region".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: cust.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (cust.schema.as_str(), cust.name.as_str()))
+            .prop_req("id", "Long")
+            .prop("region", "String")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "customer_id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: ord.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (ord.schema.as_str(), ord.name.as_str()))
+            .prop_req("id", "Long")
+            .prop_req("customer_id", "Long")
+            .prop("status", "String")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("LineItem".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "order_id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "sku".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: li.clone(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("LineItem", (li.schema.as_str(), li.name.as_str()))
+            .prop_req("id", "Long")
+            .prop_req("order_id", "Long")
+            .prop("sku", "String")
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "lineItems".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("LineItem".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "order_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "lineItems",
+        "Order",
+        "LineItem",
+        Cardinality::Many,
+        "id",
+        "order_id",
+    ))
     .await
     .unwrap();
 
@@ -766,14 +702,13 @@ pub async fn two_batch_thing_setup(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Thing".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: thing,
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Thing", (thing.schema.as_str(), thing.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
@@ -926,27 +861,13 @@ pub async fn seed_vector_type(
 
     // Register the object type with the ontology (identity = "id").
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Docs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Docs", (table.schema.as_str(), table.name.as_str()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type Docs");
 
@@ -992,13 +913,13 @@ pub async fn seed_vector_type(
 
     // Declare the named Flat/Cosine index and build it.
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_sim".into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_sim",
+            "Docs",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define_vector_index by_sim");
     let build_run = RunId(uuid::Uuid::new_v4());
@@ -1020,12 +941,8 @@ pub async fn seed_vector_type(
 /// `createOrderWithLines` seed below and the multi-object/response-envelope e2e tests'
 /// own single-step actions.
 fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: Some(binds.into()),
-    }
+    let p = ParamDef::new(name, ty).binds(binds);
+    if required { p.required() } else { p }
 }
 
 /// Define the `createOrderWithLines` multi-step action: step0 inserts the Order (bind
