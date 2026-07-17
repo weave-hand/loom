@@ -40,12 +40,8 @@ fn tn(s: &str) -> TypeName {
 
 /// A required param renamed away from the property it writes (`binds`).
 fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: Some(binds.into()),
-    }
+    let p = ParamDef::new(name, ty).binds(binds);
+    if required { p.required() } else { p }
 }
 
 /// A `PropertyConstraints` with only a numeric `max` (for the constraint-violation test).

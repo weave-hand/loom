@@ -10,7 +10,7 @@
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, Assignment, ControlPlane, Effect, ObjectType,
     Policy, PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, SubjectId,
-    TableRef, TypeName,
+    TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -37,12 +37,8 @@ struct GadgetWriter {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn param(
@@ -51,12 +47,14 @@ fn param(
     required: bool,
     binds: Option<&str>,
 ) -> control_plane_core::ParamDef {
-    control_plane_core::ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: binds.map(str::to_string),
+    let mut p = control_plane_core::ParamDef::new(name, ty);
+    if required {
+        p = p.required();
     }
+    if let Some(b) = binds {
+        p = p.binds(b);
+    }
+    p
 }
 
 /// The `Gadget` property list, with `total`'s constraints parameterized so the
@@ -67,12 +65,7 @@ fn gadget_properties(total_constraints: PropertyConstraints) -> Vec<PropertyDef>
         prop("id", "Long", true),
         prop("qty", "Long", false),
         prop("unitPrice", "Double", false),
-        PropertyDef {
-            name: "total".into(),
-            ty: "Double".into(),
-            required: false,
-            constraints: total_constraints,
-        },
+        PropertyDef::new("total", "Double").constrained(total_constraints),
         prop("tier", "String", false),
         prop("label", "String", false),
         prop("createdAt", "Timestamp", false),
@@ -97,17 +90,15 @@ async fn setup_gadget_writer_with_total_constraints(
 
     let gadget = TypeName("Gadget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: gadget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "gadget".into(),
-            },
-            properties: gadget_properties(total_constraints),
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            gadget_properties(total_constraints)
+                .into_iter()
+                .fold(ObjectType::build("Gadget", ("main", "gadget")), |b, p| {
+                    b.add_prop(p)
+                })
+                .identity("id")
+                .done(),
+        )
         .await
         .unwrap();
 

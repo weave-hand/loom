@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef,
-    ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkDef, ObjectType,
+    ParamDef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::openapi_gen::{base_type_to_schema, ontology_openapi};
@@ -112,70 +112,31 @@ fn nullable_adds_null_to_type() {
 
 // ---- fixtures ------------------------------------------------------------------------
 
-fn tref(schema: &str, table: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: table.into(),
-    }
-}
-
 fn customer() -> ObjectType {
-    ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "email".into(),
-                ty: "string".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "score".into(),
-                ty: "double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: tref("main", "customer"),
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "long")
+        .prop("email", "string")
+        .prop("score", "double")
+        .identity("id")
+        .done()
 }
 
 fn order() -> ObjectType {
-    ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: tref("main", "orders"),
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Order", ("main", "orders"))
+        .prop_req("id", "long")
+        .identity("id")
+        .done()
 }
 
 fn orders_link() -> LinkDef {
-    LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    }
+    LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    )
 }
 
 /// A well-formed Insert action against `customer()`: one required + one optional parameter.
@@ -185,18 +146,8 @@ fn create_customer_action() -> ActionDef {
         TypeName("Customer".into()),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "name".into(),
-                ty: "string".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "tier".into(),
-                ty: "integer".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("name", "string").required(),
+            ParamDef::new("tier", "integer"),
         ],
         vec![],
     )

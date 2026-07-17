@@ -100,12 +100,7 @@ fn create_order_action(downstream: Vec<JobTemplate>) -> ActionDef {
         ActionName("createOrder".into()),
         tn("Order"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     )
     .downstream(downstream)
@@ -299,12 +294,7 @@ fn update_order_action(downstream: Vec<JobTemplate>) -> ActionDef {
         ActionName("updateOrder".into()),
         tn("Order"),
         ActionKind::Update,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     )
     .downstream(downstream)
@@ -317,12 +307,7 @@ fn delete_order_action(downstream: Vec<JobTemplate>) -> ActionDef {
         ActionName("deleteOrder".into()),
         tn("Order"),
         ActionKind::Delete,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     )
     .downstream(downstream)

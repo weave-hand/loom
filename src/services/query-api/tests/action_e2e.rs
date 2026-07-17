@@ -5,8 +5,7 @@
 
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, CompareOp, ControlPlane, DatasetRef, Effect,
-    ObjectType, PageReq, Policy, PolicyTarget, PropertyDef, RoleId, RowFilter, ScalarValue,
-    SubjectId, TableRef, TypeName,
+    ObjectType, PageReq, Policy, PolicyTarget, RoleId, RowFilter, ScalarValue, SubjectId, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -40,30 +39,12 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
     // Define the Widget type + a createWidget insert action.
     let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .prop("name", "String")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
@@ -72,18 +53,8 @@ async fn setup_widget_writer(fx: &PgFixture) -> WidgetWriter {
             widget.clone(),
             ActionKind::Insert,
             vec![
-                control_plane_core::ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                control_plane_core::ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    binds: None,
-                },
+                control_plane_core::ParamDef::new("id", "Long").required(),
+                control_plane_core::ParamDef::new("name", "String"),
             ],
             vec![],
         ))
@@ -262,22 +233,11 @@ async fn ungranted_subject_is_forbidden() {
 
     let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            }],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
@@ -285,12 +245,7 @@ async fn ungranted_subject_is_forbidden() {
             ActionName("createWidget".into()),
             widget.clone(),
             ActionKind::Insert,
-            vec![control_plane_core::ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            }],
+            vec![control_plane_core::ParamDef::new("id", "Long").required()],
             vec![],
         ))
         .await

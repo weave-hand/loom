@@ -70,37 +70,25 @@ impl ActionEngine for OkEngine {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 fn param(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let p = ParamDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// Seed the type + action + coarse Write grant; return the cp (so the caller can
 /// `set_policy` the fine-grained policy under test) and the writer role.
 async fn seed() -> (MemoryControlPlane, RoleId) {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     cp.define_action(ActionDef::single_step(

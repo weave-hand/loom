@@ -78,38 +78,29 @@ impl ActionEngine for RecordingEngine {
 }
 
 fn param(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let p = ParamDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// Seed a `Widget(id Long [>=1], code String [^[A-Z]+$, len 1..=4])` type + an insert
 /// action + a coarse Write grant for the `analyst` subject.
 async fn seed() -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: PropertyConstraints {
-                    range: Some(RangeConstraint {
-                        min: Some(1.0),
-                        max: None,
+    cp.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .add_prop(
+                PropertyDef::new("id", "Long")
+                    .required()
+                    .constrained(PropertyConstraints {
+                        range: Some(RangeConstraint {
+                            min: Some(1.0),
+                            max: None,
+                        }),
+                        ..PropertyConstraints::default()
                     }),
-                    ..PropertyConstraints::default()
-                },
-            },
-            PropertyDef {
-                name: "code".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: PropertyConstraints {
+            )
+            .add_prop(PropertyDef::new("code", "String").required().constrained(
+                PropertyConstraints {
                     pattern: Some("^[A-Z]+$".into()),
                     length: Some(LengthConstraint {
                         min: Some(1),
@@ -118,16 +109,10 @@ async fn seed() -> MemoryControlPlane {
                     one_of: None,
                     range: None,
                 },
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+            ))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     cp.define_action(ActionDef::single_step(
