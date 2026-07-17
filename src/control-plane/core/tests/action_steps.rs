@@ -41,6 +41,7 @@ fn multi_step_round_trips() {
                     ty: "Long".into(),
                     required: true,
                     binds: Some("id".into()),
+                    description: None,
                 }],
                 assignments: vec![],
                 bind: Some("order".into()),
@@ -53,6 +54,7 @@ fn multi_step_round_trips() {
                     ty: "String".into(),
                     required: true,
                     binds: None,
+                    description: None,
                 }],
                 // A cross-step reference: LineItem.orderId = @order.id.
                 assignments: vec![Assignment::step_ref("orderId", "order", "id")],
@@ -60,6 +62,7 @@ fn multi_step_round_trips() {
             },
         ],
         downstream: Vec::new(),
+        description: None,
     };
     let v = serde_json::to_value(&a).expect("serialize");
     assert!(v.get("steps").is_some(), "stepped form carries steps");
@@ -90,6 +93,7 @@ fn builder_defines_multi_step_with_cross_step_ref() {
                     ty: "Long".into(),
                     required: true,
                     binds: Some("id".into()),
+                    description: None,
                 }],
                 assignments: vec![],
                 bind: Some("order".into()),
@@ -102,12 +106,14 @@ fn builder_defines_multi_step_with_cross_step_ref() {
                     ty: "String".into(),
                     required: true,
                     binds: None,
+                    description: None,
                 }],
                 assignments: vec![Assignment::step_ref("orderId", "order", "id")],
                 bind: None,
             },
         ],
         downstream: Vec::new(),
+        description: None,
     };
     assert_eq!(built, expected);
 }

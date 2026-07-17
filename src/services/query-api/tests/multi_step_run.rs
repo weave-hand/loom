@@ -166,6 +166,7 @@ fn action() -> ActionDef {
             },
         ],
         downstream: Vec::new(),
+        description: None,
     }
 }
 

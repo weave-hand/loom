@@ -693,6 +693,7 @@ fn create_order_with_line_action(downstream: Vec<JobTemplate>) -> ActionDef {
                     ty: "Long".into(),
                     required: true,
                     binds: None,
+                    description: None,
                 }],
                 assignments: vec![],
                 bind: Some("order".into()),
@@ -705,12 +706,14 @@ fn create_order_with_line_action(downstream: Vec<JobTemplate>) -> ActionDef {
                     ty: "Long".into(),
                     required: true,
                     binds: Some("id".into()),
+                    description: None,
                 }],
                 assignments: vec![Assignment::step_ref("orderId", "order", "id")],
                 bind: None,
             },
         ],
         downstream,
+        description: None,
     }
 }
 

@@ -224,6 +224,8 @@ impl Ontology for PgControlPlane {
                 ty: r.ty,
                 required: r.required,
                 constraints,
+                // No `description` column yet — Task 15 replaces this with the real read.
+                description: None,
             });
         }
         let derived_rows = sqlx::query!(
@@ -241,6 +243,8 @@ impl Ontology for PgControlPlane {
                 ty: r.ty,
                 link: r.link_name,
                 agg: rebuild_agg(&r.agg_kind, r.agg_column)?,
+                // No `description` column yet — Task 15 replaces this with the real read.
+                description: None,
             });
         }
         Ok(ObjectType {
@@ -253,6 +257,8 @@ impl Ontology for PgControlPlane {
             derived,
             identity: row.identity,
             version: row.version,
+            // No `description` column yet — Task 15 replaces this with the real read.
+            description: None,
         })
     }
 
@@ -530,6 +536,8 @@ impl Ontology for PgControlPlane {
                         ty: r.ty,
                         required: r.required,
                         binds: r.binds,
+                        // No `description` column yet — Task 15 replaces this with the real read.
+                        description: None,
                     })
                     .collect(),
                 assignments: assignment_rows
@@ -571,6 +579,8 @@ impl Ontology for PgControlPlane {
             name: name.clone(),
             steps,
             downstream,
+            // No `description` column yet — Task 15 replaces this with the real read.
+            description: None,
         })
     }
 
@@ -667,6 +677,8 @@ impl Ontology for PgControlPlane {
                     r.m.map(|v| v as u32),
                     r.ef_construction.map(|v| v as u32),
                 )?,
+                // No `description` column yet — Task 15 replaces this with the real read.
+                description: None,
             });
         }
         Ok(out)
@@ -784,6 +796,8 @@ pub async fn vector_index_def_row(
             r.m.map(|v| v as u32),
             r.ef_construction.map(|v| v as u32),
         )?,
+        // No `description` column yet — Task 15 replaces this with the real read.
+        description: None,
     }))
 }
 
@@ -830,6 +844,8 @@ pub(crate) async fn pg_validate_derived_columns(
                         ty: p.ty,
                         required: false,
                         constraints: control_plane_core::PropertyConstraints::default(),
+                        // The validator reads only name + properties; these are filler.
+                        description: None,
                     })
                     .collect(),
                 // The validator reads only name + properties; these are filler.
@@ -837,6 +853,7 @@ pub(crate) async fn pg_validate_derived_columns(
                 table: ty.table.clone(),
                 identity: None,
                 version: None,
+                description: None,
             }
         };
         targets.insert(l.name, target);
@@ -911,6 +928,8 @@ fn link_defs(rows: Vec<LinkRow>) -> Result<Page<LinkDef>> {
                 r.join_table_schema,
                 r.join_table_name,
             ),
+            // No `description` column yet — Task 15 replaces this with the real read.
+            description: None,
         });
     }
     Ok(Page::from_full(out))

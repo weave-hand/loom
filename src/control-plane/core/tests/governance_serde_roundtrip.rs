@@ -5,8 +5,8 @@
 use control_plane_core::{
     Action, ActionDef, ActionKind, ActionName, Aggregation, Cardinality, CompareOp, Decision,
     DerivedPropertyDef, IndexSpec, LinkBacking, LinkDef, Metric, ObjectType, Page, PageReq,
-    ParamDef, Policy, PolicyTarget, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
-    VectorIndexDef,
+    ParamDef, Policy, PolicyTarget, PropertyDef, RowFilter, ScalarValue, SubjectId, TableRef,
+    TypeName, VectorIndexDef,
 };
 
 fn roundtrip<T>(v: &T)
@@ -121,4 +121,31 @@ fn ontology_payloads_roundtrip() {
     roundtrip(&Aggregation::Min("created_at".into()));
     roundtrip(&Aggregation::Max("updated_at".into()));
     roundtrip(&PageReq::default());
+}
+
+#[test]
+fn description_absent_from_json_decodes_to_none() {
+    // The engine-wire compat guarantee: ontology structs cross that wire as serde-JSON
+    // strings, so a payload written before this field existed must still decode.
+    let json = r#"{"name":"email","ty":"EmailAddress","required":true}"#;
+    let p: PropertyDef = serde_json::from_str(json).unwrap();
+    assert_eq!(p.description, None);
+}
+
+#[test]
+fn none_description_is_omitted_from_json() {
+    // ... and re-encodes byte-identically to today's payload.
+    let json =
+        serde_json::to_string(&PropertyDef::new("email", "EmailAddress").required()).unwrap();
+    assert!(
+        !json.contains("description"),
+        "None must not serialize a key, got: {json}"
+    );
+}
+
+#[test]
+fn some_description_round_trips() {
+    let p = PropertyDef::new("email", "EmailAddress").described("Primary email");
+    let back: PropertyDef = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back, p);
 }

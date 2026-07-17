@@ -56,23 +56,27 @@ fn object_type_builder_matches_literal() {
                 ty: "Long".into(),
                 required: true,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
             PropertyDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
         ],
         derived: vec![],
         identity: Some("id".into()),
         version: None,
+        description: None,
     };
     assert_eq!(built, literal);
 }
@@ -99,6 +103,7 @@ fn object_type_builder_constraints_and_derived_hooks() {
         ty: "Long".into(),
         link: "orders".into(),
         agg: Aggregation::Count,
+        description: None,
     };
     let t = ObjectType::build("Account", ("main", "account"))
         .prop_with("code", "String", true, constraints.clone())
@@ -125,12 +130,14 @@ fn action_def_builder_matches_literal() {
                 ty: "Long".into(),
                 required: true,
                 binds: None,
+                description: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: true,
                 binds: None,
+                description: None,
             },
         ],
         vec![],
@@ -268,4 +275,81 @@ fn add_prop_appends_a_prebuilt_property_in_order() {
     );
     assert!(t.properties[1].required);
     assert_eq!(t.identity.as_deref(), Some("id"));
+}
+
+#[test]
+fn described_carries_prose_and_defaults_to_none() {
+    assert_eq!(PropertyDef::new("email", "EmailAddress").description, None);
+    assert_eq!(
+        PropertyDef::new("email", "EmailAddress")
+            .described("The customer's primary email")
+            .description
+            .as_deref(),
+        Some("The customer's primary email")
+    );
+}
+
+#[test]
+fn described_trims_and_normalizes_blank_to_none() {
+    assert_eq!(
+        PropertyDef::new("e", "T")
+            .described("  spaced  ")
+            .description
+            .as_deref(),
+        Some("spaced")
+    );
+    assert_eq!(
+        PropertyDef::new("e", "T").described("   ").description,
+        None
+    );
+    assert_eq!(PropertyDef::new("e", "T").described("").description, None);
+}
+
+#[test]
+fn described_is_available_on_every_declarable_entity() {
+    assert!(
+        ObjectType::build("C", ("wh", "c"))
+            .described("A customer")
+            .done()
+            .description
+            .is_some()
+    );
+    assert!(
+        LinkDef::fk(
+            "customer",
+            "Order",
+            "Customer",
+            Cardinality::One,
+            "cid",
+            "id"
+        )
+        .described("The order's placer")
+        .description
+        .is_some()
+    );
+    assert!(
+        DerivedPropertyDef::new("n", "Long", "orders", Aggregation::Count)
+            .described("Order count")
+            .description
+            .is_some()
+    );
+    assert!(
+        ParamDef::new("email", "EmailAddress")
+            .described("Contact address")
+            .description
+            .is_some()
+    );
+    assert!(
+        VectorIndexDef::new("i", "Doc", "embedding", Metric::Cosine, IndexSpec::Flat)
+            .described("Semantic search index")
+            .description
+            .is_some()
+    );
+    assert!(
+        ActionDef::build("createCustomer", "Customer", ActionKind::Insert)
+            .described("Registers a new customer")
+            .done()
+            .description
+            .is_some()
+    );
 }

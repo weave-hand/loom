@@ -314,6 +314,7 @@ async fn constraint_violation_on_step2_rolls_back_everything() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -406,6 +407,7 @@ async fn denied_column_on_step2_rolls_back_everything() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -536,6 +538,7 @@ async fn mixed_insert_and_update_commit_atomically() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -680,6 +683,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -815,6 +819,7 @@ async fn vector_target_rejects_delete_step() {
                 bind: Some("v".into()),
             }],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();

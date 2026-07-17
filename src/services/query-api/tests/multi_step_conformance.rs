@@ -72,6 +72,7 @@ fn action(step0_assignments: Vec<Assignment>, li_assignments: Vec<Assignment>) -
             },
         ],
         downstream: Vec::new(),
+        description: None,
     }
 }
 
@@ -178,6 +179,7 @@ fn same_table_update_delete_alongside_another_step_is_rejected() {
             },
         ],
         downstream: Vec::new(),
+        description: None,
     };
     let m = err_msg(check_conformance_steps(
         &a,
@@ -213,6 +215,7 @@ fn same_table_two_inserts_is_allowed() {
             },
         ],
         downstream: Vec::new(),
+        description: None,
     };
     assert!(
         check_conformance_steps(&a, &[order(), order()], &bases(&[order(), order()])).is_ok(),

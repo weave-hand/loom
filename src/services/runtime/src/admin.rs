@@ -543,6 +543,8 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 ty: d.ty,
                 link: d.link,
                 agg,
+                // No `description` on the request DTO yet — Task 18b wires it through.
+                description: None,
             }),
             Err(e) => {
                 return (
@@ -567,11 +569,15 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
                 ty: p.ty,
                 required: p.required,
                 constraints: to_constraints(p.constraints),
+                // No `description` on the request DTO yet — Task 18b wires it through.
+                description: None,
             })
             .collect(),
         derived,
         identity: req.identity,
         version: None,
+        // No `description` on the request DTO yet — Task 18b wires it through.
+        description: None,
     };
     match st.cp.ontology().define_type(otype).await {
         Ok(()) => (
@@ -694,6 +700,8 @@ async fn define_vector_index_route(
         property: req.property,
         metric,
         spec,
+        // No `description` on the request DTO yet — Task 18b wires it through.
+        description: None,
     };
     match st.cp.ontology().define_vector_index(def).await {
         Ok(()) => (
