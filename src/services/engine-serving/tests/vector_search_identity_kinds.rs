@@ -12,7 +12,7 @@ use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
-    PropertyDef, RunId, TableRef, TypeName, VectorIndexDef,
+    RunId, TableRef, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -89,27 +89,11 @@ fn ipc_str(rows: &[(&str, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
 }
 
 fn object_type(name: &str, table: &TableRef, id_ty: &str) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        table: table.clone(),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: id_ty.into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "embedding".into(),
-                ty: "vector(4)".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build(name, (table.schema.clone(), table.name.clone()))
+        .prop_req("id", id_ty)
+        .prop_req("embedding", "vector(4)")
+        .identity("id")
+        .done()
 }
 
 fn lineage_evt(table: &TableRef) -> LineageEvent {
@@ -143,13 +127,13 @@ async fn seed_and_build(
         .await
         .expect("define_type");
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName(type_name.into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_flat",
+            type_name,
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define_vector_index");
     let (cold_schema, cold_batches) = cold_ipc;

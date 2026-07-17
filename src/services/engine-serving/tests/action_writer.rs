@@ -8,8 +8,8 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, ColumnSpec, ControlPlane, DatasetRef, EventType, IndexSpec,
-    LineageEvent, Metric, ObjectType, PropertyDef, RunId, STREAM_CONSOLIDATE_JOB_KIND,
-    StreamTables, TableRef, TypeName, VectorIndexDef,
+    LineageEvent, Metric, ObjectType, RunId, STREAM_CONSOLIDATE_JOB_KIND, StreamTables, TableRef,
+    VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -114,41 +114,17 @@ fn event(op: &str) -> LineageEvent {
 /// Define the `Widget` type in the ontology so `land`/`overwrite_parquet_snapshot`
 /// succeed on a fresh table. Copied from `action_e2e.rs::setup_widget_writer`.
 async fn e2e_seed_widget_table(cp: &PgControlPlane) {
-    let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .prop("name", "String")
                 // Vector property so tests can declare indexes; landing derives
                 // the physical schema from the caller's `columns`, so tests that
                 // never write it are unaffected.
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+                .prop("embedding", "vector(4)")
+                .done(),
+        )
         .await
         .unwrap();
 }
@@ -232,13 +208,13 @@ async fn overwrite_table_enqueues_declared_index_rebuilds() {
     // Declare TWO vector indexes over the seeded `embedding` property.
     for name in ["by_flat", "by_flat2"] {
         cp.ontology()
-            .define_vector_index(VectorIndexDef {
-                name: name.into(),
-                type_name: TypeName("Widget".into()),
-                property: "embedding".into(),
-                metric: Metric::Cosine,
-                spec: IndexSpec::Flat,
-            })
+            .define_vector_index(VectorIndexDef::new(
+                name,
+                "Widget",
+                "embedding",
+                Metric::Cosine,
+                IndexSpec::Flat,
+            ))
             .await
             .expect("define_vector_index");
     }

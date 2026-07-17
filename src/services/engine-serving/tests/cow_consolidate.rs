@@ -17,8 +17,7 @@
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, EventType, LineageEvent, ObjectType, Ontology, PropertyDef, RunId, SnapshotId,
-    TableRef, TypeName,
+    ColumnSpec, EventType, LineageEvent, ObjectType, Ontology, RunId, SnapshotId, TableRef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -104,32 +103,14 @@ fn lineage() -> LineageEvent {
 /// Define `(schema.name)` as an ontology type with the given identity column, so
 /// `identity_for_table` resolves (or not) during the consolidation dispatch.
 async fn define_type(cp: &PgControlPlane, schema: &str, name: &str, identity: Option<&str>) {
-    cp.define_type(ObjectType {
-        name: TypeName(format!("Type_{schema}_{name}")),
-        table: TableRef {
-            schema: schema.into(),
-            name: name.into(),
-        },
-        identity: identity.map(str::to_string),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
-    .await
-    .expect("define_type");
+    let builder = ObjectType::build(format!("Type_{schema}_{name}"), (schema, name))
+        .prop_req("id", "Long")
+        .prop("name", "String");
+    let ty = match identity {
+        Some(id) => builder.identity(id).done(),
+        None => builder.done(),
+    };
+    cp.define_type(ty).await.expect("define_type");
 }
 
 /// A fully-seeded COW table: file rows 1..=4 landed as Parquet, an identity type

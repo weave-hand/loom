@@ -10,7 +10,7 @@
 //! An identity-less type keeps the additive union (no dedup).
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
-use control_plane_core::{ObjectType, Ontology, PropertyDef, TableRef, TypeName};
+use control_plane_core::{ObjectType, Ontology};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_mirror::live_table_id;
@@ -44,61 +44,26 @@ async fn define_type(
     name: &str,
     identity: Option<&str>,
 ) {
-    cp.define_type(ObjectType {
-        name: TypeName(format!("Type_{schema}_{name}")),
-        table: TableRef {
-            schema: schema.into(),
-            name: name.into(),
-        },
-        identity: identity.map(str::to_string),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
-    .await
-    .expect("define_type");
+    let builder = ObjectType::build(format!("Type_{schema}_{name}"), (schema, name))
+        .prop_req("id", "Long")
+        .prop("name", "String");
+    let ty = match identity {
+        Some(id) => builder.identity(id).done(),
+        None => builder.done(),
+    };
+    cp.define_type(ty).await.expect("define_type");
 }
 
 /// Define `(schema.name)` as an identity type whose non-id property is the camelCase
 /// `unitPrice`, so the merge-on-read view for it must preserve mixed-case column names.
 async fn define_camel_type(cp: &control_plane_postgres::PgControlPlane, schema: &str, name: &str) {
-    cp.define_type(ObjectType {
-        name: TypeName(format!("Type_{schema}_{name}")),
-        table: TableRef {
-            schema: schema.into(),
-            name: name.into(),
-        },
-        identity: Some("id".to_string()),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "unitPrice".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build(format!("Type_{schema}_{name}"), (schema, name))
+            .prop_req("id", "Long")
+            .prop("unitPrice", "String")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define_type");
 }

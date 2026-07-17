@@ -8,8 +8,7 @@ use std::time::Duration;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, PropertyDef, RunId,
-    TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, RunId,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -77,32 +76,13 @@ fn event(op: &str) -> LineageEvent {
 /// Define the `Widget` type in the ontology so write_object / overwrite_table
 /// succeed on a fresh table.
 async fn seed_widget_table(cp: &PgControlPlane) {
-    let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .prop("name", "String")
+                .done(),
+        )
         .await
         .expect("define_type");
 }

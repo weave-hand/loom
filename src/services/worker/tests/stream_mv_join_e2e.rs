@@ -9,9 +9,8 @@ use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, EventType, Job, JobId, LineageEvent, LookupOn, MergeEngine,
-    MvWatermarks, ObjectType, Ontology, PropertyConstraints, PropertyDef, Queue, RetryPolicy,
-    RunId, RunState, RunTrigger, STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef,
-    TransformBody, TransformRun, TypeName, mv_key,
+    MvWatermarks, ObjectType, Ontology, Queue, RetryPolicy, RunId, RunState, RunTrigger,
+    STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody, TransformRun, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -151,27 +150,16 @@ async fn declare_customers(cp: &PgControlPlane, pool: &PgPool, table: &TableRef)
     cp.declare_cdc(tid, 2, "id", MergeEngine::LastRow)
         .await
         .expect("declare_cdc");
-    cp.define_type(ObjectType {
-        name: TypeName(format!("Type_{}_{}", table.schema, table.name)),
-        table: table.clone(),
-        identity: Some("id".to_string()),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build(
+            format!("Type_{}_{}", table.schema, table.name),
+            (table.schema.clone(), table.name.clone()),
+        )
+        .prop_req("id", "Long")
+        .prop_req("name", "String")
+        .identity("id")
+        .done(),
+    )
     .await
     .expect("define_type");
     tid

@@ -25,21 +25,12 @@ fn tref(name: &str) -> TableRef {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn derived(name: &str, ty: &str, link: &str, agg: Aggregation) -> DerivedPropertyDef {
-    DerivedPropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        link: link.into(),
-        agg,
-    }
+    DerivedPropertyDef::new(name, ty, link, agg)
 }
 
 fn object_type(
@@ -48,14 +39,15 @@ fn object_type(
     properties: Vec<PropertyDef>,
     derived: Vec<DerivedPropertyDef>,
 ) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        properties,
-        derived,
-        table: tref(table),
-        identity: None,
-        version: None,
-    }
+    let builder = properties
+        .into_iter()
+        .fold(ObjectType::build(name, ("main", table)), |b, p| {
+            b.add_prop(p)
+        });
+    derived
+        .into_iter()
+        .fold(builder, |b, d| b.derived(d))
+        .done()
 }
 
 /// Seed the customer/order graph: `main.customer(id long, name string)`,
@@ -98,16 +90,14 @@ async fn seed_graph(cp: &MemoryControlPlane) {
     ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 }
@@ -466,16 +456,14 @@ async fn seed_link_tables(cp: &MemoryControlPlane) {
 }
 
 fn fk_link(from_column: &str, to_column: &str) -> LinkDef {
-    LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: from_column.into(),
-            to_column: to_column.into(),
-        },
-    }
+    LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        from_column,
+        to_column,
+    )
 }
 
 fn jt_link(from_key: &str, from_column: &str, to_column: &str, to_key: &str) -> LinkDef {
@@ -489,19 +477,13 @@ fn jt_link_on(
     to_column: &str,
     to_key: &str,
 ) -> LinkDef {
-    LinkDef {
-        name: "viaOrders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: tref(table),
-            from_key: from_key.into(),
-            from_column: from_column.into(),
-            to_column: to_column.into(),
-            to_key: to_key.into(),
-        },
-    }
+    LinkDef::new(
+        "viaOrders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        LinkBacking::join_table(("main", table), from_key, from_column, to_column, to_key),
+    )
 }
 
 async fn link_names(cp: &MemoryControlPlane) -> Vec<String> {

@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use control_plane_core::{
     BUILD_VECTOR_INDEX_JOB_KIND, BuildVectorIndexJob, Catalog, ControlPlane, DatasetId, EventType,
-    IndexSpec, Job, JobId, LineageEvent, Metric, ObjectType, PropertyDef, RunId, TableRef,
-    TypeName, VectorIndexDef,
+    IndexSpec, Job, JobId, LineageEvent, Metric, ObjectType, RunId, TableRef, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -79,52 +78,38 @@ async fn worker_builds_vector_index_over_the_wire() {
 
     // Register object type so build_vector_index can resolve the identity column.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Vectors".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Vectors", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
     // Declare two named indexes on the same property: a flat and an hnsw.
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName("Vectors".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_flat",
+            "Vectors",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define by_flat");
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_hnsw".into(),
-            type_name: TypeName("Vectors".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Hnsw {
+        .define_vector_index(VectorIndexDef::new(
+            "by_hnsw",
+            "Vectors",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Hnsw {
                 m: None,
                 ef_construction: None,
             },
-        })
+        ))
         .await
         .expect("define by_hnsw");
 
@@ -274,27 +259,13 @@ async fn build_with_unknown_index_name_fails() {
 
     // Register the type but declare NO vector index.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Vectors".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Vectors", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 

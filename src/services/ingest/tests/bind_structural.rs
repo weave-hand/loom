@@ -3,8 +3,7 @@
 //! just an `ObjectType` and a `TableSchema`.
 
 use control_plane_core::{
-    Aggregation, ColumnDef, DerivedPropertyDef, ObjectType, PropertyDef, TableRef, TableSchema,
-    TypeName,
+    Aggregation, ColumnDef, DerivedPropertyDef, ObjectType, PropertyDef, TableSchema,
 };
 use ingest::bind::{
     BindViolationReason, identity_violation, property_violations, reserved_name_violations,
@@ -21,25 +20,17 @@ fn col(name: &str, ty: &str, nullable: bool) -> ColumnDef {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn otype(properties: Vec<PropertyDef>, identity: Option<&str>) -> ObjectType {
-    ObjectType {
-        name: TypeName("T".into()),
-        properties,
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "t".into(),
-        },
-        identity: identity.map(str::to_string),
-        version: None,
+    let builder = properties
+        .into_iter()
+        .fold(ObjectType::build("T", ("main", "t")), |b, p| b.add_prop(p));
+    match identity {
+        Some(id) => builder.identity(id).done(),
+        None => builder.done(),
     }
 }
 
@@ -123,12 +114,12 @@ fn underscore_property_and_derived_names_are_reserved() {
 #[test]
 fn underscore_derived_name_is_reserved() {
     let mut ty = otype(vec![prop("id", "Long", true)], None);
-    ty.derived = vec![DerivedPropertyDef {
-        name: "_hidden".into(),
-        ty: "Long".into(),
-        link: "orders".into(),
-        agg: Aggregation::Count,
-    }];
+    ty.derived = vec![DerivedPropertyDef::new(
+        "_hidden",
+        "Long",
+        "orders",
+        Aggregation::Count,
+    )];
     let v = reserved_name_violations(&ty);
     assert_eq!(v.len(), 1);
     assert_eq!(v[0].property, "_hidden");

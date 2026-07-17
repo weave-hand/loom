@@ -5,27 +5,20 @@
 //! `IcebergCatalog` while the ontology stays on the shared Postgres tables (`cp`).
 
 use control_plane_core::{
-    Aggregation, Cardinality, ControlPlaneError, DerivedPropertyDef, LinkBacking, LinkDef,
-    ObjectType, Ontology, PageReq, PropertyDef, TableRef, TypeName,
+    Aggregation, Cardinality, ControlPlaneError, DerivedPropertyDef, LinkDef, ObjectType, Ontology,
+    PageReq, PropertyDef, TypeName,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use ingest::{BindError, BindViolationReason, bind, bind_link};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
-fn customer() -> TableRef {
-    TableRef {
-        schema: "main".into(),
-        name: "customer".into(),
-    }
+fn customer() -> (&'static str, &'static str) {
+    ("main", "customer")
 }
 
 /// Build an Iceberg writer over the fixture db (its own pool + libpq DSN for the
@@ -72,17 +65,10 @@ async fn bind_accepts_conforming_type_and_persists_it() {
     seed_customer(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            prop("id", "Long", true),             // long, non-null -> ok
-            prop("email", "EmailAddress", false), // string, optional -> ok
-        ],
-        derived: vec![],
-        table: customer(),
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true)) // long, non-null -> ok
+        .add_prop(prop("email", "EmailAddress", false)) // string, optional -> ok
+        .done();
     bind(&cat, &cp, type_def.clone()).await.unwrap();
 
     let got = cp.get_type(&TypeName("Customer".into())).await.unwrap();
@@ -102,20 +88,13 @@ async fn bind_collects_all_violations_and_persists_nothing() {
     // amount: Money is unknown (UnknownLogicalType)
     // email: String required over a nullable column (NullabilityViolation)
     // score: required Long over a nullable string column (TypeMismatch + NullabilityViolation)
-    let type_def = ObjectType {
-        name: TypeName("Bad".into()),
-        properties: vec![
-            prop("phone", "String", false),
-            prop("id", "Integer", false),
-            prop("amount", "Money", false),
-            prop("email", "String", true),
-            prop("score", "Long", true),
-        ],
-        derived: vec![],
-        table: customer(),
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Bad", customer())
+        .add_prop(prop("phone", "String", false))
+        .add_prop(prop("id", "Integer", false))
+        .add_prop(prop("amount", "Money", false))
+        .add_prop(prop("email", "String", true))
+        .add_prop(prop("score", "Long", true))
+        .done();
 
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
@@ -162,17 +141,11 @@ async fn bind_accepts_identity_naming_a_required_property() {
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `id` is a required property (long, non-null) -> a valid identity.
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("email", "EmailAddress", false),
-        ],
-        derived: vec![],
-        table: customer(),
-        identity: Some("id".into()),
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true))
+        .add_prop(prop("email", "EmailAddress", false))
+        .identity("id")
+        .done();
     bind(&cat, &cp, type_def).await.unwrap();
 }
 
@@ -185,14 +158,10 @@ async fn bind_rejects_identity_naming_unknown_property() {
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `nope` is not a declared property -> BadIdentity.
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: customer(),
-        identity: Some("nope".into()),
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true))
+        .identity("nope")
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
@@ -214,17 +183,11 @@ async fn bind_rejects_identity_naming_non_required_property() {
 
     // `email` is a declared but non-required (nullable) property -> a PK can't be
     // nullable -> BadIdentity.
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("email", "EmailAddress", false),
-        ],
-        derived: vec![],
-        table: customer(),
-        identity: Some("email".into()),
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true))
+        .add_prop(prop("email", "EmailAddress", false))
+        .identity("email")
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
@@ -243,17 +206,9 @@ async fn bind_rejects_an_unknown_table() {
     // No seeding: empty catalog, no tables.
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
-    let type_def = ObjectType {
-        name: TypeName("Ghost".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "ghost".into(),
-        },
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Ghost", ("main", "ghost"))
+        .add_prop(prop("id", "Long", true))
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     assert!(matches!(err, BindError::TableNotFound(_)), "got {err:?}");
 }
@@ -274,11 +229,8 @@ async fn seed_reserved(writer: &IcebergWriter) {
         .await;
 }
 
-fn reserved_table() -> TableRef {
-    TableRef {
-        schema: "main".into(),
-        name: "reserved".into(),
-    }
+fn reserved_table() -> (&'static str, &'static str) {
+    ("main", "reserved")
 }
 
 #[tokio::test]
@@ -290,14 +242,10 @@ async fn bind_rejects_a_property_name_starting_with_underscore() {
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // `_x` exists as a physical column, so the only violation is the reserved name.
-    let type_def = ObjectType {
-        name: TypeName("Reserved".into()),
-        properties: vec![prop("id", "Long", true), prop("_x", "Long", false)],
-        derived: vec![],
-        table: reserved_table(),
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Reserved", reserved_table())
+        .add_prop(prop("id", "Long", true))
+        .add_prop(prop("_x", "Long", false))
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
@@ -318,19 +266,15 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
 
     // Base conforming type, but derived property name begins with `_`.
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![DerivedPropertyDef {
-            name: "_y".into(),
-            ty: "long".into(),
-            link: "whatever".into(),
-            agg: Aggregation::Count,
-        }],
-        table: customer(),
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true))
+        .derived(DerivedPropertyDef::new(
+            "_y",
+            "long",
+            "whatever",
+            Aggregation::Count,
+        ))
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
@@ -348,11 +292,8 @@ async fn bind_rejects_a_derived_property_name_starting_with_underscore() {
 // these cases prove the SAME validators run against the real catalog, whose adapter
 // maps physical Iceberg types to loom logical types that feed the validator.
 
-fn purchase_table() -> TableRef {
-    TableRef {
-        schema: "main".into(),
-        name: "purchase".into(),
-    }
+fn purchase_table() -> (&'static str, &'static str) {
+    ("main", "purchase")
 }
 
 // Seed main.purchase: id long NN, customer_id long NULL, cost long NULL.
@@ -381,36 +322,28 @@ async fn seed_purchase(writer: &IcebergWriter) {
 // FK link (`customer.id = purchase.customer_id`), so a derived property over
 // `purchases` resolves.
 async fn define_purchase_graph(cp: &impl Ontology) {
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: customer(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", customer())
+            .add_prop(prop("id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Purchase".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: purchase_table(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Purchase", purchase_table())
+            .add_prop(prop("id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "purchases".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Purchase".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "purchases",
+        "Customer",
+        "Purchase",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 }
@@ -428,27 +361,22 @@ async fn bind_accepts_valid_derived_properties_over_the_real_catalog() {
     // Count -> Long, and Sum over the numeric `cost` column -> Long (numeric). The
     // Iceberg adapter maps the physical types to loom logical types the validator reads.
     let derived = vec![
-        DerivedPropertyDef {
-            name: "purchaseCount".into(),
-            ty: "Long".into(),
-            link: "purchases".into(),
-            agg: Aggregation::Count,
-        },
-        DerivedPropertyDef {
-            name: "totalCost".into(),
-            ty: "Long".into(),
-            link: "purchases".into(),
-            agg: Aggregation::Sum("cost".into()),
-        },
+        DerivedPropertyDef::new("purchaseCount", "Long", "purchases", Aggregation::Count),
+        DerivedPropertyDef::new(
+            "totalCost",
+            "Long",
+            "purchases",
+            Aggregation::Sum("cost".into()),
+        ),
     ];
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: derived.clone(),
-        table: customer(),
-        identity: None,
-        version: None,
-    };
+    let type_def = derived
+        .clone()
+        .into_iter()
+        .fold(
+            ObjectType::build("Customer", customer()).add_prop(prop("id", "Long", true)),
+            |b, d| b.derived(d),
+        )
+        .done();
     bind(&cat, &cp, type_def).await.unwrap();
 
     let got = cp.get_type(&TypeName("Customer".into())).await.unwrap();
@@ -467,27 +395,21 @@ async fn bind_rejects_a_bad_derived_reference_over_the_real_catalog() {
 
     // `cost` is numeric -> Sum is applicable, but "ghost" is not a column on
     // purchase -> MissingAggColumn; and "noSuchLink" is undefined -> UnknownDerivedLink.
-    let type_def = ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![
-            DerivedPropertyDef {
-                name: "ghostSum".into(),
-                ty: "Long".into(),
-                link: "purchases".into(),
-                agg: Aggregation::Sum("ghost".into()),
-            },
-            DerivedPropertyDef {
-                name: "dangler".into(),
-                ty: "Long".into(),
-                link: "noSuchLink".into(),
-                agg: Aggregation::Count,
-            },
-        ],
-        table: customer(),
-        identity: None,
-        version: None,
-    };
+    let type_def = ObjectType::build("Customer", customer())
+        .add_prop(prop("id", "Long", true))
+        .derived(DerivedPropertyDef::new(
+            "ghostSum",
+            "Long",
+            "purchases",
+            Aggregation::Sum("ghost".into()),
+        ))
+        .derived(DerivedPropertyDef::new(
+            "dangler",
+            "Long",
+            "noSuchLink",
+            Aggregation::Count,
+        ))
+        .done();
     let err = bind(&cat, &cp, type_def).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
@@ -509,37 +431,29 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
     seed_purchase(&writer).await;
     let cat = IcebergCatalog::new(fx.pool_for(&db).await);
     // Endpoint types only (no link yet — bind_link creates it).
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: customer(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", customer())
+            .add_prop(prop("id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Purchase".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: purchase_table(),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Purchase", purchase_table())
+            .add_prop(prop("id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
 
-    let good = LinkDef {
-        name: "purchases".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Purchase".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    };
+    let good = LinkDef::fk(
+        "purchases",
+        "Customer",
+        "Purchase",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    );
     bind_link(&cat, &cp, good).await.unwrap();
     let links = cp
         .links(&TypeName("Customer".into()), PageReq::unbounded())
@@ -548,16 +462,14 @@ async fn bind_link_validates_backing_columns_over_the_real_catalog() {
     assert!(links.items.iter().any(|l| l.name == "purchases"));
 
     // A backing column that does not exist on the to-table -> MissingColumn.
-    let bad = LinkDef {
-        name: "broken".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Purchase".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "nope".into(),
-        },
-    };
+    let bad = LinkDef::fk(
+        "broken",
+        "Customer",
+        "Purchase",
+        Cardinality::Many,
+        "id",
+        "nope",
+    );
     let err = bind_link(&cat, &cp, bad).await.unwrap_err();
     let BindError::DoesNotConform(v) = err else {
         panic!("expected DoesNotConform, got {err:?}");
