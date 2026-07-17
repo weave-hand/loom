@@ -83,21 +83,13 @@ impl query_api::serving::ServingEngine for NullServing {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn param(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let p = ParamDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// MemoryControlPlane with a Widget type (id Long req, name String opt), a conformant
@@ -105,17 +97,13 @@ fn param(name: &str, ty: &str, required: bool) -> ParamDef {
 /// subject `analyst` granted Action::Write on Widget.
 async fn seeded() -> (MemoryControlPlane, SubjectId) {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     cp.define_action(ActionDef::single_step(

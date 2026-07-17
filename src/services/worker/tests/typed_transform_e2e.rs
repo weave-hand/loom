@@ -16,7 +16,7 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, ControlPlaneError, DatasetId, EventType, Job, JobId,
     LineageEvent, NewJob, ObjectType, OutputMode, PropertyDef, Queue, RetryPolicy, RunId,
-    SnapshotId, TYPED_TRANSFORM_JOB_KIND, TableRef, TypeName, TypedTransformJob,
+    SnapshotId, TYPED_TRANSFORM_JOB_KIND, TableRef, TypedTransformJob,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -38,12 +38,8 @@ fn tref(schema: &str, name: &str) -> TableRef {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn customer_columns() -> Vec<ColumnSpec> {
@@ -218,14 +214,15 @@ async fn seed_customer_source(h: &Harness) -> TableRef {
     .expect("land");
 
     h.pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-            derived: vec![],
-            table: customers.clone(),
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build(
+                "Customer",
+                (customers.schema.clone(), customers.name.clone()),
+            )
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", false))
+            .done(),
+        )
         .await
         .unwrap();
     customers
@@ -300,14 +297,11 @@ async fn typed_transform_commits_with_type_named_lineage() {
     // Define the OUTPUT type (its backing table main.customer_slim does NOT exist yet).
     let slim = tref("main", "customer_slim");
     h.pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("CustomerSlim".into()),
-            properties: vec![prop("id", "Long", false)],
-            derived: vec![],
-            table: slim.clone(),
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("CustomerSlim", (slim.schema.clone(), slim.name.clone()))
+                .add_prop(prop("id", "Long", false))
+                .done(),
+        )
         .await
         .unwrap();
 
@@ -411,14 +405,11 @@ async fn nonconforming_result_abandons_without_commit() {
     // The output type declares ONLY `id`; the SQL below also yields `region`.
     let bad = tref("main", "customer_bad");
     h.pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("CustomerBad".into()),
-            properties: vec![prop("id", "Long", false)],
-            derived: vec![],
-            table: bad.clone(),
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("CustomerBad", (bad.schema.clone(), bad.name.clone()))
+                .add_prop(prop("id", "Long", false))
+                .done(),
+        )
         .await
         .unwrap();
 
@@ -509,28 +500,28 @@ async fn typed_transform_conforms_over_a_source_with_a_live_inline_row() {
     // The input type has an IDENTITY — that is what routes the source through
     // `build_merge_view` at all — and a REQUIRED non-identity property.
     h.pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", true)],
-            derived: vec![],
-            table: customers.clone(),
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build(
+                "Customer",
+                (customers.schema.clone(), customers.name.clone()),
+            )
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("region", "String", true))
+            .identity("id")
+            .done(),
+        )
         .await
         .unwrap();
     // The OUTPUT type also declares `region` REQUIRED: a nullable `region` in the
     // result schema is exactly what `check_conformance` refuses.
     let slim = tref("main", "customer_regions");
     h.pg.ontology()
-        .define_type(ObjectType {
-            name: TypeName("CustomerRegion".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", true)],
-            derived: vec![],
-            table: slim.clone(),
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("CustomerRegion", (slim.schema.clone(), slim.name.clone()))
+                .add_prop(prop("id", "Long", true))
+                .add_prop(prop("region", "String", true))
+                .done(),
+        )
         .await
         .unwrap();
 

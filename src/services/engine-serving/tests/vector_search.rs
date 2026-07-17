@@ -3,9 +3,7 @@
 //! a vector row landed inline AFTER the index's covered snapshot S is found in the
 //! hot delta and merged exactly once. Cosine and L2 both verified.
 
-use control_plane_core::{
-    ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
-};
+use control_plane_core::{ControlPlane, IndexSpec, Metric, ObjectType, RunId, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::land;
 use engine_serving::{EngineServingError, VectorQuery};
@@ -115,27 +113,13 @@ async fn no_bound_index_is_deterministic_error() {
 
     // Register type.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("NoDocs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("NoDocs", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 

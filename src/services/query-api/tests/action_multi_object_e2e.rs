@@ -40,12 +40,8 @@ fn tn(s: &str) -> TypeName {
 
 /// A required param renamed away from the property it writes (`binds`).
 fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: Some(binds.into()),
-    }
+    let p = ParamDef::new(name, ty).binds(binds);
+    if required { p.required() } else { p }
 }
 
 /// A `PropertyConstraints` with only a numeric `max` (for the constraint-violation test).
@@ -318,6 +314,7 @@ async fn constraint_violation_on_step2_rolls_back_everything() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -410,6 +407,7 @@ async fn denied_column_on_step2_rolls_back_everything() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -540,6 +538,7 @@ async fn mixed_insert_and_update_commit_atomically() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -684,6 +683,7 @@ async fn multi_step_delete_emptying_table_commits_atomically() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();
@@ -819,6 +819,7 @@ async fn vector_target_rejects_delete_step() {
                 bind: Some("v".into()),
             }],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .unwrap();

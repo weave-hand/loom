@@ -12,8 +12,7 @@ use arrow_array::builder::{Float32Builder, ListBuilder};
 use arrow_array::{Array, Float32Array, Int64Array, ListArray, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, ObjectType, PropertyDef, RunId,
-    TableRef, TypeName,
+    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, ObjectType, RunId, TableRef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_inline;
@@ -76,27 +75,11 @@ fn ipc_long(rows: &[(i64, [f32; 4])]) -> (Arc<Schema>, Vec<RecordBatch>) {
 }
 
 fn object_type(name: &str, table: &TableRef, id_ty: &str) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        table: table.clone(),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: id_ty.into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "embedding".into(),
-                ty: "vector(4)".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build(name, (table.schema.clone(), table.name.clone()))
+        .prop_req("id", id_ty)
+        .prop_req("embedding", "vector(4)")
+        .identity("id")
+        .done()
 }
 
 fn lineage_evt(table: &TableRef) -> LineageEvent {

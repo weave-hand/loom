@@ -2,9 +2,39 @@
 //! builder output == literal, field for field, including ordering.
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, Aggregation, Assignment, DerivedPropertyDef,
-    LengthConstraint, ObjectType, ParamDef, PropertyConstraints, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, Aggregation, Assignment, Cardinality, DerivedPropertyDef,
+    IndexSpec, LengthConstraint, LinkBacking, LinkDef, Metric, ObjectType, ParamDef,
+    PropertyConstraints, PropertyDef, TableRef, TypeName, VectorIndexDef,
 };
+
+#[test]
+fn property_def_new_is_optional_and_unconstrained() {
+    let p = PropertyDef::new("email", "EmailAddress");
+    assert_eq!(p.name, "email");
+    assert_eq!(p.ty, "EmailAddress");
+    assert!(!p.required);
+    assert!(p.constraints.is_empty());
+}
+
+#[test]
+fn property_def_required_sets_the_flag() {
+    let p = PropertyDef::new("id", "Long").required();
+    assert!(p.required);
+}
+
+#[test]
+fn property_def_constrained_carries_constraints() {
+    let c = PropertyConstraints {
+        length: Some(LengthConstraint {
+            min: None,
+            max: Some(255),
+        }),
+        ..PropertyConstraints::default()
+    };
+    let p = PropertyDef::new("email", "EmailAddress").constrained(c.clone());
+    assert_eq!(p.constraints, c);
+    assert!(!p.required, "constrained must not change requiredness");
+}
 
 #[test]
 fn object_type_builder_matches_literal() {
@@ -26,23 +56,27 @@ fn object_type_builder_matches_literal() {
                 ty: "Long".into(),
                 required: true,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
             PropertyDef {
                 name: "name".into(),
                 ty: "String".into(),
                 required: false,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
             PropertyDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: false,
                 constraints: PropertyConstraints::default(),
+                description: None,
             },
         ],
         derived: vec![],
         identity: Some("id".into()),
         version: None,
+        description: None,
     };
     assert_eq!(built, literal);
 }
@@ -69,6 +103,7 @@ fn object_type_builder_constraints_and_derived_hooks() {
         ty: "Long".into(),
         link: "orders".into(),
         agg: Aggregation::Count,
+        description: None,
     };
     let t = ObjectType::build("Account", ("main", "account"))
         .prop_with("code", "String", true, constraints.clone())
@@ -95,12 +130,14 @@ fn action_def_builder_matches_literal() {
                 ty: "Long".into(),
                 required: true,
                 binds: None,
+                description: None,
             },
             ParamDef {
                 name: "qty".into(),
                 ty: "Long".into(),
                 required: true,
                 binds: None,
+                description: None,
             },
         ],
         vec![],
@@ -123,4 +160,196 @@ fn action_def_builder_binds_and_assignment_hooks() {
         vec![Assignment::constant("status", serde_json::json!("active"))]
     );
     assert_eq!(a.steps[0].kind, ActionKind::Update);
+}
+
+#[test]
+fn link_def_fk_builds_a_foreign_key_link() {
+    let l = LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    );
+    assert_eq!(l.name, "customer");
+    assert_eq!(l.from, TypeName("Order".to_string()));
+    assert_eq!(l.to, TypeName("Customer".to_string()));
+    assert_eq!(l.cardinality, Cardinality::One);
+    assert_eq!(
+        l.backing,
+        LinkBacking::ForeignKey {
+            from_column: "customer_id".to_string(),
+            to_column: "id".to_string()
+        }
+    );
+}
+
+#[test]
+fn link_backing_join_table_builds_a_mapping_backing() {
+    let b = LinkBacking::join_table(("wh", "doc_tag"), "doc_pk", "doc_id", "tag_id", "tag_pk");
+    assert_eq!(
+        b,
+        LinkBacking::JoinTable {
+            table: TableRef {
+                schema: "wh".to_string(),
+                name: "doc_tag".to_string()
+            },
+            from_key: "doc_pk".to_string(),
+            from_column: "doc_id".to_string(),
+            to_column: "tag_id".to_string(),
+            to_key: "tag_pk".to_string(),
+        }
+    );
+}
+
+#[test]
+fn link_def_new_takes_an_explicit_backing() {
+    let l = LinkDef::new(
+        "tags",
+        "Doc",
+        "Tag",
+        Cardinality::Many,
+        LinkBacking::join_table(("wh", "doc_tag"), "doc_pk", "doc_id", "tag_id", "tag_pk"),
+    );
+    assert_eq!(l.cardinality, Cardinality::Many);
+    assert!(matches!(l.backing, LinkBacking::JoinTable { .. }));
+}
+
+#[test]
+fn derived_property_def_new_carries_its_aggregation() {
+    let d = DerivedPropertyDef::new("orderCount", "Long", "orders", Aggregation::Count);
+    assert_eq!(d.name, "orderCount");
+    assert_eq!(d.ty, "Long");
+    assert_eq!(d.link, "orders");
+    assert_eq!(d.agg, Aggregation::Count);
+}
+
+#[test]
+fn param_def_new_is_optional_and_self_binding() {
+    let p = ParamDef::new("email", "EmailAddress");
+    assert!(!p.required);
+    assert_eq!(p.binds, None);
+    assert_eq!(p.binds_property(), "email");
+}
+
+#[test]
+fn param_def_required_and_binds() {
+    let p = ParamDef::new("email", "EmailAddress")
+        .required()
+        .binds("email_address");
+    assert!(p.required);
+    assert_eq!(p.binds_property(), "email_address");
+}
+
+#[test]
+fn vector_index_def_new_carries_metric_and_spec() {
+    let v = VectorIndexDef::new(
+        "byEmbedding",
+        "Doc",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    );
+    assert_eq!(v.name, "byEmbedding");
+    assert_eq!(v.type_name, TypeName("Doc".to_string()));
+    assert_eq!(v.property, "embedding");
+    assert_eq!(v.metric, Metric::Cosine);
+    assert_eq!(v.spec, IndexSpec::Flat);
+}
+
+#[test]
+fn add_prop_appends_a_prebuilt_property_in_order() {
+    let t = ObjectType::build("Customer", ("wh", "customers"))
+        .prop_req("id", "Long")
+        .add_prop(PropertyDef::new("email", "EmailAddress").required())
+        .prop("note", "String")
+        .identity("id")
+        .done();
+
+    let names: Vec<&str> = t.properties.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["id", "email", "note"],
+        "add_prop must append in call order"
+    );
+    assert!(t.properties[1].required);
+    assert_eq!(t.identity.as_deref(), Some("id"));
+}
+
+#[test]
+fn described_carries_prose_and_defaults_to_none() {
+    assert_eq!(PropertyDef::new("email", "EmailAddress").description, None);
+    assert_eq!(
+        PropertyDef::new("email", "EmailAddress")
+            .described("The customer's primary email")
+            .description
+            .as_deref(),
+        Some("The customer's primary email")
+    );
+}
+
+#[test]
+fn described_trims_and_normalizes_blank_to_none() {
+    assert_eq!(
+        PropertyDef::new("e", "T")
+            .described("  spaced  ")
+            .description
+            .as_deref(),
+        Some("spaced")
+    );
+    assert_eq!(
+        PropertyDef::new("e", "T").described("   ").description,
+        None
+    );
+    assert_eq!(PropertyDef::new("e", "T").described("").description, None);
+}
+
+#[test]
+fn described_is_available_on_every_declarable_entity() {
+    assert!(
+        ObjectType::build("C", ("wh", "c"))
+            .described("A customer")
+            .done()
+            .description
+            .is_some()
+    );
+    assert!(
+        LinkDef::fk(
+            "customer",
+            "Order",
+            "Customer",
+            Cardinality::One,
+            "cid",
+            "id"
+        )
+        .described("The order's placer")
+        .description
+        .is_some()
+    );
+    assert!(
+        DerivedPropertyDef::new("n", "Long", "orders", Aggregation::Count)
+            .described("Order count")
+            .description
+            .is_some()
+    );
+    assert!(
+        ParamDef::new("email", "EmailAddress")
+            .described("Contact address")
+            .description
+            .is_some()
+    );
+    assert!(
+        VectorIndexDef::new("i", "Doc", "embedding", Metric::Cosine, IndexSpec::Flat)
+            .described("Semantic search index")
+            .description
+            .is_some()
+    );
+    assert!(
+        ActionDef::build("createCustomer", "Customer", ActionKind::Insert)
+            .described("Registers a new customer")
+            .done()
+            .description
+            .is_some()
+    );
 }

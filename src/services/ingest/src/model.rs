@@ -67,6 +67,8 @@ pub fn infer_object_type(
                 ty: ty.to_string(),
                 required: !field.is_nullable(),
                 constraints: control_plane_core::PropertyConstraints::default(),
+                // Inferred from an Arrow schema — no prose to carry.
+                description: None,
             }),
             None => violations.push(Violation {
                 column: field.name().clone(),
@@ -97,5 +99,7 @@ pub fn infer_object_type(
         },
         identity: identity.map(str::to_string),
         version: None,
+        // Inferred from an Arrow schema — no prose to carry.
+        description: None,
     })
 }

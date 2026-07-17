@@ -6,34 +6,22 @@ use std::time::Duration;
 
 use control_plane_core::{
     Acl, Action, CompareOp, Effect, GovernedCatalog, ObjectType, Ontology, Policy, PolicyTarget,
-    PropertyConstraints, PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef,
-    TypeName,
+    PropertyDef, RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::governed::resolve_governed_catalog;
 
 fn prop(name: &str, ty: &str) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: PropertyConstraints::default(),
-    }
+    PropertyDef::new(name, ty)
 }
 
 fn object_type(name: &str, table: TableRef) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        properties: vec![
-            prop("id", "Long"),
-            prop("status", "String"),
-            prop("secret", "String"),
-        ],
-        derived: vec![],
-        table,
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build(name, (table.schema, table.name))
+        .add_prop(prop("id", "Long"))
+        .add_prop(prop("status", "String"))
+        .add_prop(prop("secret", "String"))
+        .identity("id")
+        .done()
 }
 
 fn orders_table() -> TableRef {

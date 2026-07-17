@@ -4,12 +4,8 @@ use query_api::serving::SqlValue;
 use serde_json::json;
 
 fn p(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let pd = ParamDef::new(name, ty);
+    if required { pd.required() } else { pd }
 }
 fn body(v: serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
     v.as_object().unwrap().clone()
@@ -115,42 +111,30 @@ fn invalid_iso_date_is_an_error() {
 
 // --- resolve_action_row: param->property mapping + constant assignments (slice 1) ---
 
-use control_plane_core::{
-    ActionKind, ActionStep, Assignment, ObjectType, PropertyDef, TableRef, TypeName,
-};
+use control_plane_core::{ActionKind, ActionStep, Assignment, ObjectType, PropertyDef, TypeName};
 use query_api::params::{StepEnv, resolve_action_row};
 
 fn gadget() -> ObjectType {
-    let prop = |name: &str, ty: &str, required: bool| PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
+    let prop = |name: &str, ty: &str, required: bool| {
+        let p = PropertyDef::new(name, ty);
+        if required { p.required() } else { p }
     };
-    ObjectType {
-        name: TypeName("Gadget".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("status", "String", false),
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "gadget".into(),
-        },
-        identity: None,
-        version: None,
-    }
+    ObjectType::build("Gadget", ("main", "gadget"))
+        .add_prop(prop("id", "Long", true))
+        .add_prop(prop("name", "String", false))
+        .add_prop(prop("status", "String", false))
+        .done()
 }
 
 fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: binds.map(str::to_string),
+    let mut p = ParamDef::new(name, ty);
+    if required {
+        p = p.required();
     }
+    if let Some(b) = binds {
+        p = p.binds(b);
+    }
+    p
 }
 
 // The single step under test. `resolve_action_row` now takes one `ActionStep` (the sole step of
@@ -271,12 +255,7 @@ fn now() -> time::PrimitiveDateTime {
 /// `gadget()` + a `total: Double` property, for computed-assignment tests.
 fn gadget_with_total() -> ObjectType {
     let mut g = gadget();
-    g.properties.push(PropertyDef {
-        name: "total".into(),
-        ty: "Double".into(),
-        required: false,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    });
+    g.properties.push(PropertyDef::new("total", "Double"));
     g
 }
 
@@ -306,12 +285,8 @@ fn computed_expression_writes_value() {
 fn computed_now_uses_injected_clock() {
     // createdAt = now() lands exactly the injected clock (deterministic).
     let mut g = gadget();
-    g.properties.push(PropertyDef {
-        name: "createdAt".into(),
-        ty: "Timestamp".into(),
-        required: false,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    });
+    g.properties
+        .push(PropertyDef::new("createdAt", "Timestamp"));
     let action = insert(
         vec![pb("id", "Long", true, None)],
         vec![Assignment::expr("createdAt", "now()")],

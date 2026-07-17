@@ -7,8 +7,8 @@
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
 
 use control_plane_core::{
-    ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, PageReq, PropertyConstraints,
-    PropertyDef, RunId, TableRef, TypeName,
+    ControlPlane, DatasetRef, EventType, LineageEvent, ObjectType, PageReq, RunId, TableRef,
+    TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -23,30 +23,12 @@ use serde_json::json;
 async fn define_pair_type(cp: &PgControlPlane, type_name: &str, table_name: &str) -> TypeName {
     let ty = TypeName(type_name.into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: ty.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: table_name.into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "label".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build(type_name, ("main", table_name))
+                .prop_req("id", "Long")
+                .prop("label", "String")
+                .done(),
+        )
         .await
         .unwrap();
     ty

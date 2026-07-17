@@ -8,7 +8,7 @@
 //! are prod-only or worker-test helpers.
 
 use arrow::array::{Int64Array, RecordBatch};
-use control_plane_core::{ObjectType, Ontology, PropertyDef, TableRef, TypeName};
+use control_plane_core::{ObjectType, Ontology, TableRef};
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_mirror::live_table_id;
@@ -41,29 +41,14 @@ async fn define_type(
     name: &str,
     identity: Option<&str>,
 ) {
-    cp.define_type(ObjectType {
-        name: TypeName(format!("Type_{schema}_{name}")),
-        table: tref(schema, name),
-        identity: identity.map(str::to_string),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
-    .await
-    .expect("define_type");
+    let builder = ObjectType::build(format!("Type_{schema}_{name}"), (schema, name))
+        .prop_req("id", "Long")
+        .prop("name", "String");
+    let ty = match identity {
+        Some(id) => builder.identity(id).done(),
+        None => builder.done(),
+    };
+    cp.define_type(ty).await.expect("define_type");
 }
 
 /// Flatten the `id` column (column 0) out of a batch set, sorted.

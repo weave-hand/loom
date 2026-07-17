@@ -26,7 +26,7 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Acl, Action, Auth, ColumnSpec, CompareOp, ControlPlane, DatasetId, EventType, GovernedCatalog,
     GovernedTable, LineageEvent, NewServiceAccount, ObjectType, Ontology, Policy, PolicyTarget,
-    PropertyConstraints, PropertyDef, RowFilter, RunId, ScalarValue, SubjectId, TableRef, TypeName,
+    PropertyDef, RowFilter, RunId, ScalarValue, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -225,12 +225,7 @@ fn lineage(run: RunId, schema: &str, name: &str) -> LineageEvent {
 }
 
 fn prop(name: &str, ty: &str) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: true,
-        constraints: PropertyConstraints::default(),
-    }
+    PropertyDef::new(name, ty).required()
 }
 
 /// Wrap a Flight message in a `tonic::Request` carrying a `Bearer` authorization header.
@@ -377,42 +372,33 @@ async fn setup_with_cap(fx: &PgFixture, max_rows: u32) -> Harness {
     .expect("land secrets");
 
     // Ontology: Order, Customer, Secret. `raw_dump` is deliberately left unbound.
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            prop("id", "long"),
-            prop("customer_id", "long"),
-            prop("email", "string"),
-        ],
-        derived: vec![],
-        table: t_orders(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", (t_orders().schema, t_orders().name))
+            .add_prop(prop("id", "long"))
+            .add_prop(prop("customer_id", "long"))
+            .add_prop(prop("email", "string"))
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Order type");
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            prop("id", "long"),
-            prop("name", "string"),
-            prop("ssn", "string"),
-        ],
-        derived: vec![],
-        table: t_customers(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", (t_customers().schema, t_customers().name))
+            .add_prop(prop("id", "long"))
+            .add_prop(prop("name", "string"))
+            .add_prop(prop("ssn", "string"))
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Customer type");
-    cp.define_type(ObjectType {
-        name: TypeName("Secret".into()),
-        properties: vec![prop("id", "long"), prop("value", "string")],
-        derived: vec![],
-        table: t_secrets(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Secret", (t_secrets().schema, t_secrets().name))
+            .add_prop(prop("id", "long"))
+            .add_prop(prop("value", "string"))
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Secret type");
 

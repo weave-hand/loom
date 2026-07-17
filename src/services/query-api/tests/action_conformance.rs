@@ -4,41 +4,29 @@
 //! into one ActionError::Misconfigured message.
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, ObjectType, ParamDef, PropertyDef, TypeName,
 };
 use query_api::action::{ActionError, check_conformance};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn param(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let p = ParamDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// Widget: id (Long, required), name (String, optional).
 fn widget(props: Vec<PropertyDef>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Widget".into()),
-        properties: props,
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    props
+        .into_iter()
+        .fold(ObjectType::build("Widget", ("main", "widget")), |b, p| {
+            b.add_prop(p)
+        })
+        .identity("id")
+        .done()
 }
 
 fn action(params: Vec<ParamDef>) -> ActionDef {
@@ -164,30 +152,22 @@ use control_plane_core::Assignment;
 
 /// Gadget: id (Long, required), name (String, optional), status (String, optional).
 fn gadget() -> ObjectType {
-    ObjectType {
-        name: TypeName("Gadget".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("status", "String", false),
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "gadget".into(),
-        },
-        identity: None,
-        version: None,
-    }
+    ObjectType::build("Gadget", ("main", "gadget"))
+        .add_prop(prop("id", "Long", true))
+        .add_prop(prop("name", "String", false))
+        .add_prop(prop("status", "String", false))
+        .done()
 }
 
 fn pb(name: &str, ty: &str, required: bool, binds: Option<&str>) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: binds.map(str::to_string),
+    let mut p = ParamDef::new(name, ty);
+    if required {
+        p = p.required();
     }
+    if let Some(b) = binds {
+        p = p.binds(b);
+    }
+    p
 }
 
 fn insert_action(params: Vec<ParamDef>, assignments: Vec<Assignment>) -> ActionDef {

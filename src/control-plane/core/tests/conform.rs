@@ -3,12 +3,8 @@
 use control_plane_core::{ColumnSpec, PropertyDef, Violation, check_conformance};
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn col(name: &str, ty: &str, nullable: bool) -> ColumnSpec {

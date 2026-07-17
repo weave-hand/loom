@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select name, ty, link_name, agg_kind, agg_column from ontology.derived_property where type_name = $1 order by ordinal",
+  "query": "select name, ty, link_name, agg_kind, agg_column, description from ontology.derived_property where type_name = $1 order by ordinal",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "agg_column"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.derived_property",
+            "name": "description"
+          }
+        }
       }
     ],
     "parameters": {
@@ -69,8 +80,9 @@
       false,
       false,
       false,
+      true,
       true
     ]
   },
-  "hash": "621435293beb20a5f7c8d710ad114df73f63118d0a96a172c35b1a7a64b120a3"
+  "hash": "7b7227b64facd6c04da80e492fb8f37bc3656b9b4bfac3708233c5ba2cd62590"
 }

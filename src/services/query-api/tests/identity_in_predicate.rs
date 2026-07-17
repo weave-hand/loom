@@ -3,35 +3,18 @@
 
 use std::collections::HashSet;
 
-use control_plane_core::{CompareOp, ObjectType, PropertyDef, TableRef, TypeName};
+use control_plane_core::{CompareOp, ObjectType};
 use query_api::filter::FilterError;
 use query_api::handler::{QueryError, identity_in_predicate, identity_is_governed};
 use query_api::serving::SqlValue;
 
 fn customer(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "string".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "long")
+        .prop("name", "string");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 

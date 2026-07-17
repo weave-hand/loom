@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "select property_name, metric, index_kind, nlist, m, ef_construction from ontology.vector_index_definition where type_name = $1 and name = $2",
+  "query": "select property_name, metric, index_kind, nlist, m, ef_construction, description from ontology.vector_index_definition where type_name = $1 and name = $2",
   "describe": {
     "columns": [
       {
@@ -68,6 +68,17 @@
             "name": "ef_construction"
           }
         }
+      },
+      {
+        "ordinal": 6,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.vector_index_definition",
+            "name": "description"
+          }
+        }
       }
     ],
     "parameters": {
@@ -82,8 +93,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "ac9d640bfd8f7e567cdc8e375aea15f901e531a45d33dd331750ad295715eb93"
+  "hash": "411a51b49d651fe86284894f8066f733e4e1c973743969a08b98f94183587926"
 }

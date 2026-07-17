@@ -10,27 +10,18 @@
 //!   - identity DENIED    => still 3 rows (ssn column absent from the projection),
 //!   - the double-pathed person collapses to a single row in every case (no over-splitting).
 
-use control_plane_core::{
-    Cardinality, ControlPlane, LinkBacking, LinkDef, ObjectType, Ontology, PropertyConstraints,
-    PropertyDef, TypeName,
-};
+use control_plane_core::{Cardinality, ControlPlane, LinkDef, ObjectType, Ontology, PropertyDef};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use e2e_support::{
-    InProcessServingEngine, grant_read, grant_read_columns, subject_with_role, tref,
-};
+use e2e_support::{InProcessServingEngine, grant_read, grant_read_columns, subject_with_role};
 use query_api::handler::{ChainQuery, ObjectRows, QueryDeps, Subject, read_linked_chain};
 use query_api::serving::SqlValue;
 use std::sync::Arc;
 
 fn pdef(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 /// The values of a single projected column, in row order.
@@ -107,68 +98,52 @@ async fn setup(
         )
         .await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![pdef("id", "Long", true)],
-        derived: vec![],
-        table: tref("main", "customer"),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", ("main", "customer"))
+            .add_prop(pdef("id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            pdef("id", "Long", true),
-            pdef("customer_id", "Long", true),
-            pdef("person_id", "Long", true),
-        ],
-        derived: vec![],
-        table: tref("main", "orders"),
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "orders"))
+            .add_prop(pdef("id", "Long", true))
+            .add_prop(pdef("customer_id", "Long", true))
+            .add_prop(pdef("person_id", "Long", true))
+            .done(),
+    )
     .await
     .unwrap();
     // Person's identity is "ssn" — the declared PK the dedup keys on.
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            pdef("ssn", "Long", true),
-            pdef("name", "String", false),
-            pdef("city", "String", false),
-        ],
-        derived: vec![],
-        table: tref("main", "person"),
-        identity: Some("ssn".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", ("main", "person"))
+            .add_prop(pdef("ssn", "Long", true))
+            .add_prop(pdef("name", "String", false))
+            .add_prop(pdef("city", "String", false))
+            .identity("ssn")
+            .done(),
+    )
     .await
     .unwrap();
 
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "people".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "person_id".into(),
-            to_column: "ssn".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "people",
+        "Order",
+        "Person",
+        Cardinality::Many,
+        "person_id",
+        "ssn",
+    ))
     .await
     .unwrap();
 

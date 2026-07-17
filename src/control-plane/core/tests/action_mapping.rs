@@ -1,11 +1,10 @@
 use control_plane_core::{ActionDef, ActionKind, ActionName, Assignment, ParamDef, TypeName};
 
 fn param(name: &str, ty: &str, binds: Option<&str>) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: true,
-        binds: binds.map(str::to_string),
+    let p = ParamDef::new(name, ty).required();
+    match binds {
+        Some(b) => p.binds(b),
+        None => p,
     }
 }
 

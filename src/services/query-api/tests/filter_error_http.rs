@@ -67,29 +67,20 @@ impl ActionEngine for StubAction {
 }
 
 fn prop(name: &str, ty: &str) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    PropertyDef::new(name, ty)
 }
 
 /// Seed `Order(id long identity, amount double)` and grant coarse Read to `analyst`.
 /// When `deny_amount` is set, also attach a Read policy denying the `amount` column.
 async fn seed(deny_amount: bool) -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![prop("id", "long"), prop("amount", "double")],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "order".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "order"))
+            .add_prop(prop("id", "long"))
+            .add_prop(prop("amount", "double"))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 

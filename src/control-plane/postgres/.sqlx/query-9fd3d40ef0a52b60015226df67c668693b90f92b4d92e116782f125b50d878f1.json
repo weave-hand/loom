@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select description from ontology.action where name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "ontology.action",
+            "name": "description"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "9fd3d40ef0a52b60015226df67c668693b90f92b4d92e116782f125b50d878f1"
+}

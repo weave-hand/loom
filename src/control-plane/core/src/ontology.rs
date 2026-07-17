@@ -20,6 +20,18 @@ use crate::vector_index::{IndexSpec, Metric};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TypeName(pub String);
 
+/// Trim a description and normalize blank/whitespace-only to `None`, so an empty
+/// string cannot round-trip as `Some("")`.
+fn normalize_description(text: impl Into<String>) -> Option<String> {
+    let text = text.into();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// A logical property of an object type. `ty` is the ontology's logical type
 /// (loom's vocabulary), NOT the physical column type. `constraints` (default empty)
 /// declares optional per-value validation rules enforced on every write path.
@@ -33,6 +45,51 @@ pub struct PropertyDef {
         skip_serializing_if = "crate::constraints::PropertyConstraints::is_empty"
     )]
     pub constraints: crate::constraints::PropertyConstraints,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl PropertyDef {
+    /// An optional (`required: false`), unconstrained property. Plain construction —
+    /// no validation, no I/O (that stays with [`Ontology::define_type`]).
+    ///
+    /// ```
+    /// use control_plane_core::PropertyDef;
+    /// let p = PropertyDef::new("email", "EmailAddress").required();
+    /// assert!(p.required);
+    /// ```
+    pub fn new(name: impl Into<String>, ty: impl Into<String>) -> PropertyDef {
+        PropertyDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: false,
+            constraints: crate::constraints::PropertyConstraints::default(),
+            description: None,
+        }
+    }
+
+    /// Mark this property required.
+    pub fn required(mut self) -> PropertyDef {
+        self.required = true;
+        self
+    }
+
+    /// Attach per-value validation constraints.
+    pub fn constrained(
+        mut self,
+        constraints: crate::constraints::PropertyConstraints,
+    ) -> PropertyDef {
+        self.constraints = constraints;
+        self
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> PropertyDef {
+        self.description = normalize_description(text);
+        self
+    }
 }
 
 /// An ontology object type: a named, propertied view bound to a physical table.
@@ -51,6 +108,10 @@ pub struct ObjectType {
     /// as precedence by the `Versioned` CDC merge engine. `None` = no version
     /// column (back-compatible). At most one version property per type.
     pub version: Option<String>,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl ObjectType {
@@ -82,8 +143,15 @@ impl ObjectType {
                 },
                 identity: None,
                 version: None,
+                description: None,
             },
         }
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> ObjectType {
+        self.description = normalize_description(text);
+        self
     }
 }
 
@@ -129,7 +197,15 @@ impl ObjectTypeBuilder {
             ty: ty.into(),
             required,
             constraints,
+            description: None,
         });
+        self
+    }
+
+    /// Append an already-built [`PropertyDef`] — the escape hatch for properties needing
+    /// the full surface (constraints, description) rather than the `prop`/`prop_req` shorthands.
+    pub fn add_prop(mut self, prop: PropertyDef) -> Self {
+        self.inner.properties.push(prop);
         self
     }
 
@@ -155,6 +231,12 @@ impl ObjectTypeBuilder {
     /// reads it (the declaration surface validates orderability, not existence).
     pub fn version(mut self, prop: impl Into<String>) -> Self {
         self.inner.version = Some(prop.into());
+        self
+    }
+
+    /// Attach human-readable prose to the type being built.
+    pub fn described(mut self, text: impl Into<String>) -> Self {
+        self.inner.description = normalize_description(text);
         self
     }
 
@@ -247,6 +329,35 @@ impl LinkBacking {
             },
         }
     }
+
+    /// A direct equijoin backing: `from_table.from_column = to_table.to_column`.
+    pub fn fk(from_column: impl Into<String>, to_column: impl Into<String>) -> LinkBacking {
+        LinkBacking::ForeignKey {
+            from_column: from_column.into(),
+            to_column: to_column.into(),
+        }
+    }
+
+    /// A many-to-many backing through the mapping table `table` (a `(schema, name)` pair —
+    /// a tuple, not two args, to stay under the enforced `too_many_arguments` ceiling).
+    pub fn join_table(
+        table: (impl Into<String>, impl Into<String>),
+        from_key: impl Into<String>,
+        from_column: impl Into<String>,
+        to_column: impl Into<String>,
+        to_key: impl Into<String>,
+    ) -> LinkBacking {
+        LinkBacking::JoinTable {
+            table: TableRef {
+                schema: table.0.into(),
+                name: table.1.into(),
+            },
+            from_key: from_key.into(),
+            from_column: from_column.into(),
+            to_column: to_column.into(),
+            to_key: to_key.into(),
+        }
+    }
 }
 
 /// A directed link between two types (e.g. `Order.customer -> Customer`).
@@ -257,6 +368,61 @@ pub struct LinkDef {
     pub to: TypeName,
     pub cardinality: Cardinality,
     pub backing: LinkBacking,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl LinkDef {
+    /// A directed link with an explicit physical `backing`. Plain construction — no
+    /// validation, no I/O (that stays with [`Ontology::define_link`]).
+    pub fn new(
+        name: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        cardinality: Cardinality,
+        backing: LinkBacking,
+    ) -> LinkDef {
+        LinkDef {
+            name: name.into(),
+            from: TypeName(from.into()),
+            to: TypeName(to.into()),
+            cardinality,
+            backing,
+            description: None,
+        }
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> LinkDef {
+        self.description = normalize_description(text);
+        self
+    }
+
+    /// The common case: a link backed by a direct foreign-key equijoin.
+    ///
+    /// ```
+    /// use control_plane_core::{Cardinality, LinkDef};
+    /// let l = LinkDef::fk("customer", "Order", "Customer", Cardinality::One, "customer_id", "id");
+    /// assert_eq!(l.name, "customer");
+    /// ```
+    pub fn fk(
+        name: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        cardinality: Cardinality,
+        from_column: impl Into<String>,
+        to_column: impl Into<String>,
+    ) -> LinkDef {
+        LinkDef::new(
+            name,
+            from,
+            to,
+            cardinality,
+            LinkBacking::fk(from_column, to_column),
+        )
+    }
 }
 
 /// How a derived property aggregates over its link's target rows. The `String` is the
@@ -279,6 +445,35 @@ pub struct DerivedPropertyDef {
     pub ty: String,
     pub link: String,
     pub agg: Aggregation,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl DerivedPropertyDef {
+    /// A computed property: aggregate `agg` over the rows reachable via the link named
+    /// `link`. Plain construction — the define path validates the aggregation/result types.
+    pub fn new(
+        name: impl Into<String>,
+        ty: impl Into<String>,
+        link: impl Into<String>,
+        agg: Aggregation,
+    ) -> DerivedPropertyDef {
+        DerivedPropertyDef {
+            name: name.into(),
+            ty: ty.into(),
+            link: link.into(),
+            agg,
+            description: None,
+        }
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> DerivedPropertyDef {
+        self.description = normalize_description(text);
+        self
+    }
 }
 
 /// The result-type expectation of an aggregation, resolved against the target
@@ -435,9 +630,42 @@ pub struct ParamDef {
     /// param away from the property `p` it binds.
     #[serde(default)]
     pub binds: Option<String>,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 impl ParamDef {
+    /// An optional (`required: false`) parameter binding the property of the same name.
+    pub fn new(name: impl Into<String>, ty: impl Into<String>) -> ParamDef {
+        ParamDef {
+            name: name.into(),
+            ty: ty.into(),
+            required: false,
+            binds: None,
+            description: None,
+        }
+    }
+
+    /// Mark this parameter required.
+    pub fn required(mut self) -> ParamDef {
+        self.required = true;
+        self
+    }
+
+    /// Rename this parameter away from the property it writes.
+    pub fn binds(mut self, property: impl Into<String>) -> ParamDef {
+        self.binds = Some(property.into());
+        self
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> ParamDef {
+        self.description = normalize_description(text);
+        self
+    }
+
     /// The property this parameter writes: its explicit `binds`, else its own `name`.
     #[must_use]
     pub fn binds_property(&self) -> &str {
@@ -457,6 +685,37 @@ pub struct VectorIndexDef {
     pub property: String,
     pub metric: Metric,
     pub spec: IndexSpec,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl VectorIndexDef {
+    /// A named vector index on `type_name.property`. Dimension is NOT restated — it is
+    /// derived from the property's `vector(N)` type at define time.
+    pub fn new(
+        name: impl Into<String>,
+        type_name: impl Into<String>,
+        property: impl Into<String>,
+        metric: Metric,
+        spec: IndexSpec,
+    ) -> VectorIndexDef {
+        VectorIndexDef {
+            name: name.into(),
+            type_name: TypeName(type_name.into()),
+            property: property.into(),
+            metric,
+            spec,
+            description: None,
+        }
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> VectorIndexDef {
+        self.description = normalize_description(text);
+        self
+    }
 }
 
 /// The source of a property's [`Assignment`]: either a fixed constant (the JSON wire form of a
@@ -560,6 +819,12 @@ pub struct ActionDef {
     /// carries the real default (empty) on both its `Flat` and `Stepped` variants.
     #[serde(default)]
     pub downstream: Vec<JobTemplate>,
+    /// Optional human-readable prose describing this entity. Pure annotation — nothing in
+    /// the engine consumes it; it feeds the ontology read surface and generated API docs.
+    /// The field-level `#[serde(default)]` is documentary — the [`ActionDefRepr`] bridge
+    /// carries the real default (`None`) on both its `Flat` and `Stepped` variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// Wire bridge: a single-step, bind-less action reads/writes the legacy flat JSON;
@@ -579,12 +844,16 @@ enum ActionDefRepr {
         assignments: Vec<Assignment>,
         #[serde(default)]
         downstream: Vec<JobTemplate>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
     Stepped {
         name: ActionName,
         steps: Vec<ActionStep>,
         #[serde(default)]
         downstream: Vec<JobTemplate>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
     },
 }
 
@@ -598,19 +867,23 @@ impl From<ActionDefRepr> for ActionDef {
                 parameters,
                 assignments,
                 downstream,
+                description,
             } => {
                 let mut def = ActionDef::single_step(name, target, kind, parameters, assignments);
                 def.downstream = downstream;
+                def.description = description;
                 def
             }
             ActionDefRepr::Stepped {
                 name,
                 steps,
                 downstream,
+                description,
             } => ActionDef {
                 name,
                 steps,
                 downstream,
+                description,
             },
         }
     }
@@ -637,11 +910,13 @@ impl From<ActionDef> for ActionDefRepr {
                 parameters: s.parameters,
                 assignments: s.assignments,
                 downstream: a.downstream,
+                description: a.description,
             },
             None => ActionDefRepr::Stepped {
                 name: a.name,
                 steps,
                 downstream: a.downstream,
+                description: a.description,
             },
         }
     }
@@ -667,6 +942,7 @@ impl ActionDef {
                 bind: None,
             }],
             downstream: Vec::new(),
+            description: None,
         }
     }
 
@@ -676,6 +952,12 @@ impl ActionDef {
     #[must_use]
     pub fn downstream(mut self, templates: Vec<JobTemplate>) -> Self {
         self.downstream = templates;
+        self
+    }
+
+    /// Attach human-readable prose. Trims; blank/whitespace-only becomes `None`.
+    pub fn described(mut self, text: impl Into<String>) -> ActionDef {
+        self.description = normalize_description(text);
         self
     }
 
@@ -706,6 +988,7 @@ impl ActionDef {
                 bind: None,
             }],
             downstream: Vec::new(),
+            description: None,
         }
     }
 }
@@ -719,6 +1002,8 @@ pub struct ActionDefBuilder {
     steps: Vec<ActionStep>,
     /// Downstream templates (slice 4); empty by default until `.downstream(...)`.
     downstream: Vec<JobTemplate>,
+    /// `None` by default until `.described(...)`.
+    description: Option<String>,
 }
 
 impl ActionDefBuilder {
@@ -731,6 +1016,7 @@ impl ActionDefBuilder {
                 ty: ty.into(),
                 required: false,
                 binds: None,
+                description: None,
             });
         }
         self
@@ -744,6 +1030,7 @@ impl ActionDefBuilder {
                 ty: ty.into(),
                 required: true,
                 binds: None,
+                description: None,
             });
         }
         self
@@ -764,6 +1051,7 @@ impl ActionDefBuilder {
                 ty: ty.into(),
                 required,
                 binds: Some(binds.into()),
+                description: None,
             });
         }
         self
@@ -836,12 +1124,19 @@ impl ActionDefBuilder {
         self
     }
 
+    /// Attach human-readable prose to the action being built.
+    pub fn described(mut self, text: impl Into<String>) -> Self {
+        self.description = normalize_description(text);
+        self
+    }
+
     /// Finish: the assembled [`ActionDef`].
     pub fn done(self) -> ActionDef {
         ActionDef {
             name: self.name,
             steps: self.steps,
             downstream: self.downstream,
+            description: self.description,
         }
     }
 }

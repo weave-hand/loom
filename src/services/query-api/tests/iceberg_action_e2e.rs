@@ -9,7 +9,7 @@
 // it unused fails the clippy/lint gate).
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, DatasetRef, Effect, ObjectType,
-    PageReq, ParamDef, PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    PageReq, ParamDef, PolicyTarget, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -25,30 +25,12 @@ use serde_json::json;
 async fn define_widget(cp: &PgControlPlane) -> TypeName {
     let widget = TypeName("Widget".into());
     cp.ontology()
-        .define_type(ObjectType {
-            name: widget.clone(),
-            table: TableRef {
-                schema: "main".into(),
-                name: "widget".into(),
-            },
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Widget", ("main", "widget"))
+                .prop_req("id", "Long")
+                .prop("name", "String")
+                .done(),
+        )
         .await
         .unwrap();
     cp.ontology()
@@ -57,18 +39,8 @@ async fn define_widget(cp: &PgControlPlane) -> TypeName {
             widget.clone(),
             ActionKind::Insert,
             vec![
-                ParamDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    binds: None,
-                },
-                ParamDef {
-                    name: "name".into(),
-                    ty: "String".into(),
-                    required: false,
-                    binds: None,
-                },
+                ParamDef::new("id", "Long").required(),
+                ParamDef::new("name", "String"),
             ],
             vec![],
         ))

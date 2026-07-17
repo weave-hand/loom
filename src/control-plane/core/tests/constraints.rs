@@ -2,16 +2,11 @@
 
 use control_plane_core::{
     ConstraintRule, LengthConstraint, ObjectType, PropertyConstraints, PropertyDef,
-    PropertyValidator, RangeConstraint, TableRef, TypeName, validate_constraints,
+    PropertyValidator, RangeConstraint, validate_constraints,
 };
 
 fn sprop(name: &str, ty: &str, c: PropertyConstraints) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: c,
-    }
+    PropertyDef::new(name, ty).constrained(c)
 }
 
 fn vstr(c: &PropertyConstraints, v: &str) -> Vec<ConstraintRule> {
@@ -194,16 +189,6 @@ fn declaration_accepts_valid_and_empty() {
 #[test]
 fn object_type_without_eq_still_partial_eq() {
     // Regression guard: ObjectType keeps PartialEq after the Eq drop.
-    let t = ObjectType {
-        name: TypeName("T".into()),
-        properties: vec![],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "t".into(),
-        },
-        identity: None,
-        version: None,
-    };
+    let t = ObjectType::build("T", ("main", "t")).done();
     assert_eq!(t.clone(), t);
 }

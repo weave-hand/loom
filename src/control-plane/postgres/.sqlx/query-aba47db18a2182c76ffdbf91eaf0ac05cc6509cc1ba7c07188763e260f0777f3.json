@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "insert into ontology.link (name, from_type, to_type, cardinality, backing_kind, from_column, to_column, from_key, to_key, join_table_schema, join_table_name, description) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) on conflict (name, from_type) do update set to_type = excluded.to_type, cardinality = excluded.cardinality, backing_kind = excluded.backing_kind, from_column = excluded.from_column, to_column = excluded.to_column, from_key = excluded.from_key, to_key = excluded.to_key, join_table_schema = excluded.join_table_schema, join_table_name = excluded.join_table_name, description = excluded.description",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aba47db18a2182c76ffdbf91eaf0ac05cc6509cc1ba7c07188763e260f0777f3"
+}

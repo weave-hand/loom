@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
-    PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Effect, LinkDef, ObjectType, Ontology, Policy, PolicyTarget, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{GraphQuery, QueryDeps, QueryError, Subject, read_graph_tree};
@@ -42,29 +42,12 @@ impl ServingEngine for TreeServing {
 }
 
 fn person_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "person".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Person", ("main", "person"))
+        .prop_req("id", "Long")
+        .prop("name", "Text");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
@@ -73,16 +56,14 @@ fn person_type(identity: Option<String>) -> ObjectType {
 async fn seeded(person: ObjectType) -> (MemoryControlPlane, SubjectId, RoleId) {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     cp.define_type(person).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "knows_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        "knows_id",
+        "id",
+    ))
     .await
     .unwrap();
     let analyst = SubjectId("analyst".into());

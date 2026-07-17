@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, PropertyDef, RoleId,
-    SnapshotId, SubjectId, TableRef, TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, RoleId, SnapshotId,
+    SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -66,22 +66,12 @@ impl ActionEngine for NullAction {
 
 async fn build_faulting_app() -> axum::Router {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_secs(5)));
-    cp.define_type(ObjectType {
-        name: TypeName("FaultType".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "long".into(),
-            required: false,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "fault_type".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("FaultType", ("main", "fault_type"))
+            .prop("id", "long")
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     let role = RoleId("alice-role".into());

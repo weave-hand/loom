@@ -5,34 +5,17 @@
 //! – UPDATE relaxes required-property coverage (PATCH semantics).
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, ObjectType, ParamDef, PropertyDef, TypeName,
 };
 use query_api::action::check_conformance;
 
 fn widget(identity: Option<&str>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![
-            PropertyDef {
-                name: "sku".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "qty".into(),
-                ty: "Long".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "s".into(),
-            name: "widget".into(),
-        },
-        identity: identity.map(|s| s.to_string()),
-        version: None,
+    let b = ObjectType::build("Widget", ("s", "widget"))
+        .add_prop(PropertyDef::new("sku", "String").required())
+        .add_prop(PropertyDef::new("qty", "Long"));
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
@@ -42,12 +25,7 @@ fn delete_requires_identity_param_only() {
         ActionName("del".into()),
         TypeName("Widget".into()),
         ActionKind::Delete,
-        vec![ParamDef {
-            name: "sku".into(),
-            ty: "String".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("sku", "String").required()],
         vec![],
     );
     assert!(check_conformance(&action, &widget(Some("sku"))).is_ok());
@@ -60,18 +38,8 @@ fn delete_rejects_extra_params() {
         TypeName("Widget".into()),
         ActionKind::Delete,
         vec![
-            ParamDef {
-                name: "sku".into(),
-                ty: "String".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "qty".into(),
-                ty: "Long".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("sku", "String").required(),
+            ParamDef::new("qty", "Long"),
         ],
         vec![],
     );
@@ -84,12 +52,7 @@ fn mutate_requires_declared_identity() {
         ActionName("del".into()),
         TypeName("Widget".into()),
         ActionKind::Delete,
-        vec![ParamDef {
-            name: "sku".into(),
-            ty: "String".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("sku", "String").required()],
         vec![],
     );
     assert!(check_conformance(&action, &widget(None)).is_err());
@@ -103,18 +66,8 @@ fn update_allows_partial_columns() {
         TypeName("Widget".into()),
         ActionKind::Update,
         vec![
-            ParamDef {
-                name: "sku".into(),
-                ty: "String".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "qty".into(),
-                ty: "Long".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("sku", "String").required(),
+            ParamDef::new("qty", "Long"),
         ],
         vec![],
     );
@@ -134,18 +87,8 @@ fn update_identity_via_binds_conforms() {
         TypeName("Widget".into()),
         ActionKind::Update,
         vec![
-            ParamDef {
-                name: "key".into(),
-                ty: "String".into(),
-                required: true,
-                binds: Some("sku".into()),
-            },
-            ParamDef {
-                name: "quantity".into(),
-                ty: "Long".into(),
-                required: false,
-                binds: Some("qty".into()),
-            },
+            ParamDef::new("key", "String").required().binds("sku"),
+            ParamDef::new("quantity", "Long").binds("qty"),
         ],
         vec![],
     );
@@ -159,12 +102,7 @@ fn delete_identity_via_binds_conforms() {
         ActionName("del".into()),
         TypeName("Widget".into()),
         ActionKind::Delete,
-        vec![ParamDef {
-            name: "key".into(),
-            ty: "String".into(),
-            required: true,
-            binds: Some("sku".into()),
-        }],
+        vec![ParamDef::new("key", "String").required().binds("sku")],
         vec![],
     );
     check_conformance(&action, &widget(Some("sku"))).expect("delete conforms via binds");
@@ -177,12 +115,7 @@ fn delete_with_assignment_rejected() {
         ActionName("del".into()),
         TypeName("Widget".into()),
         ActionKind::Delete,
-        vec![ParamDef {
-            name: "key".into(),
-            ty: "String".into(),
-            required: true,
-            binds: Some("sku".into()),
-        }],
+        vec![ParamDef::new("key", "String").required().binds("sku")],
         vec![Assignment::constant("qty", serde_json::json!(1))],
     );
     assert!(matches!(

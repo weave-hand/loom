@@ -36,7 +36,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{
     ColumnSpec, ControlPlane, DatasetId, EventType, IndexSpec, LineageEvent, Metric, ObjectType,
-    RunId, TableRef, TypeName, VectorIndexDef,
+    RunId, TableRef, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -368,13 +368,13 @@ pub async fn seed_docs_world(fx: &PgFixture, db: &str) -> VectorSeed {
 /// Declare a named vector index over the seeded world's `embedding` property.
 pub async fn define_docs_index(s: &VectorSeed, index: &str, metric: Metric, spec: IndexSpec) {
     s.cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: index.into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
+        .define_vector_index(VectorIndexDef::new(
+            index,
+            "Docs",
+            "embedding",
             metric,
             spec,
-        })
+        ))
         .await
         .expect("define_vector_index");
 }

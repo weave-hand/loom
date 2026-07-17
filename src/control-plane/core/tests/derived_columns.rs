@@ -6,40 +6,24 @@
 use std::collections::HashMap;
 
 use control_plane_core::{
-    Aggregation, ControlPlaneError, DerivedPropertyDef, ObjectType, PropertyConstraints,
-    PropertyDef, TableRef, TypeName, validate_derived_columns,
+    Aggregation, ControlPlaneError, DerivedPropertyDef, ObjectType, PropertyDef,
+    validate_derived_columns,
 };
 
 fn prop(name: &str, ty: &str) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: PropertyConstraints::default(),
-    }
+    PropertyDef::new(name, ty)
 }
 
 fn target_type(name: &str, props: Vec<PropertyDef>) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        properties: props,
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: name.to_ascii_lowercase(),
-        },
-        identity: None,
-        version: None,
+    let mut builder = ObjectType::build(name, ("main", name.to_ascii_lowercase()));
+    for p in props {
+        builder = builder.add_prop(p);
     }
+    builder.done()
 }
 
 fn derived(link: &str, agg: Aggregation) -> DerivedPropertyDef {
-    DerivedPropertyDef {
-        name: "x".into(),
-        ty: "Double".into(),
-        link: link.into(),
-        agg,
-    }
+    DerivedPropertyDef::new("x", "Double", link, agg)
 }
 
 #[test]

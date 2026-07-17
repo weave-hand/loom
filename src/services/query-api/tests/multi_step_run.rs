@@ -117,21 +117,13 @@ fn tn(s: &str) -> TypeName {
 }
 
 fn param(name: &str, ty: &str, required: bool) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: None,
-    }
+    let p = ParamDef::new(name, ty);
+    if required { p.required() } else { p }
 }
 
 fn param_bound(name: &str, ty: &str, required: bool, binds: &str) -> ParamDef {
-    ParamDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        binds: Some(binds.into()),
-    }
+    let p = ParamDef::new(name, ty).binds(binds);
+    if required { p.required() } else { p }
 }
 
 /// Order: id (Long, required, identity), note (String, optional).
@@ -174,6 +166,7 @@ fn action() -> ActionDef {
             },
         ],
         downstream: Vec::new(),
+        description: None,
     }
 }
 

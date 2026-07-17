@@ -14,8 +14,7 @@ use loom_test_seed::{
 use std::time::Duration;
 
 use control_plane_core::{
-    ControlPlane, IndexSpec, Metric, ObjectType, PropertyDef, RunId, TableRef, TypeName,
-    VectorIndexDef,
+    ControlPlane, IndexSpec, Metric, ObjectType, RunId, TableRef, VectorIndexDef,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
@@ -50,39 +49,25 @@ async fn vector_search_flight_top_k() {
 
     // Register the object type (identity = "id").
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Docs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Docs", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
     // Declare a named cosine flat index on the embedding property.
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName("Docs".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_flat",
+            "Docs",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define_vector_index");
 
@@ -186,27 +171,13 @@ async fn vector_search_no_index_is_not_found() {
 
     // Register type.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("NoDocs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "Vector".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("NoDocs", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "Vector")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
 
@@ -280,37 +251,23 @@ async fn vector_search_dim_mismatch_is_invalid_argument() {
         name: "dimdocs".into(),
     };
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("DimDocs".into()),
-            table: table.clone(),
-            properties: vec![
-                PropertyDef {
-                    name: "id".into(),
-                    ty: "Long".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-                PropertyDef {
-                    name: "embedding".into(),
-                    ty: "vector(4)".into(),
-                    required: true,
-                    constraints: control_plane_core::PropertyConstraints::default(),
-                },
-            ],
-            derived: vec![],
-            identity: Some("id".into()),
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("DimDocs", (table.schema.clone(), table.name.clone()))
+                .prop_req("id", "Long")
+                .prop_req("embedding", "vector(4)")
+                .identity("id")
+                .done(),
+        )
         .await
         .expect("define_type");
     cp.ontology()
-        .define_vector_index(VectorIndexDef {
-            name: "by_flat".into(),
-            type_name: TypeName("DimDocs".into()),
-            property: "embedding".into(),
-            metric: Metric::Cosine,
-            spec: IndexSpec::Flat,
-        })
+        .define_vector_index(VectorIndexDef::new(
+            "by_flat",
+            "DimDocs",
+            "embedding",
+            Metric::Cosine,
+            IndexSpec::Flat,
+        ))
         .await
         .expect("define_vector_index");
 

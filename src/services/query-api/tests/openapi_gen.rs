@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use control_plane_core::{
-    ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkBacking, LinkDef,
-    ObjectType, ParamDef, PropertyDef, TableRef, TypeName,
+    ActionDef, ActionKind, ActionName, BaseType, Cardinality, ControlPlane, LinkDef, ObjectType,
+    ParamDef, PropertyDef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::openapi_gen::{base_type_to_schema, ontology_openapi};
@@ -112,70 +112,31 @@ fn nullable_adds_null_to_type() {
 
 // ---- fixtures ------------------------------------------------------------------------
 
-fn tref(schema: &str, table: &str) -> TableRef {
-    TableRef {
-        schema: schema.into(),
-        name: table.into(),
-    }
-}
-
 fn customer() -> ObjectType {
-    ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "email".into(),
-                ty: "string".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "score".into(),
-                ty: "double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: tref("main", "customer"),
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "long")
+        .prop("email", "string")
+        .prop("score", "double")
+        .identity("id")
+        .done()
 }
 
 fn order() -> ObjectType {
-    ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: tref("main", "orders"),
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Order", ("main", "orders"))
+        .prop_req("id", "long")
+        .identity("id")
+        .done()
 }
 
 fn orders_link() -> LinkDef {
-    LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    }
+    LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    )
 }
 
 /// A well-formed Insert action against `customer()`: one required + one optional parameter.
@@ -185,18 +146,8 @@ fn create_customer_action() -> ActionDef {
         TypeName("Customer".into()),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "name".into(),
-                ty: "string".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "tier".into(),
-                ty: "integer".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("name", "string").required(),
+            ParamDef::new("tier", "integer"),
         ],
         vec![],
     )
@@ -511,6 +462,49 @@ fn get_op_documents_filter_and_pagination_params() {
             .contains("startswith"),
         "filter grammar documented: {}",
         email["description"]
+    );
+}
+
+#[test]
+fn generated_document_carries_ontology_descriptions() {
+    let doc_ty = ObjectType::build("Doc", ("main", "docs"))
+        .described("A document in the corpus")
+        .add_prop(
+            PropertyDef::new("id", "Long")
+                .required()
+                .described("The document's id"),
+        )
+        .prop("body", "String")
+        .identity("id")
+        .done();
+    let create = ActionDef::build("createDoc", "Doc", ActionKind::Insert)
+        .described("Registers a new document")
+        .param_req("id", "Long")
+        .done();
+    let link = LinkDef::fk("parent", "Doc", "Doc", Cardinality::One, "parent_id", "id")
+        .described("The document this one was split from");
+
+    let (paths, schemas) = ontology_openapi(&[doc_ty], &[link], &[create]);
+
+    let doc = serde_json::to_value(schemas.get("Doc").expect("Doc schema")).unwrap();
+    assert_eq!(doc["description"], "A document in the corpus");
+    // Combined: property prose + the preserved Long encoding note.
+    assert_eq!(
+        doc["properties"]["id"]["description"],
+        "The document's id (int64 encoded as a decimal string)"
+    );
+    assert!(
+        doc["properties"]["body"].get("description").is_none(),
+        "an undescribed property carries no description key: {}",
+        doc["properties"]["body"]
+    );
+    assert_eq!(
+        op_json(&paths, "/actions/createDoc", "post")["description"],
+        "Registers a new document"
+    );
+    assert_eq!(
+        op_json(&paths, "/objects/Doc/links/parent", "get")["description"],
+        "The document this one was split from"
     );
 }
 

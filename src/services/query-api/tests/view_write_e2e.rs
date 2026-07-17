@@ -526,6 +526,7 @@ async fn multi_step_update_out_of_view_identity_is_not_found() {
                         ty: "Long".into(),
                         required: true,
                         binds: Some("id".into()),
+                        description: None,
                     }],
                     assignments: vec![],
                     bind: None,
@@ -539,12 +540,14 @@ async fn multi_step_update_out_of_view_identity_is_not_found() {
                             ty: "Long".into(),
                             required: true,
                             binds: Some("id".into()),
+                            description: None,
                         },
                         ParamDef {
                             name: "wQty".into(),
                             ty: "Long".into(),
                             required: false,
                             binds: Some("qty".into()),
+                            description: None,
                         },
                     ],
                     assignments: vec![],
@@ -552,6 +555,7 @@ async fn multi_step_update_out_of_view_identity_is_not_found() {
                 },
             ],
             downstream: Vec::new(),
+            description: None,
         })
         .await
         .expect("define noteAndUpdateWidget");

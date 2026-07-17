@@ -8,8 +8,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ControlPlane, Effect, LineageEvent, ObjectType,
-    Ontology, ParamDef, PolicyTarget, PropertyDef, RoleId, RunId, SnapshotId, SubjectId, TableRef,
-    TypeName,
+    Ontology, ParamDef, PolicyTarget, RoleId, RunId, SnapshotId, SubjectId, TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::http::{AppState, router};
@@ -67,30 +66,13 @@ impl ServingEngine for NoServing {
 
 async fn seeded() -> (MemoryControlPlane, SubjectId) {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .prop_req("id", "Long")
+            .prop("name", "String")
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     cp.define_action(ActionDef::single_step(
@@ -98,18 +80,8 @@ async fn seeded() -> (MemoryControlPlane, SubjectId) {
         TypeName("Widget".into()),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("id", "Long").required(),
+            ParamDef::new("name", "String"),
         ],
         vec![],
     ))

@@ -9,8 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use control_plane_core::{
     Acl, Action, Decision, Effect, Grant, ObjectType, Ontology, Page, PageReq, Policy,
-    PolicyTarget, PropertyDef, Result as CpResult, RoleId, RolePolicy, SubjectId, TableRef,
-    TypeName,
+    PolicyTarget, Result as CpResult, RoleId, RolePolicy, SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object_page};
@@ -130,30 +129,11 @@ impl ServingEngine for PageServing {
 }
 
 fn person() -> ObjectType {
-    ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "person".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build("Person", ("main", "person"))
+        .prop_req("id", "Long")
+        .prop("name", "String")
+        .identity("id")
+        .done()
 }
 
 #[tokio::test]

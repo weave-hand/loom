@@ -19,8 +19,7 @@ use std::sync::Arc;
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
-    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, ObjectType, Ontology, PropertyDef,
-    RunId, TableRef, TypeName,
+    Catalog, ColumnSpec, DatasetId, EventType, LineageEvent, ObjectType, Ontology, RunId, TableRef,
 };
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -91,27 +90,13 @@ fn lineage(table: &TableRef) -> LineageEvent {
 /// An identity type whose non-identity property is REQUIRED — the shape the
 /// register's defect needed (`Docs.embedding`), minus the vector type.
 async fn define_identity_type(cp: &control_plane_postgres::PgControlPlane, table: &TableRef) {
-    cp.define_type(ObjectType {
-        name: TypeName("Thing".into()),
-        table: table.clone(),
-        identity: Some("id".to_string()),
-        version: None,
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build("Thing", (table.schema.clone(), table.name.clone()))
+            .prop_req("id", "Long")
+            .prop_req("name", "String")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define_type");
 }

@@ -160,27 +160,13 @@ async fn grant_write(pg: &PgControlPlane, subject: &str, type_name: &str) {
 
 /// Define a `Thing` model (id: long identity, name: string) over `table`.
 async fn define_thing(pg: &PgControlPlane, type_name: &str, table: TableRef) {
-    pg.define_type(ObjectType {
-        name: TypeName(type_name.into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "string".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table,
-        identity: Some("id".into()),
-        version: None,
-    })
+    pg.define_type(
+        ObjectType::build(type_name, (table.schema, table.name))
+            .prop_req("id", "long")
+            .prop("name", "string")
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 }
@@ -296,30 +282,18 @@ async fn constraint_violation_is_422_and_nothing_lands() {
         schema: "main".into(),
         name: "cthing".into(),
     };
-    pg.define_type(ObjectType {
-        name: TypeName("CThing".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "code".into(),
-                ty: "string".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints {
+    pg.define_type(
+        ObjectType::build("CThing", (ctable.schema.clone(), ctable.name.clone()))
+            .prop_req("id", "long")
+            .add_prop(PropertyDef::new("code", "string").required().constrained(
+                control_plane_core::PropertyConstraints {
                     pattern: Some("^[A-Z]+$".into()),
                     ..control_plane_core::PropertyConstraints::default()
                 },
-            },
-        ],
-        derived: vec![],
-        table: ctable.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+            ))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
     grant_write(&pg, "alice", "CThing").await;

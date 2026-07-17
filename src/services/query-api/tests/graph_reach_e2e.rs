@@ -94,59 +94,52 @@ async fn setup(fx: &PgFixture) -> (PgControlPlane, InProcessServingEngine, Icebe
         .await;
 
     // Person declares identity `id`.
-    cp.define_type(ObjectType {
-        name: TypeName("Person".into()),
-        properties: vec![
-            prop("id", "Long", true),
-            prop("name", "String", false),
-            prop("active", "Boolean", true),
-            prop("company_id", "Long", false),
-        ],
-        derived: vec![],
-        table: person.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Person", (person.schema.as_str(), person.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .add_prop(prop("active", "Boolean", true))
+            .add_prop(prop("company_id", "Long", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Company".into()),
-        properties: vec![prop("id", "Long", true), prop("name", "String", false)],
-        derived: vec![],
-        table: company.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Company", (company.schema.as_str(), company.name.as_str()))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("name", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
 
     // `knows`: the join-table SELF-link Person -> Person.
-    cp.define_link(LinkDef {
-        name: "knows".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Person".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: knows.clone(),
-            from_key: "id".into(),
-            from_column: "a".into(),
-            to_column: "b".into(),
-            to_key: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::new(
+        "knows",
+        "Person",
+        "Person",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            (knows.schema.as_str(), knows.name.as_str()),
+            "id",
+            "a",
+            "b",
+            "id",
+        ),
+    ))
     .await
     .unwrap();
     // `employer`: a non-self FK link Person -> Company (drives NotCyclicPath -> 400).
-    cp.define_link(LinkDef {
-        name: "employer".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "company_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "employer",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "company_id",
+        "id",
+    ))
     .await
     .unwrap();
 

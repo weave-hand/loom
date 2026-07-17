@@ -23,7 +23,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Auth, ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, ObjectType, Ontology,
-    PropertyDef, RunId, TableRef, TypeName,
+    RunId, TableRef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -175,27 +175,13 @@ async fn setup_with_cap(
     .expect("land vector");
 
     // Register the ontology type — its table MUST equal the landed `TableRef`.
-    cp.define_type(ObjectType {
-        name: TypeName("Chunk".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "embedding".into(),
-                ty: "vector(4)".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: table.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Chunk", (table.schema.clone(), table.name.clone()))
+            .prop_req("id", "long")
+            .prop_req("embedding", "vector(4)")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Chunk type");
 
@@ -271,27 +257,13 @@ async fn setup_with_mask(
     .await
     .expect("land vector");
 
-    cp.define_type(ObjectType {
-        name: TypeName("Chunk".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "embedding".into(),
-                ty: "vector(4)".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: table.clone(),
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Chunk", (table.schema.clone(), table.name.clone()))
+            .prop_req("id", "long")
+            .prop_req("embedding", "vector(4)")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Chunk type");
 

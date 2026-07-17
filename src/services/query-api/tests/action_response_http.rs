@@ -92,12 +92,7 @@ async fn multi_step_envelope_and_single_step_back_compat() {
             ActionName("createGadget".into()),
             tn("Gadget"),
             ActionKind::Insert,
-            vec![ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            }],
+            vec![ParamDef::new("id", "Long").required()],
             vec![],
         ))
         .await

@@ -4,30 +4,16 @@
 
 use std::time::Duration;
 
-use control_plane_core::{
-    Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, PropertyDef, TableRef, TypeName,
-};
+use control_plane_core::{Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, TypeName};
 use control_plane_memory::MemoryControlPlane;
 use query_api::governed::resolve_hop;
 use query_api::handler::{Direction, Hop, QueryError};
 
 fn simple_type(name: &str, table: &str) -> ObjectType {
-    ObjectType {
-        name: TypeName(name.into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: table.into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    }
+    ObjectType::build(name, ("main", table))
+        .prop_req("id", "Long")
+        .identity("id")
+        .done()
 }
 
 /// Person -employer-> Company; Team -staff-> Company and Guild -staff-> Company (an
@@ -42,40 +28,34 @@ async fn seeded() -> MemoryControlPlane {
         .unwrap();
     cp.define_type(simple_type("Team", "team")).await.unwrap();
     cp.define_type(simple_type("Guild", "guild")).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "employer".into(),
-        from: TypeName("Person".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "employer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "employer",
+        "Person",
+        "Company",
+        Cardinality::One,
+        "employer_id",
+        "id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "staff".into(),
-        from: TypeName("Team".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "company_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "staff",
+        "Team",
+        "Company",
+        Cardinality::One,
+        "company_id",
+        "id",
+    ))
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "staff".into(),
-        from: TypeName("Guild".into()),
-        to: TypeName("Company".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "company_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "staff",
+        "Guild",
+        "Company",
+        Cardinality::One,
+        "company_id",
+        "id",
+    ))
     .await
     .unwrap();
     cp

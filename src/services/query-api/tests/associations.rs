@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use control_plane_core::{
-    Acl, Action, Cardinality, Effect, LinkBacking, LinkDef, ObjectType, Ontology, Policy,
-    PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    Acl, Action, Cardinality, Effect, LinkDef, ObjectType, Ontology, Policy, PolicyTarget, RoleId,
+    SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use query_api::handler::{
@@ -38,56 +38,22 @@ impl ServingEngine for PairServing {
 }
 
 fn customer_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "region".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "Long")
+        .prop("region", "Text");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
 fn order_type(identity: Option<String>) -> ObjectType {
-    ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![
-            PropertyDef {
-                name: "order_id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "customer_id".into(),
-                ty: "Long".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "order".into(),
-        },
-        identity,
-        version: None,
+    let b = ObjectType::build("Order", ("main", "order"))
+        .prop_req("order_id", "Long")
+        .prop("customer_id", "Long");
+    match identity {
+        Some(id) => b.identity(id).done(),
+        None => b.done(),
     }
 }
 
@@ -96,16 +62,14 @@ async fn seeded(customer: ObjectType, order: ObjectType) -> (MemoryControlPlane,
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
     cp.define_type(customer).await.unwrap();
     cp.define_type(order).await.unwrap();
-    cp.define_link(LinkDef {
-        name: "orders".into(),
-        from: TypeName("Customer".into()),
-        to: TypeName("Order".into()),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "customer_id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "orders",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        "id",
+        "customer_id",
+    ))
     .await
     .unwrap();
 

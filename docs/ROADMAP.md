@@ -10,6 +10,8 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## catalog
 
+## ontology
+
 ## acl
 
 - [ ] **Comprehensive auth capability — build-vs-adopt a fuller identity layer** `{#road-auth-comprehensive area:acl status:planned from:2026-06-23-auth-password-session-design pr:- spec:2026-07-01-auth-comprehensive-adopt-design}`

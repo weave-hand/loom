@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Cardinality, LinkBacking, LinkDef, ObjectType, Ontology, PropertyDef, SubjectId, TableRef,
-    TypeName,
+    Cardinality, LinkDef, ObjectType, Ontology, PropertyDef, SubjectId, TableRef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -67,53 +66,67 @@ impl ActionEngine for StubAction {
 }
 
 fn prop(name: &str, ty: &str, required: bool) -> PropertyDef {
-    PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    }
+    let p = PropertyDef::new(name, ty);
+    if required { p.required() } else { p }
+}
+
+/// A single `Doc` type carrying a description on the type itself, on one property
+/// (`id`, described) alongside one without (`body`, undescribed), and on its one
+/// outbound self-link (`parent`, described). Separate from `seeded_control_plane` so
+/// the latter's exact-array oracle (no `description` keys) stays undisturbed.
+async fn seeded_described() -> MemoryControlPlane {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    cp.define_type(
+        ObjectType::build("Doc", ("main", "docs"))
+            .described("A document.")
+            .add_prop(
+                PropertyDef::new("id", "Long")
+                    .required()
+                    .described("The document id."),
+            )
+            .prop("body", "String")
+            .identity("id")
+            .done(),
+    )
+    .await
+    .unwrap();
+    cp.define_link(
+        LinkDef::fk("parent", "Doc", "Doc", Cardinality::One, "parent_id", "id")
+            .described("The parent document."),
+    )
+    .await
+    .unwrap();
+    cp
 }
 
 /// An ontology with `Customer` and `Order` and one FK link `Order.customer -> Customer`.
 async fn seeded_control_plane() -> MemoryControlPlane {
     let cp = MemoryControlPlane::new(Duration::from_millis(300));
-    cp.define_type(ObjectType {
-        name: TypeName("Customer".into()),
-        properties: vec![prop("id", "Long", true)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customers".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Customer", ("main", "customers"))
+            .add_prop(prop("id", "Long", true))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_type(ObjectType {
-        name: TypeName("Order".into()),
-        properties: vec![prop("id", "Long", true), prop("note", "String", false)],
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: "orders".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Order", ("main", "orders"))
+            .add_prop(prop("id", "Long", true))
+            .add_prop(prop("note", "String", false))
+            .identity("id")
+            .done(),
+    )
     .await
     .unwrap();
-    cp.define_link(LinkDef {
-        name: "customer".into(),
-        from: TypeName("Order".into()),
-        to: TypeName("Customer".into()),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "customer_id".into(),
-            to_column: "id".into(),
-        },
-    })
+    cp.define_link(LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    ))
     .await
     .unwrap();
     cp
@@ -188,4 +201,25 @@ async fn unknown_type_is_404() {
     let app = app(seeded_control_plane().await);
     let (status, _) = get(&app, "/ontology/types/no-such-type").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_carries_descriptions() {
+    let app = app(seeded_described().await);
+
+    let (status, json) = get(&app, "/ontology/types/Doc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["description"], "A document.");
+    assert_eq!(json["properties"][0]["description"], "The document id.");
+    assert_eq!(json["links"][0]["description"], "The parent document.");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_omits_absent_descriptions() {
+    let app = app(seeded_described().await);
+
+    let (status, json) = get(&app, "/ontology/types/Doc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["properties"][1]["name"], "body");
+    assert!(json["properties"][1].get("description").is_none());
 }

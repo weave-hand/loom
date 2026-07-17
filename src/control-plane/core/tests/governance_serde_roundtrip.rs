@@ -49,39 +49,26 @@ fn acl_payloads_roundtrip() {
 
 #[test]
 fn ontology_payloads_roundtrip() {
-    let ty = ObjectType {
-        name: TypeName("customer".into()),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "int".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![DerivedPropertyDef {
-            name: "order_count".into(),
-            ty: "int".into(),
-            link: "orders".into(),
-            agg: Aggregation::Count,
-        }],
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-    };
+    let ty = ObjectType::build("customer", ("main", "customer"))
+        .prop_req("id", "int")
+        .derived(DerivedPropertyDef::new(
+            "order_count",
+            "int",
+            "orders",
+            Aggregation::Count,
+        ))
+        .identity("id")
+        .done();
     roundtrip(&ty);
     roundtrip(&Page {
-        items: vec![LinkDef {
-            name: "orders".into(),
-            from: TypeName("customer".into()),
-            to: TypeName("order".into()),
-            cardinality: Cardinality::Many,
-            backing: LinkBacking::ForeignKey {
-                from_column: "id".into(),
-                to_column: "customer_id".into(),
-            },
-        }],
+        items: vec![LinkDef::fk(
+            "orders",
+            "customer",
+            "order",
+            Cardinality::Many,
+            "id",
+            "customer_id",
+        )],
         next: None,
     });
     roundtrip(&ActionDef::single_step(
@@ -97,28 +84,18 @@ fn ontology_payloads_roundtrip() {
         TypeName("order".into()),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "amount".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "note".into(),
-                ty: "String".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("amount", "Long").required(),
+            ParamDef::new("note", "String"),
         ],
         vec![],
     ));
-    roundtrip(&VectorIndexDef {
-        name: "emb_idx".into(),
-        type_name: TypeName("customer".into()),
-        property: "embedding".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Flat,
-    });
+    roundtrip(&VectorIndexDef::new(
+        "emb_idx",
+        "customer",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    ));
     // Non-default IndexSpec variants.
     roundtrip(&IndexSpec::IvfFlat { nlist: Some(128) });
     roundtrip(&IndexSpec::IvfFlat { nlist: None });
@@ -131,20 +108,88 @@ fn ontology_payloads_roundtrip() {
         ef_construction: None,
     });
     // JoinTable LinkBacking variant.
-    roundtrip(&LinkBacking::JoinTable {
-        table: TableRef {
-            schema: "main".into(),
-            name: "customer_group".into(),
-        },
-        from_key: "id".into(),
-        from_column: "customer_id".into(),
-        to_column: "group_id".into(),
-        to_key: "id".into(),
-    });
+    roundtrip(&LinkBacking::join_table(
+        ("main", "customer_group"),
+        "id",
+        "customer_id",
+        "group_id",
+        "id",
+    ));
     // Non-Count Aggregation variants.
     roundtrip(&Aggregation::Sum("amount".into()));
     roundtrip(&Aggregation::Avg("score".into()));
     roundtrip(&Aggregation::Min("created_at".into()));
     roundtrip(&Aggregation::Max("updated_at".into()));
     roundtrip(&PageReq::default());
+}
+
+#[test]
+fn description_absent_from_json_decodes_to_none() {
+    // The engine-wire compat guarantee: ontology structs cross that wire as serde-JSON
+    // strings, so a payload written before this field existed must still decode.
+    let json = r#"{"name":"email","ty":"EmailAddress","required":true}"#;
+    let p: PropertyDef = serde_json::from_str(json).unwrap();
+    assert_eq!(p.description, None);
+}
+
+#[test]
+fn none_description_is_omitted_from_json() {
+    // ... and re-encodes byte-identically to today's payload.
+    let json =
+        serde_json::to_string(&PropertyDef::new("email", "EmailAddress").required()).unwrap();
+    assert!(
+        !json.contains("description"),
+        "None must not serialize a key, got: {json}"
+    );
+}
+
+#[test]
+fn some_description_round_trips() {
+    let p = PropertyDef::new("email", "EmailAddress").described("Primary email");
+    let back: PropertyDef = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+    assert_eq!(back, p);
+}
+
+// `ActionDef`'s serde goes through the `ActionDefRepr` bridge, whose `Flat` arm (the
+// single-bind-less-step wire shape) rebuilds the `ActionDef` via `ActionDef::single_step`
+// — a constructor that sets `description: None`. Carrying the description across that arm
+// therefore relies on an explicit assignment the compiler cannot force. These two tests
+// are that assignment's only regression guard.
+#[test]
+fn action_def_description_survives_the_flat_bridge() {
+    let action = ActionDef::single_step(
+        ActionName("createCustomer".into()),
+        TypeName("customer".into()),
+        ActionKind::Insert,
+        vec![],
+        vec![],
+    )
+    .described("Registers a new customer");
+    assert_eq!(
+        action.description.as_deref(),
+        Some("Registers a new customer")
+    );
+
+    let json = serde_json::to_string(&action).unwrap();
+    // A single bind-less step serializes to the flat shape, not the stepped one — so this
+    // exercises the `Flat` arm specifically, the one that rebuilds via `single_step`.
+    assert!(
+        !json.contains("\"steps\""),
+        "expected the flat wire shape, got: {json}"
+    );
+    let back: ActionDef = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, action, "description dropped crossing the flat bridge");
+}
+
+#[test]
+fn action_def_flat_json_with_description_decodes() {
+    // A hand-written flat payload carrying a description must decode with it intact — the
+    // wire-compat direction (an old flat payload gaining the new optional key).
+    let json = r#"{"name":"createCustomer","target":"customer","kind":"insert","description":"Registers a new customer"}"#;
+    let action: ActionDef = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        action.description.as_deref(),
+        Some("Registers a new customer")
+    );
+    assert_eq!(action.steps.len(), 1, "flat payload is one implicit step");
 }

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
-use control_plane_core::{ControlPlane, ObjectType, Ontology, TypeName};
+use control_plane_core::{ControlPlane, ObjectType, Ontology};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
@@ -20,7 +20,7 @@ use control_plane_postgres::iceberg_sql_catalog::{
     SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
 };
 use e2e_support::InProcessServingEngine;
-use e2e_support::{grant_read, ids_i64, prop, session_token, spawn_http, subject_with_role, tref};
+use e2e_support::{grant_read, ids_i64, prop, session_token, spawn_http, subject_with_role};
 use iceberg::CatalogBuilder;
 use iceberg::io::LocalFsStorageFactory;
 use ingest::landing::IcebergMaterializer;
@@ -124,14 +124,12 @@ async fn run_wire_vertical(backend: WireBackend) {
     // not require the table to pre-exist; the land below creates it.)
     backend
         .cp
-        .define_type(ObjectType {
-            name: TypeName("Customer".into()),
-            properties: vec![prop("id", "Long", true), prop("region", "String", false)],
-            derived: vec![],
-            table: tref("main", "customer"),
-            identity: None,
-            version: None,
-        })
+        .define_type(
+            ObjectType::build("Customer", ("main", "customer"))
+                .add_prop(prop("id", "Long", true))
+                .add_prop(prop("region", "String", false))
+                .done(),
+        )
         .await
         .unwrap();
     // ACL: `reader` may read Customer; `intruder` is a real subject with a role

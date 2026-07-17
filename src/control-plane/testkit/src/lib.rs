@@ -41,27 +41,11 @@ fn job(kind: &str) -> NewJob {
 /// type name. Used where a type only needs to *exist* (e.g. to satisfy the
 /// existence checks on `grant`/`set_policy`/`define_action`).
 async fn define_min_type<O: Ontology>(o: &O, name: &str, props: &[&str]) {
-    o.define_type(ObjectType {
-        name: TypeName(name.into()),
-        properties: props
-            .iter()
-            .map(|n| PropertyDef {
-                name: (*n).into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            })
-            .collect(),
-        derived: vec![],
-        table: TableRef {
-            schema: "main".into(),
-            name: name.to_lowercase(),
-        },
-        identity: None,
-        version: None,
-    })
-    .await
-    .expect("define type");
+    let mut ty = ObjectType::build(name, ("main", name.to_lowercase()));
+    for n in props {
+        ty = ty.prop(*n, "String");
+    }
+    o.define_type(ty.done()).await.expect("define type");
 }
 
 /// Contract for the `Queue` ops including transactional `enqueue`.
@@ -1260,51 +1244,19 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     };
 
     // define + get round-trips with ordered properties and the backing table.
-    let customer = ObjectType {
-        name: tn("Customer"),
-        table: tref("main", "customer"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "email".into(),
-                ty: "EmailAddress".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: Some("id".into()),
-    };
+    let customer = ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "Long")
+        .prop_req("email", "EmailAddress")
+        .identity("id")
+        .version("id")
+        .done();
     o.define_type(customer.clone())
         .await
         .expect("define Customer");
-    let order = ObjectType {
-        name: tn("Order"),
-        table: tref("main", "orders"),
-        properties: vec![
-            PropertyDef {
-                name: "total".into(),
-                ty: "Currency".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "note".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: None,
-        version: None,
-    };
+    let order = ObjectType::build("Order", ("main", "orders"))
+        .prop_req("total", "Currency")
+        .prop("note", "Text")
+        .done();
     o.define_type(order.clone()).await.expect("define Order");
 
     assert_eq!(
@@ -1372,19 +1324,9 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // re-define replaces the property list (no stale properties).
-    let order_v2 = ObjectType {
-        name: tn("Order"),
-        table: tref("main", "orders"),
-        properties: vec![PropertyDef {
-            name: "total".into(),
-            ty: "Currency".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        identity: None,
-        version: None,
-    };
+    let order_v2 = ObjectType::build("Order", ("main", "orders"))
+        .prop_req("total", "Currency")
+        .done();
     o.define_type(order_v2).await.unwrap();
     assert_eq!(
         o.get_type(&tn("Order")).await.unwrap().properties.len(),
@@ -1393,47 +1335,30 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // --- Model constraints: round-trip + define-time rejection. ---
-    let constrained = ObjectType {
-        name: tn("Account"),
-        table: tref("main", "account"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints {
-                    range: Some(control_plane_core::RangeConstraint {
-                        min: Some(1.0),
-                        max: None,
-                    }),
-                    ..control_plane_core::PropertyConstraints::default()
-                },
+    let constrained = ObjectType::build("Account", ("main", "account"))
+        .add_prop(PropertyDef::new("id", "Long").required().constrained(
+            control_plane_core::PropertyConstraints {
+                range: Some(control_plane_core::RangeConstraint {
+                    min: Some(1.0),
+                    max: None,
+                }),
+                ..control_plane_core::PropertyConstraints::default()
             },
-            PropertyDef {
-                name: "code".into(),
-                ty: "String".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints {
-                    length: Some(control_plane_core::LengthConstraint {
-                        min: Some(2),
-                        max: Some(8),
-                    }),
-                    pattern: Some("^[A-Z]+$".into()),
-                    one_of: None,
-                    range: None,
-                },
+        ))
+        .add_prop(PropertyDef::new("code", "String").required().constrained(
+            control_plane_core::PropertyConstraints {
+                length: Some(control_plane_core::LengthConstraint {
+                    min: Some(2),
+                    max: Some(8),
+                }),
+                pattern: Some("^[A-Z]+$".into()),
+                one_of: None,
+                range: None,
             },
-            PropertyDef {
-                name: "note".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
-    };
+        ))
+        .prop("note", "String")
+        .identity("id")
+        .done();
     o.define_type(constrained.clone())
         .await
         .expect("define constrained type");
@@ -1444,25 +1369,17 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // A `range` on a string property is rejected at define time.
-    let bad_range = ObjectType {
-        name: tn("BadRange"),
-        table: tref("main", "bad_range"),
-        properties: vec![PropertyDef {
-            name: "name".into(),
-            ty: "String".into(),
-            required: false,
-            constraints: control_plane_core::PropertyConstraints {
+    let bad_range = ObjectType::build("BadRange", ("main", "bad_range"))
+        .add_prop(PropertyDef::new("name", "String").constrained(
+            control_plane_core::PropertyConstraints {
                 range: Some(control_plane_core::RangeConstraint {
                     min: Some(0.0),
                     max: None,
                 }),
                 ..control_plane_core::PropertyConstraints::default()
             },
-        }],
-        derived: vec![],
-        identity: None,
-        version: None,
-    };
+        ))
+        .done();
     assert!(
         matches!(
             o.define_type(bad_range).await,
@@ -1472,22 +1389,14 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // An invalid regex `pattern` is rejected at define time.
-    let bad_regex = ObjectType {
-        name: tn("BadRegex"),
-        table: tref("main", "bad_regex"),
-        properties: vec![PropertyDef {
-            name: "code".into(),
-            ty: "String".into(),
-            required: false,
-            constraints: control_plane_core::PropertyConstraints {
+    let bad_regex = ObjectType::build("BadRegex", ("main", "bad_regex"))
+        .add_prop(PropertyDef::new("code", "String").constrained(
+            control_plane_core::PropertyConstraints {
                 pattern: Some("(".into()),
                 ..control_plane_core::PropertyConstraints::default()
             },
-        }],
-        derived: vec![],
-        identity: None,
-        version: None,
-    };
+        ))
+        .done();
     assert!(
         matches!(
             o.define_type(bad_regex).await,
@@ -1497,16 +1406,14 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // link between existing types, then read it back.
-    let link = LinkDef {
-        name: "customer".into(),
-        from: tn("Order"),
-        to: tn("Customer"),
-        cardinality: Cardinality::One,
-        backing: LinkBacking::ForeignKey {
-            from_column: "customer_id".into(),
-            to_column: "id".into(),
-        },
-    };
+    let link = LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::One,
+        "customer_id",
+        "id",
+    );
     o.define_link(link.clone()).await.expect("define link");
     assert_eq!(
         o.links(&tn("Order"), PageReq::unbounded())
@@ -1517,10 +1424,14 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // re-define same (name, from) upserts (no duplicate; cardinality updated).
-    o.define_link(LinkDef {
-        cardinality: Cardinality::Many,
-        ..link.clone()
-    })
+    o.define_link(LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::Many,
+        "customer_id",
+        "id",
+    ))
     .await
     .unwrap();
     let ls = o
@@ -1532,19 +1443,19 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert_eq!(ls[0].cardinality, Cardinality::Many, "cardinality updated");
 
     // many-to-many link with a join-table backing round-trips intact.
-    let m2m = LinkDef {
-        name: "items".into(),
-        from: tn("Customer"),
-        to: tn("Order"),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::JoinTable {
-            table: tref("main", "customer_order"),
-            from_key: "id".into(),
-            from_column: "customer_id".into(),
-            to_column: "order_id".into(),
-            to_key: "id".into(),
-        },
-    };
+    let m2m = LinkDef::new(
+        "items",
+        "Customer",
+        "Order",
+        Cardinality::Many,
+        LinkBacking::join_table(
+            ("main", "customer_order"),
+            "id",
+            "customer_id",
+            "order_id",
+            "id",
+        ),
+    );
     o.define_link(m2m.clone()).await.expect("define m2m link");
     assert_eq!(
         o.links(&tn("Customer"), PageReq::unbounded())
@@ -1558,10 +1469,14 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     // inbound adjacency: links_to(X) returns links whose `to` is X — the inverse of
     // `links`. `customer` (Order -> Customer, upserted to Many above) is inbound to
     // Customer; `items` (Customer -> Order, join-table) is inbound to Order.
-    let customer_link = LinkDef {
-        cardinality: Cardinality::Many,
-        ..link.clone()
-    };
+    let customer_link = LinkDef::fk(
+        "customer",
+        "Order",
+        "Customer",
+        Cardinality::Many,
+        "customer_id",
+        "id",
+    );
     assert_eq!(
         o.links_to(&tn("Customer"), PageReq::unbounded())
             .await
@@ -1582,16 +1497,14 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     // link to an undefined endpoint -> NotFound.
     assert!(
         matches!(
-            o.define_link(LinkDef {
-                name: "ghost".into(),
-                from: tn("Order"),
-                to: tn("Ghost"),
-                cardinality: Cardinality::One,
-                backing: LinkBacking::ForeignKey {
-                    from_column: "ghost_id".into(),
-                    to_column: "id".into(),
-                },
-            })
+            o.define_link(LinkDef::fk(
+                "ghost",
+                "Order",
+                "Ghost",
+                Cardinality::One,
+                "ghost_id",
+                "id",
+            ))
             .await,
             Err(control_plane_core::ControlPlaneError::NotFound(_))
         ),
@@ -1619,27 +1532,12 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // --- Actions ---
     // The target type must exist (FK in the pg adapter).
-    o.define_type(ObjectType {
-        name: tn("Widget"),
-        table: tref("main", "widget"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .prop_req("id", "Long")
+            .prop("name", "String")
+            .done(),
+    )
     .await
     .expect("define Widget");
 
@@ -1648,18 +1546,8 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         tn("Widget"),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            },
-            ParamDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                binds: None,
-            },
+            ParamDef::new("id", "Long").required(),
+            ParamDef::new("name", "String"),
         ],
         vec![],
     );
@@ -1690,12 +1578,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ActionName("createWidget".into()),
         tn("Widget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     ))
     .await
@@ -1742,33 +1625,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // --- Action param→property mapping (binds + constant assignments) ---
-    o.define_type(ObjectType {
-        name: tn("Gadget"),
-        table: tref("main", "gadget"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "name".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("Gadget", ("main", "gadget"))
+            .prop_req("id", "Long")
+            .prop("name", "String")
+            .prop("status", "String")
+            .done(),
+    )
     .await
     .expect("define Gadget");
 
@@ -1777,19 +1640,9 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         tn("Gadget"),
         ActionKind::Insert,
         vec![
-            ParamDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                binds: None,
-            },
+            ParamDef::new("id", "Long").required(),
             // Renamed: the operation param `displayName` writes the `name` property.
-            ParamDef {
-                name: "displayName".into(),
-                ty: "String".into(),
-                required: false,
-                binds: Some("name".into()),
-            },
+            ParamDef::new("displayName", "String").binds("name"),
         ],
         vec![Assignment::constant("status", serde_json::json!("active"))],
     );
@@ -1810,12 +1663,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ActionName("computeGadget".into()),
         tn("Gadget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![
             Assignment::constant("status", serde_json::json!("active")),
             Assignment::expr("name", "upper(\"g\")"),
@@ -1835,12 +1683,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ActionName("createGadget".into()),
         tn("Gadget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     ))
     .await
@@ -1867,56 +1710,21 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     // A two-step action persists ALL steps in the normalized per-step tables and
     // round-trips unchanged. Step 1 (`Order`) carries a `bind`; step 2 (`LineItem`)
     // carries its own params + a computed assignment. Both target types must exist.
-    o.define_type(ObjectType {
-        name: tn("Order"),
-        table: tref("main", "order"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "status".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("Order", ("main", "order"))
+            .prop_req("id", "Long")
+            .prop("status", "String")
+            .done(),
+    )
     .await
     .expect("define Order");
-    o.define_type(ObjectType {
-        name: tn("LineItem"),
-        table: tref("main", "line_item"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "qty".into(),
-                ty: "Long".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "total".into(),
-                ty: "Double".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("LineItem", ("main", "line_item"))
+            .prop_req("id", "Long")
+            .prop("qty", "Long")
+            .prop("total", "Double")
+            .done(),
+    )
     .await
     .expect("define LineItem");
 
@@ -1950,12 +1758,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ActionName("createGadgetWithJob".into()),
         tn("Gadget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     )
     .downstream(vec![JobTemplate {
@@ -1980,12 +1783,7 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
         ActionName("createPlain".into()),
         tn("Gadget"),
         ActionKind::Insert,
-        vec![ParamDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            binds: None,
-        }],
+        vec![ParamDef::new("id", "Long").required()],
         vec![],
     );
     assert!(
@@ -2004,32 +1802,23 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // --- Derived properties ---
-    o.define_type(ObjectType {
-        name: tn("Account"),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![
-            DerivedPropertyDef {
-                name: "txnCount".into(),
-                ty: "Long".into(),
-                link: "transactions".into(),
-                agg: Aggregation::Count,
-            },
-            DerivedPropertyDef {
-                name: "balance".into(),
-                ty: "Double".into(),
-                link: "transactions".into(),
-                agg: Aggregation::Sum("amount".into()),
-            },
-        ],
-        table: tref("main", "account"),
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("Account", ("main", "account"))
+            .prop_req("id", "Long")
+            .derived(DerivedPropertyDef::new(
+                "txnCount",
+                "Long",
+                "transactions",
+                Aggregation::Count,
+            ))
+            .derived(DerivedPropertyDef::new(
+                "balance",
+                "Double",
+                "transactions",
+                Aggregation::Sum("amount".into()),
+            ))
+            .done(),
+    )
     .await
     .expect("define Account with derived");
     let got = o.get_type(&tn("Account")).await.unwrap();
@@ -2044,19 +1833,11 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert_eq!(got.derived[0].agg, Aggregation::Count);
     assert_eq!(got.derived[1].agg, Aggregation::Sum("amount".into()));
     // Redefine with fewer derived -> replaced.
-    o.define_type(ObjectType {
-        name: tn("Account"),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        table: tref("main", "account"),
-        identity: None,
-        version: None,
-    })
+    o.define_type(
+        ObjectType::build("Account", ("main", "account"))
+            .prop_req("id", "Long")
+            .done(),
+    )
     .await
     .unwrap();
     assert!(
@@ -2066,76 +1847,58 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // --- Surface-2: define-time validation of a derived property's aggregate
     // column against its link's target type (only when the link+target resolve).
-    // Concrete target + link so Surface-2 validation resolves (a local prop helper —
-    // no prop_* helper exists in this contract).
-    let prop = |name: &str, ty: &str| PropertyDef {
-        name: name.into(),
-        ty: ty.into(),
-        required: false,
-        constraints: control_plane_core::PropertyConstraints::default(),
-    };
-    o.define_type(ObjectType {
-        name: tn("Transaction"),
-        table: tref("main", "txn"),
-        identity: None,
-        version: None,
-        properties: vec![
-            prop("id", "Long"),
-            prop("amount", "Double"),
-            prop("note", "String"),
-        ],
-        derived: vec![],
-    })
+    // Concrete target + link so Surface-2 validation resolves.
+    o.define_type(
+        ObjectType::build("Transaction", ("main", "txn"))
+            .prop("id", "Long")
+            .prop("amount", "Double")
+            .prop("note", "String")
+            .done(),
+    )
     .await
     .expect("define Transaction");
     // define_link requires both endpoints to pre-exist; Account is defined above.
-    o.define_link(LinkDef {
-        name: "transactions".into(),
-        from: tn("Account"),
-        to: tn("Transaction"),
-        cardinality: Cardinality::Many,
-        backing: LinkBacking::ForeignKey {
-            from_column: "id".into(),
-            to_column: "account_id".into(),
-        },
-    })
+    o.define_link(LinkDef::fk(
+        "transactions",
+        "Account",
+        "Transaction",
+        Cardinality::Many,
+        "id",
+        "account_id",
+    ))
     .await
     .expect("define transactions link");
 
     // resolvable link + UNDECLARED agg column (`nope` is not a Transaction property)
     // → Ok. A derived aggregate may read a catalog-only column the type doesn't declare;
     // best-effort validation SKIPS it (the ingest `bind` seam is the catalog-aware backstop).
-    o.define_type(ObjectType {
-        name: tn("Account"),
-        table: tref("main", "account"),
-        identity: None,
-        version: None,
-        properties: vec![prop("id", "Long")],
-        derived: vec![DerivedPropertyDef {
-            name: "x".into(),
-            ty: "Double".into(),
-            link: "transactions".into(),
-            agg: Aggregation::Sum("nope".into()),
-        }],
-    })
+    o.define_type(
+        ObjectType::build("Account", ("main", "account"))
+            .prop("id", "Long")
+            .derived(DerivedPropertyDef::new(
+                "x",
+                "Double",
+                "transactions",
+                Aggregation::Sum("nope".into()),
+            ))
+            .done(),
+    )
     .await
     .expect("undeclared agg column is skipped (best-effort)");
 
     // resolvable link + NON-NUMERIC agg column (note: String) under Sum → Validation.
     let non_numeric = o
-        .define_type(ObjectType {
-            name: tn("Account"),
-            table: tref("main", "account"),
-            identity: None,
-            version: None,
-            properties: vec![prop("id", "Long")],
-            derived: vec![DerivedPropertyDef {
-                name: "x".into(),
-                ty: "String".into(),
-                link: "transactions".into(),
-                agg: Aggregation::Sum("note".into()),
-            }],
-        })
+        .define_type(
+            ObjectType::build("Account", ("main", "account"))
+                .prop("id", "Long")
+                .derived(DerivedPropertyDef::new(
+                    "x",
+                    "String",
+                    "transactions",
+                    Aggregation::Sum("note".into()),
+                ))
+                .done(),
+        )
         .await;
     assert!(
         matches!(
@@ -2146,86 +1909,61 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // valid Sum over a numeric column (amount: Double) → Ok.
-    o.define_type(ObjectType {
-        name: tn("Account"),
-        table: tref("main", "account"),
-        identity: None,
-        version: None,
-        properties: vec![prop("id", "Long")],
-        derived: vec![DerivedPropertyDef {
-            name: "balance".into(),
-            ty: "Double".into(),
-            link: "transactions".into(),
-            agg: Aggregation::Sum("amount".into()),
-        }],
-    })
+    o.define_type(
+        ObjectType::build("Account", ("main", "account"))
+            .prop("id", "Long")
+            .derived(DerivedPropertyDef::new(
+                "balance",
+                "Double",
+                "transactions",
+                Aggregation::Sum("amount".into()),
+            ))
+            .done(),
+    )
     .await
     .expect("valid Sum over numeric column");
 
     // unresolvable link (target link undefined) → Ok (deferred; read path still omits).
-    o.define_type(ObjectType {
-        name: tn("Account"),
-        table: tref("main", "account"),
-        identity: None,
-        version: None,
-        properties: vec![prop("id", "Long")],
-        derived: vec![DerivedPropertyDef {
-            name: "y".into(),
-            ty: "Double".into(),
-            link: "ghostlink".into(),
-            agg: Aggregation::Sum("whatever".into()),
-        }],
-    })
+    o.define_type(
+        ObjectType::build("Account", ("main", "account"))
+            .prop("id", "Long")
+            .derived(DerivedPropertyDef::new(
+                "y",
+                "Double",
+                "ghostlink",
+                Aggregation::Sum("whatever".into()),
+            ))
+            .done(),
+    )
     .await
     .expect("unresolvable link defers validation");
 
     // --- vector index declarations -------------------------------------------
-    let doc = ObjectType {
-        name: tn("Document"),
-        table: tref("main", "document"),
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "embedding".into(),
-                ty: "vector(8)".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "title".into(),
-                ty: "Text".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
-    };
+    let doc = ObjectType::build("Document", ("main", "document"))
+        .prop_req("id", "Long")
+        .prop_req("embedding", "vector(8)")
+        .prop("title", "Text")
+        .identity("id")
+        .done();
     o.define_type(doc.clone()).await.expect("define Document");
 
-    let by_sim = VectorIndexDef {
-        name: "by_sim".into(),
-        type_name: tn("Document"),
-        property: "embedding".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Hnsw {
+    let by_sim = VectorIndexDef::new(
+        "by_sim",
+        "Document",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Hnsw {
             m: Some(16),
             ef_construction: Some(200),
         },
-    };
-    let by_cluster = VectorIndexDef {
-        name: "by_cluster".into(),
-        type_name: tn("Document"),
-        property: "embedding".into(),
-        metric: Metric::L2,
-        spec: IndexSpec::IvfFlat { nlist: Some(4) },
-    };
+    );
+    let by_cluster = VectorIndexDef::new(
+        "by_cluster",
+        "Document",
+        "embedding",
+        Metric::L2,
+        IndexSpec::IvfFlat { nlist: Some(4) },
+    );
     o.define_vector_index(by_sim.clone())
         .await
         .expect("define by_sim");
@@ -2259,10 +1997,16 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     assert_eq!(names, vec!["by_cluster".to_string(), "by_sim".to_string()]);
 
     // upsert replaces (exercises as_cols → from_label round-trip on the postgres adapter)
-    let by_sim_v2 = VectorIndexDef {
-        metric: Metric::L2,
-        ..by_sim.clone()
-    };
+    let by_sim_v2 = VectorIndexDef::new(
+        "by_sim",
+        "Document",
+        "embedding",
+        Metric::L2,
+        IndexSpec::Hnsw {
+            m: Some(16),
+            ef_construction: Some(200),
+        },
+    );
     o.define_vector_index(by_sim_v2.clone())
         .await
         .expect("redeclare by_sim");
@@ -2272,24 +2016,12 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     );
 
     // validation: non-vector property and missing property both error
-    let bad_prop = VectorIndexDef {
-        name: "bad".into(),
-        type_name: tn("Document"),
-        property: "title".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Flat,
-    };
+    let bad_prop = VectorIndexDef::new("bad", "Document", "title", Metric::Cosine, IndexSpec::Flat);
     assert!(
         o.define_vector_index(bad_prop).await.is_err(),
         "non-vector property rejected"
     );
-    let missing = VectorIndexDef {
-        name: "bad2".into(),
-        type_name: tn("Document"),
-        property: "ghost".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Flat,
-    };
+    let missing = VectorIndexDef::new("bad2", "Document", "ghost", Metric::Cosine, IndexSpec::Flat);
     assert!(
         o.define_vector_index(missing).await.is_err(),
         "missing property rejected"
@@ -2297,13 +2029,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
 
     // unknown type -> NotFound (not Validation): the type, not the property,
     // is what is missing. Pins postgres to the memory adapter's answer.
-    let unknown_type = VectorIndexDef {
-        name: "bad3".into(),
-        type_name: tn("Ghost"), // never defined in this contract
-        property: "embedding".into(),
-        metric: Metric::Cosine,
-        spec: IndexSpec::Flat,
-    };
+    let unknown_type = VectorIndexDef::new(
+        "bad3",
+        "Ghost", // never defined in this contract
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    );
     assert!(
         matches!(
             o.define_vector_index(unknown_type).await,
@@ -2355,12 +2087,13 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
     // (Runs after the delete_link block re-defined `customer`, so it is present here.)
     let order_ty = o.get_type(&tn("Order")).await.expect("Order exists");
     let mut order_with_derived = order_ty.clone();
-    order_with_derived.derived = vec![DerivedPropertyDef {
-        name: "customerCount".into(),
-        ty: "Long".into(),
-        link: "customer".into(),
-        agg: Aggregation::Count, // Count: no agg column, so Surface-2 validation is a no-op here
-    }];
+    // Count: no agg column, so Surface-2 validation is a no-op here.
+    order_with_derived.derived = vec![DerivedPropertyDef::new(
+        "customerCount",
+        "Long",
+        "customer",
+        Aggregation::Count,
+    )];
     o.define_type(order_with_derived)
         .await
         .expect("Order with derived");
@@ -2441,6 +2174,237 @@ pub async fn ontology_contract<O: Ontology>(o: &O) {
             .await
             .is_ok(),
         "re-defined action readable"
+    );
+
+    // --- descriptions: round-trip on all 7 declarable entities, undescribed
+    // siblings stay None, and redefining without a description clears it. ---
+
+    // object_type + property + derived_property, described and undescribed
+    // siblings in the same define so redefine-replaces semantics don't erase
+    // one while asserting the other.
+    let described_type = ObjectType::build("DescribedType", ("main", "described_type"))
+        .add_prop(
+            PropertyDef::new("id", "Long")
+                .required()
+                .described("The primary key"),
+        )
+        .prop("plain", "String")
+        .derived(
+            DerivedPropertyDef::new("cnt", "Long", "widgets", Aggregation::Count)
+                .described("Count of related widgets"),
+        )
+        .derived(DerivedPropertyDef::new(
+            "plainCount",
+            "Long",
+            "widgets",
+            Aggregation::Count,
+        ))
+        .described("A type with a description")
+        .done();
+    o.define_type(described_type.clone())
+        .await
+        .expect("define DescribedType");
+    let got_described = o.get_type(&tn("DescribedType")).await.unwrap();
+    assert_eq!(
+        got_described.description.as_deref(),
+        Some("A type with a description"),
+        "object_type description round-trips"
+    );
+    assert_eq!(
+        got_described.properties[0].description.as_deref(),
+        Some("The primary key"),
+        "property description round-trips"
+    );
+    assert_eq!(
+        got_described.properties[1].description, None,
+        "undescribed property sibling stays None"
+    );
+    assert_eq!(
+        got_described.derived[0].description.as_deref(),
+        Some("Count of related widgets"),
+        "derived_property description round-trips"
+    );
+    assert_eq!(
+        got_described.derived[1].description, None,
+        "undescribed derived_property sibling stays None"
+    );
+
+    // A type defined without `.described(...)` stays None (reusing Order, already
+    // seeded and redefined several times above with no description attached).
+    assert_eq!(
+        o.get_type(&tn("Order")).await.unwrap().description,
+        None,
+        "type with no description stays None"
+    );
+
+    // link: described + undescribed sibling, both self-links on DescribedType.
+    let described_link = LinkDef::fk(
+        "described_link",
+        "DescribedType",
+        "DescribedType",
+        Cardinality::One,
+        "id",
+        "id",
+    )
+    .described("A described self-link");
+    let plain_link = LinkDef::fk(
+        "plain_link",
+        "DescribedType",
+        "DescribedType",
+        Cardinality::One,
+        "id",
+        "id",
+    );
+    o.define_link(described_link.clone())
+        .await
+        .expect("define described link");
+    o.define_link(plain_link.clone())
+        .await
+        .expect("define plain link");
+    let described_type_links = o
+        .links(&tn("DescribedType"), PageReq::unbounded())
+        .await
+        .unwrap()
+        .items;
+    assert_eq!(
+        described_type_links
+            .iter()
+            .find(|l| l.name == "described_link")
+            .expect("described_link present")
+            .description
+            .as_deref(),
+        Some("A described self-link"),
+        "link description round-trips"
+    );
+    assert_eq!(
+        described_type_links
+            .iter()
+            .find(|l| l.name == "plain_link")
+            .expect("plain_link present")
+            .description,
+        None,
+        "undescribed link sibling stays None"
+    );
+
+    // action + action_param: described + undescribed sibling param in one action.
+    let described_action = ActionDef::single_step(
+        ActionName("describedAction".into()),
+        tn("DescribedType"),
+        ActionKind::Insert,
+        vec![
+            ParamDef::new("id", "Long")
+                .required()
+                .described("The id param"),
+            ParamDef::new("plain", "String"),
+        ],
+        vec![],
+    )
+    .described("An action with a description");
+    o.define_action(described_action.clone())
+        .await
+        .expect("define described action");
+    let got_described_action = o
+        .get_action(&ActionName("describedAction".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        got_described_action, described_action,
+        "action + param descriptions round-trip"
+    );
+    assert_eq!(
+        got_described_action.description.as_deref(),
+        Some("An action with a description"),
+        "action description round-trips"
+    );
+    assert_eq!(
+        got_described_action.steps[0].parameters[0]
+            .description
+            .as_deref(),
+        Some("The id param"),
+        "action_param description round-trips"
+    );
+    assert_eq!(
+        got_described_action.steps[0].parameters[1].description, None,
+        "undescribed action_param sibling stays None"
+    );
+
+    // An action defined without `.described(...)` stays None.
+    let plain_action = ActionDef::single_step(
+        ActionName("plainAction".into()),
+        tn("DescribedType"),
+        ActionKind::Insert,
+        vec![ParamDef::new("id", "Long").required()],
+        vec![],
+    );
+    o.define_action(plain_action.clone())
+        .await
+        .expect("define plain action");
+    assert_eq!(
+        o.get_action(&ActionName("plainAction".into()))
+            .await
+            .unwrap()
+            .description,
+        None,
+        "action with no description stays None"
+    );
+
+    // vector_index_definition: described + undescribed sibling on Document
+    // (already seeded above with an `embedding` vector property).
+    let described_index = VectorIndexDef::new(
+        "by_sim_described",
+        "Document",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    )
+    .described("A described vector index");
+    let plain_index = VectorIndexDef::new(
+        "by_plain",
+        "Document",
+        "embedding",
+        Metric::Cosine,
+        IndexSpec::Flat,
+    );
+    o.define_vector_index(described_index.clone())
+        .await
+        .expect("define described index");
+    o.define_vector_index(plain_index.clone())
+        .await
+        .expect("define plain index");
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_sim_described")
+            .await
+            .unwrap(),
+        Some(described_index),
+        "vector_index_definition description round-trips"
+    );
+    assert_eq!(
+        o.get_vector_index(&tn("Document"), "by_plain")
+            .await
+            .unwrap()
+            .and_then(|v| v.description),
+        None,
+        "undescribed vector_index_definition sibling stays None"
+    );
+
+    // --- clear-on-redefine: redefining without `.described(...)` clears a
+    // previously-set description (type + property together, since `define_type`
+    // replaces both in the same write). ---
+    let cleared_type = ObjectType::build("DescribedType", ("main", "described_type"))
+        .add_prop(PropertyDef::new("id", "Long").required())
+        .prop("plain", "String")
+        .done();
+    o.define_type(cleared_type)
+        .await
+        .expect("redefine DescribedType without description");
+    let got_cleared = o.get_type(&tn("DescribedType")).await.unwrap();
+    assert_eq!(
+        got_cleared.description, None,
+        "redefining without a description clears the type's description"
+    );
+    assert_eq!(
+        got_cleared.properties[0].description, None,
+        "redefining without a description clears the property's description"
     );
 }
 
@@ -3874,48 +3838,20 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
     // against an identity-less target must each be rejected as Validation. Seed an
     // identity-bearing `Widget` (so `@self.id` resolves) and a no-identity `Blob` (so it
     // does not — the `id` property exists iff identity is declared).
-    cp.define_type(ObjectType {
-        name: tn("Widget"),
-        table: TableRef {
-            schema: "main".into(),
-            name: "widget".into(),
-        },
-        properties: vec![
-            PropertyDef {
-                name: "id".into(),
-                ty: "Long".into(),
-                required: true,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-            PropertyDef {
-                name: "sku".into(),
-                ty: "String".into(),
-                required: false,
-                constraints: control_plane_core::PropertyConstraints::default(),
-            },
-        ],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("main", "widget"))
+            .prop_req("id", "Long")
+            .prop("sku", "String")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Widget type");
-    cp.define_type(ObjectType {
-        name: tn("Blob"),
-        table: TableRef {
-            schema: "main".into(),
-            name: "blob".into(),
-        },
-        properties: vec![PropertyDef {
-            name: "data".into(),
-            ty: "String".into(),
-            required: false,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
+    cp.define_type(
+        ObjectType::build("Blob", ("main", "blob"))
+            .prop("data", "String")
+            .done(),
+    )
     .await
     .expect("define Blob type");
     // downstream kind must be in the allowlist.
@@ -3974,12 +3910,7 @@ pub async fn existence_validation_contract<CP: Acl + Ontology>(cp: &CP) {
                     ActionName("unwrittenProp".into()),
                     tn("Widget"),
                     ActionKind::Insert,
-                    vec![ParamDef {
-                        name: "id".into(),
-                        ty: "Long".into(),
-                        required: true,
-                        binds: None,
-                    }],
+                    vec![ParamDef::new("id", "Long").required()],
                     vec![],
                 )
                 .downstream(vec![JobTemplate {
@@ -5128,17 +5059,8 @@ pub async fn type_table_binding_contract<CP: Ontology + Lineage>(cp: &CP) {
         outputs: vec![out],
         payload: serde_json::json!({}),
     };
-    let otype = |name: &str, schema: &str, table: &str| ObjectType {
-        name: TypeName(name.into()),
-        properties: vec![],
-        derived: vec![],
-        table: TableRef {
-            schema: schema.into(),
-            name: table.into(),
-        },
-        identity: None,
-        version: None,
-    };
+    let otype =
+        |name: &str, schema: &str, table: &str| ObjectType::build(name, (schema, table)).done();
 
     // define type X bound to main.customers -> emits binding edge {customers -> type/X}
     cp.define_type(otype("Bnd_X", "main", "bnd_customers"))
@@ -5247,16 +5169,9 @@ fn tref(schema: &str, name: &str) -> TableRef {
 /// typed-transform validation has a known type name to reference. Mirrors
 /// `ontology_contract`'s `ObjectType` seeding shape.
 async fn seed_type<O: Ontology>(o: &O, name: &str, schema: &str, table: &str) {
-    o.define_type(ObjectType {
-        name: TypeName(name.to_string()),
-        table: tref(schema, table),
-        properties: vec![],
-        derived: vec![],
-        identity: None,
-        version: None,
-    })
-    .await
-    .unwrap();
+    o.define_type(ObjectType::build(name, (schema, table)).done())
+        .await
+        .unwrap();
 }
 
 /// Contract for the transforms concern. Seeds two ontology types (`Widget`,
@@ -5937,24 +5852,14 @@ where
 
     // --- rebind cycle: a define_type that re-points a binding into a trigger
     // cycle among data-triggered defs is rejected (not silently allowed) ---
-    // `tn` is a closure scoped to `ontology_contract`, NOT visible here, so
-    // define a local one (TypeName is module-level imported).
-    let tn = |s: &str| TypeName(s.to_string());
     let ta = tref("main", "rc_a");
     let tb = tref("main", "rc_b");
     let tc = tref("main", "rc_c");
-    let mk_type = |name: &str, table: &TableRef| ObjectType {
-        name: tn(name),
-        table: table.clone(),
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "Long".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-        identity: Some("id".into()),
-        version: None,
+    let mk_type = |name: &str, table: &TableRef| {
+        ObjectType::build(name, (table.schema.clone(), table.name.clone()))
+            .prop_req("id", "Long")
+            .identity("id")
+            .done()
     };
     cp.define_type(mk_type("RcA", &ta)).await.unwrap();
     cp.define_type(mk_type("RcB", &tb)).await.unwrap();
@@ -6173,25 +6078,11 @@ where
 
     // 4. Typed def resolves through the ontology at eval time.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Widget".into()),
-            table: tref("main", "dt_widgets"),
-            properties: vec![],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(ObjectType::build("Widget", ("main", "dt_widgets")).done())
         .await
         .unwrap();
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Gadget".into()),
-            table: tref("main", "dt_gadgets"),
-            properties: vec![],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(ObjectType::build("Gadget", ("main", "dt_gadgets")).done())
         .await
         .unwrap();
     let typed = TransformDef {
@@ -6233,14 +6124,7 @@ where
     // Rebind: redefine type Widget -> (main, dt_gadgets), so `typed`'s
     // resolved input now coincides with its own resolved output table.
     cp.ontology()
-        .define_type(ObjectType {
-            name: TypeName("Widget".into()),
-            table: tref("main", "dt_gadgets"),
-            properties: vec![],
-            derived: vec![],
-            identity: None,
-            version: None,
-        })
+        .define_type(ObjectType::build("Widget", ("main", "dt_gadgets")).done())
         .await
         .unwrap();
     let rid = uuid::Uuid::new_v4();

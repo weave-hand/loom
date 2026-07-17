@@ -1,4 +1,4 @@
-use control_plane_core::{ObjectType, Ontology, PropertyDef, TableRef, TypeName};
+use control_plane_core::{ObjectType, Ontology, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::ontology::identity_for_table;
 
@@ -8,22 +8,12 @@ async fn resolves_identity_from_ontology() {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Widget".into()),
-        table: TableRef {
-            schema: "s".into(),
-            name: "t".into(),
-        },
-        identity: Some("id".into()),
-        version: None,
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "String".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build("Widget", ("s", "t"))
+            .prop_req("id", "String")
+            .identity("id")
+            .done(),
+    )
     .await
     .expect("define Widget type");
 
@@ -56,22 +46,11 @@ async fn returns_none_when_identity_column_is_null() {
     let (cp, db) = fx.fresh_db().await;
     let pool = fx.pool_for(&db).await;
 
-    cp.define_type(ObjectType {
-        name: TypeName("Gadget".into()),
-        table: TableRef {
-            schema: "s".into(),
-            name: "noid".into(),
-        },
-        identity: None,
-        version: None,
-        properties: vec![PropertyDef {
-            name: "id".into(),
-            ty: "String".into(),
-            required: true,
-            constraints: control_plane_core::PropertyConstraints::default(),
-        }],
-        derived: vec![],
-    })
+    cp.define_type(
+        ObjectType::build("Gadget", ("s", "noid"))
+            .prop_req("id", "String")
+            .done(),
+    )
     .await
     .expect("define Gadget type");
 
