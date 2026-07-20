@@ -1,4 +1,4 @@
-# STPA Control Analysis: weave-hand/loom @ 0d12c60
+# STPA Control Analysis: weave-hand/loom @ 1d63441
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
@@ -138,14 +138,14 @@ flowchart TD
 | `mv.commit` | Commit micro-batch MV output + watermark advance atomically | `stream-mv` → `engine` | built | engine/src/service.rs:590 |
 | `mv.delta` | Read framed source delta for a standing query | `stream-mv` → `engine` | built | engine-serving/src/mv_delta.rs:53 |
 | `mv.enrich` | Read enrich table current state (optionally key-filtered) | `stream-mv` → `engine` | built | engine-serving/src/mv_enrich.rs:44 |
-| `ontology.resolve` | Resolve a type name to its backing table | `query-api` → `ontology` | built | postgres/src/ontology.rs:305 |
+| `ontology.resolve` | Resolve a type name to its backing table | `query-api` → `ontology` | built | postgres/src/ontology.rs:315 |
 | `queue.complete` | Mark a dequeued job as completed | `worker` → `queue` | built | postgres/src/queue.rs:107 |
 | `queue.dequeue` | Claim the next available job (SELECT FOR UPDATE SKIP LOCKED) | `worker` → `queue` | built | postgres/src/queue.rs:78 |
 | `queue.enqueue` | Submit a new job (flush, compaction, transform, downstream) | `ingest` → `queue` | built | postgres/src/queue.rs:73 |
 | `queue.fail` | Return a failed job for retry or dead-letter | `worker` → `queue` | built | postgres/src/queue.rs:116 |
 | `scheduler.fire` | Fire due cron schedules for transforms and maintenance jobs | `scheduler` → `queue` | built | engine/src/scheduler.rs:61 |
 | `subscribe.feed` | Stream governed changelog events as NDJSON | `query-api` → `engine` | built | subscribe.rs:99 |
-| `transform.commit` | Commit transform output (files + lineage) atomically | `transform` → `engine` | built | worker/src/transform.rs:343 |
+| `transform.commit` | Commit transform output (files + lineage) atomically | `transform` → `engine` | built | worker/src/transform.rs:345 |
 | `tx.commit` | Commit a multi-table transaction atomically | `ingest` → `postgres` | built | postgres/src/transaction.rs:24 |
 
 ## Unsafe control actions
@@ -165,12 +165,12 @@ flowchart TD
 | `lineage.emit.not-providing` | `lineage.emit` | not-providing | An error after the data write but before lineage.emit means the snapshot exists with no provenance record | medium | lineage-gap | postgres/src/lineage.rs:62 |
 | `lineage.filter.not-providing` | `lineage.filter` | not-providing | Lineage endpoint returns nodes or event payloads the caller lacks Read permission for (filter bypass or incomplete redaction) | high | lineage-over-disclosure | lineage_filter.rs:105 |
 | `mv.commit.wrong-timing` | `mv.commit` | wrong-timing | A filtering micro-batch produces no output rows but advances the watermark past consumed offsets; if the filter incorrectly dropped rows (e.g. LookupOn mismatch), those rows are permanently lost | medium | mv-silent-drop | engine/src/service.rs:639 |
-| `ontology.resolve.wrong-timing` | `ontology.resolve` | wrong-timing | Ontology resolution returns a TableRef that was valid at resolve time but the backing table is dropped or replaced before the query executes | low | stale-type | postgres/src/ontology.rs:305 |
+| `ontology.resolve.wrong-timing` | `ontology.resolve` | wrong-timing | Ontology resolution returns a TableRef that was valid at resolve time but the backing table is dropped or replaced before the query executes | low | stale-type | postgres/src/ontology.rs:315 |
 | `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | Lock-timeout reclaim dequeues a job whose original worker is still running (slow but alive), causing duplicate execution of a side-effecting job | medium | stuck-queue | postgres/src/queue.rs:78 |
 | `queue.fail.not-providing` | `queue.fail` | not-providing | Worker panics or is killed between dequeue and fail/complete — the job stays running with no heartbeat until lock timeout, delaying retry | medium | stuck-queue | postgres/src/queue.rs:116 |
 | `scheduler.fire.not-providing` | `scheduler.fire` | not-providing | A crash between claiming a due schedule (which advances next_run_at) and submitting the job skips that occurrence entirely — at-most-once semantics mean the scheduled GC/compaction is silently lost | low | stuck-queue | engine/src/scheduler.rs:17 |
 | `subscribe.feed.providing` | `subscribe.feed` | providing | Subscribe feed captures governance policy at connect time; a concurrent ACL revoke mid-stream is not reflected until the next connect, so events streamed after the revoke carry the pre-revoke policy | medium | stale-policy, phantom-rows | http.rs:685 |
-| `transform.commit.wrong-timing` | `transform.commit` | wrong-timing | Transform reads input tables at snapshot T, but a concurrent ingest commits new data at T+1 before the transform commits — the output reflects stale inputs while lineage records the current snapshot, creating a provenance/data mismatch | medium | dangling-lineage, lineage-gap | worker/src/transform.rs:343 |
+| `transform.commit.wrong-timing` | `transform.commit` | wrong-timing | Transform reads input tables at snapshot T, but a concurrent ingest commits new data at T+1 before the transform commits — the output reflects stale inputs while lineage records the current snapshot, creating a provenance/data mismatch | medium | dangling-lineage, lineage-gap | worker/src/transform.rs:345 |
 | `tx.commit.wrong-timing` | `tx.commit` | wrong-timing | Transaction commits the catalog entry and enqueues a flush job, but crashes before the COMMIT — Postgres rolls back both atomically, so no data is lost, but the inverse (commit succeeds, subsequent non-transactional step fails) can leave a committed snapshot with no flush job | medium | dangling-lineage, lineage-gap | postgres/src/transaction.rs:24 |
 
 ## Unsafe feedback
@@ -227,7 +227,7 @@ flowchart TD
 - **service-token mint with max_ttl**: token TTL is capped by LOOM_SERVICE_TOKEN_MAX_TTL (default 90d); a request above the cap is rejected 400 — no immortal tokens
 - **snapshot_intact evidence-then-watermark read ordering**: time-travel retention check reads evidence (surviving rows) before the monotone reclaimed_through watermark on the same connection; concurrent GC between the two reads cannot produce a false intact verdict (iceberg_catalog.rs:506)
 - **stream feed engine fault mid-stream**: subscribe.rs closes the NDJSON stream on engine fault; the client sees a closed stream (HTTP 200 body ends) and resumes from its last cursor — no silent data loss
-- **transform conformance gate**: typed transforms check output conformance BEFORE any rows are written; a non-conforming result writes/commits nothing (worker/src/transform.rs:304)
+- **transform conformance gate**: typed transforms check output conformance BEFORE any rows are written; a non-conforming result writes/commits nothing (worker/src/transform.rs:305)
 - **transform duplicate input name**: run_wire_transform rejects duplicate input registration names up front; DataFusion shadowing is prevented (worker/src/transform.rs:239)
 - **tx.commit read-only transaction**: a transaction with no writes commits as a no-op; Postgres COMMIT on an empty transaction is harmless
 - **vector-search dimension mismatch**: the engine returns DimMismatch error; query-api surfaces it as a 400 — no silent wrong result
