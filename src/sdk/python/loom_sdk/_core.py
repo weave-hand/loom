@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from .models import LandAck, ModelLandAck
+
 
 @dataclass
 class PreparedRequest:
@@ -66,3 +68,86 @@ def build_headers(headers: dict[str, str], token: str | None) -> dict[str, str]:
     if token is not None:
         merged["Authorization"] = f"Bearer {token}"
     return merged
+
+
+_ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
+
+
+def land_dataset_request(
+    schema: str,
+    table: str,
+    ipc: bytes,
+    *,
+    mode: str | None = None,
+    buckets: int | None = None,
+    model_gate: list[dict] | None = None,
+    run_id: str | None = None,
+) -> PreparedRequest:
+    """Build `POST /datasets/{schema}/{table}` (routed to the ingest service).
+
+    `model_gate` (when given) is sent as the `X-Loom-Model` header —
+    `{"columns": model_gate}` — required for zero-row bootstrap of
+    date/timestamp columns, which Arrow-schema inference alone rejects.
+    """
+    params: dict[str, str] = {}
+    if mode is not None:
+        params["mode"] = mode
+    if buckets is not None:
+        params["buckets"] = str(buckets)
+
+    headers = {"Content-Type": _ARROW_STREAM_CONTENT_TYPE}
+    if model_gate is not None:
+        headers["X-Loom-Model"] = json.dumps({"columns": model_gate})
+    if run_id is not None:
+        headers["X-Loom-Run-Id"] = run_id
+
+    return PreparedRequest(
+        method="POST",
+        service="ingest",
+        path=f"/datasets/{schema}/{table}",
+        params=params,
+        headers=headers,
+        content=ipc,
+    )
+
+
+def land_model_request(
+    type_name: str,
+    ipc: bytes,
+    *,
+    identity: str | None = None,
+    mode: str | None = None,
+    buckets: int | None = None,
+    merge_engine: str | None = None,
+) -> PreparedRequest:
+    """Build `POST /models/{type_name}` (routed to the ingest service)."""
+    params: dict[str, str] = {}
+    if identity is not None:
+        params["identity"] = identity
+    if mode is not None:
+        params["mode"] = mode
+    if buckets is not None:
+        params["buckets"] = str(buckets)
+    if merge_engine is not None:
+        params["merge_engine"] = merge_engine
+
+    return PreparedRequest(
+        method="POST",
+        service="ingest",
+        path=f"/models/{type_name}",
+        params=params,
+        headers={"Content-Type": _ARROW_STREAM_CONTENT_TYPE},
+        content=ipc,
+    )
+
+
+def parse_land_ack(body: bytes) -> LandAck:
+    """Parse a `POST /datasets/{schema}/{table}` 200 response body."""
+    data = json.loads(body)
+    return LandAck(snapshot_id=int(data["snapshot_id"]), dataset=str(data["dataset"]))
+
+
+def parse_model_ack(body: bytes) -> ModelLandAck:
+    """Parse a `POST /models/{type}` 200 response body (wire key is `type`)."""
+    data = json.loads(body)
+    return ModelLandAck(snapshot_id=int(data["snapshot_id"]), type_name=str(data["type"]))
