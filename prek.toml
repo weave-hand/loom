@@ -71,6 +71,18 @@ language = "system"
 files = "Cargo\\.(toml|lock)$"
 pass_filenames = false
 
+# When the Python manifest/lock or muntjac config changes, regenerate
+# third-party/python/ (frozen: no re-lock, no network — muntjac's staleness
+# gate is mtime-based and CI checkout mtimes are arbitrary) and fail if the
+# generated tree or the lockfile drifted — the Python reindeer-check.
+[[repos.hooks]]
+id = "muntjac-check"
+name = "muntjac in sync"
+entry = "bash -c './tools/pybuckify.sh --frozen && git diff --exit-code third-party/python src/sdk/python/uv.lock'"
+language = "system"
+files = "(^|/)(pyproject\\.toml|uv\\.lock)$|^muntjac\\.toml$"
+pass_filenames = false
+
 # Enforce Conventional Commits on the message itself (commit-msg stage). Local
 # regex check — no Python/Node, so it stays hermetic. See tools/check-commit-msg.sh.
 [[repos.hooks]]
