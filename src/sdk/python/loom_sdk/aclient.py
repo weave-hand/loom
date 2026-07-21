@@ -12,6 +12,8 @@ from ._arrow import to_ipc
 from ._core import (
     PreparedRequest,
     build_headers,
+    define_link_request,
+    define_model_request,
     get_dataset_request,
     land_dataset_request,
     land_model_request,
@@ -21,6 +23,7 @@ from ._core import (
     ontology_types_request,
     parse_dataset_detail,
     parse_dataset_list,
+    parse_define_model_ack,
     parse_land_ack,
     parse_login,
     parse_model_ack,
@@ -143,6 +146,30 @@ class _AsyncModelsNamespace:
         return parse_model_ack(response.content)
 
 
+class _AsyncAdminNamespace:
+    """`client.admin` — the admin ontology-write surface (admin role required)."""
+
+    def __init__(self, client: AsyncClient) -> None:
+        self._client = client
+
+    async def define_model(self, payload: dict) -> str:
+        """Register an ontology type (`POST /admin/models`), returning its name.
+
+        `payload` is passed through verbatim — dict-level API; build it with
+        `loom_sdk._core.model_payload` for a wire-conformant body.
+        """
+        response = await self._client._send(define_model_request(payload))
+        return parse_define_model_ack(response.content)
+
+    async def define_link(self, payload: dict) -> None:
+        """Register a link between ontology types (`POST /admin/links`).
+
+        `payload` is passed through verbatim — dict-level API; build it with
+        `loom_sdk._core.fk_link_payload` for a wire-conformant FK-backed body.
+        """
+        await self._client._send(define_link_request(payload))
+
+
 class AsyncClient:
     """Asynchronous loom client.
 
@@ -166,6 +193,7 @@ class AsyncClient:
         self.datasets = _AsyncDatasetsNamespace(self)
         self.models = _AsyncModelsNamespace(self)
         self.ontology = _AsyncOntologyNamespace(self)
+        self.admin = _AsyncAdminNamespace(self)
 
     async def login(self, username: str, password: str) -> Self:
         """Authenticate and store the returned bearer token on this client."""

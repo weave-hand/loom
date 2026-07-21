@@ -309,6 +309,108 @@ def parse_dataset_detail(body: bytes) -> DatasetDetail:
     )
 
 
+_VALID_CARDINALITIES = ("One", "Many")
+
+
+def model_payload(
+    name: str,
+    schema: str,
+    table: str,
+    identity: str | None,
+    properties: list[tuple[str, str, bool]],
+    description: str | None = None,
+) -> dict:
+    """Build a `POST /admin/models` JSON body.
+
+    `properties` is `(name, ty, required)` triples; `identity` is always
+    emitted (even `null`) since the wire body always carries the key,
+    `description` is omitted entirely when `None`.
+    """
+    payload: dict = {
+        "name": name,
+        "table": {"schema": schema, "name": table},
+        "identity": identity,
+        "properties": [
+            {"name": prop_name, "ty": ty, "required": required} for prop_name, ty, required in properties
+        ],
+    }
+    if description is not None:
+        payload["description"] = description
+    return payload
+
+
+def fk_link_payload(
+    name: str,
+    from_type: str,
+    to_type: str,
+    from_column: str,
+    to_column: str,
+    cardinality: str = "One",
+    description: str | None = None,
+) -> dict:
+    """Build a `POST /admin/links` JSON body with `ForeignKey` backing.
+
+    `cardinality` defaults to `"One"` — an FK field on the declaring type
+    points at exactly one target (the tree's canonical
+    `LinkDef::fk("customer", "Order", "Customer", Cardinality::One, ...)`
+    shape). Must be `"One"` or `"Many"`; `description` is omitted entirely
+    when `None`.
+    """
+    if cardinality not in _VALID_CARDINALITIES:
+        raise ValueError(f"cardinality must be one of {_VALID_CARDINALITIES!r}, got {cardinality!r}")
+    payload: dict = {
+        "name": name,
+        "from": from_type,
+        "to": to_type,
+        "cardinality": cardinality,
+        "backing": {"ForeignKey": {"from_column": from_column, "to_column": to_column}},
+    }
+    if description is not None:
+        payload["description"] = description
+    return payload
+
+
+def define_model_request(payload: dict) -> PreparedRequest:
+    """Build `POST /admin/models` (routed to the query service).
+
+    `payload` is passed through verbatim as the JSON body — dict-level API;
+    use `model_payload` to build a wire-conformant body.
+    """
+    content = json.dumps(payload).encode("utf-8")
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path="/admin/models",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=content,
+    )
+
+
+def parse_define_model_ack(body: bytes) -> str:
+    """Extract the type name from a `POST /admin/models` 201 response body."""
+    data = json.loads(body)
+    return str(data["name"])
+
+
+def define_link_request(payload: dict) -> PreparedRequest:
+    """Build `POST /admin/links` (routed to the query service).
+
+    `payload` is passed through verbatim as the JSON body — dict-level API;
+    use `fk_link_payload` to build a wire-conformant `ForeignKey`-backed body.
+    The 201 response is plain text (`"defined"`); there is nothing to parse.
+    """
+    content = json.dumps(payload).encode("utf-8")
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path="/admin/links",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=content,
+    )
+
+
 def preview_dataset_request(schema: str, table: str, *, limit: int | None = None) -> PreparedRequest:
     """Build `GET /datasets/{schema}/{table}/preview` (routed to the query service)."""
     params: dict[str, str] = {}
