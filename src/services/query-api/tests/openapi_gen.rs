@@ -593,3 +593,61 @@ fn type_detail_response_documents_derived_and_vector_indexes() {
     assert!(j["components"]["schemas"]["DerivedPropertyView"].is_object());
     assert!(j["components"]["schemas"]["VectorIndexView"].is_object());
 }
+
+#[test]
+fn derived_properties_are_read_only_in_the_component_schema() {
+    let cust = ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "long")
+        .derived(
+            control_plane_core::DerivedPropertyDef::new(
+                "orderCount",
+                "Long",
+                "orders",
+                control_plane_core::Aggregation::Count,
+            )
+            .described("How many orders this customer has."),
+        )
+        .identity("id")
+        .done();
+    let create = create_customer_action(); // params: name (req), tier — no derived props
+    let (_paths, schemas) = ontology_openapi(&[cust], &[], &[create]);
+
+    let doc = serde_json::to_value(schemas.get("Customer").expect("Customer schema")).unwrap();
+    // Derived property is present in the READ component, marked readOnly, with its prose.
+    // `orderCount` is declared `ty = "Long"`, so `property_schema` folds the property prose
+    // together with `base_type_to_schema(Long)`'s encoding note (same pattern the pre-existing
+    // `generated_document_carries_ontology_descriptions` test asserts, openapi_gen.rs:492-495).
+    assert_eq!(doc["properties"]["orderCount"]["readOnly"], true);
+    assert_eq!(
+        doc["properties"]["orderCount"]["description"],
+        "How many orders this customer has. (int64 encoded as a decimal string)"
+    );
+    // A physical property is NOT readOnly.
+    assert!(
+        doc["properties"]["id"].get("readOnly").is_none(),
+        "physical properties must not be readOnly: {}",
+        doc["properties"]["id"]
+    );
+}
+
+#[test]
+fn derived_properties_do_not_appear_in_action_request_schemas() {
+    let cust = ObjectType::build("Customer", ("main", "customer"))
+        .prop_req("id", "long")
+        .derived(control_plane_core::DerivedPropertyDef::new(
+            "orderCount",
+            "Long",
+            "orders",
+            control_plane_core::Aggregation::Count,
+        ))
+        .identity("id")
+        .done();
+    let (paths, _schemas) = ontology_openapi(&[cust], &[], &[create_customer_action()]);
+    let op = op_json(&paths, "/actions/createCustomer", "post");
+    let schema = &op["requestBody"]["content"]["application/json"]["schema"];
+    assert!(
+        schema["properties"]["orderCount"].is_null(),
+        "derived properties are computed, never writable — must not appear in the action \
+         request schema: {schema}"
+    );
+}
