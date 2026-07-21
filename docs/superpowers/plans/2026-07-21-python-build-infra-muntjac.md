@@ -354,16 +354,25 @@ muntjac shells out to `uv` (lock-freshness check), so the vendored uv must be on
 
 ```bash
 #!/usr/bin/env bash
-# Wrapper around `muntjac vendor` + `muntjac buckify` that regenerates
-# third-party/python/ from src/sdk/python/uv.lock + muntjac.toml (both at the
-# paths muntjac.toml declares). The Python analog of tools/buckify.sh.
+# Regenerate third-party/python/ from muntjac.toml + src/sdk/python/uv.lock:
+# `uv lock` → `muntjac vendor` → `muntjac buckify`. The Python analog of
+# tools/buckify.sh.
+#
+# --frozen skips the `uv lock` step and passes --frozen to muntjac (which
+# forbids its own when-stale re-lock) — the deterministic, network-free form
+# the muntjac-check prek hook and CI use. muntjac's staleness gate is a raw
+# mtime comparison, and fresh CI checkouts have arbitrary mtimes; --frozen
+# keeps the lint job from ever resolving against PyPI.
 #
 # vendor runs in prebake-only mode ([buck] vendor = false): with an all-wheels
 # dependency set it only (re)writes third-party/python/prebake/'s manifest —
 # it becomes load-bearing the day a dependency ships sdist-only.
 #
-# Usage: ./tools/pybuckify.sh   (run from anywhere; resolves the repo root itself)
+# Usage: ./tools/pybuckify.sh [--frozen]   (run from anywhere)
 set -euo pipefail
+
+FROZEN=""
+if [ "${1:-}" = "--frozen" ]; then FROZEN="--frozen"; fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -384,13 +393,16 @@ trap 'rm -rf "$UV_DIR"' EXIT
 ln -s "$UV_BIN" "$UV_DIR/uv"
 export PATH="$UV_DIR:$PATH"
 
-buck2 run --console none root//tools:muntjac -- vendor
-buck2 run --console none root//tools:muntjac -- buckify
+if [ -z "$FROZEN" ]; then
+    uv lock --project src/sdk/python
+fi
+buck2 run --console none root//tools:muntjac -- $FROZEN vendor
+buck2 run --console none root//tools:muntjac -- $FROZEN buckify
 
 echo "pybuckify complete"
 ```
 
-(Symlinking the genrule output is safe — it is a real standalone binary, unlike the command_alias trampoline.)
+(Symlinking the genrule output is safe — it is a real standalone binary, unlike the command_alias trampoline. The default mode's unconditional `uv lock` is what the spec's component 4 describes; `--frozen` is the check-mode variant.)
 
 ```bash
 chmod +x tools/pybuckify.sh
@@ -461,10 +473,11 @@ git commit -m "feat(python): pybuckify.sh + muntjac-generated third-party/python
 `src/sdk/python/tests/imports_test.py` — stdlib `unittest` (the prelude test runner speaks it; no pytest dep in v1). Import each dep and exercise one native-code touchpoint so a broken wheel can't pass as an empty namespace package:
 
 ```python
-"""Acceptance test for road-python-build-infra: the three SDK deps import and
+"""Acceptance test for road-python-build-infra.
 
-exercise their native code on the hermetic CPython 3.13 toolchain, proving the
-muntjac-generated //third-party/python wheels agree with the interpreter.
+The three SDK deps import and exercise their native code on the hermetic
+CPython 3.13 toolchain, proving the muntjac-generated //third-party/python
+wheels agree with the interpreter.
 """
 
 import sys
@@ -548,11 +561,12 @@ git commit -m "test(python): hermetic import acceptance test for the muntjac dep
 
 ---
 
-### Task 6: drift guard + dev-shell + docs
+### Task 6: drift guard + dev-shell + CI scope + docs
 
 **Files:**
 - Modify: `/workspace/prek.toml` (add `muntjac-check` after the `reindeer-check` hook block)
 - Modify: `/workspace/tools/env.sh` (two entries in the `TOOLS` map)
+- Modify: `/workspace/buildbuddy.yaml` (extend `build-test`'s build scope)
 - Modify: `/workspace/CLAUDE.md` (dev-tools bullets + a "Third-party Python deps" section)
 
 **Interfaces:**
@@ -565,27 +579,38 @@ In `prek.toml`, directly after the `reindeer-check` hook:
 
 ```toml
 # When the Python manifest/lock or muntjac config changes, regenerate
-# third-party/python/ and fail if it drifted — the Python reindeer-check.
+# third-party/python/ (frozen: no re-lock, no network — muntjac's staleness
+# gate is mtime-based and CI checkout mtimes are arbitrary) and fail if the
+# generated tree or the lockfile drifted — the Python reindeer-check.
 [[repos.hooks]]
 id = "muntjac-check"
 name = "muntjac in sync"
-entry = "bash -c './tools/pybuckify.sh && git diff --exit-code third-party/python'"
+entry = "bash -c './tools/pybuckify.sh --frozen && git diff --exit-code third-party/python src/sdk/python/uv.lock'"
 language = "system"
 files = "(^|/)(pyproject\\.toml|uv\\.lock)$|^muntjac\\.toml$"
 pass_filenames = false
 ```
 
+(`src/sdk/python/uv.lock` rides the diff so a future non-frozen regeneration that only moves the lock still trips the gate; under `--frozen` the lock is never rewritten, so it is inert but harmless there.)
+
 - [ ] **Step 2: Verify the hook both passes and fails**
+
+The red-test must change generated **output**, not just the manifest (a constraint loosening like `>=0.28` → `>=0.28.1` re-locks to the identical resolution and stays green). Hand-introduce drift in the generated tree:
 
 ```bash
 buck2 run //tools:prek -- run muntjac-check --all-files          # expect: Passed
-sed -i 's/httpx>=0.28/httpx>=0.28.1/' src/sdk/python/pyproject.toml
-buck2 run //tools:prek -- run muntjac-check --all-files          # expect: Failed (lock now stale → uv re-locks → diff)
-git checkout src/sdk/python/pyproject.toml src/sdk/python/uv.lock
-git checkout third-party/python/ 2>/dev/null || true             # restore anything the failing run regenerated
+sed -i 's/^pypi_package($/pypi_package(  # drift/' third-party/python/BUCK   # or append a comment line
+buck2 run //tools:prek -- run muntjac-check --all-files          # expect: Failed (regeneration reverts the edit → diff)
+git checkout third-party/python/
 ```
 
-- [ ] **Step 3: env.sh entries**
+Also probe the frozen path's stale-lock behavior once, and record what happens (this is dogfood signal for muntjac): `touch src/sdk/python/pyproject.toml` then run the hook — if muntjac `--frozen` errors on a stale-by-mtime manifest, the hook correctly goes red on un-relocked edits; if it silently proceeds, note in CLAUDE.md's new section that lock freshness is enforced by review + the SDK's own CI builds, not this hook. `git checkout` anything touched afterwards.
+
+- [ ] **Step 3: keep the generated tree CI-built**
+
+`build-test` builds only `//src/...` and `affected` filters btd output to `root//src/` — after this PR merges, nothing would rebuild the generated tree except the three aliases the imports test pulls in, so wheel-URL/sha rot in the unused targets (and all aarch64 variants) would be silent. Extend `build-test`'s build line in `buildbuddy.yaml` (the `buck2 build` step of the `build-test` action) from `//src/...` to `//src/... //third-party/python/...` — building the package in the host cfg still fetches/verifies every per-arch wheel `http_file` (they're data, not executed), which is exactly the rot check needed. The `affected` job's src-only filter stays (the `muntjac-check` lint hook already regenerates the tree on PRs that touch the manifests).
+
+- [ ] **Step 4: env.sh entries**
 
 In the `declare -A TOOLS=(` map in `tools/env.sh`, after the `[lucidshark-duplo]` line:
 
@@ -596,19 +621,19 @@ In the `declare -A TOOLS=(` map in `tools/env.sh`, after the `[lucidshark-duplo]
 
 Verify: `eval "$(./tools/env.sh)" && uv --version && muntjac --help >/dev/null && echo OK` → `OK`.
 
-- [ ] **Step 4: CLAUDE.md**
+- [ ] **Step 5: CLAUDE.md**
 
 Two edits:
 
 1. In **Dev tools**, after the `//tools:lucidshark-duplo` bullet, add bullets for `//tools:muntjac` (uv.lock→BUCK importer, weave-hand fork releases, binary at archive root, bump via `MUNTJAC_VERSION` + sidecar sha256s, normally driven via `./tools/pybuckify.sh`) and `//tools:uv` (vendored resolver muntjac shells out to; wrapper-dir archive like prek; bump via `UV_VERSION` + sidecars).
 2. New section **"Third-party Python deps"** after "Third-party Rust deps", covering: muntjac non-vendored mode (wheels downloaded at build time, sources not committed); config `muntjac.toml` at repo root → `src/sdk/python/pyproject.toml` + `uv.lock`; workflow (edit pyproject → `buck2 run //tools:uv -- lock --project src/sdk/python` → `./tools/pybuckify.sh` → depend on `//third-party/python:<pkg>`); the `muntjac-check` prek hook; the scoped-`PACKAGE` cfg-modifier wiring (root PACKAGE registers the constructor; `third-party/python/PACKAGE` + `src/sdk/PACKAGE` set `MUNTJAC_HOST_MODIFIERS` + `py313`; new Python-target directories outside `src/sdk` need the same two-line PACKAGE); python 3.13-only matching the toolchain pin; manylinux 2_28 rationale (pyarrow); fixups `"none"` until needed.
 
-- [ ] **Step 5: Full-gate commit**
+- [ ] **Step 6: Full-gate commit**
 
 ```bash
-git add prek.toml tools/env.sh CLAUDE.md
+git add prek.toml tools/env.sh buildbuddy.yaml CLAUDE.md
 buck2 run //tools:prek -- run --all-files
-git commit -m "feat(python): muntjac-check prek hook, env.sh tools, CLAUDE.md docs"
+git commit -m "feat(python): muntjac-check prek hook, CI scope, env.sh tools, CLAUDE.md docs"
 ```
 
 ---
@@ -618,6 +643,7 @@ git commit -m "feat(python): muntjac-check prek hook, env.sh tools, CLAUDE.md do
 **Files:**
 - Modify: `/workspace/docs/ROADMAP.md` (remove the `road-python-build-infra` entry; `road-python-sdk-v1` stays)
 - Modify: `/workspace/docs/system-capabilities/build-and-test.md` (record the landed capability; drop the now-stale "promoted from fut-python-bindings" phrasing for the infra half)
+- Modify: `/workspace/docs/superpowers/specs/2026-07-21-python-build-infra-muntjac-design.md` (correct `manylinux = "2_17"` → `"2_28"` in component 3 — the spec predates the PyPI check; pyarrow cp313 linux-gnu wheels are manylinux_2_28-only, and a 2_28 platform still accepts pydantic-core's 2_17 wheels. Note the correction in the PR body.)
 
 **Interfaces:**
 - Consumes: everything above, complete and green.
@@ -638,11 +664,13 @@ Run `loom-complexity diff` and `loom-duplication diff` per their skills, compari
 - [ ] **Step 3: Final verification sweep**
 
 ```bash
-buck2 build -v0 --console none root//src/... root//third-party/python/...
+buck2 build -v0 -M none --console none root//src/... root//third-party/python/...
 buck2 test --console none root//src/...
 buck2 run //tools:prek -- run --all-files
 bash tools/docs.sh validate
 ```
+
+(`-M none` — verification needs exit status, not materialized artifacts; a whole-tree build without it is ~29 GiB and ENOSPCs cloud sessions, per CLAUDE.md's disk-cap warning. Scope the test run to touched targets if in a cloud session.)
 
 All green. Lease-check, then push:
 
