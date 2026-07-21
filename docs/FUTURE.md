@@ -278,6 +278,14 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
   `#road-config-seam-unification` loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
 
+## build
+
+- [ ] **muntjac `--frozen` staleness error / check mode** `{#fut-muntjac-frozen-staleness-check area:build status:deferred from:2026-07-21-python-build-infra-muntjac-design pr:- spec:-}`
+  Probed while building `#road-python-build-infra`: muntjac's staleness gate for its own (non-frozen) re-lock is a raw mtime comparison between `pyproject.toml` and `uv.lock`, and `--frozen` mode (what `pybuckify.sh --frozen`/the `muntjac-check` hook use, to stay network-free against arbitrary CI checkout mtimes) skips that check entirely rather than erroring — so a `pyproject.toml` edit committed without a matching `uv lock` silently passes the hook and CI. The right fix is upstream in weave-hand/muntjac: either make `--frozen` fail when the manifest's declared dependency set doesn't match what's recorded in the lock (content comparison, not mtime), or add a separate `--check` mode the hook can run that does that comparison without invoking a re-lock. Until then, lock freshness against manifest edits relies on review + the SDK's own CI re-resolving on a real `uv lock`.
+
+- [ ] **Machine-independent shebang for inplace pars (prelude fix)** `{#fut-python-par-local-shebang area:build status:deferred from:2026-07-21-python-build-infra-muntjac-design pr:- spec:-}`
+  `make_py_package_inplace.py` absolutizes the hermetic interpreter path against the par-build action's sandbox cwd, so a par built on RE cannot be exec'd locally (shebang points into `/buildbuddy-execroot`). loom pins python tests to the RE executor as the workaround (`RE_TEST_PROPS`). The real fix is upstream in the prelude bootstrap — e.g. an sh/python polyglot that resolves the interpreter relative to the par's own location — which would let python tests run on either executor; upstream deliberately made the path absolute ("inplace: make python interpreter absolute"), so this needs an upstream conversation or a carried patch.
+
 ## test
 
 - [ ] **Actual-binary subprocess smoke** `{#fut-binary-subprocess-smoke area:test status:deferred from:2026-06-23-e2e-http-client-design pr:- spec:-}`

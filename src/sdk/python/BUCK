@@ -1,0 +1,16 @@
+load("//platforms:defs.bzl", "RE_TEST_PROPS")
+
+python_test(
+    name = "imports",
+    srcs = ["tests/imports_test.py"],
+    # Pinned to the RE executor: the inplace par bakes the hermetic
+    # interpreter's absolute path from the (RE) par-build sandbox into its
+    # shebang, so a local run cannot exec it. See RE_TEST_PROPS in
+    # platforms/defs.bzl and fut-python-par-local-shebang.
+    remote_execution = RE_TEST_PROPS,
+    deps = [
+        "//third-party/python:httpx",
+        "//third-party/python:pyarrow",
+        "//third-party/python:pydantic",
+    ],
+)

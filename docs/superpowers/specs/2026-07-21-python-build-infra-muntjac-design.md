@@ -50,8 +50,10 @@ Operator decisions taken in the design session:
    `third_party_dir = "third-party/python"`,
    `python_versions = ["3.13"]` (matching `CPYTHON_VERSION = "3.13.6"` in
    `toolchains/BUCK` — single-version policy, like the single Rust nightly), platforms
-   `linux-x86_64-gnu` + `linux-aarch64-gnu` with `manylinux = "2_17"` (matching
-   `platforms/BUCK`; no macOS, same as the Rust toolchain). Fixups registry: `"none"`
+   `linux-x86_64-gnu` + `linux-aarch64-gnu` with `manylinux = "2_28"` (pyarrow's cp313
+   linux-gnu wheels are `manylinux_2_28`-only, and a 2_28 platform still accepts the
+   older-tag `2_17` wheels other deps, e.g. pydantic-core, publish; no macOS, same as
+   the Rust toolchain). Fixups registry: `"none"`
    initially; in-tree `third-party/python/fixups/` if a wheel needs one.
 4. **`tools/pybuckify.sh`** — the `buckify.sh` analog: activates the hermetic env, runs
    `uv lock` → `muntjac vendor` → `muntjac buckify` via the vendored binaries. The only

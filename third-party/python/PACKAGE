@@ -1,0 +1,10 @@
+load("@prelude//cfg/modifier/set_cfg_modifiers.bzl", "set_cfg_modifiers")
+load("//third-party/python:wiring.bzl", "MUNTJAC_HOST_MODIFIERS")
+
+# Muntjac platform selection (host os/cpu → //third-party/python/config:* platform
+# constraint) + the single pinned python version. Scoped here and in src/sdk/PACKAGE
+# — deliberately NOT the root PACKAGE, so Rust target configurations are untouched.
+# The cfg constructor these modifiers need is registered in the root PACKAGE.
+set_cfg_modifiers(cfg_modifiers = MUNTJAC_HOST_MODIFIERS + [
+    "root//third-party/python/config:py313",
+])

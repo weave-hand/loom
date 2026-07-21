@@ -34,7 +34,7 @@ actions:
     steps:
       - run: ./tools/ci/buildbuddy-setup.sh
       # -M none: validate the build on RE without downloading final artifacts.
-      - run: buck2 build -M none //src/...
+      - run: buck2 build -M none //src/... //third-party/python/...
       # Builds run on RE. Test-RUN actions default to the LOCAL executor (buck2/tpx),
       # so the postgres/duckdb fixtures only run as the runner user unless routed to RE
       # — green today only because the runner is non-root. --unstable-allow-all-tests-on-re
