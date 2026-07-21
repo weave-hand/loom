@@ -22,8 +22,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{
-    ActionKind, ControlPlane, ControlPlaneError, Cursor, DatasetRef, GC_JOB_KIND, LinkDef, NewJob,
-    PageReq, RunId, TableRef, TypeName,
+    ActionKind, ControlPlane, ControlPlaneError, Cursor, DatasetRef, DerivedPropertyDef,
+    GC_JOB_KIND, LinkDef, NewJob, PageReq, RunId, TableRef, TypeName, VectorIndexDef,
 };
 use lineage_naming::LineageNaming;
 use service_runtime::Subject;
@@ -196,6 +196,35 @@ fn link_view_json(l: &LinkDef) -> serde_json::Value {
     v
 }
 
+/// Render one `DerivedPropertyDef` as its documentation shape:
+/// `{ name, ty, link, agg, description? }`. `agg` is the externally-tagged serde form
+/// (`"Count"` or `{"Sum":"col"}`); `description` is present only when set.
+fn derived_view_json(d: &DerivedPropertyDef) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "name": d.name,
+        "ty": d.ty,
+        "link": d.link,
+        "agg": d.agg,
+    });
+    set_description(&mut v, d.description.as_ref());
+    v
+}
+
+/// Render one `VectorIndexDef` as its documentation shape:
+/// `{ name, property, metric, spec, description? }`. `type_name` is omitted (redundant on
+/// the type's own detail). `metric`/`spec` carry their serde forms (`"Cosine"`/`"L2"`;
+/// `"Flat"`/`{"IvfFlat":..}`/`{"Hnsw":..}`); `description` is present only when set.
+fn vector_index_view_json(idx: &VectorIndexDef) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "name": idx.name,
+        "property": idx.property,
+        "metric": idx.metric,
+        "spec": idx.spec,
+    });
+    set_description(&mut v, idx.description.as_ref());
+    v
+}
+
 /// Per-type ontology detail: properties, identity, backing table, and link adjacency.
 ///
 /// Reports the declared properties (with required flags), identity, backing table, and
@@ -231,6 +260,12 @@ async fn get_ontology_type(
         Ok(page) => page.items,
         Err(e) => return cp_read_error("ontology links_to fault", e),
     };
+    let mut indexes = match onto.vector_indexes_for(&type_name).await {
+        Ok(v) => v,
+        Err(e) => return cp_read_error("ontology vector_indexes_for fault", e),
+    };
+    // vector_indexes_for's order is unspecified; sort by name for a stable read surface.
+    indexes.sort_by(|a, b| a.name.cmp(&b.name));
     let properties: Vec<serde_json::Value> = ty
         .properties
         .iter()
@@ -245,6 +280,8 @@ async fn get_ontology_type(
         "table": { "schema": ty.table.schema, "name": ty.table.name },
         "identity": ty.identity,
         "properties": properties,
+        "derived": ty.derived.iter().map(derived_view_json).collect::<Vec<_>>(),
+        "vector_indexes": indexes.iter().map(vector_index_view_json).collect::<Vec<_>>(),
         "links": links.iter().map(link_view_json).collect::<Vec<_>>(),
         "links_to": links_to.iter().map(link_view_json).collect::<Vec<_>>(),
     });
