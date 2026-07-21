@@ -314,7 +314,7 @@ on `GET /ontology/types/{name}` (type, properties, links) and in the generated
 OpenAPI document (type schema, property schemas, action and link operations) — a
 described `long` property combines its prose with the wire-encoding note it
 already carried. Derived-property and vector-index descriptions persist but have
-no read surface yet (`#fut-ontology-derived-index-read-surface`).
+no read surface yet (`#road-ontology-derived-index-read-surface`).
 
 Actions are the governed write path. Part 1 delivered named `ActionDef`s invoked
 via `POST /actions/{name}` — the first live `Action::Write` enforcement — as an
@@ -617,7 +617,7 @@ lives entirely in the service layer.
 - `#fut-compaction-incremental` — incremental (append-delta) compaction output
 - `#fut-compaction-auto-trigger` — automatic compaction triggering
 - `#fut-fgac-subject-attribute` — fine-grained subject-attribute access control
-- `#fut-ontology-derived-index-read-surface` — surface derived-property and vector-index descriptions on reads
+- `#road-ontology-derived-index-read-surface` — surface derived-property and vector-index descriptions on reads
 - `#fut-cow-inline-shadow` — remaining scalable-COW slices (tombstone-aware consolidation)
 - `#fut-cow-file-granular` — file-granular copy-on-write
 - `#fut-cow-identity-change` — identity-change / upsert mutations

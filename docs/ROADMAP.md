@@ -12,6 +12,9 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## ontology
 
+- [ ] **Surface derived-property and vector-index descriptions on the read path** `{#road-ontology-derived-index-read-surface area:ontology status:planned from:2026-07-16-ontology-semantic-descriptions-design pr:- spec:2026-07-21-ontology-derived-index-read-surface-design}`
+  Promoted from `#fut-ontology-derived-index-read-surface`. `road-ontology-semantic-descriptions` (shipped, #451) left `DerivedPropertyDef.description` and `VectorIndexDef.description` write-only — settable via `POST /admin/models`, invisible on every read surface. The spec commits the full surface: `GET /ontology/types/{name}` gains `derived[]` and `vector_indexes[]` arrays (with descriptions, documented in `TypeDetailResponse`), and the per-type OpenAPI **read** component schemas additionally declare derived properties as `readOnly` — fixing the standing docs inaccuracy where object-read rows carry derived columns the generated document never mentions. No control-plane or wire changes: every read op used (`get_type`'s `derived`, `vector_indexes_for`) already exists on both the direct and wire control planes.
+
 ## acl
 
 - [ ] **Comprehensive auth capability — build-vs-adopt a fuller identity layer** `{#road-auth-comprehensive area:acl status:planned from:2026-06-23-auth-password-session-design pr:- spec:2026-07-01-auth-comprehensive-adopt-design}`
@@ -22,6 +25,9 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 ## transform
 
 ## iceberg
+
+- [ ] **Carry `GcSummary.held_by_mv_floor` on the `GcTable` RPC and into worker logs** `{#road-gc-hold-count-on-wire area:iceberg status:planned from:2026-07-12-mv-watermark-aware-gc-design pr:- spec:2026-07-21-gc-hold-count-on-wire-design}`
+  Promoted from `#fut-gc-hold-count-on-wire`. `gc_table` computes the candidates the MV read-position floor withheld, but the engine drops the count when building the three-field `GcTableResponse`, the wire client returns a bare 3-tuple, and the worker discards even that (`handle_gc`'s `.map(|_| ())`) — so "GC reclaimed nothing" is indistinguishable from "GC was blocked by a wedged MV / ghost watermark / pre-declaration hold ([[iss-mv-floor-holds-pre-declaration-files]])" anywhere outside the engine's own `tracing::warn!`. The spec commits: a fourth proto field (`held_by_mv_floor`), a named `GcCounts` struct on the engine-wire client, and worker logging of all four counts (warn when held > 0). Laggard-MV identity strings stay engine-log-only; query-api's fire-and-forget 202 is out of scope.
 
 ## deploy
 
