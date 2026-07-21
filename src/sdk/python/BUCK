@@ -14,3 +14,31 @@ python_test(
         "//third-party/python:pydantic",
     ],
 )
+
+python_library(
+    name = "loom-sdk",
+    # base_module = "" places `loom_sdk/` at the link-tree root, so it's
+    # importable as top-level `loom_sdk` (matching the published package
+    # layout) rather than nested under this BUCK file's package path.
+    base_module = "",
+    srcs = glob(["loom_sdk/**/*.py"], exclude = ["loom_sdk/pydantic/**"]),
+    visibility = ["PUBLIC"],
+    deps = [
+        "//third-party/python:httpx",
+        "//third-party/python:pyarrow",
+    ],
+)
+
+python_test(
+    name = "units",
+    srcs = glob(
+        ["tests/*_test.py"],
+        exclude = [
+            "tests/imports_test.py",  # the infra acceptance test — its own :imports target
+            "tests/pydantic_*_test.py",  # :units-pydantic (Task 5; needs the pydantic dep)
+            "tests/e2e_*_test.py",  # :e2e (Task 7; needs the fixture env)
+        ],
+    ),
+    remote_execution = RE_TEST_PROPS,
+    deps = [":loom-sdk"],
+)
