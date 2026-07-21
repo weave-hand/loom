@@ -1,0 +1,9 @@
+python_test(
+    name = "imports",
+    srcs = ["tests/imports_test.py"],
+    deps = [
+        "//third-party/python:httpx",
+        "//third-party/python:pyarrow",
+        "//third-party/python:pydantic",
+    ],
+)
