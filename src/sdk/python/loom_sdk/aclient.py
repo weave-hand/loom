@@ -12,18 +12,28 @@ from ._arrow import to_ipc
 from ._core import (
     PreparedRequest,
     build_headers,
+    get_dataset_request,
     land_dataset_request,
     land_model_request,
+    list_datasets_request,
     login_request,
+    ontology_type_request,
+    ontology_types_request,
+    parse_dataset_detail,
+    parse_dataset_list,
     parse_land_ack,
     parse_login,
     parse_model_ack,
+    parse_ontology_types,
+    parse_preview,
+    parse_type_detail,
+    preview_dataset_request,
     resolve_base,
 )
 from .errors import raise_for_response
 
 if TYPE_CHECKING:
-    from .models import LandAck, ModelLandAck
+    from .models import DatasetDetail, DatasetEntry, LandAck, ModelLandAck, Preview, TypeDetail
 
 
 class _AsyncDatasetsNamespace:
@@ -56,6 +66,51 @@ class _AsyncDatasetsNamespace:
         )
         response = await self._client._send(prep)
         return parse_land_ack(response.content)
+
+    async def list(self) -> list[DatasetEntry]:
+        """List all datasets visible to the caller (`GET /datasets`)."""
+        response = await self._client._send(list_datasets_request())
+        return parse_dataset_list(response.content)
+
+    async def get(
+        self,
+        schema: str,
+        table: str,
+        *,
+        as_of: str | None = None,
+        as_of_snapshot: int | None = None,
+    ) -> DatasetDetail:
+        """Fetch dataset metadata (`GET /datasets/{schema}/{table}`).
+
+        `as_of` and `as_of_snapshot` are mutually exclusive; passing both
+        raises `ValueError` before any request is sent.
+        """
+        prep = get_dataset_request(schema, table, as_of=as_of, as_of_snapshot=as_of_snapshot)
+        response = await self._client._send(prep)
+        return parse_dataset_detail(response.content)
+
+    async def preview(self, schema: str, table: str, *, limit: int | None = None) -> Preview:
+        """Fetch a display-string preview (`GET /datasets/{schema}/{table}/preview`)."""
+        prep = preview_dataset_request(schema, table, limit=limit)
+        response = await self._client._send(prep)
+        return parse_preview(response.content)
+
+
+class _AsyncOntologyNamespace:
+    """`client.ontology` — the ontology-type read surface."""
+
+    def __init__(self, client: AsyncClient) -> None:
+        self._client = client
+
+    async def types(self) -> list[str]:
+        """List all ontology type names (`GET /ontology/types`)."""
+        response = await self._client._send(ontology_types_request())
+        return parse_ontology_types(response.content)
+
+    async def type(self, name: str) -> TypeDetail:
+        """Fetch one ontology type's detail (`GET /ontology/types/{name}`)."""
+        response = await self._client._send(ontology_type_request(name))
+        return parse_type_detail(response.content)
 
 
 class _AsyncModelsNamespace:
@@ -110,6 +165,7 @@ class AsyncClient:
         self._http = httpx.AsyncClient(timeout=timeout)
         self.datasets = _AsyncDatasetsNamespace(self)
         self.models = _AsyncModelsNamespace(self)
+        self.ontology = _AsyncOntologyNamespace(self)
 
     async def login(self, username: str, password: str) -> Self:
         """Authenticate and store the returned bearer token on this client."""

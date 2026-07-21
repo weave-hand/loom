@@ -10,7 +10,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from .models import LandAck, ModelLandAck
+from .models import (
+    ColumnView,
+    DatasetDetail,
+    DatasetEntry,
+    LandAck,
+    LinkView,
+    ModelLandAck,
+    Preview,
+    PropertyView,
+    TableRef,
+    TypeDetail,
+)
 
 
 @dataclass
@@ -151,3 +162,173 @@ def parse_model_ack(body: bytes) -> ModelLandAck:
     """Parse a `POST /models/{type}` 200 response body (wire key is `type`)."""
     data = json.loads(body)
     return ModelLandAck(snapshot_id=int(data["snapshot_id"]), type_name=str(data["type"]))
+
+
+def ontology_types_request() -> PreparedRequest:
+    """Build `GET /ontology/types` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path="/ontology/types",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def parse_ontology_types(body: bytes) -> list[str]:
+    """Parse a `GET /ontology/types` 200 response body."""
+    data = json.loads(body)
+    return [str(name) for name in data["types"]]
+
+
+def ontology_type_request(name: str) -> PreparedRequest:
+    """Build `GET /ontology/types/{name}` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/ontology/types/{name}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def _parse_table_ref(data: dict) -> TableRef:
+    return TableRef(schema=str(data["schema"]), name=str(data["name"]))
+
+
+def _parse_property_view(data: dict) -> PropertyView:
+    return PropertyView(
+        name=str(data["name"]),
+        ty=str(data["ty"]),
+        required=bool(data["required"]),
+        description=data.get("description"),
+    )
+
+
+def _parse_link_view(data: dict) -> LinkView:
+    return LinkView(
+        name=str(data["name"]),
+        from_type=str(data["from"]),
+        to_type=str(data["to"]),
+        cardinality=str(data["cardinality"]).lower(),
+        description=data.get("description"),
+    )
+
+
+def parse_type_detail(body: bytes) -> TypeDetail:
+    """Parse a `GET /ontology/types/{name}` 200 response body.
+
+    `from`/`to` JSON keys on each link map to `from_type`/`to_type`;
+    `cardinality` is normalized to lowercase.
+    """
+    data = json.loads(body)
+    return TypeDetail(
+        name=str(data["name"]),
+        table=_parse_table_ref(data["table"]),
+        identity=data.get("identity"),
+        properties=[_parse_property_view(p) for p in data["properties"]],
+        links=[_parse_link_view(link) for link in data["links"]],
+        links_to=[_parse_link_view(link) for link in data["links_to"]],
+        description=data.get("description"),
+    )
+
+
+def list_datasets_request() -> PreparedRequest:
+    """Build `GET /datasets` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path="/datasets",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def parse_dataset_list(body: bytes) -> list[DatasetEntry]:
+    """Parse a `GET /datasets` 200 response body."""
+    data = json.loads(body)
+    return [
+        DatasetEntry(
+            schema=str(entry["schema"]),
+            name=str(entry["name"]),
+            project=str(entry["project"]),
+            updated=str(entry["updated"]),
+            kind=str(entry["kind"]),
+            base=entry.get("base"),
+        )
+        for entry in data["datasets"]
+    ]
+
+
+def get_dataset_request(
+    schema: str,
+    table: str,
+    *,
+    as_of: str | None = None,
+    as_of_snapshot: int | None = None,
+) -> PreparedRequest:
+    """Build `GET /datasets/{schema}/{table}` (routed to the query service).
+
+    `as_of` (an RFC3339 timestamp) and `as_of_snapshot` (a snapshot id) are
+    mutually exclusive: passing both raises `ValueError` before any request
+    is built.
+    """
+    if as_of is not None and as_of_snapshot is not None:
+        raise ValueError("as_of and as_of_snapshot are mutually exclusive")
+    params: dict[str, str] = {}
+    if as_of is not None:
+        params["as_of"] = as_of
+    if as_of_snapshot is not None:
+        params["as_of_snapshot"] = str(as_of_snapshot)
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/datasets/{schema}/{table}",
+        params=params,
+        headers={},
+        content=None,
+    )
+
+
+def parse_dataset_detail(body: bytes) -> DatasetDetail:
+    """Parse a `GET /datasets/{schema}/{table}` 200 response body."""
+    data = json.loads(body)
+    return DatasetDetail(
+        table=_parse_table_ref(data["table"]),
+        snapshot_id=int(data["snapshot_id"]),
+        snapshot_time=str(data["snapshot_time"]),
+        columns=[
+            ColumnView(name=str(c["name"]), ty=str(c["ty"]), nullable=bool(c["nullable"]))
+            for c in data["columns"]
+        ],
+        kind=str(data["kind"]),
+        base=data.get("base"),
+    )
+
+
+def preview_dataset_request(schema: str, table: str, *, limit: int | None = None) -> PreparedRequest:
+    """Build `GET /datasets/{schema}/{table}/preview` (routed to the query service)."""
+    params: dict[str, str] = {}
+    if limit is not None:
+        params["limit"] = str(limit)
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/datasets/{schema}/{table}/preview",
+        params=params,
+        headers={},
+        content=None,
+    )
+
+
+def parse_preview(body: bytes) -> Preview:
+    """Parse a `GET /datasets/{schema}/{table}/preview` 200 response body."""
+    data = json.loads(body)
+    return Preview(
+        columns=[str(c) for c in data["columns"]],
+        rows=[[str(cell) for cell in row] for row in data["rows"]],
+        sampled=bool(data["sampled"]),
+    )
