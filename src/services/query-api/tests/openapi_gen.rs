@@ -575,3 +575,21 @@ async fn full_catalog_is_generated() {
     assert!(j["paths"]["/objects/Customer"].is_object());
     assert!(j["paths"]["/objects/Order"].is_object());
 }
+
+#[test]
+fn type_detail_response_documents_derived_and_vector_indexes() {
+    let doc = query_api::openapi::build_openapi();
+    let j = serde_json::to_value(&doc).unwrap();
+    let td = &j["components"]["schemas"]["TypeDetailResponse"]["properties"];
+    assert!(
+        td["derived"].is_object(),
+        "TypeDetailResponse must document `derived`: {td}"
+    );
+    assert!(
+        td["vector_indexes"].is_object(),
+        "TypeDetailResponse must document `vector_indexes`: {td}"
+    );
+    // Both reference their view component schemas.
+    assert!(j["components"]["schemas"]["DerivedPropertyView"].is_object());
+    assert!(j["components"]["schemas"]["VectorIndexView"].is_object());
+}
