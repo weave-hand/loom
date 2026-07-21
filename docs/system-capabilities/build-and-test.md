@@ -77,7 +77,12 @@ so Rust target configurations stay untouched. An acceptance `//src/sdk/python:im
 on RE, proving the generated tree actually resolves and builds; the `build-test`
 action's CI build scope was extended to `//third-party/python/...` alongside
 `//src/...` (the `affected` action needs no such change — it scopes to impacted
-`//src/...` targets and third-party deps come along transitively).
+`//src/...` targets and third-party deps come along transitively). That test is
+pinned to the RE executor (`remote_execution = RE_TEST_PROPS` from
+`//platforms:defs.bzl`), since the prelude's inplace-par bootstrap bakes the
+hermetic interpreter's absolute path from the par-build action's (RE) sandbox
+into the generated entrypoint's shebang, which only resolves when the test
+itself also runs on RE — see `fut-python-par-local-shebang`.
 
 ## Test infrastructure
 

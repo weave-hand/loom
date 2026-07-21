@@ -105,6 +105,7 @@ Notes:
 - **Python 3.13-only**, matching `CPYTHON_VERSION` in `toolchains/BUCK` (3.13.6) — `muntjac.toml`'s `python_versions = ["3.13"]` is the only entry; there is no multi-version matrix.
 - **`manylinux = "2_28"`** on both platforms (not the older `2_17`/`2_14` tags): pyarrow's cp313 wheels ship `manylinux_2_28`-only, and 2_28 still accepts the older-tag wheels other deps (e.g. pydantic-core) publish, so it's the strictest tag that covers the whole set. Linux-only, like the Rust toolchain.
 - **`[fixups] registry = "none"`** — no fixups directory configured yet; add one the day a wheel needs a build-time override (the muntjac analog of `third-party/fixups/<crate>/fixups.toml`).
+- **`python_test` targets must set `remote_execution = RE_TEST_PROPS`** (from `//platforms:defs.bzl`): the prelude's inplace-par bootstrap bakes the hermetic CPython interpreter's absolute path — as recorded from the (RE) par-build action's sandbox — into the generated entrypoint's shebang, so a locally-executed test can't exec it (`/usr/bin/env: ... No such file or directory`). Pinning the test's own execution to RE is the workaround; escape hatch for RE-less environments is `-c fbcode.disable_re_tests=True` (the test then fails at exec regardless, so in practice python tests require RE until `fut-python-par-local-shebang` lands upstream).
 
 ## Compile-time SQL (postgres adapter)
 
