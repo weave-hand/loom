@@ -246,7 +246,9 @@ all held to the same route-set drift guards (#346).
   public) generated OpenAPI catalog.
 - `#fut-ingest-ontology-openapi` — ontology-derived land operations in ingest's
   OpenAPI document.
-- `#fut-python-bindings` — Python bindings for loom.
+- `#road-python-build-infra` / `#road-python-sdk-v1` — Python build machinery
+  (muntjac + vendored uv) and the `loom-sdk` client (promoted from the former
+  `#fut-python-bindings`).
 - `#fut-codehealth-reflect` — a routine mining remediation-PR outcomes and
   register trends for higher-level patterns.
 - `#fut-stpa-vendored-jq` — migrate `loom-stpa` onto the vendored `//tools:jq`.
