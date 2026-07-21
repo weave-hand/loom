@@ -59,6 +59,26 @@ pinned browser against the freshly built image, so an incomplete library closure
 can never reach the pin (spec:
 `2026-07-02-ui-e2e-hermetic-rbe-image-design.md`).
 
+loom also has hermetic **Python dependency machinery**, the Python analog of the
+reindeer flow above: `//tools:muntjac` (weave-hand/muntjac, its first production
+use) and `//tools:uv` are vendored prebuilt binaries, and root `muntjac.toml`
+drives `uv.lock` → buck2-rule generation for `src/sdk/python/pyproject.toml` into
+a generated `third-party/python/` tree (python 3.13 only, matching the hermetic
+CPython; linux x86_64+aarch64, `manylinux_2_28` on both platforms since pyarrow's
+cp313 wheels are 2_28-only and 2_28 still accepts other deps' older-tag wheels).
+`tools/pybuckify.sh` is the `buckify.sh` analog (`uv lock` → `muntjac vendor` →
+`muntjac buckify`, `--frozen` for the network-free CI/hook form), and the prek
+`muntjac-check` hook mirrors `reindeer-check` — it re-runs `pybuckify.sh --frozen`
+and fails on drift between the manifests and the generated tree. Python target
+configuration is wired through scoped `PACKAGE` cfg modifiers
+(`third-party/python/PACKAGE`, `src/sdk/PACKAGE`) rather than the root `PACKAGE`,
+so Rust target configurations stay untouched. An acceptance `//src/sdk/python:imports`
+`python_test` imports `httpx`/`pyarrow`/`pydantic` from `//third-party/python:*`
+on RE, proving the generated tree actually resolves and builds; the `build-test`
+action's CI build scope was extended to `//third-party/python/...` alongside
+`//src/...` (the `affected` action needs no such change — it scopes to impacted
+`//src/...` targets and third-party deps come along transitively).
+
 ## Test infrastructure
 
 Tests are `rust_test` integration targets only — buck2 never runs inline
@@ -246,9 +266,9 @@ all held to the same route-set drift guards (#346).
   public) generated OpenAPI catalog.
 - `#fut-ingest-ontology-openapi` — ontology-derived land operations in ingest's
   OpenAPI document.
-- `#road-python-build-infra` / `#road-python-sdk-v1` — Python build machinery
-  (muntjac + vendored uv) and the `loom-sdk` client (promoted from the former
-  `#fut-python-bindings`).
+- `#road-python-sdk-v1` — the `loom-sdk` Python client (promoted from the former
+  `#fut-python-bindings`), built on the muntjac/uv Python build machinery landed
+  above.
 - `#fut-codehealth-reflect` — a routine mining remediation-PR outcomes and
   register trends for higher-level patterns.
 - `#fut-stpa-vendored-jq` — migrate `loom-stpa` onto the vendored `//tools:jq`.

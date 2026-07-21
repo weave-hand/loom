@@ -278,6 +278,11 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
   `#road-config-seam-unification` loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
 
+## build
+
+- [ ] **muntjac `--frozen` staleness error / check mode** `{#fut-muntjac-frozen-staleness-check area:build status:deferred from:2026-07-21-python-build-infra-muntjac-design pr:- spec:-}`
+  Probed while building `#road-python-build-infra`: muntjac's staleness gate for its own (non-frozen) re-lock is a raw mtime comparison between `pyproject.toml` and `uv.lock`, and `--frozen` mode (what `pybuckify.sh --frozen`/the `muntjac-check` hook use, to stay network-free against arbitrary CI checkout mtimes) skips that check entirely rather than erroring — so a `pyproject.toml` edit committed without a matching `uv lock` silently passes the hook and CI. The right fix is upstream in weave-hand/muntjac: either make `--frozen` fail when the manifest's declared dependency set doesn't match what's recorded in the lock (content comparison, not mtime), or add a separate `--check` mode the hook can run that does that comparison without invoking a re-lock. Until then, lock freshness against manifest edits relies on review + the SDK's own CI re-resolving on a real `uv lock`.
+
 ## test
 
 - [ ] **Actual-binary subprocess smoke** `{#fut-binary-subprocess-smoke area:test status:deferred from:2026-06-23-e2e-http-client-design pr:- spec:-}`
