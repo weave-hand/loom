@@ -14,7 +14,8 @@ only places sync/async duplication is allowed. Each shell:
 3. accumulates the `ApplyReport`/`ModelLandAck` fields.
 
 See `client._OntologyNamespace.apply` / `client._ModelsNamespace.land_instances`
-for the ~15-line loop each shell drives this with.
+for the short orchestration loop each shell drives this with (the loop is
+duplicated sync/async by design and kept line-identical across the two shells).
 """
 
 from __future__ import annotations

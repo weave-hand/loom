@@ -15,8 +15,9 @@ _As of b27064f7._
 `Client`/`AsyncClient` are thin `httpx` transport shells over one shared
 sans-IO core (`_core.py` builds `PreparedRequest`s and parses responses;
 `_arrow.py` encodes/decodes Arrow IPC; `errors.py` maps HTTP responses to
-exceptions) — no logic is duplicated between the sync and async shells, only
-the transport call itself. loom is two services: ingest owns writes
+exceptions) — request-building and parsing live once in the core; the shells
+duplicate only thin, mechanically-identical delegation methods (including the
+`apply` orchestration loop, kept line-identical across the two files). loom is two services: ingest owns writes
 (`datasets.land`, `models.land`), everything else — verification reads and the
 `/admin/*` ontology-definition surface — is served by **query-api**, not
 ingest (`service_runtime::admin_routes` is merged into query-api's router, not

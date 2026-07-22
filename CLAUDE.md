@@ -122,7 +122,7 @@ co-deployed host. `pydantic` is an optional extra (`loom-sdk[pydantic]`,
 buck target `:loom-sdk-pydantic`): `LoomModel` classes whose annotations declare
 ontology properties/links (`Identity[T]`, `Link[Other]`), an idempotent
 bootstrap-aware `client.ontology.apply(*models)`, and `client.models.land_instances(...)`.
-Run its tests with `buck2 test //src/sdk/python:units :units-pydantic :e2e`
+Run its tests with `buck2 test //src/sdk/python:units //src/sdk/python:units-pydantic //src/sdk/python:e2e`
 (all three are RE-pinned — see the inplace-par shebang footgun above — so a
 bare local `buck2 test` on them fails to exec; RE is required). See
 `docs/system-capabilities/python-sdk.md` for the capability writeup.

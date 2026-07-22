@@ -1,7 +1,7 @@
-"""Wire DTOs for loom_sdk's write acknowledgements.
+"""Wire DTOs for loom_sdk: write acknowledgements, read views, and reports.
 
 Plain dataclasses, no pydantic (the pydantic-based ontology layer is a
-separate opt-in module). Extended by later tasks (e.g. object-write acks).
+separate opt-in module).
 """
 
 from __future__ import annotations
