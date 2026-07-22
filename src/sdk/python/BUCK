@@ -66,3 +66,43 @@ python_test(
         ":loom-sdk-pydantic",
     ],
 )
+
+# `//src/sdk/PACKAGE` applies the Python cfg modifiers to this whole package, so a
+# bare `$(location //src/services/standalone:loom)` from `:e2e`'s `env` would
+# reconfigure (and rebuild) the whole Rust tree under that cfg hash. Pin the
+# referenced binary explicitly to `prelude//platforms:default` — the actual
+# default TARGET platform every `root//...` target (including this one) resolves
+# to per `.buckconfig`'s `target_platform_detector_spec` (NOT `root//platforms:
+# default`, which `.buckconfig`'s `execution_platforms` uses for the separate
+# execution-platform axis) — so this alias reproduces exactly the configuration a
+# plain `buck2 build //src/services/standalone:loom` already uses, verified via
+# `buck2 cquery //src/services/standalone:loom` matching `buck2 cquery
+# "deps(//src/sdk/python:e2e, 1)"`'s entry for it. In-tree precedent for the
+# alias mechanism (not this platform choice, which is wasm there):
+# `src/ui/e2e/BUCK`'s `:bundle-wasm`.
+configured_alias(
+    name = "standalone-bin",
+    actual = "//src/services/standalone:loom",
+    platform = "prelude//platforms:default",
+)
+
+# E2E smoke test: boots the real `loom` composite (embedded Postgres, engine +
+# ingest + query-api + worker) as a subprocess and drives it entirely over HTTP
+# from `loom_sdk.AsyncClient`. Env mirrors the `loom_fixture_test` fixture wiring
+# (src/control-plane/postgres/defs.bzl) — copied literally, not reinvented —
+# plus `STANDALONE_BIN` via the pinned alias above.
+python_test(
+    name = "e2e",
+    srcs = ["tests/e2e_smoke_test.py"],
+    env = {
+        "STANDALONE_BIN": "$(location :standalone-bin)",
+        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
+        "LOOM_PG_FIXTURE_SLOT_DIR": "/tmp/loom-pg-fixture-slots",
+    },
+    remote_execution = RE_TEST_PROPS,
+    deps = [
+        ":loom-sdk",
+        ":loom-sdk-pydantic",
+    ],
+)
