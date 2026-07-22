@@ -779,18 +779,168 @@ async fn list_vector_indexes_route(
     }
 }
 
+/// Typed OpenAPI request-body mirrors for the two `/admin/*` routes whose handlers take
+/// a raw `Json<serde_json::Value>` and deserialize into `control_plane_core::LinkDef` /
+/// `ActionDef` internally (issue #365 — utoipa otherwise documents an empty `{}` body).
+/// These twins exist ONLY to shape the generated schema; they are never constructed (the
+/// handlers still parse the raw JSON), so their fields are deliberately unread. They MUST
+/// track the core types' serde shapes.
+#[allow(
+    dead_code,
+    reason = "OpenAPI schema mirrors for #365 — fields shape the generated docs only; the handlers deserialize raw serde_json::Value, so nothing reads these"
+)]
+mod openapi_bodies {
+    use super::TableReq;
+
+    /// Mirror of `control_plane_core::LinkDef`.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) struct DefineLinkReq {
+        /// Link name (unique per `from` type).
+        pub name: String,
+        /// The link's source type.
+        pub from: String,
+        /// The link's destination type.
+        pub to: String,
+        pub cardinality: CardinalityReq,
+        pub backing: LinkBackingReq,
+        #[serde(default)]
+        pub description: Option<String>,
+    }
+
+    /// Mirror of `Cardinality` — externally-tagged unit variants (`"One"` / `"Many"`).
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) enum CardinalityReq {
+        One,
+        Many,
+    }
+
+    /// Mirror of `LinkBacking` — externally-tagged struct variants.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) enum LinkBackingReq {
+        /// Direct equijoin `from.from_column = to.to_column`.
+        ForeignKey {
+            from_column: String,
+            to_column: String,
+        },
+        /// Many-to-many through a mapping table.
+        JoinTable {
+            table: TableReq,
+            from_key: String,
+            from_column: String,
+            to_column: String,
+            to_key: String,
+        },
+    }
+
+    /// Mirror of `control_plane_core::ActionDef`, which serializes through an untagged
+    /// `Flat`-or-`Stepped` bridge: a single-step action uses the flat legacy shape, a
+    /// multi-step action the explicit `steps` array.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    #[serde(untagged)]
+    pub(super) enum DefineActionReq {
+        /// Flat single-step action (the common shape).
+        Flat {
+            name: String,
+            target: String,
+            #[serde(default)]
+            kind: ActionKindReq,
+            #[serde(default)]
+            parameters: Vec<ParamReq>,
+            #[serde(default)]
+            assignments: Vec<AssignmentReq>,
+            #[serde(default)]
+            downstream: Vec<JobTemplateReq>,
+            #[serde(default)]
+            description: Option<String>,
+        },
+        /// Multi-step action: an ordered list of single-target steps committed atomically.
+        Stepped {
+            name: String,
+            steps: Vec<ActionStepReq>,
+            #[serde(default)]
+            downstream: Vec<JobTemplateReq>,
+            #[serde(default)]
+            description: Option<String>,
+        },
+    }
+
+    /// Mirror of `ActionKind` — `#[serde(rename_all = "lowercase")]`, default `insert`.
+    #[derive(serde::Deserialize, utoipa::ToSchema, Default)]
+    #[serde(rename_all = "lowercase")]
+    pub(super) enum ActionKindReq {
+        #[default]
+        Insert,
+        Update,
+        Delete,
+    }
+
+    /// Mirror of `ActionStep`.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) struct ActionStepReq {
+        /// The step's target type.
+        pub target: String,
+        pub kind: ActionKindReq,
+        #[serde(default)]
+        pub parameters: Vec<ParamReq>,
+        #[serde(default)]
+        pub assignments: Vec<AssignmentReq>,
+        /// Names this step's row for cross-step `@bind.prop` references.
+        #[serde(default)]
+        pub bind: Option<String>,
+    }
+
+    /// Mirror of `ParamDef`.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) struct ParamReq {
+        pub name: String,
+        /// The parameter's logical type (the ontology vocabulary).
+        pub ty: String,
+        pub required: bool,
+        /// The property this parameter writes; `None` ⇒ the property named `name`.
+        #[serde(default)]
+        pub binds: Option<String>,
+        #[serde(default)]
+        pub description: Option<String>,
+    }
+
+    /// Mirror of `Assignment`.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) struct AssignmentReq {
+        pub property: String,
+        pub source: AssignmentSourceReq,
+    }
+
+    /// Mirror of `AssignmentSource` — externally-tagged.
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) enum AssignmentSourceReq {
+        /// A fixed constant (any JSON scalar), coerced to the property's logical type.
+        Const(serde_json::Value),
+        /// A bounded expression over the action's params / earlier-resolved properties.
+        Expr(String),
+        /// A reference to an earlier step's resolved property (`@bind.prop`).
+        StepRef { bind: String, prop: String },
+    }
+
+    /// Mirror of `JobTemplate` (a downstream job enqueued atomically with the write).
+    #[derive(serde::Deserialize, utoipa::ToSchema)]
+    pub(super) struct JobTemplateReq {
+        pub kind: String,
+        #[serde(default)]
+        pub payload: serde_json::Value,
+    }
+}
+
+use openapi_bodies::{
+    ActionKindReq, ActionStepReq, AssignmentReq, AssignmentSourceReq, CardinalityReq,
+    DefineActionReq, DefineLinkReq, JobTemplateReq, LinkBackingReq, ParamReq,
+};
+
 /// Define an ontology link between two existing types.
 ///
-/// The body is a `LinkDef` in its serde shape (documented on the request body below).
+/// The body is a `LinkDef` in its serde shape (mirrored by [`DefineLinkReq`] for the docs).
 #[utoipa::path(
     post, path = "/admin/links",
-    request_body(
-        content = serde_json::Value,
-        description = "A `LinkDef` in its serde shape: `{\"name\", \"from\", \"to\", \
-            \"cardinality\": \"One\"|\"Many\", \"backing\": {\"ForeignKey\": {\"from_column\", \
-            \"to_column\"}} | {\"JoinTable\": {\"table\": {\"schema\", \"name\"}, \"from_key\", \
-            \"from_column\", \"to_column\", \"to_key\"}}}`",
-    ),
+    request_body = DefineLinkReq,
     responses(
         (status = 201, description = "Link defined"),
         (status = 400, description = "Body does not decode as a LinkDef, or validation failed"),
@@ -853,16 +1003,11 @@ async fn delete_link_route(
 
 /// Define an ontology action.
 ///
-/// The body is an `ActionDef` in its serde shape (documented on the request body below).
+/// The body is an `ActionDef` in its serde shape (mirrored by [`DefineActionReq`] for the
+/// docs): a flat single-step action, or a stepped action with an explicit `steps` array.
 #[utoipa::path(
     post, path = "/admin/actions",
-    request_body(
-        content = serde_json::Value,
-        description = "An `ActionDef` in its serde shape: flat single-step \
-            `{\"name\", \"target\", \"kind\"?, \"parameters\"?, \"assignments\"?}` or stepped \
-            `{\"name\", \"steps\": [{\"target\", \"kind\", \"parameters\", \"assignments\", \
-            \"bind\"?}]}`",
-    ),
+    request_body = DefineActionReq,
     responses(
         (status = 201, description = "Action defined"),
         (status = 400, description = "Body does not decode as an ActionDef, or validation \
@@ -2005,7 +2150,17 @@ pub fn admin_routes(admin: AdminState, auth: AuthState) -> Router {
         JobScheduleReq,
         JobScheduleView,
         ListSchedulesResp,
-        DefineViewReq
+        DefineViewReq,
+        DefineLinkReq,
+        CardinalityReq,
+        LinkBackingReq,
+        DefineActionReq,
+        ActionKindReq,
+        ActionStepReq,
+        ParamReq,
+        AssignmentReq,
+        AssignmentSourceReq,
+        JobTemplateReq
     ))
 )]
 struct AdminApiDoc;

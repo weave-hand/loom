@@ -232,6 +232,7 @@ async fn failed_write_commits_neither_row_nor_lineage() {
             &["id".to_string()],
             &[query_api::serving::SqlValue::Text("not-a-long".into())],
             &["Long".to_string()],
+            &[false],
             event,
             &[],
         )

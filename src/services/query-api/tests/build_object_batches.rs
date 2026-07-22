@@ -11,14 +11,22 @@ fn builds_two_rows() {
         vec![SqlValue::Text("a".into()), SqlValue::Int(1)],
         vec![SqlValue::Text("b".into()), SqlValue::Int(2)],
     ];
-    let (_schema, batch, specs) = build_object_batches(&cols, &rows, &types).unwrap();
+    // sku non-nullable (e.g. an identity), qty nullable — the per-column flags are honored.
+    let (schema, batch, specs) =
+        build_object_batches(&cols, &rows, &types, &[false, true]).unwrap();
     assert_eq!(batch.num_rows(), 2);
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(specs.len(), 2);
+    assert!(
+        !schema.field(0).is_nullable(),
+        "sku field non-nullable (#359)"
+    );
+    assert!(schema.field(1).is_nullable(), "qty field nullable");
+    assert!(!specs[0].nullable && specs[1].nullable);
 }
 
 #[test]
 fn rejects_empty_rows() {
-    let err = build_object_batches(&["sku".into()], &[], &["String".into()]);
+    let err = build_object_batches(&["sku".into()], &[], &["String".into()], &[true]);
     assert!(err.is_err());
 }

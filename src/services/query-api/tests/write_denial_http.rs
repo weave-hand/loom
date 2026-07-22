@@ -50,6 +50,7 @@ impl ActionEngine for OkEngine {
         _columns: &[String],
         _values: &[SqlValue],
         _logical_types: &[String],
+        _nullable: &[bool],
         _event: control_plane_core::LineageEvent,
         _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
@@ -62,6 +63,7 @@ impl ActionEngine for OkEngine {
         _columns: &[String],
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
+        _nullable: &[bool],
         _event: control_plane_core::LineageEvent,
         _jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {

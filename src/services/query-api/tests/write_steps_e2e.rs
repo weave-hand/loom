@@ -110,6 +110,7 @@ async fn write_steps_lands_two_targets_and_one_lineage_atomically() {
             columns: vec!["id".into(), "label".into()],
             rows: vec![vec![SqlValue::Int(1), SqlValue::Text("a1".into())]],
             logical_types: vec!["Long".into(), "String".into()],
+            nullable: vec![false, true],
             mode: WriteMode::Append,
         },
         StepWrite {
@@ -120,6 +121,7 @@ async fn write_steps_lands_two_targets_and_one_lineage_atomically() {
                 vec![SqlValue::Int(11), SqlValue::Text("b11".into())],
             ],
             logical_types: vec!["Long".into(), "String".into()],
+            nullable: vec![false, true],
             mode: WriteMode::Append,
         },
     ];

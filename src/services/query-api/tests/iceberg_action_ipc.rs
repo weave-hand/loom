@@ -13,6 +13,7 @@ fn batch_encodes_to_ipc_and_round_trips() {
         &["id".into(), "name".into()],
         &[SqlValue::Int(42), SqlValue::Text("gadget".into())],
         &["Long".into(), "String".into()],
+        &[false, true],
     )
     .expect("batch");
     // ColumnSpec.ty is the loom logical canonical name (what land() consumes).

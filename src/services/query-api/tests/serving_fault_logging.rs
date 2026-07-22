@@ -45,6 +45,7 @@ impl ActionEngine for NullAction {
         _columns: &[String],
         _values: &[SqlValue],
         _logical_types: &[String],
+        _nullable: &[bool],
         _event: control_plane_core::LineageEvent,
         _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {
@@ -57,6 +58,7 @@ impl ActionEngine for NullAction {
         _columns: &[String],
         _rows: &[Vec<SqlValue>],
         _logical_types: &[String],
+        _nullable: &[bool],
         _event: control_plane_core::LineageEvent,
         _jobs: &[control_plane_core::NewJob],
     ) -> Result<SnapshotId, ServingError> {

@@ -69,6 +69,10 @@ pub struct StepWrite {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<SqlValue>>,
     pub logical_types: Vec<String>,
+    /// Per-column stored nullability (aligned with `columns`): `!(required || identity)`.
+    /// MUST match the target table's schema or the engine's schema-evolution guard rejects
+    /// the write ("nullability changed", issue #359). See `action::column_nullability`.
+    pub nullable: Vec<bool>,
     pub mode: WriteMode,
 }
 
@@ -112,38 +116,50 @@ pub struct ChangeFeedPolicy {
 }
 
 /// Build a one-row Arrow `RecordBatch` + `Schema` + loom `ColumnSpec` list from an
-/// aligned `(columns, values, logical_types)` triple. Each logical type resolves
+/// aligned `(columns, values, logical_types, nullable)` tuple. Each logical type resolves
 /// (via `resolve_logical`) to a `BaseType` that fixes BOTH the Arrow `DataType` and
-/// the loom logical `ColumnSpec.ty` (its canonical name). Every field is nullable —
-/// an action write passes `SqlValue::Null` for any property it does not set. A length
-/// mismatch, an empty input, an unknown logical type, or a value whose variant does
-/// not match its column's base type is a `ServingError::Engine`.
+/// the loom logical `ColumnSpec.ty` (its canonical name). `nullable[i]` sets column `i`'s
+/// Arrow field + `ColumnSpec` nullability — it MUST match the stored table's per-column
+/// nullability, or the engine's positional schema-evolution guard rejects the write
+/// (`schema evolution unsupported: column ... nullability changed`, issue #359). An
+/// append into an EXISTING table has to declare a required column non-nullable even
+/// though the caller may pass `SqlValue::Null` for optional properties it did not set.
+/// A length mismatch, an empty input, an unknown logical type, or a value whose variant
+/// does not match its column's base type is a `ServingError::Engine`.
 pub fn build_object_batch(
     columns: &[String],
     values: &[SqlValue],
     logical_types: &[String],
+    nullable: &[bool],
 ) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
-    if columns.is_empty() || columns.len() != values.len() || columns.len() != logical_types.len() {
+    if columns.is_empty()
+        || columns.len() != values.len()
+        || columns.len() != logical_types.len()
+        || columns.len() != nullable.len()
+    {
         return Err(ServingError::Engine(format!(
-            "build_object_batch: {} columns / {} values / {} types (need >= 1, equal counts)",
+            "build_object_batch: {} columns / {} values / {} types / {} nullable (need >= 1, equal counts)",
             columns.len(),
             values.len(),
-            logical_types.len()
+            logical_types.len(),
+            nullable.len()
         )));
     }
     let mut fields: Vec<Field> = Vec::with_capacity(columns.len());
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(columns.len());
     let mut specs: Vec<ColumnSpec> = Vec::with_capacity(columns.len());
-    for ((name, value), logical) in columns.iter().zip(values).zip(logical_types) {
+    for (((name, value), logical), &null_ok) in
+        columns.iter().zip(values).zip(logical_types).zip(nullable)
+    {
         let base = resolve_logical(logical)
             .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
         let (dt, array) = one_cell(base, value, name)?;
-        fields.push(Field::new(name, dt, true));
+        fields.push(Field::new(name, dt, null_ok));
         arrays.push(array);
         specs.push(ColumnSpec {
             name: name.clone(),
             ty: base.canonical_name(),
-            nullable: true,
+            nullable: null_ok,
         });
     }
     let schema = Arc::new(Schema::new(fields));
@@ -154,19 +170,26 @@ pub fn build_object_batch(
 
 /// Build a single multi-row `RecordBatch` (+ schema + `ColumnSpec`s) from `rows`
 /// (row-major, each aligned to `columns`). Generalizes [`build_object_batch`] to N rows
-/// for the copy-on-write overwrite path. Every field is nullable. Rejects empty `rows`
-/// (the empty/truncate case is handled by the caller before this is reached) and any
+/// for the multi-step append and copy-on-write overwrite paths. `nullable[i]` sets column
+/// `i`'s nullability and MUST match the stored table schema (issue #359). Rejects empty
+/// `rows` (the empty/truncate case is handled by the caller before this is reached) and any
 /// shape mismatch or value/type mismatch (via `one_cell`).
 pub fn build_object_batches(
     columns: &[String],
     rows: &[Vec<SqlValue>],
     logical_types: &[String],
+    nullable: &[bool],
 ) -> Result<(Arc<Schema>, RecordBatch, Vec<ColumnSpec>), ServingError> {
-    if columns.is_empty() || columns.len() != logical_types.len() || rows.is_empty() {
+    if columns.is_empty()
+        || columns.len() != logical_types.len()
+        || columns.len() != nullable.len()
+        || rows.is_empty()
+    {
         return Err(ServingError::Engine(format!(
-            "build_object_batches: {} columns / {} types / {} rows (need >=1 col, >=1 row, equal col/type counts)",
+            "build_object_batches: {} columns / {} types / {} nullable / {} rows (need >=1 col, >=1 row, equal col/type/nullable counts)",
             columns.len(),
             logical_types.len(),
+            nullable.len(),
             rows.len()
         )));
     }
@@ -189,12 +212,13 @@ pub fn build_object_batches(
         let refs: Vec<&dyn arrow::array::Array> = cells.iter().map(|a| a.as_ref()).collect();
         let array = concat(&refs).map_err(|e| ServingError::Engine(e.to_string()))?;
         let dt = col_dt.ok_or_else(|| ServingError::Engine("no rows".into()))?;
-        fields.push(Field::new(name, dt, true));
+        let null_ok = nullable.get(ci).copied().unwrap_or(true);
+        fields.push(Field::new(name, dt, null_ok));
         arrays.push(array);
         specs.push(ColumnSpec {
             name: name.clone(),
             ty: base.canonical_name(),
-            nullable: true,
+            nullable: null_ok,
         });
     }
     let schema = Arc::new(Schema::new(fields));
@@ -390,12 +414,21 @@ pub struct BeforeImage<'a> {
 /// SnapshotId` contract.
 #[async_trait]
 pub trait ActionEngine: Send + Sync {
+    /// Append one row and commit `event` atomically. `nullable[i]` is column `i`'s
+    /// stored nullability (`!(required || identity)`); it MUST match the target table's
+    /// per-column nullability or the engine's schema-evolution guard rejects the append
+    /// (issue #359). Aligned positionally with `columns`/`values`/`logical_types`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the atomic write seam threads table + the aligned column/value/logical/nullable row + lineage + jobs; a params struct would only obscure the call site"
+    )]
     async fn write_object(
         &self,
         table: &control_plane_core::TableRef,
         columns: &[String],
         values: &[SqlValue],
         logical_types: &[String],
+        nullable: &[bool],
         event: control_plane_core::LineageEvent,
         jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
@@ -404,12 +437,17 @@ pub trait ActionEngine: Send + Sync {
     /// overwrite path for UPDATE/DELETE), committing `event` atomically with the new
     /// snapshot. `rows.is_empty()` truncates the table (delete-all). Both MVCC tiers
     /// (files + inline) are superseded; time travel is preserved.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the atomic overwrite seam threads table + the aligned column/rows/logical/nullable set + lineage + jobs; a params struct would only obscure the call site"
+    )]
     async fn overwrite_table(
         &self,
         table: &control_plane_core::TableRef,
         columns: &[String],
         rows: &[Vec<SqlValue>],
         logical_types: &[String],
+        nullable: &[bool],
         event: control_plane_core::LineageEvent,
         jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError>;
