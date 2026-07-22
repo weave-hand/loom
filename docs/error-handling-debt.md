@@ -3,8 +3,8 @@
 **Resolved on PR #200 (branch `clippy-strict-lints`).** Every site below now carries
 its source error, and all the tracked `#[expect(clippy::map_err_ignore)]` suppressions
 have been deleted — `clippy::map_err_ignore` is enforced tree-wide with **zero**
-production suppressions. This file is kept as the resolution log; see [`FUTURE.md`](FUTURE.md)
-`#fut-clippy-map-err-debt`.
+production suppressions. This file is kept as the resolution log; see the
+`idea`-labeled GitHub issue tracking `fut-clippy-map-err-debt`.
 
 `clippy::map_err_ignore` is **enforced**: discarding the source error in `map_err(|_| …)`
 loses debugging information. The adoption PR suppressed these with a tracked

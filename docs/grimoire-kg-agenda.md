@@ -5,10 +5,11 @@ _A biased wishlist, not the roadmap._
 This register is one downstream consumer's opinionated, prioritized list of what it
 wants from loom. It is deliberately **single-use-case and biased**: it reflects
 Joe's homelab (a D&D campaign manager "Grimoire" and a personal knowledge graph),
-not a survey of loom's users. Treat it as input to sequencing in
-[`ROADMAP.md`](ROADMAP.md) / [`FUTURE.md`](FUTURE.md), not as committed work. Where
-an ask already maps to a roadmap id, it is cited; net-new asks are flagged `new`
-and proposed for the registers.
+not a survey of loom's users. Treat it as input to sequencing in the GitHub
+issue tracker (`roadmap`-labeled issues) / (`idea`-labeled issues), not as
+committed work. Where an ask already maps to a roadmap issue, it is cited;
+net-new asks are flagged `new` and proposed to be filed as labeled GitHub
+issues.
 
 Full design rationale lives outside this repo (homelab
 `projects/grimoire/loom-mapping.md`).
@@ -135,7 +136,7 @@ not a requirement.
 
 **Nothing loom must build.** The use case is served by composing shipped
 primitives (see [The chosen model](#the-chosen-model)). Two optional, deferred
-items remain on the registers:
+items remain filed as labeled GitHub issues:
 
 - `fut-ingest-overwrite-endpoint` — first-class full-state replace check-in (nicety).
 - `fut-fgac-subject-attribute` — general fine-grained ACL, for a *future*

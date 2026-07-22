@@ -143,8 +143,9 @@ needed in `collect_vectors`", and the actual fix turned out to need a second cha
 it forces you to find that out; filing it does not.
 
 When you do fix a found defect, it rides the same rules as the item itself: a failing
-test first (watch it fail for the right reason), then the fix, then the register close
-if it had an entry — and the capability recorded in `docs/system-capabilities/`.
+test first (watch it fail for the right reason), then the fix, then close its issue
+if it had one (`Closes #N` in the PR body) — and the capability recorded in
+`docs/system-capabilities/`.
 
 | Rationalization | Reality |
 |---|---|
