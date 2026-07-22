@@ -195,6 +195,77 @@ class DefinitionTimeErrorsTest(unittest.TestCase):
             [("buyer", "buyer_id"), ("seller", "customer_id")],
         )
 
+    def test_optional_identity_raises_deliberate_error(self) -> None:
+        # Finding 1: `Identity[int] | None` must raise a deliberate, clearly
+        # worded error — the identity is always required — rather than fail
+        # incidentally (e.g. an "unmappable annotation" or a miscounted
+        # "found 0 Identity fields" error).
+        with self.assertRaisesRegex(TypeError, "identity property cannot be optional"):
+
+            class BadOptionalIdentity(LoomModel, table=("s", "t")):
+                id: Identity[int] | None = None
+
+    def test_forward_referenced_link_target_raises_ordering_error(self) -> None:
+        # Finding 2: a link to a not-yet-defined sibling class must raise a
+        # TypeError stating the actual constraint (declare-before-link
+        # ordering), not the misleading "unmappable annotation:
+        # ForwardRef(...)" that leaks out of `loom_type` today.
+        with self.assertRaisesRegex(TypeError, "fully-defined LoomModel classes declared before"):
+
+            class OrderForward(LoomModel, table=("s", "o")):
+                order_id: Identity[int]
+                customer: Link[CustomerDeclaredLater]
+
+            class CustomerDeclaredLater(LoomModel, table=("s", "c")):
+                customer_id: Identity[int]
+
+    def test_self_referential_link_raises_ordering_error(self) -> None:
+        # Finding 2: a self-referential link must raise a TypeError stating
+        # the actual constraint (self-reference unsupported in v1), not the
+        # misleading "has no loom identity" that leaks out today (the target
+        # resolves to the still-under-construction class itself).
+        with self.assertRaisesRegex(TypeError, "self-referential"):
+
+            class Node(LoomModel, table=("s", "n")):
+                node_id: Identity[int]
+                parent: Link[Node] | None = None
+
+    def test_fk_column_collision_with_plain_property_raises_naming_both_fields(self) -> None:
+        # Finding 3: an FK column silently colliding with a plain property
+        # of the same name must raise, naming both fields and suggesting the
+        # `Link[Target, "other_col"]` override.
+        with self.assertRaises(TypeError) as ctx:
+
+            class OrderWithCollidingColumn(LoomModel, table=("s", "o")):
+                order_id: Identity[int]
+                customer_id: int
+                customer: Link[Customer]
+
+        message = str(ctx.exception)
+        self.assertIn("customer_id", message)
+        self.assertIn("customer", message)
+        self.assertIn("other_column", message)
+
+
+class OptionalLinkTest(unittest.TestCase):
+    def test_optional_link_maps_to_nullable_fk_and_still_emits_link_spec(self) -> None:
+        # Finding 1: `Link[Customer] | None` (a nullable FK) must not raise
+        # "unmappable annotation" — it should map to the FK property with
+        # required=False, and the link spec must still be emitted.
+        class OrderMaybeCustomer(LoomModel, table=("s", "t")):
+            id: Identity[int]
+            customer: Link[Customer] | None = None
+
+        self.assertEqual(
+            OrderMaybeCustomer.__loom_properties__,
+            [("id", "long", True), ("customer_id", "long", False)],
+        )
+        self.assertEqual(len(OrderMaybeCustomer.__loom_links__), 1)
+        link = OrderMaybeCustomer.__loom_links__[0]
+        self.assertEqual(link.field, "customer")
+        self.assertIs(link.target, Customer)
+        self.assertEqual(link.fk_column, "customer_id")
+
 
 if __name__ == "__main__":
     unittest.main()
