@@ -12,9 +12,6 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## ontology
 
-- [ ] **Surface derived-property and vector-index descriptions on the read path** `{#road-ontology-derived-index-read-surface area:ontology status:planned from:2026-07-16-ontology-semantic-descriptions-design pr:- spec:2026-07-21-ontology-derived-index-read-surface-design}`
-  Promoted from `#fut-ontology-derived-index-read-surface`. `road-ontology-semantic-descriptions` (shipped, #451) left `DerivedPropertyDef.description` and `VectorIndexDef.description` write-only — settable via `POST /admin/models`, invisible on every read surface. The spec commits the full surface: `GET /ontology/types/{name}` gains `derived[]` and `vector_indexes[]` arrays (with descriptions, documented in `TypeDetailResponse`), and the per-type OpenAPI **read** component schemas additionally declare derived properties as `readOnly` — fixing the standing docs inaccuracy where object-read rows carry derived columns the generated document never mentions. No control-plane or wire changes: every read op used (`get_type`'s `derived`, `vector_indexes_for`) already exists on both the direct and wire control planes.
-
 ## acl
 
 - [ ] **Comprehensive auth capability — build-vs-adopt a fuller identity layer** `{#road-auth-comprehensive area:acl status:planned from:2026-06-23-auth-password-session-design pr:- spec:2026-07-01-auth-comprehensive-adopt-design}`

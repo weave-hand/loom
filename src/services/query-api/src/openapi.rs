@@ -134,6 +134,40 @@ pub struct LinkView {
     pub description: Option<String>,
 }
 
+/// Documentation shape for one derived (aggregate-over-link) property in a type-detail
+/// response. `agg` is the aggregation's serde form (`"Count"` or `{"Sum":"col"}`).
+#[derive(ToSchema)]
+pub struct DerivedPropertyView {
+    pub name: String,
+    /// The ontology's LOGICAL result type (e.g. `Long` for a count, `Double` for a sum).
+    pub ty: String,
+    /// The link whose target rows are aggregated.
+    pub link: String,
+    /// The aggregation, e.g. `"Count"` or `{"Sum":"amount"}`.
+    #[schema(value_type = Object)]
+    pub agg: serde_json::Value,
+    /// Optional human-readable prose. Omitted from the response when the entity carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Documentation shape for one declared vector index in a type-detail response. The owning
+/// `type_name` is omitted (redundant on the type's own detail).
+#[derive(ToSchema)]
+pub struct VectorIndexView {
+    pub name: String,
+    /// The `vector(N)` property the index is built over.
+    pub property: String,
+    /// Distance metric: `"Cosine"` | `"L2"`.
+    pub metric: String,
+    /// Index spec: `"Flat"` | `{"IvfFlat":{..}}` | `{"Hnsw":{..}}`.
+    #[schema(value_type = Object)]
+    pub spec: serde_json::Value,
+    /// Optional human-readable prose. Omitted from the response when the entity carries none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// Documentation shape for the `GET /ontology/types/{name}` type-detail response.
 #[derive(ToSchema)]
 pub struct TypeDetailResponse {
@@ -144,6 +178,10 @@ pub struct TypeDetailResponse {
     pub identity: Option<String>,
     /// The declared properties, in order.
     pub properties: Vec<PropertyView>,
+    /// Derived (aggregate-over-link) properties, in declared order.
+    pub derived: Vec<DerivedPropertyView>,
+    /// Declared vector indexes, name-ordered.
+    pub vector_indexes: Vec<VectorIndexView>,
     /// Outbound links (`from` = this type).
     pub links: Vec<LinkView>,
     /// Inbound links (`to` = this type).
@@ -254,6 +292,8 @@ pub struct DatasetPreviewResponse {
         OntologyTypesResponse,
         TableRefView,
         PropertyView,
+        DerivedPropertyView,
+        VectorIndexView,
         LinkView,
         TypeDetailResponse,
         DatasetsResponse,

@@ -140,6 +140,18 @@ fn json_response(schema: RefOr<Schema>, description: &str) -> utoipa::openapi::R
         .build()
 }
 
+/// Mark a property schema `readOnly` — derived/computed columns are served on reads but are
+/// never writable. Non-object schemas (none arise for derived scalar aggregates) pass through.
+fn read_only_derived(schema: RefOr<Schema>) -> RefOr<Schema> {
+    match schema {
+        RefOr::T(Schema::Object(mut obj)) => {
+            obj.read_only = Some(true);
+            RefOr::T(Schema::Object(obj))
+        }
+        other => other,
+    }
+}
+
 /// The component (read) schema for a type: properties by codec, identity `required`.
 fn type_component_schema(ty: &ObjectType) -> RefOr<Schema> {
     let mut b = ObjectBuilder::new().schema_type(SchemaType::Type(Type::Object));
@@ -150,6 +162,15 @@ fn type_component_schema(ty: &ObjectType) -> RefOr<Schema> {
         b = b.property(
             p.name.clone(),
             property_schema(&p.ty, p.required, p.description.as_deref()),
+        );
+    }
+    // Derived (aggregate-over-link) properties are computed, served on reads, and never
+    // writable — declare them readOnly so the read document matches object-read rows while
+    // the write/action schemas (built from action params) never gain them.
+    for d in &ty.derived {
+        b = b.property(
+            d.name.clone(),
+            read_only_derived(property_schema(&d.ty, false, d.description.as_deref())),
         );
     }
     if let Some(id) = &ty.identity {

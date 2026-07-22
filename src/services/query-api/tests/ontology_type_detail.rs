@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Cardinality, LinkDef, ObjectType, Ontology, PropertyDef, SubjectId, TableRef,
+    Aggregation, Cardinality, DerivedPropertyDef, IndexSpec, LinkDef, Metric, ObjectType, Ontology,
+    PropertyDef, SubjectId, TableRef, VectorIndexDef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -85,7 +86,18 @@ async fn seeded_described() -> MemoryControlPlane {
                     .described("The document id."),
             )
             .prop("body", "String")
+            .add_prop(PropertyDef::new("embedding", "vector(4)"))
             .identity("id")
+            .derived(
+                DerivedPropertyDef::new("child_count", "Long", "parent", Aggregation::Count)
+                    .described("Number of child documents."),
+            )
+            .derived(DerivedPropertyDef::new(
+                "weight_sum",
+                "Double",
+                "parent",
+                Aggregation::Sum("weight".into()),
+            ))
             .done(),
     )
     .await
@@ -94,6 +106,24 @@ async fn seeded_described() -> MemoryControlPlane {
         LinkDef::fk("parent", "Doc", "Doc", Cardinality::One, "parent_id", "id")
             .described("The parent document."),
     )
+    .await
+    .unwrap();
+    cp.define_vector_index(
+        VectorIndexDef::new("flat", "Doc", "embedding", Metric::Cosine, IndexSpec::Flat)
+            .described("Exact cosine index over the embedding."),
+    )
+    .await
+    .unwrap();
+    cp.define_vector_index(VectorIndexDef::new(
+        "hnsw",
+        "Doc",
+        "embedding",
+        Metric::L2,
+        IndexSpec::Hnsw {
+            m: Some(16),
+            ef_construction: Some(200),
+        },
+    ))
     .await
     .unwrap();
     cp
@@ -178,6 +208,8 @@ async fn type_detail_serves_properties_identity_and_links() {
         ])
     );
     assert_eq!(json["links_to"], serde_json::json!([]));
+    assert_eq!(json["derived"], serde_json::json!([]));
+    assert_eq!(json["vector_indexes"], serde_json::json!([]));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -222,4 +254,50 @@ async fn type_detail_omits_absent_descriptions() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["properties"][1]["name"], "body");
     assert!(json["properties"][1].get("description").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_serves_derived_and_vector_indexes() {
+    let app = app(seeded_described().await);
+    let (status, json) = get(&app, "/ontology/types/Doc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json["derived"],
+        serde_json::json!([
+            {
+                "name": "child_count", "ty": "Long", "link": "parent",
+                "agg": "Count", "description": "Number of child documents."
+            },
+            {
+                "name": "weight_sum", "ty": "Double", "link": "parent",
+                "agg": { "Sum": "weight" }
+            },
+        ])
+    );
+    // vector_indexes_for's order is unspecified (HashMap-backed in memory); the handler
+    // sorts by name, so "flat" precedes "hnsw" deterministically.
+    assert_eq!(
+        json["vector_indexes"],
+        serde_json::json!([
+            {
+                "name": "flat", "property": "embedding", "metric": "Cosine",
+                "spec": "Flat", "description": "Exact cosine index over the embedding."
+            },
+            {
+                "name": "hnsw", "property": "embedding", "metric": "L2",
+                "spec": { "Hnsw": { "m": 16, "ef_construction": 200 } }
+            },
+        ])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_detail_omits_absent_derived_and_index_descriptions() {
+    let app = app(seeded_described().await);
+    let (_, json) = get(&app, "/ontology/types/Doc").await;
+    // The undescribed derived property + index carry no `description` key.
+    assert_eq!(json["derived"][1]["name"], "weight_sum");
+    assert!(json["derived"][1].get("description").is_none());
+    assert_eq!(json["vector_indexes"][1]["name"], "hnsw");
+    assert!(json["vector_indexes"][1].get("description").is_none());
 }
