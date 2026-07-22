@@ -35,7 +35,4 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## devx
 
-- [ ] **Python SDK v1 (`loom-sdk`) — ingest + pydantic ontology** `{#road-python-sdk-v1 area:devx status:planned from:fut-python-bindings pr:- spec:2026-07-21-python-sdk-v1-design}`
-  Promoted from `#fut-python-bindings`; depends on the muntjac build machinery (landed via this PR). A hand-written Python SDK at `src/sdk/python/` (distribution `loom-sdk`, import `loom_sdk`): sync `Client` + `AsyncClient` with identical surfaces over a shared sans-IO core (httpx shells; pyarrow encodes Arrow IPC), covering the write path — `datasets.land`/`models.land`, `admin.define_model`/`define_link`, and the verification reads — with a typed error hierarchy (incl. `ConformanceError` carrying the ingest 422 violations). pydantic ships as an optional extra: `LoomModel` classes whose annotations map to ontology properties (`Identity[T]`, `Link[Other]`), an idempotent bootstrap-aware `ontology.apply` (zero-row land materializes the backing table before `define_model`), and `land_instances`. Tested by mocked-transport `python_test` units plus one e2e smoke booting ingest+engine+query-api on the hermetic fixture.
-
 ## cross-cutting
