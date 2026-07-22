@@ -14,3 +14,95 @@ python_test(
         "//third-party/python:pydantic",
     ],
 )
+
+python_library(
+    name = "loom-sdk",
+    # base_module = "" places `loom_sdk/` at the link-tree root, so it's
+    # importable as top-level `loom_sdk` (matching the published package
+    # layout) rather than nested under this BUCK file's package path.
+    base_module = "",
+    srcs = glob(["loom_sdk/**/*.py"], exclude = ["loom_sdk/pydantic/**"]),
+    visibility = ["PUBLIC"],
+    deps = [
+        "//third-party/python:httpx",
+        "//third-party/python:pyarrow",
+    ],
+)
+
+python_test(
+    name = "units",
+    srcs = glob(
+        ["tests/*_test.py"],
+        exclude = [
+            "tests/imports_test.py",  # the infra acceptance test — its own :imports target
+            "tests/pydantic_*_test.py",  # :units-pydantic (Task 5; needs the pydantic dep)
+            "tests/e2e_*_test.py",  # :e2e (Task 7; needs the fixture env)
+        ],
+    ),
+    remote_execution = RE_TEST_PROPS,
+    deps = [":loom-sdk"],
+)
+
+python_library(
+    name = "loom-sdk-pydantic",
+    base_module = "",
+    srcs = glob(["loom_sdk/pydantic/**/*.py"]),
+    visibility = ["PUBLIC"],
+    deps = [
+        ":loom-sdk",
+        "//third-party/python:pydantic",
+    ],
+)
+
+python_test(
+    name = "units-pydantic",
+    srcs = [
+        "tests/pydantic_apply_test.py",
+        "tests/pydantic_mapping_test.py",
+    ],
+    remote_execution = RE_TEST_PROPS,
+    deps = [
+        ":loom-sdk",
+        ":loom-sdk-pydantic",
+    ],
+)
+
+# `//src/sdk/PACKAGE` applies the Python cfg modifiers to this whole package, so a
+# bare `$(location //src/services/standalone:loom)` from `:e2e`'s `env` would
+# reconfigure (and rebuild) the whole Rust tree under that cfg hash. Pin the
+# referenced binary explicitly to `prelude//platforms:default` — the actual
+# default TARGET platform every `root//...` target (including this one) resolves
+# to per `.buckconfig`'s `target_platform_detector_spec` (NOT `root//platforms:
+# default`, which `.buckconfig`'s `execution_platforms` uses for the separate
+# execution-platform axis) — so this alias reproduces exactly the configuration a
+# plain `buck2 build //src/services/standalone:loom` already uses, verified via
+# `buck2 cquery //src/services/standalone:loom` matching `buck2 cquery
+# "deps(//src/sdk/python:e2e, 1)"`'s entry for it. In-tree precedent for the
+# alias mechanism (not this platform choice, which is wasm there):
+# `src/ui/e2e/BUCK`'s `:bundle-wasm`.
+configured_alias(
+    name = "standalone-bin",
+    actual = "//src/services/standalone:loom",
+    platform = "prelude//platforms:default",
+)
+
+# E2E smoke test: boots the real `loom` composite (embedded Postgres, engine +
+# ingest + query-api + worker) as a subprocess and drives it entirely over HTTP
+# from `loom_sdk.AsyncClient`. Env mirrors the `loom_fixture_test` fixture wiring
+# (src/control-plane/postgres/defs.bzl) — copied literally, not reinvented —
+# plus `STANDALONE_BIN` via the pinned alias above.
+python_test(
+    name = "e2e",
+    srcs = ["tests/e2e_smoke_test.py"],
+    env = {
+        "STANDALONE_BIN": "$(location :standalone-bin)",
+        "POSTGRES_BIN_DIR": "$(location //src/control-plane/postgres:postgres-bin)/bin",
+        "POSTGRES_LD_LIBRARY_PATH": "$(location //src/control-plane/postgres:postgres-bin)/lib:$(location //src/control-plane/postgres:libxml2)",
+        "LOOM_PG_FIXTURE_SLOT_DIR": "/tmp/loom-pg-fixture-slots",
+    },
+    remote_execution = RE_TEST_PROPS,
+    deps = [
+        ":loom-sdk",
+        ":loom-sdk-pydantic",
+    ],
+)

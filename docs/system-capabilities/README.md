@@ -20,5 +20,6 @@ against.
 | [stream.md](stream.md) | Log tables and PK/CDC tables, framing/bucketing/offsets, CDC emission, dual base+changelog Iceberg tables, LastRow compaction, CDC-aware serving reads |
 | [vector-search.md](vector-search.md) | `vector(N)` column type, index definitions, Flat/IVF/HNSW builds, `/search`, rebuild triggers |
 | [build-and-test.md](build-and-test.md) | Hermetic buck2 builds + RE, test infrastructure, lint gates, CI, code-health and docs-register tooling |
+| [python-sdk.md](python-sdk.md) | `loom_sdk` (`src/sdk/python/`): sync/async clients over a sans-IO core, the two-URL model, the pydantic ontology-declaration layer, the RE-pinned test estate incl. the real-composite e2e smoke |
 | [ui.md](ui.md) | The Yew/WASM UI experiment and its browser e2e harness |
 | [../deploy.md](../deploy.md) | Images, Helm chart, standalone binary, embedded Postgres (capabilities merged into the existing deploy doc) |

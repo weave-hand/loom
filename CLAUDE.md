@@ -106,6 +106,26 @@ Notes:
 - **`manylinux = "2_28"`** on both platforms (not the older `2_17`/`2_14` tags): pyarrow's cp313 wheels ship `manylinux_2_28`-only, and 2_28 still accepts the older-tag wheels other deps (e.g. pydantic-core) publish, so it's the strictest tag that covers the whole set. Linux-only, like the Rust toolchain.
 - **`[fixups] registry = "none"`** — no fixups directory configured yet; add one the day a wheel needs a build-time override (the muntjac analog of `third-party/fixups/<crate>/fixups.toml`).
 - **`python_test` targets must set `remote_execution = RE_TEST_PROPS`** (from `//platforms:defs.bzl`): the prelude's inplace-par bootstrap bakes the hermetic CPython interpreter's absolute path — as recorded from the (RE) par-build action's sandbox — into the generated entrypoint's shebang, so a locally-executed test can't exec it (`/usr/bin/env: ... No such file or directory`). Pinning the test's own execution to RE is the workaround; escape hatch for RE-less environments is `-c fbcode.disable_re_tests=True` (the test then fails at exec regardless, so in practice python tests require RE until `fut-python-par-local-shebang` lands upstream).
+- **muntjac ≥ v0.2.2 required.** v0.2.1's buckify silently dropped `[project.optional-dependencies]` subtrees (13→8 rules, no diagnostic) — found dogfooding the `loom-sdk` pydantic extra. Fixed upstream on `weave-hand/muntjac`; `MUNTJAC_VERSION` in `tools/BUCK` is pinned to `v0.2.2`, which walks extras too (plus a debug log and a regression fixture). Don't pin muntjac below this.
+
+## `loom-sdk` (Python SDK)
+
+`src/sdk/python/` ships `loom_sdk` (distribution `loom-sdk`, import `loom_sdk`): a
+hand-written sync `Client` + `AsyncClient`, identical surfaces over a shared
+sans-IO core (`_core.py`/`_arrow.py`/`errors.py`), covering loom's write path
+(Arrow-IPC `datasets.land`/`models.land`), the admin ontology surface
+(`admin.define_model`/`define_link`, which is served by **query-api**, not
+ingest), and verification reads (`ontology.types`/`.type`, `datasets.list`/`.get`/
+`.preview`). **Two-URL model:** ingest writes route to `ingest_url`, everything
+else (reads + `/admin/*`) to `query_url`; a single `url` sets both for a
+co-deployed host. `pydantic` is an optional extra (`loom-sdk[pydantic]`,
+buck target `:loom-sdk-pydantic`): `LoomModel` classes whose annotations declare
+ontology properties/links (`Identity[T]`, `Link[Other]`), an idempotent
+bootstrap-aware `client.ontology.apply(*models)`, and `client.models.land_instances(...)`.
+Run its tests with `buck2 test //src/sdk/python:units //src/sdk/python:units-pydantic //src/sdk/python:e2e`
+(all three are RE-pinned — see the inplace-par shebang footgun above — so a
+bare local `buck2 test` on them fails to exec; RE is required). See
+`docs/system-capabilities/python-sdk.md` for the capability writeup.
 
 ## Compile-time SQL (postgres adapter)
 

@@ -85,6 +85,10 @@ source = { virtual = "." }
 dependencies = [
     { name = "httpx" },
     { name = "pyarrow" },
+]
+
+[package.optional-dependencies]
+pydantic = [
     { name = "pydantic" },
 ]
 
@@ -92,8 +96,9 @@ dependencies = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pyarrow", specifier = ">=25" },
-    { name = "pydantic", specifier = ">=2.11" },
+    { name = "pydantic", marker = "extra == 'pydantic'", specifier = ">=2.11" },
 ]
+provides-extras = ["pydantic"]
 
 [[package]]
 name = "pyarrow"
