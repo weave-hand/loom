@@ -91,11 +91,14 @@ run; pin the resulting **index digest** in `platforms/defs.bzl`.
 - arm64 (multi-arch base image temporarily pinned for the test): `//src/testing:emit-seed` builds
   end-to-end on RE to a native `aarch64` glibc ELF (Layers 1–5 all exercised).
 
-## Remaining human step (gated, not blocking the code)
-- **Republish the RBE image multi-arch** via `workflow_dispatch` on `rbe-image.yml` (now buildx
-  amd64+arm64), then repin the resulting **index digest** in `platforms/defs.bzl` (`_RBE_IMAGE`).
-  Until then the arm64 path uses the amd64-only digest; the *code* is complete and proven (the
-  proof above pinned the multi-arch base to stand in for the not-yet-republished image).
+## Multi-arch RBE image — DONE
+`rbe-image.yml` republished `loom-rbe-browser` as a multi-arch index
+(`sha256:8fe89f64…`, linux/amd64 + linux/arm64), now pinned in `platforms/defs.bzl` (`_RBE_IMAGE`).
+End-to-end proof against the **real** image: `//src/services/ingest:ingest-bin` built
+`--target-platforms=linux-aarch64` is a native aarch64 ELF (`ld-linux-aarch64.so.1`); the amd64
+build is unaffected. (Publishing needed an org `GHCR_PAT` with `write:packages` — the package
+predated the repo so the `GITHUB_TOKEN` lacked write; the login step prefers `GHCR_PAT` and falls
+back to `GITHUB_TOKEN`.)
 
 ## Follow-up (out of scope)
 - The `apko.yaml`s still say `archs: [x86_64]`; extending them to `[x86_64, aarch64]` + folding
