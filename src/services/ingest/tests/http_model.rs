@@ -402,6 +402,26 @@ async fn grant_write_absent_type(
     .expect("seed grant on absent type");
 }
 
+/// Grant a subject Write on a TABLE target through the PUBLIC ACL API — the #361
+/// pre-authorization path. Unlike `grant_write_absent_type` (which bypasses the API with
+/// raw SQL because the type does not exist), a `PolicyTarget::Table` grant is
+/// existence-unchecked, so `main.<type>` can be granted before the type is inferred.
+async fn grant_write_table(pg: &PgControlPlane, subject: &str, table: TableRef) {
+    let subj = SubjectId(subject.into());
+    let role = RoleId(format!("{subject}-role"));
+    pg.define_subject(&subj).await.unwrap();
+    pg.define_role(&role).await.unwrap();
+    pg.assign_role(&subj, &role).await.unwrap();
+    pg.grant(
+        &role,
+        Action::Write,
+        PolicyTarget::Table(table),
+        Effect::Allow,
+    )
+    .await
+    .expect("grant table target");
+}
+
 /// Like `post_model` but appends a raw query string (e.g. "identity=id").
 async fn post_model_q(
     app: Router,
@@ -488,6 +508,89 @@ async fn infer_and_create_lands_and_records_the_type() {
     .expect("serving read");
     let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
     assert_eq!(total, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn conventional_table_grant_authorizes_absent_type_land() {
+    let fx = PgFixture::shared();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, pool, _wh, state) = app_state(fx, &db).await;
+    // #361: "widget" does not exist and bob holds NO type grant — only a Write grant on
+    // the conventional landing table main.widget, granted through the PUBLIC ACL API.
+    // This alone must authorize the infer-and-create land (the deadlock #361 describes:
+    // a type cannot be granted before it exists, but the landing table can).
+    grant_write_table(
+        &pg,
+        "bob",
+        TableRef {
+            schema: "main".into(),
+            name: "widget".into(),
+        },
+    )
+    .await;
+    let token = session_token(&pg, "bob").await;
+
+    let app = protected(state, pg.clone());
+    let (status, json) = post_model_q(app, "widget", "", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a conventional main.<type> table grant authorizes the absent-type inference land"
+    );
+    assert_eq!(json["type"], "widget");
+
+    // The type was inferred + created, bound to the conventional table, and the rows landed.
+    let ot = pg
+        .get_type(&TypeName("widget".into()))
+        .await
+        .expect("type created");
+    assert_eq!(
+        ot.table,
+        TableRef {
+            schema: "main".into(),
+            name: "widget".into()
+        }
+    );
+    let catalog = IcebergCatalog::new(pool.clone());
+    let batches =
+        engine_serving::execute_query(&catalog, "SELECT \"id\" FROM \"main\".\"widget\"", None)
+            .await
+            .expect("serving read");
+    let total: usize = batches.iter().map(RecordBatch::num_rows).sum();
+    assert_eq!(total, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn table_grant_on_a_different_table_does_not_authorize_land() {
+    let fx = PgFixture::shared();
+    let (_seed, db) = fx.fresh_db().await;
+    let (pg, _pool, _wh, state) = app_state(fx, &db).await;
+    // carol is granted Write on main.other — NOT the landing table for "widget". The
+    // coarse gate must deny (no type grant, table grant names a different table), and no
+    // type may be inferred on the denied path (no side effect).
+    grant_write_table(
+        &pg,
+        "carol",
+        TableRef {
+            schema: "main".into(),
+            name: "other".into(),
+        },
+    )
+    .await;
+    let token = session_token(&pg, "carol").await;
+
+    let app = protected(state, pg.clone());
+    let (status, _json) = post_model_q(app, "widget", "", &token, ipc_bytes(&sample_batch())).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a table grant on a different table does not authorize this land"
+    );
+    let missing = pg.get_type(&TypeName("widget".into())).await;
+    assert!(
+        matches!(missing, Err(ControlPlaneError::NotFound(_))),
+        "the denied land inferred no type"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

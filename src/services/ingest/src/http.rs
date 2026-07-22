@@ -363,9 +363,20 @@ pub(crate) async fn land_model(
     let type_name = TypeName(type_name);
 
     // 1. Coarse ACL gate BEFORE anything is revealed: an authenticated subject without a
-    //    Write grant on this type is 403 — returned whether or not the type exists (no
-    //    existence leak). `require_auth` already 401s an unauthenticated caller.
-    match st
+    //    Write grant is 403 — returned whether or not the type exists (no existence leak).
+    //    `require_auth` already 401s an unauthenticated caller. Two grant shapes authorize:
+    //      * a Write grant on the TYPE (`PolicyTarget::Type`) — the ordinary path; or
+    //      * a Write grant on the conventional landing TABLE `main.<type>`
+    //        (`PolicyTarget::Table`) — the pre-authorization path for the absent-type
+    //        inference land (#361). A type cannot be granted before it exists (the grant
+    //        API validates type existence), so a subject bootstrapping a NEW type via
+    //        inference is instead authorized by a grant on the table the inferred type
+    //        will occupy. `infer_object_type` binds an inferred type to exactly this ref.
+    let conventional_table = TableRef {
+        schema: "main".to_string(),
+        name: type_name.0.clone(),
+    };
+    let type_allow = match st
         .cp
         .acl()
         .check(
@@ -375,9 +386,32 @@ pub(crate) async fn land_model(
         )
         .await
     {
-        Ok(Decision::Allow) => {}
-        Ok(Decision::Deny) => return Err(ApiError::Forbidden),
-        Err(e) => return Err(ApiError::internal("ingest model: acl check", e)),
+        Ok(Decision::Allow) => true,
+        Ok(Decision::Deny) => false,
+        Err(e) => return Err(ApiError::internal("ingest model: acl check (type)", e)),
+    };
+    // Only consult the table grant when the type grant did not already authorize, so a
+    // type-authorized land pays no second ACL round-trip.
+    let table_allow = if type_allow {
+        false
+    } else {
+        match st
+            .cp
+            .acl()
+            .check(
+                &subject.0,
+                Action::Write,
+                &PolicyTarget::Table(conventional_table.clone()),
+            )
+            .await
+        {
+            Ok(Decision::Allow) => true,
+            Ok(Decision::Deny) => false,
+            Err(e) => return Err(ApiError::internal("ingest model: acl check (table)", e)),
+        }
+    };
+    if !type_allow && !table_allow {
+        return Err(ApiError::Forbidden);
     }
 
     // 2. Decode the Arrow IPC body. Needed by both branches (inference reads the schema).
@@ -419,6 +453,16 @@ pub(crate) async fn land_model(
         }
         Err(e) => return Err(ApiError::internal("ingest model: get_type", e)),
     };
+
+    // Soundness for the table-grant path: a subject authorized ONLY by the conventional
+    // landing-table grant (`main.<type>`) may write solely to that table. An EXISTING type
+    // bound to a different physical table is not reachable via a `main.<type>` grant, so
+    // fall back to the (already-denied) type decision and 403. The inference branch always
+    // binds `main.<type>`, so a just-created type passes; a pre-existing conventionally
+    // bound type passes too.
+    if !type_allow && otype.table != conventional_table {
+        return Err(ApiError::Forbidden);
+    }
 
     // `?mode=cdc&buckets=N&merge_engine=<engine>` declares this type's table as a
     // PK/CDC stream table on first creation. Requires a declared identity (the

@@ -1,5 +1,5 @@
 //! build_object_batch: a one-row Arrow batch + schema + ColumnSpec list from an
-//! aligned (columns, values, logical_types) triple. Pure logic (no DB).
+//! aligned (columns, values, logical_types, nullable) tuple. Pure logic (no DB).
 
 use arrow::array::{Array, Float64Array, Int64Array, StringArray};
 use query_api::serving::{SqlValue, build_object_batch};
@@ -10,6 +10,7 @@ fn builds_one_row_batch_with_typed_null_and_specs() {
         &["id".to_string(), "name".to_string()],
         &[SqlValue::Int(7), SqlValue::Null],
         &["Long".to_string(), "String".to_string()],
+        &[true, true],
     )
     .expect("builds");
 
@@ -24,7 +25,7 @@ fn builds_one_row_batch_with_typed_null_and_specs() {
     );
     assert!(
         specs.iter().all(|s| s.nullable),
-        "action columns are nullable"
+        "both columns declared nullable"
     );
 
     let id = batch
@@ -42,11 +43,32 @@ fn builds_one_row_batch_with_typed_null_and_specs() {
 }
 
 #[test]
+fn honors_per_column_nullability() {
+    // Regression for #359: an insert into an existing table must declare a required
+    // column (e.g. the identity) NON-nullable so it matches the stored schema and the
+    // engine's schema-evolution guard admits the append. The Arrow field AND the loom
+    // ColumnSpec both carry the per-column flag verbatim.
+    let (schema, _batch, specs) = build_object_batch(
+        &["id".to_string(), "label".to_string()],
+        &[SqlValue::Int(10), SqlValue::Text("x".into())],
+        &["Long".to_string(), "String".to_string()],
+        &[false, true],
+    )
+    .expect("builds");
+
+    assert!(!schema.field(0).is_nullable(), "id field is non-nullable");
+    assert!(schema.field(1).is_nullable(), "label field is nullable");
+    assert!(!specs[0].nullable, "id spec is non-nullable");
+    assert!(specs[1].nullable, "label spec is nullable");
+}
+
+#[test]
 fn rejects_unknown_logical_type() {
     let err = build_object_batch(
         &["x".to_string()],
         &[SqlValue::Int(1)],
         &["Bogus".to_string()],
+        &[true],
     )
     .unwrap_err();
     assert!(
@@ -62,6 +84,7 @@ fn rejects_value_type_mismatch() {
         &["id".to_string()],
         &[SqlValue::Text("nope".into())],
         &["Long".to_string()],
+        &[true],
     )
     .unwrap_err();
     assert!(format!("{err}").contains("does not match"), "got {err}");
@@ -80,6 +103,7 @@ fn widens_int_into_double_column() {
         &["total".to_string()],
         &[SqlValue::Int(5)],
         &["Double".to_string()],
+        &[true],
     )
     .expect("an integer value widens into a Double column");
 
@@ -93,6 +117,21 @@ fn widens_int_into_double_column() {
 
 #[test]
 fn rejects_length_mismatch() {
-    let err = build_object_batch(&["x".to_string()], &[], &["Long".to_string()]).unwrap_err();
+    let err =
+        build_object_batch(&["x".to_string()], &[], &["Long".to_string()], &[true]).unwrap_err();
     assert!(format!("{err}").contains("columns"), "got {err}");
+}
+
+#[test]
+fn rejects_nullable_length_mismatch() {
+    // The nullable slice must align 1:1 with the columns, or the batch build is rejected
+    // rather than silently defaulting a column's nullability.
+    let err = build_object_batch(
+        &["x".to_string()],
+        &[SqlValue::Int(1)],
+        &["Long".to_string()],
+        &[],
+    )
+    .unwrap_err();
+    assert!(format!("{err}").contains("nullable"), "got {err}");
 }

@@ -107,6 +107,30 @@ async fn admin_fragment_documents_exactly_the_admin_routes() {
     assert_eq!(set, expected);
 }
 
+#[tokio::test]
+async fn admin_link_and_action_bodies_reference_a_typed_schema() {
+    // #365: /admin/links and /admin/actions handlers take `Json<serde_json::Value>`, so
+    // utoipa previously documented an empty `{}` request body. Typed mirrors now shape the
+    // schema: each route's request body must `$ref` its registered component, not `{}`.
+    let json = serde_json::to_value(service_runtime::admin_openapi()).unwrap();
+    for (path, schema_name) in [
+        ("/admin/links", "DefineLinkReq"),
+        ("/admin/actions", "DefineActionReq"),
+    ] {
+        let schema =
+            &json["paths"][path]["post"]["requestBody"]["content"]["application/json"]["schema"];
+        assert_eq!(
+            schema["$ref"],
+            serde_json::json!(format!("#/components/schemas/{schema_name}")),
+            "{path} request body must $ref {schema_name} (not an empty schema)"
+        );
+        assert!(
+            json["components"]["schemas"][schema_name].is_object(),
+            "{schema_name} must be registered in components.schemas"
+        );
+    }
+}
+
 /// Every component name `$ref`'d by a documented response body, across all
 /// paths/methods/status codes of one fragment document.
 fn response_schema_names(json: &serde_json::Value) -> std::collections::BTreeSet<String> {

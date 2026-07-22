@@ -42,22 +42,25 @@ fn serialize_jobs(jobs: &[control_plane_core::NewJob]) -> Result<String, Serving
 
 /// Build the `ColumnSpec` list for a zero-row `Overwrite` (truncate) step, where
 /// `build_object_batches` cannot run (it rejects empty rows) yet the engine still needs the
-/// schema to re-project the emptied table. Every field is nullable — the same spec shape
-/// `build_object_batches` produces from its `(columns, logical_types)`.
+/// schema to re-project the emptied table. `nullable[i]` sets column `i`'s nullability and
+/// MUST match the stored table schema (issue #359) — the same spec shape
+/// `build_object_batches` produces from its `(columns, logical_types, nullable)`.
 fn empty_specs(
     columns: &[String],
     logical_types: &[String],
+    nullable: &[bool],
 ) -> Result<Vec<control_plane_core::ColumnSpec>, ServingError> {
     columns
         .iter()
         .zip(logical_types)
-        .map(|(name, logical)| {
+        .enumerate()
+        .map(|(ci, (name, logical))| {
             let base = control_plane_core::resolve_logical(logical)
                 .ok_or_else(|| ServingError::Engine(format!("unknown logical type `{logical}`")))?;
             Ok(control_plane_core::ColumnSpec {
                 name: name.clone(),
                 ty: base.canonical_name(),
-                nullable: true,
+                nullable: nullable.get(ci).copied().unwrap_or(true),
             })
         })
         .collect()
@@ -91,17 +94,22 @@ impl EngineActionClient {
 
 #[async_trait]
 impl ActionEngine for EngineActionClient {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the ActionEngine::write_object seam one-for-one; a params struct would only obscure the call site"
+    )]
     async fn write_object(
         &self,
         table: &control_plane_core::TableRef,
         columns: &[String],
         values: &[SqlValue],
         logical_types: &[String],
+        nullable: &[bool],
         event: control_plane_core::LineageEvent,
         jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
         let jobs_json = serialize_jobs(jobs)?;
-        let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
+        let (_schema, batch, specs) = build_object_batch(columns, values, logical_types, nullable)?;
         let ipc = encode_ipc_stream(&batch)?;
         let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
         let lineage_json = serde_json::to_string(&LineageWire::from(&event)).map_err(to_serving)?;
@@ -120,12 +128,17 @@ impl ActionEngine for EngineActionClient {
         Ok(control_plane_core::SnapshotId(id))
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the ActionEngine::overwrite_table seam one-for-one; a params struct would only obscure the call site"
+    )]
     async fn overwrite_table(
         &self,
         table: &control_plane_core::TableRef,
         columns: &[String],
         rows: &[Vec<SqlValue>],
         logical_types: &[String],
+        nullable: &[bool],
         event: control_plane_core::LineageEvent,
         jobs: &[control_plane_core::NewJob],
     ) -> Result<control_plane_core::SnapshotId, ServingError> {
@@ -139,7 +152,8 @@ impl ActionEngine for EngineActionClient {
                 serde_json::to_string(no_cols).map_err(to_serving)?,
             )
         } else {
-            let (_schema, batch, specs) = build_object_batches(columns, rows, logical_types)?;
+            let (_schema, batch, specs) =
+                build_object_batches(columns, rows, logical_types, nullable)?;
             (
                 encode_ipc_stream(&batch)?,
                 serde_json::to_string(&specs).map_err(to_serving)?,
@@ -170,7 +184,10 @@ impl ActionEngine for EngineActionClient {
         let id_cols = vec![id_column.to_string()];
         let id_values = vec![id_value.clone()];
         let id_logicals = vec![id_logical.to_string()];
-        let (_schema, batch, specs) = build_object_batch(&id_cols, &id_values, &id_logicals)?;
+        // Inline single-identity path: the inline-shadow schema is all-nullable, so a
+        // one-cell id batch stays nullable (unlike the file-tier append in `write_object`).
+        let (_schema, batch, specs) =
+            build_object_batch(&id_cols, &id_values, &id_logicals, &[true])?;
         let id_ipc = encode_ipc_stream(&batch)?;
         let columns_json = serde_json::to_string(&specs).map_err(to_serving)?;
         self.ctl
@@ -222,13 +239,19 @@ impl ActionEngine for EngineActionClient {
             let id_cols = vec![id_column.to_string()];
             let id_values = vec![id_value.clone()];
             let id_logicals = vec![id_logical.clone()];
-            let (_schema, batch, specs) = build_object_batch(&id_cols, &id_values, &id_logicals)?;
+            // Inline single-identity path: the inline-shadow schema is all-nullable, so a
+            // one-cell id batch stays nullable (unlike the file-tier append in `write_object`).
+            let (_schema, batch, specs) =
+                build_object_batch(&id_cols, &id_values, &id_logicals, &[true])?;
             (
                 encode_ipc_stream(&batch)?,
                 serde_json::to_string(&specs).map_err(to_serving)?,
             )
         } else {
-            let (_schema, batch, specs) = build_object_batch(columns, values, logical_types)?;
+            // Inline delta (all-nullable shadow schema); the file-tier guard is not on this path.
+            let all_nullable = vec![true; columns.len()];
+            let (_schema, batch, specs) =
+                build_object_batch(columns, values, logical_types, &all_nullable)?;
             (
                 encode_ipc_stream(&batch)?,
                 serde_json::to_string(&specs).map_err(to_serving)?,
@@ -239,8 +262,9 @@ impl ActionEngine for EngineActionClient {
         // CDC consumer can build the −U/−D row directly. Absent ⇒ empty IPC.
         let (before_ipc, before_columns_json) = match before {
             Some(b) => {
+                let all_nullable = vec![true; b.columns.len()];
                 let (_schema, batch, specs) =
-                    build_object_batch(b.columns, b.values, b.logical_types)?;
+                    build_object_batch(b.columns, b.values, b.logical_types, &all_nullable)?;
                 (
                     encode_ipc_stream(&batch)?,
                     serde_json::to_string(&specs).map_err(to_serving)?,
@@ -291,12 +315,12 @@ impl ActionEngine for EngineActionClient {
             let (ipc, columns_json) = if overwrite && w.rows.is_empty() {
                 (
                     Vec::new(),
-                    serde_json::to_string(&empty_specs(&w.columns, &w.logical_types)?)
+                    serde_json::to_string(&empty_specs(&w.columns, &w.logical_types, &w.nullable)?)
                         .map_err(to_serving)?,
                 )
             } else {
                 let (_schema, batch, specs) =
-                    build_object_batches(&w.columns, &w.rows, &w.logical_types)?;
+                    build_object_batches(&w.columns, &w.rows, &w.logical_types, &w.nullable)?;
                 (
                     encode_ipc_stream(&batch)?,
                     serde_json::to_string(&specs).map_err(to_serving)?,

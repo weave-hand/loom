@@ -58,6 +58,7 @@ async fn write_object_through_wire_client() {
                 SqlValue::Null,
             ],
             &["Long".to_string(), "String".to_string(), "Long".to_string()],
+            &[false, true, true],
             event,
             &[],
         )
@@ -94,6 +95,118 @@ async fn write_object_through_wire_client() {
         objects_to_json(&rows, None)["objects"][0],
         json!({ "id": "7", "name": "hi", "qty": null }),
         "row round-trips through EngineActionClient wire"
+    );
+
+    drop(warehouse);
+}
+
+/// Regression for #359: an Insert action APPENDING into a table whose identity column
+/// is stored non-nullable must succeed. The first write creates the table (no schema
+/// reconciliation); the SECOND write appends into the existing table and is compared,
+/// positionally, against the live schema. Before the fix the writer declared every
+/// column nullable, so the required `id` disagreed with the stored non-null `id` and the
+/// engine's schema-evolution guard rejected the append ("nullability changed") with a 500.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn append_into_existing_nonnull_id_table_succeeds() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+
+    let widget = define_widget(&cp).await;
+    let subj = grant_writer(&cp, &widget).await;
+
+    let warehouse = tempfile::tempdir().expect("warehouse");
+    let (engine, _guard) =
+        spawn_engine_writer(fx, &db, warehouse.path(), 16 * 1024 * 1024, i64::MAX).await;
+
+    let table = TableRef {
+        schema: "main".into(),
+        name: "widget".into(),
+    };
+    // Widget(id Long identity, name String, qty Long): id is non-nullable, the others
+    // nullable — exactly the schema `full_row_nullability` derives for an insert.
+    let cols = ["id".to_string(), "name".to_string(), "qty".to_string()];
+    let logical = ["Long".to_string(), "String".to_string(), "Long".to_string()];
+    let nullable = [false, true, true];
+    let event = |run: Uuid| LineageEvent {
+        run_id: RunId(run),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetRef {
+            namespace: "loom".into(),
+            name: "main.widget".into(),
+        }],
+        payload: json!({ "action": "createWidget" }),
+    };
+
+    // 1. First write CREATES the table (id stored non-nullable).
+    engine
+        .write_object(
+            &table,
+            &cols,
+            &[
+                SqlValue::Int(1),
+                SqlValue::Text("first".into()),
+                SqlValue::Null,
+            ],
+            &logical,
+            &nullable,
+            event(Uuid::new_v4()),
+            &[],
+        )
+        .await
+        .expect("create write");
+
+    // 2. Second write APPENDS into the existing table — the #359 path. The append is
+    //    reconciled against the live non-null `id`; the honest nullability makes it Identical.
+    engine
+        .write_object(
+            &table,
+            &cols,
+            &[
+                SqlValue::Int(2),
+                SqlValue::Text("second".into()),
+                SqlValue::Null,
+            ],
+            &logical,
+            &nullable,
+            event(Uuid::new_v4()),
+            &[],
+        )
+        .await
+        .expect("append into existing non-null id table must not 500 (#359)");
+
+    // Both rows are visible.
+    let catalog = IcebergCatalog::new(pool.clone());
+    let eng = InProcessServingEngine::new(catalog);
+    let qdeps = QueryDeps {
+        ontology: cp.ontology(),
+        acl: cp.acl(),
+        catalog: cp.catalog(),
+        serving: &eng,
+        default_limit: 1000,
+        gc_retention: e2e_support::TEST_GC_RETENTION,
+    };
+    let rows = read_object(
+        &ObjectQuery {
+            type_name: "Widget".into(),
+            filters: vec![],
+            ids: vec![],
+            or_raw: Vec::new(),
+            as_of: None,
+        },
+        &Subject(subj),
+        &qdeps,
+    )
+    .await
+    .expect("read_object after append");
+    assert_eq!(
+        objects_to_json(&rows, None)["objects"]
+            .as_array()
+            .map(Vec::len),
+        Some(2),
+        "both the created and appended rows are visible"
     );
 
     drop(warehouse);

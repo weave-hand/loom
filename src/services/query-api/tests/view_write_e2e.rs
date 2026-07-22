@@ -46,13 +46,14 @@ async fn setup_view_widget(
     regions: &[&str],
 ) -> (control_plane_core::SubjectId, IcebergWriter) {
     let writer = IcebergWriter::new(pool.clone(), fx.pg_dsn(db));
-    // All columns nullable so the file schema matches the engine writer's all-nullable
-    // action batch (an action write passes SqlValue::Null for any unset property).
+    // Column nullability matches the `Widget` type's declared shape (identity `id` +
+    // required `region` are non-null; `name`/`qty` optional), so the seeded base schema
+    // agrees with the honest per-column nullability an action write now declares (#359).
     let cols = vec![
-        ("id".to_string(), "long".to_string(), true),
+        ("id".to_string(), "long".to_string(), false),
         ("name".to_string(), "string".to_string(), true),
         ("qty".to_string(), "long".to_string(), true),
-        ("region".to_string(), "string".to_string(), true),
+        ("region".to_string(), "string".to_string(), false),
     ];
     writer
         .seed_arrays(

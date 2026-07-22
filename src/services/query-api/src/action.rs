@@ -665,6 +665,31 @@ pub fn expand_to_full_row(
     (full_columns, full_values, full_logical)
 }
 
+/// The stored per-column nullability for `columns`, keyed by property name (so it is
+/// correct regardless of `columns` ordering). A property is non-nullable when it is
+/// `required` OR it is the type's identity — exactly the rule the ingest land path applies
+/// (`model_shape_from_type` forces the identity required), so an action write declares the
+/// same schema the table was landed with. An unknown column defaults to nullable. Threading
+/// this into the write batch is what keeps the engine's schema-evolution guard from
+/// rejecting the append/overwrite (issue #359).
+pub fn column_nullability(target: &ObjectType, columns: &[String]) -> Vec<bool> {
+    let identity = target.identity.as_deref();
+    let non_null: std::collections::HashMap<&str, bool> = target
+        .properties
+        .iter()
+        .map(|p| {
+            (
+                p.name.as_str(),
+                p.required || identity == Some(p.name.as_str()),
+            )
+        })
+        .collect();
+    columns
+        .iter()
+        .map(|c| !non_null.get(c.as_str()).copied().unwrap_or(false))
+        .collect()
+}
+
 /// The shared response epilogue of both write paths: the affected object as a
 /// single-row `ObjectRows`, its logical types zipped per column via the governance
 /// layer's [`Projection`] (`of_columns` reuses `prop_ty`; an unknown column zips to
@@ -819,6 +844,12 @@ async fn run_insert(
 
     // 5. Expand to the target type's FULL property set (declared order).
     let (full_columns, full_values, full_logical) = expand_to_full_row(target, &pairs);
+    // Per-column stored nullability, aligned with the full row. It MUST match how the
+    // table was landed (`model_shape_from_type`: identity + `required` properties are
+    // non-null), or the engine's schema-evolution guard rejects the append with
+    // "nullability changed" (issue #359). The batch is built all-nullable-typed only if
+    // this is not threaded — that is exactly the #359 bug.
+    let full_nullable = column_nullability(target, &full_columns);
 
     // 4d. View predicate gate: a view-bound insert whose FULL row falls outside the
     //     view's predicate is Forbidden (a caller may not write a row into a view it
@@ -855,6 +886,7 @@ async fn run_insert(
             &full_columns,
             &full_values,
             &full_logical,
+            &full_nullable,
             event,
             &downstream_jobs,
         )
@@ -1717,11 +1749,13 @@ async fn govern_and_build_insert(
         );
         return Err(ActionError::Forbidden);
     }
+    let nullable = column_nullability(target, &full_columns);
     Ok(StepWrite {
         table: target.table.clone(),
         columns: full_columns,
         rows: vec![full_values],
         logical_types: full_logical,
+        nullable,
         mode: WriteMode::Append,
     })
 }
@@ -1822,11 +1856,13 @@ async fn govern_and_build_mutate(
         }
     }
 
+    let nullable = column_nullability(target, &columns);
     Ok(StepWrite {
         table: target.table.clone(),
         columns,
         rows,
         logical_types: logical,
+        nullable,
         mode: WriteMode::Overwrite,
     })
 }
