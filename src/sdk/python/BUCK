@@ -42,3 +42,24 @@ python_test(
     remote_execution = RE_TEST_PROPS,
     deps = [":loom-sdk"],
 )
+
+python_library(
+    name = "loom-sdk-pydantic",
+    base_module = "",
+    srcs = glob(["loom_sdk/pydantic/**/*.py"]),
+    visibility = ["PUBLIC"],
+    deps = [
+        ":loom-sdk",
+        "//third-party/python:pydantic",
+    ],
+)
+
+python_test(
+    name = "units-pydantic",
+    srcs = ["tests/pydantic_mapping_test.py"],
+    remote_execution = RE_TEST_PROPS,
+    deps = [
+        ":loom-sdk",
+        ":loom-sdk-pydantic",
+    ],
+)
