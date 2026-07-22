@@ -635,20 +635,20 @@ command_alias(
 # weave-hand/muntjac, update MUNTJAC_VERSION, refresh each sha256 from the
 # release's `.tar.gz.sha256` sidecars.
 
-MUNTJAC_VERSION = "v0.2.1"
+MUNTJAC_VERSION = "v0.2.2"
 
 _MUNTJAC_URL = "https://github.com/weave-hand/muntjac/releases/download/{version}/muntjac-{triple}.tar.gz"
 
 http_file(
     name = "muntjac-x86_64-linux.tar.gz",
     urls = [_MUNTJAC_URL.format(version = MUNTJAC_VERSION, triple = "x86_64-unknown-linux-gnu")],
-    sha256 = "a22db1fd9539ca6a0f52be42ed697fb2d0cfa74c4b143706eb1f27d22f60ab81",
+    sha256 = "0ede62e7531951ba36536996621fc9b2ba6d86407504471b677606558667695d",
 )
 
 http_file(
     name = "muntjac-aarch64-linux.tar.gz",
     urls = [_MUNTJAC_URL.format(version = MUNTJAC_VERSION, triple = "aarch64-unknown-linux-gnu")],
-    sha256 = "5ed3098733a3ea2beb5d69da95a9698305d665d1c3c9e2528e1bb2b4b2057fe9",
+    sha256 = "0a3bf70d255de1d584376553b071de38a2497638de239b82a89cffcb44dc21d7",
 )
 
 genrule(
