@@ -53,7 +53,11 @@ jobs:
 
       - name: Log in to ghcr
         env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Prefer a PAT with `write:packages` if the org secret GHCR_PAT is set —
+          # it works even when the loom-rbe-browser package isn't linked to this
+          # repo (the manual-first-push case). Falls back to the repo GITHUB_TOKEN
+          # otherwise, so nothing breaks once the package↔repo link is in place.
+          GHCR_TOKEN: ${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Build and push multi-arch (amd64 + arm64)
