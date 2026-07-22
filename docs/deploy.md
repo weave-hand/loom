@@ -131,7 +131,12 @@ single-node PVC.
   neither, for operators who manage the schema themselves. The migrations are
   **baked into every binary** at compile time (`sqlx::migrate!` — no migrations
   on disk to mount), so any loom image, including the standalone `loom` binary,
-  can act as the one-shot migrator via `LOOM_MIGRATE=apply`.
+  can act as the one-shot migrator via `LOOM_MIGRATE=apply`. **Under GitOps
+  (ArgoCD), use `onBoot`, not the default `job`:** the migrate hook Job becomes an
+  ArgoCD PostSync hook that only fires once the Application is Healthy, but the
+  service pods cannot become Healthy without the schema — a deadlock. `onBoot`
+  migrates at pod startup and sidesteps it (the advisory lock still serialises
+  replicas).
 - **Object store — local PVC (default) or S3/MinIO.** By default the services use a
   `LocalFileSystem` warehouse at `LOOM_DATA_PATH`, backed by one PVC that ingest
   writes and query-api reads; with the default `ReadWriteOnce` the chart

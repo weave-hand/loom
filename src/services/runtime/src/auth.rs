@@ -53,6 +53,25 @@ pub(crate) fn unauthorized() -> Response {
     (status_for(&e), e.to_string()).into_response()
 }
 
+/// Map a control-plane error to an HTTP response, carrying the message for
+/// client-error variants. `Validation`/`NotFound`/`Conflict`/`Unauthorized`
+/// deliver `{"error": <message>}` — these are admin-facing and hold no secrets,
+/// and leaving them bodyless forced callers to guess the cause (#364, e.g. a
+/// grant on an unknown type produced a bare `400`). Server errors stay bodyless:
+/// their detail is logged server-side, never leaked on the wire (cf. #140).
+pub fn error_response(e: &ControlPlaneError) -> Response {
+    let status = status_for(e);
+    if status.is_server_error() {
+        status.into_response()
+    } else {
+        (
+            status,
+            axum::Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response()
+    }
+}
+
 /// Extract the bearer token from the `Authorization` header, if present.
 fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
     headers

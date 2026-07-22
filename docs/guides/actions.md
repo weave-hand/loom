@@ -36,10 +36,11 @@ transaction — all or nothing**.
 
 ## Where actions are defined vs invoked
 
-- **Defining** an action is a control-plane operation — `Ontology::define_action`,
-  called in-process (at bootstrap/seed time or from a tool). There is **no HTTP
-  endpoint to define actions** yet; the external ontology-definition wire is
-  deferred. So the "define" examples below are Rust.
+- **Defining** an action is a control-plane operation — `Ontology::define_action`.
+  It is exposed over the admin surface as `POST /admin/actions` (and
+  `DELETE /admin/actions/{name}`); the `define` examples below use the Rust
+  builder, which mirrors the JSON shape those routes accept. (A public,
+  non-admin ontology-definition wire is still deferred.)
 - **Invoking** an action is over HTTP: `POST /actions/{name}`. That is the
   runtime surface your clients use.
 
@@ -70,8 +71,12 @@ Parameter and assignment building blocks (all append to the *current* step):
 | `.assign_expr(prop, "expr")` | computed value over the action's inputs (closed grammar, e.g. `"qty * unitPrice"`) |
 | `.assign_step_ref(prop, bind, refprop)` | cross-step reference (`prop = @bind.refprop`) — multi-step only |
 
-Property types (`ty`) are the ontology logical types: `Long`, `String`, `Bool`,
-`Double`, `IsoDate`, `IsoTimestamp`.
+Property types (`ty`) are the ontology logical types, resolved
+case-insensitively: `long`, `string`, `boolean`, `double`, `date`, `timestamp`,
+plus the semantic aliases `emailAddress`, `url`, `phoneNumber`, and `vector(N)`.
+(The `Long`/`String` used in the examples resolve fine — matching is
+case-insensitive — but `Bool`, `IsoDate`, `IsoTimestamp` are **not** recognized
+tokens; use `boolean`, `date`, `timestamp`.)
 
 ## Defining a multi-step action
 

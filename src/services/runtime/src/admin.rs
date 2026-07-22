@@ -23,7 +23,7 @@ use control_plane_core::{
 };
 use time::format_description::well_known::Rfc3339;
 
-use crate::auth::{AuthState, Subject, protect, status_for, unauthorized};
+use crate::auth::{AuthState, Subject, error_response, protect, unauthorized};
 use crate::hash_password;
 
 /// Shared state for the admin routes + gate.
@@ -108,10 +108,10 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
     {
         Ok(()) => true,
         Err(ControlPlaneError::Conflict(_)) => false,
-        Err(e) => return status_for(&e).into_response(),
+        Err(e) => return error_response(&e),
     };
     if let Err(e) = st.cp.acl().define_subject(&subject).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     let mut assigned = Vec::new();
     for r in &req.roles {
@@ -130,7 +130,7 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
                 )
                     .into_response();
             }
-            Err(e) => return status_for(&e).into_response(),
+            Err(e) => return error_response(&e),
         }
     }
     let status = if created {
@@ -192,7 +192,7 @@ async fn list_users(State(st): State<AdminState>) -> Response {
             let users = page.into_iter().map(to_view).collect();
             (StatusCode::OK, Json(ListUsersResp { users })).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -207,7 +207,7 @@ async fn list_users(State(st): State<AdminState>) -> Response {
 async fn disable_user(State(st): State<AdminState>, Path(username): Path<String>) -> Response {
     match st.auth.set_user_disabled(&username, true).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -222,7 +222,7 @@ async fn disable_user(State(st): State<AdminState>, Path(username): Path<String>
 async fn enable_user(State(st): State<AdminState>, Path(username): Path<String>) -> Response {
     match st.auth.set_user_disabled(&username, false).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -256,10 +256,10 @@ async fn reset_password(
     };
     let subject = SubjectId(username);
     if let Err(e) = st.auth.update_password(&subject, &new_phc).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     if let Err(e) = st.auth.revoke_subject_sessions(&subject, None).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     StatusCode::OK.into_response()
 }
@@ -284,7 +284,7 @@ async fn create_role(State(st): State<AdminState>, Json(req): Json<CreateRoleReq
             Json(serde_json::json!({ "role": req.role })),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -301,7 +301,7 @@ async fn list_roles(State(st): State<AdminState>) -> Response {
             "roles": roles.into_iter().map(|r| r.0).collect::<Vec<_>>()
         }))
         .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -390,7 +390,7 @@ async fn grant(
         .await
     {
         Ok(()) => (StatusCode::CREATED, "granted").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -591,7 +591,7 @@ async fn define_model(State(st): State<AdminState>, Json(req): Json<DefineModelR
             Json(serde_json::json!({ "name": req.name })),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -717,7 +717,7 @@ async fn define_vector_index_route(
             Json(serde_json::json!({ "name": req.name })),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -775,7 +775,7 @@ async fn list_vector_indexes_route(
                 .collect();
             Json(VectorIndexesResp { indexes }).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -811,7 +811,7 @@ async fn define_link_route(
     };
     match st.cp.ontology().define_link(link).await {
         Ok(()) => (StatusCode::CREATED, "defined").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -847,7 +847,7 @@ async fn delete_link_route(
             Json(serde_json::json!({ "error": msg })),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -883,7 +883,7 @@ async fn define_action_route(
     };
     match st.cp.ontology().define_action(action).await {
         Ok(()) => (StatusCode::CREATED, "defined").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -903,7 +903,7 @@ async fn delete_action_route(State(st): State<AdminState>, Path(name): Path<Stri
         .await
     {
         Ok(()) => Json(serde_json::json!({ "deleted": { "name": name } })).into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -920,7 +920,7 @@ async fn delete_action_route(State(st): State<AdminState>, Path(name): Path<Stri
 async fn delete_role_route(State(st): State<AdminState>, Path(role): Path<String>) -> Response {
     match st.cp.acl().delete_role(&RoleId(role.clone())).await {
         Ok(()) => Json(serde_json::json!({ "deleted": { "role": role } })).into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -969,7 +969,7 @@ async fn list_role_grants(State(st): State<AdminState>, Path(role): Path<String>
                 .collect();
             Json(RoleGrantsResp { grants }).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1002,7 +1002,7 @@ async fn revoke_grant(
     };
     match st.cp.acl().revoke(&RoleId(role), action, &target).await {
         Ok(()) => (StatusCode::OK, "revoked").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1071,7 +1071,7 @@ async fn set_policy_route(
     };
     match st.cp.acl().set_policy(&RoleId(role), action, policy).await {
         Ok(()) => (StatusCode::CREATED, "defined").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1129,7 +1129,7 @@ async fn list_role_policies(State(st): State<AdminState>, Path(role): Path<Strin
                 .collect();
             Json(RolePoliciesResp { policies }).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1167,7 +1167,7 @@ async fn clear_policy_route(
         .await
     {
         Ok(()) => (StatusCode::OK, "cleared").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1193,7 +1193,7 @@ async fn user_roles(State(st): State<AdminState>, Path(username): Path<String>) 
             "roles": page.items.into_iter().map(|r| r.0).collect::<Vec<_>>()
         }))
         .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1222,7 +1222,7 @@ async fn assign_user_role(
         .await
     {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1247,11 +1247,11 @@ async fn unassign_user_role(
     let subject = SubjectId(username);
     // Existence gate: the trait's unassign_role is unconditional Ok(()).
     if let Err(e) = st.cp.acl().roles_of(&subject, PageReq::unbounded()).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     match st.cp.acl().unassign_role(&subject, &RoleId(role)).await {
         Ok(()) => StatusCode::OK.into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1365,7 +1365,7 @@ async fn submit_new_run(
             }),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1409,7 +1409,7 @@ async fn define_transform_route(
     // Capture the physical output table (if any) before the def is moved into define.
     let grant_table = def.body.physical_output_grant_table().cloned();
     if let Err(e) = st.cp.transforms().define_transform(def).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     // A physical output is a fresh untyped table with no grant; grant the reserved
     // admin role Read so its catalog metadata + lineage node are visible regardless
@@ -1428,7 +1428,7 @@ async fn define_transform_route(
             )
             .await
     {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     (StatusCode::CREATED, "defined").into_response()
 }
@@ -1446,7 +1446,7 @@ async fn list_transforms_route(State(st): State<AdminState>) -> Response {
             let transforms = page.items.iter().map(def_view).collect();
             (StatusCode::OK, Json(ListTransformsResp { transforms })).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1466,11 +1466,11 @@ async fn get_transform_route(State(st): State<AdminState>, Path(name): Path<Stri
     let name = TransformName(name);
     let def = match st.cp.transforms().get_transform(&name).await {
         Ok(d) => d,
-        Err(e) => return status_for(&e).into_response(),
+        Err(e) => return error_response(&e),
     };
     let nra = match st.cp.transforms().next_run_at(&name).await {
         Ok(n) => n,
-        Err(e) => return status_for(&e).into_response(),
+        Err(e) => return error_response(&e),
     };
     let mut view = def_view(&def);
     view.next_run_at = nra.map(rfc3339);
@@ -1498,7 +1498,7 @@ async fn delete_transform_route(
         .await
     {
         Ok(()) => Json(serde_json::json!({ "deleted": name })).into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1518,7 +1518,7 @@ async fn run_transform_route(State(st): State<AdminState>, Path(name): Path<Stri
     let name = TransformName(name);
     let def = match st.cp.transforms().get_transform(&name).await {
         Ok(d) => d,
-        Err(e) => return status_for(&e).into_response(),
+        Err(e) => return error_response(&e),
     };
     submit_new_run(&st, Some(name), RunTrigger::Manual, def.body).await
 }
@@ -1574,7 +1574,7 @@ async fn run_adhoc_route(
 async fn list_transform_runs(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
     let name = TransformName(name);
     if let Err(e) = st.cp.transforms().get_transform(&name).await {
-        return status_for(&e).into_response();
+        return error_response(&e);
     }
     match st
         .cp
@@ -1586,7 +1586,7 @@ async fn list_transform_runs(State(st): State<AdminState>, Path(name): Path<Stri
             let runs = page.items.iter().map(run_view).collect();
             (StatusCode::OK, Json(ListRunsResp { runs })).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1611,7 +1611,7 @@ async fn get_run_route(State(st): State<AdminState>, Path(run_id): Path<String>)
     };
     match st.cp.transforms().get_run(rid).await {
         Ok(run) => (StatusCode::OK, Json(run_view(&run))).into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1696,7 +1696,7 @@ async fn schedule_table_check(
             )
                 .into_response(),
         ),
-        Err(e) => Some(status_for(&e).into_response()),
+        Err(e) => Some(error_response(&e)),
     }
 }
 
@@ -1738,7 +1738,7 @@ async fn define_schedule_route(
             Json(serde_json::json!({ "name": req.name })),
         )
             .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1755,7 +1755,7 @@ async fn list_schedules_route(State(st): State<AdminState>) -> Response {
             let schedules = list.iter().map(schedule_view).collect();
             (StatusCode::OK, Json(ListSchedulesResp { schedules })).into_response()
         }
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1773,7 +1773,7 @@ async fn list_schedules_route(State(st): State<AdminState>) -> Response {
 async fn delete_schedule_route(State(st): State<AdminState>, Path(name): Path<String>) -> Response {
     match st.cp.queue().delete_job_schedule(&name).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1842,7 +1842,7 @@ async fn define_view_route(
     };
     match st.cp.catalog().define_view(view).await {
         Ok(()) => (StatusCode::CREATED, "defined").into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 
@@ -1870,7 +1870,7 @@ async fn drop_view_route(
             "dropped": format!("{}.{}", view.schema, view.name)
         }))
         .into_response(),
-        Err(e) => status_for(&e).into_response(),
+        Err(e) => error_response(&e),
     }
 }
 

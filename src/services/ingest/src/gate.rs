@@ -12,7 +12,7 @@
 use arrow::array::{Array, AsArray, RecordBatch};
 use arrow::datatypes::{DataType, Float64Type, Int32Type, Int64Type, Schema};
 
-use control_plane_core::{PropertyConstraints, PropertyValidator};
+use control_plane_core::{PropertyConstraints, PropertyValidator, satisfies};
 use datafusion_io::arrow_logical_type;
 
 /// One expected column of a model. `ty` is a loom logical type string. `constraints`
@@ -74,13 +74,20 @@ pub fn validate(shape: &ModelShape, batch: &Schema) -> Result<(), Vec<Violation>
                     column: col.name.clone(),
                     reason: ViolationReason::Unsupported,
                 }),
-                Some(found) if found != col.ty => violations.push(Violation {
-                    column: col.name.clone(),
-                    reason: ViolationReason::TypeMismatch {
-                        expected: col.ty.clone(),
-                        found: found.to_string(),
-                    },
-                }),
+                // Case-insensitive logical-type match via core's `satisfies` (the
+                // seam conform.rs/bind.rs already use), not raw string equality —
+                // so a property declared `Long` accepts the landing map's lowercase
+                // `long`. `satisfies` errs only when the DECLARED type is itself
+                // unrecognized, which is a mismatch to report here too.
+                Some(found) if !satisfies(&col.ty, found).unwrap_or(false) => {
+                    violations.push(Violation {
+                        column: col.name.clone(),
+                        reason: ViolationReason::TypeMismatch {
+                            expected: col.ty.clone(),
+                            found: found.to_string(),
+                        },
+                    });
+                }
                 Some(_) => {}
             },
         }
