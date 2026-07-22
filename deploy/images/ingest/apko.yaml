@@ -27,3 +27,4 @@ entrypoint:
   command: /usr/local/bin/ingest
 archs:
   - x86_64
+  - aarch64

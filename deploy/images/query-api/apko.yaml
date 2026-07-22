@@ -29,3 +29,4 @@ entrypoint:
   command: /usr/local/bin/query-api
 archs:
   - x86_64
+  - aarch64

@@ -100,9 +100,17 @@ build is unaffected. (Publishing needed an org `GHCR_PAT` with `write:packages` 
 predated the repo so the `GITHUB_TOKEN` lacked write; the login step prefers `GHCR_PAT` and falls
 back to `GITHUB_TOKEN`.)
 
-## Follow-up (out of scope)
-- The `apko.yaml`s still say `archs: [x86_64]`; extending them to `[x86_64, aarch64]` + folding
-  the two-arch build into `release.yml` is the image-level follow-up (the toolchain now supports
-  it).
-- The query-api image bundles the wasm UI whose `platforms:wasm` hardcodes x86_64 cpu — a
-  multi-arch query-api image can reuse one arch-agnostic wasm build across both arches.
+## Multi-arch service images — DONE (follow-up PR)
+All four service images (`ingest`, `engine`, `worker`, `query-api`) now build multi-arch
+(linux/amd64 + linux/arm64). apko's `archs:` gained `aarch64` (locks regenerated), and a
+loom-owned rule `//images:multiarch.bzl` composes them: homelab's `oci_image` is single-arch by
+construction (`regctl image import` collapses a multi-arch index to the host manifest), so the
+rule instead builds a single-arch apko base per arch (`apko build --arch`, no index to collapse),
+stages that arch's binary with `regctl image mod`, and combines the two with `regctl index
+create`. Push uses `regctl image copy` (not `crane push`, which only loads docker-archive tars);
+`release.yml` is unchanged (same `image.push`/`image.info` target names). Verified: each image's
+amd64 manifest carries the x86-64 binary and arm64 the aarch64 binary, entrypoint + nonroot user
+preserved, and `regctl image copy` pushes the index to a local registry as both platforms.
+
+- The query-api image's wasm UI (`platforms:wasm` hardcodes x86_64 cpu) is arch-agnostic, so one
+  bundle is layered onto both arches (verified present on amd64 + arm64) — no per-arch UI build.

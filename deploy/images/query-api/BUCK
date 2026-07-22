@@ -1,42 +1,26 @@
-# loom query-api service image: the buck2-built `query-api-bin` (x86_64 glibc)
-# layered onto an apko/Wolfi base. query-api is now a pure wire client with no
-# embedded analytics engine — it reads over the engine's Arrow Flight service via a shared
-# unix-domain socket (LOOM_ENGINE_SOCKET), with the engine running as a sidecar
-# in the same pod (see deploy/chart/chart/templates/query-api.yaml). The binary
-# is therefore a plain glibc Rust binary with the same package set as ingest.
-# Kept under //deploy (not //src) so it stays off the normal CI build sweep — the
-# release workflow builds/pushes it explicitly.
-load("@homelab//buck2/apko:defs.bzl", "apko_image")
-load("@homelab//buck2/oci:defs.bzl", "oci_image", "tar_layer")
-
-# Wolfi base (glibc + libgcc + CA certs, nonroot,
-# entrypoint = /usr/local/bin/query-api).
-apko_image(
-    name = "base",
-    config = "apko.yaml",
-    lock = "apko.lock.json",
-)
-
-# Stage the query-api binary at the base's entrypoint path.
-tar_layer(
-    name = "bin_layer",
-    binary = "root//src/services/query-api:query-api-bin",
-    path = "/usr/local/bin/query-api",
-)
+# loom query-api service image: multi-arch (linux/amd64 + linux/arm64). query-api is a
+# pure wire client with no embedded analytics engine — it reads over the engine's Arrow
+# Flight service via a shared unix-domain socket (LOOM_ENGINE_SOCKET), with the engine
+# running as a sidecar in the same pod (see deploy/chart/chart/templates/query-api.yaml).
+# The apko base is built per-arch and the buck2-built `query-api-bin` is staged per-arch;
+# the arch-agnostic wasm UI bundle is added to both arches; the two are combined into one
+# OCI index (see //images:multiarch.bzl). Kept under //deploy (not //src) so it stays off
+# the normal CI build sweep — the release workflow builds/pushes it explicitly.
+load("//images:multiarch.bzl", "multiarch_oci_image")
 
 # The wasm UI bundle, pinned to the wasm target platform. A plain dep from this
-# (linux-configured) cell would re-configure //src/ui:bundle for linux and break
-# the yew cross-compile — `default_target_platform` does not survive being a
-# dependency, so the platform must be forced here.
+# (linux-configured) cell would re-configure //src/ui:bundle for linux and break the
+# yew cross-compile — `default_target_platform` does not survive being a dependency, so
+# the platform must be forced here. The wasm output is arch-independent, so one bundle
+# serves both image arches.
 configured_alias(
     name = "ui-bundle",
     actual = "root//src/ui:bundle",
     platform = "root//platforms:wasm",
 )
 
-# Stage the UI dist dir (index.html, config.js, app.js, app_bg.wasm) at the
-# path the chart points LOOM_UI_DIR at. `tar_layer` stages single executables,
-# so this stays a local genrule over the dist directory.
+# Stage the UI dist dir (index.html, config.js, app.js, app_bg.wasm) at the path the
+# chart points LOOM_UI_DIR at. Arch-agnostic — added to every image arch.
 genrule(
     name = "ui_layer",
     out = "layer.tar",
@@ -47,13 +31,16 @@ genrule(
     ]),
 )
 
-# Deployable image + `.info` (digest pin) + `.push` (crane push to ghcr).
-oci_image(
+# Deployable multi-arch image + `.info` (digest pin) + `.push` (crane push to ghcr).
+# Base (glibc + libgcc + CA certs, nonroot, entrypoint = /usr/local/bin/query-api) from
+# apko.yaml; the query-api binary is staged at that entrypoint path per arch, plus the
+# shared wasm UI layer.
+multiarch_oci_image(
     name = "image",
-    base = ":base",
-    layers = [
-        ":bin_layer",
-        ":ui_layer",
-    ],
+    config = "apko.yaml",
+    lock = "apko.lock.json",
+    binary = "root//src/services/query-api:query-api-bin",
+    path = "/usr/local/bin/query-api",
+    layers = [":ui_layer"],
     repository = "ghcr.io/weave-hand/loom-query-api",
 )

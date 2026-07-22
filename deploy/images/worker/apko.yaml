@@ -28,3 +28,4 @@ entrypoint:
   command: /usr/local/bin/worker
 archs:
   - x86_64
+  - aarch64
