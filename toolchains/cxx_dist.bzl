@@ -186,3 +186,127 @@ wasm_cxx_toolchain = rule(
         )),
     },
 )
+
+# Native (linux/gnu clang) cxx toolchain that runs its LINK actions on RE rather
+# than the local executor. The prelude `system_cxx_toolchain` hardcodes
+# link_binaries_locally/link_libraries_locally/archive_objects_locally = True
+# (prelude/toolchains/cxx.bzl), which is fine when the local host arch == target
+# arch but makes a native ARM64 link (driven from an x86 host over RE) impossible:
+# the forced-local link tries to run the aarch64 toolchain on x86. This mirrors
+# the linux/clang/gnu branch of the prelude's _cxx_toolchain_from_cxx_tools_info
+# with those three flags set to False, so an arm64 link lands on the arm64 RE
+# worker. Selected only for arm64 via `toolchains//:cxx` — x86_64 keeps the
+# unchanged prelude system_cxx_toolchain (local links).
+def _native_re_cxx_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
+    tools = ctx.attrs.cxx_tools_info[CxxToolsInfo]
+    linker_type = LinkerType("gnu")
+
+    def run(x):
+        return None if x == None else RunInfo(args = [x])
+
+    return [
+        DefaultInfo(),
+        CxxToolchainInfo(
+            internal_tools = ctx.attrs.internal_tools[CxxInternalTools],
+            linker_info = LinkerInfo(
+                linker = run(tools.linker),
+                # clang drives ld.lld (bundled in the LLVM dist); matches the
+                # prelude's linux/clang linker flags.
+                linker_flags = ["-fuse-ld=lld"],
+                post_linker_flags = [],
+                archiver = run(tools.archiver),
+                archiver_type = tools.archiver_type,
+                archiver_supports_argfiles = True,
+                generate_linker_maps = False,
+                lto_mode = LtoMode("none"),
+                type = linker_type,
+                # The whole point: run link/archive on RE, not local.
+                link_binaries_locally = False,
+                link_libraries_locally = False,
+                archive_objects_locally = False,
+                use_archiver_flags = True,
+                static_dep_runtime_ld_flags = [],
+                static_pic_dep_runtime_ld_flags = [],
+                shared_dep_runtime_ld_flags = [],
+                independent_shlib_interface_linker_flags = [],
+                shlib_interfaces = ShlibInterfacesMode("disabled"),
+                link_style = LinkStyle("shared"),
+                link_weight = 1,
+                binary_extension = "",
+                object_file_extension = "o",
+                shared_library_name_default_prefix = "lib",
+                shared_library_name_format = "{}.so",
+                shared_library_versioned_name_format = "{}.so.{}",
+                static_library_extension = "a",
+                force_full_hybrid_if_capable = False,
+                is_pdb_generated = is_pdb_generated(linker_type, []),
+                link_ordering = None,
+            ),
+            bolt_enabled = False,
+            # Bare host-tool names, resolved from the RE worker's PATH (the base
+            # RBE image ships binutils); a pure-Rust link never invokes them.
+            binary_utilities_info = BinaryUtilitiesInfo(
+                nm = RunInfo(args = ["nm"]),
+                objcopy = RunInfo(args = ["objcopy"]),
+                objdump = RunInfo(args = ["objdump"]),
+                ranlib = RunInfo(args = ["ranlib"]),
+                strip = RunInfo(args = ["strip"]),
+                dwp = None,
+                bolt_msdk = None,
+            ),
+            cxx_compiler_info = CxxCompilerInfo(
+                compiler = run(tools.cxx_compiler),
+                preprocessor_flags = [],
+                compiler_flags = [],
+                compiler_type = tools.compiler_type,
+            ),
+            c_compiler_info = CCompilerInfo(
+                compiler = run(tools.compiler),
+                preprocessor_flags = [],
+                compiler_flags = [],
+                compiler_type = tools.compiler_type,
+            ),
+            as_compiler_info = CCompilerInfo(
+                compiler = run(tools.compiler),
+                compiler_type = tools.compiler_type,
+            ),
+            asm_compiler_info = CCompilerInfo(
+                compiler = run(tools.asm_compiler),
+                compiler_type = tools.asm_compiler_type,
+            ),
+            cvtres_compiler_info = CvtresCompilerInfo(
+                compiler = run(tools.cvtres_compiler),
+                preprocessor_flags = [],
+                compiler_flags = [],
+                compiler_type = tools.compiler_type,
+            ),
+            rc_compiler_info = RcCompilerInfo(
+                compiler = run(tools.rc_compiler),
+                preprocessor_flags = [],
+                compiler_flags = [],
+                compiler_type = tools.compiler_type,
+            ),
+            header_mode = HeaderMode("symlink_tree_only"),
+            cpp_dep_tracking_mode = DepTrackingMode("show_headers"),
+            pic_behavior = PicBehavior("supported"),
+            llvm_link = RunInfo(args = ["llvm-link"]),
+            use_dep_files = True,
+            runtime_dependency_handling = RuntimeDependencyHandling("no_symlink"),
+        ),
+        CxxPlatformInfo(name = "aarch64"),
+    ]
+
+native_re_cxx_toolchain = rule(
+    impl = _native_re_cxx_toolchain_impl,
+    is_toolchain_rule = True,
+    attrs = {
+        # exec_dep: the clang/archiver tools must materialize and run on the EXEC
+        # platform (the arm64 RE worker). The wrapped hermetic_cxx_tools' llvm_dist
+        # select then resolves in the exec (arm64) configuration → aarch64 clang.
+        "cxx_tools_info": attrs.exec_dep(providers = [CxxToolsInfo]),
+        "internal_tools": attrs.default_only(attrs.exec_dep(
+            providers = [CxxInternalTools],
+            default = "prelude//cxx/tools:internal_tools",
+        )),
+    },
+)

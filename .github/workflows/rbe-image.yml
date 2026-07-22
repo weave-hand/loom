@@ -35,26 +35,37 @@ jobs:
           echo "cft=$v" >> "$GITHUB_OUTPUT"
           echo "chrome-for-testing version: $v"
 
-      - name: Build image
-        run: docker build -t loom-rbe-browser:ci tools/ci/rbe-browser
+      - name: Set up QEMU (for emulated arm64 apt layer)
+        uses: docker/setup-qemu-action@v3
 
-      - name: Smoke-test the lib closure (fails the publish if a lib is missing)
-        run: tools/ci/rbe-browser/smoke.sh loom-rbe-browser:ci
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 and smoke-test the lib closure
+        # Smoke runs the amd64 chrome-headless-shell (the browser buck vendors is
+        # amd64), so we --load a single-arch amd64 image to test against. The apt
+        # package list is arch-identical on arm64 Ubuntu 24.04, so the arm64
+        # variant shares the same closure — no separate arm64 smoke.
+        run: |
+          docker buildx build --platform linux/amd64 --load \
+            -t loom-rbe-browser:ci tools/ci/rbe-browser
+          tools/ci/rbe-browser/smoke.sh loom-rbe-browser:ci
 
       - name: Log in to ghcr
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
-      - name: Tag and push
+      - name: Build and push multi-arch (amd64 + arm64)
         id: push
         run: |
           set -euo pipefail
           cft="${{ steps.ver.outputs.cft }}"
-          docker tag loom-rbe-browser:ci "$IMAGE:latest"
-          docker tag loom-rbe-browser:ci "$IMAGE:cft-$cft"
-          docker push "$IMAGE:latest"
-          docker push "$IMAGE:cft-$cft"
+          # Pushes a manifest-list; the amd64 layer is a buildx cache hit from the
+          # smoke build above. platforms/defs.bzl pins the resulting index digest.
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -t "$IMAGE:latest" -t "$IMAGE:cft-$cft" \
+            --push tools/ci/rbe-browser
           digest="$(docker buildx imagetools inspect "$IMAGE:latest" --format '{{.Manifest.Digest}}')"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 

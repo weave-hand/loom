@@ -1,10 +1,15 @@
-load("@prelude//platforms:defs.bzl", "host_configuration")
-load(":defs.bzl", "buildbuddy_platforms")
+load(":defs.bzl", "loom_execution_platforms")
 
-buildbuddy_platforms(
+# Registered execution platforms (see .buckconfig [build] execution_platforms).
+# Both arches are registered so a single build can place actions on amd64 or
+# arm64 workers; the rust toolchain's exec_compatible_with is what steers an
+# arm64-configured compile onto the arm64 platform (else amd64 wins as the first
+# compatible entry). Target platforms still default from the prelude detector
+# (see .buckconfig target_platform_detector_spec) — this only wires *execution*.
+loom_execution_platforms(
     name = "default",
-    cpu_configuration = host_configuration.cpu,
-    os_configuration = host_configuration.os,
+    amd64 = ":linux-x86_64",
+    arm64 = ":linux-aarch64",
     visibility = ["PUBLIC"],
 )
 
