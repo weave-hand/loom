@@ -56,7 +56,10 @@ python_library(
 
 python_test(
     name = "units-pydantic",
-    srcs = ["tests/pydantic_mapping_test.py"],
+    srcs = [
+        "tests/pydantic_apply_test.py",
+        "tests/pydantic_mapping_test.py",
+    ],
     remote_execution = RE_TEST_PROPS,
     deps = [
         ":loom-sdk",

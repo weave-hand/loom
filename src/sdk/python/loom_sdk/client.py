@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Self
 
@@ -33,10 +34,12 @@ from ._core import (
     preview_dataset_request,
     resolve_base,
 )
-from .errors import raise_for_response
+from .errors import NotFoundError, raise_for_response
+from .models import ApplyReport
 
 if TYPE_CHECKING:
     from .models import DatasetDetail, DatasetEntry, LandAck, ModelLandAck, Preview, TypeDetail
+    from .pydantic import LoomModel
 
 
 class _DatasetsNamespace:
@@ -115,6 +118,53 @@ class _OntologyNamespace:
         response = self._client._send(ontology_type_request(name))
         return parse_type_detail(response.content)
 
+    def apply(self, *models: type[LoomModel]) -> ApplyReport:
+        """Apply each `LoomModel`'s declared shape to the ontology, in order.
+
+        Requires the `pydantic` extra (imported lazily here, so the core
+        SDK stays pydantic-free). Per model: if `GET /ontology/types/{name}`
+        finds an existing type, its shape must match exactly (identity,
+        properties, table) or `OntologyDriftError` is raised and nothing is
+        written; otherwise the type is bootstrapped — a zero-row dataset
+        land (gated by `X-Loom-Model`, so date/timestamp columns survive)
+        followed by `define_model`. Once every model has been processed,
+        each model's link specs absent from their declaring type's current
+        `links` are registered via `define_link`.
+        """
+        from .pydantic import _apply
+
+        created: list[str] = []
+        unchanged: list[str] = []
+        current_links: dict[str, list[str]] = {}
+
+        for cls in models:
+            try:
+                response = self._client._send(_apply.type_check_request(cls))
+            except NotFoundError:
+                pass
+            else:
+                detail = parse_type_detail(response.content)
+                _apply.diff_type(cls, detail)
+                unchanged.append(cls.__name__)
+                current_links[cls.__name__] = [link.name for link in detail.links]
+                continue
+
+            try:
+                self._client._send(_apply.dataset_check_request(cls))
+            except NotFoundError:
+                self._client._send(_apply.land_bootstrap_request(cls))
+            self._client._send(_apply.define_model_request_for(cls))
+            created.append(cls.__name__)
+            current_links[cls.__name__] = []
+
+        links_created: list[str] = []
+        for cls in models:
+            for spec in _apply.links_to_create(cls, current_links.get(cls.__name__, [])):
+                self._client._send(_apply.define_link_request_for(cls, spec))
+                links_created.append(_apply.link_name(cls, spec))
+
+        return ApplyReport(created=created, unchanged=unchanged, links_created=links_created)
+
 
 class _ModelsNamespace:
     """`client.models` — the ontology-type side of the ingest write surface."""
@@ -142,6 +192,22 @@ class _ModelsNamespace:
             buckets=buckets,
             merge_engine=merge_engine,
         )
+        response = self._client._send(prep)
+        return parse_model_ack(response.content)
+
+    def land_instances(self, instances: Sequence[LoomModel]) -> ModelLandAck:
+        """Land pydantic `LoomModel` instances, returning the commit ack.
+
+        Requires the `pydantic` extra (imported lazily here). Builds a
+        `pa.Table` from `instances` via their shared class's Arrow schema,
+        flattening link fields to their FK column name (`Order.customer`
+        lands under `customer_id`, not `customer`). Every instance must be
+        the exact same `LoomModel` subclass — a mix (or an empty sequence)
+        raises `ValueError` before any request is built.
+        """
+        from .pydantic import _apply
+
+        prep = _apply.land_instances_request(instances)
         response = self._client._send(prep)
         return parse_model_ack(response.content)
 

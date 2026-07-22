@@ -114,6 +114,20 @@ class DatasetDetail:
 
 
 @dataclass
+class ApplyReport:
+    """Result of `client.ontology.apply(*models)` (the pydantic extra).
+
+    `created` / `unchanged` hold ontology type names; `links_created` holds
+    `<from>_<field>` link names. A type name appears in exactly one of
+    `created`/`unchanged` per `apply` call.
+    """
+
+    created: list[str]
+    unchanged: list[str]
+    links_created: list[str]
+
+
+@dataclass
 class Preview:
     """200 response from `GET /datasets/{schema}/{table}/preview`.
 

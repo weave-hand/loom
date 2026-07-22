@@ -63,6 +63,22 @@ class ServerError(LoomError):
     """5xx — internal server error."""
 
 
+class OntologyDriftError(LoomError):
+    """Raised by `ontology.apply` when a server-side ontology type's shape
+    doesn't match its `LoomModel` declaration.
+
+    Unlike the other `LoomError` subclasses, this isn't derived from an HTTP
+    error response — the triggering `GET /ontology/types/{name}` returned a
+    normal 200, but its `identity`/`properties`/`table` differ from what the
+    class declares. `status` is fixed at 200 for that reason; `message`
+    names the first field found to differ (identity, then properties, then
+    table — the order `apply`'s comparison checks them in).
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(200, message)
+
+
 def _decode(body: bytes) -> str:
     return body.decode("utf-8", errors="replace")
 
