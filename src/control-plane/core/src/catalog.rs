@@ -202,7 +202,7 @@ pub trait Catalog {
     /// A "quiet table" proxy (`no writes since at`) is NOT a valid implementation of this:
     /// a governed delete-all end-caps every row and writes none, so it looks quiet from
     /// the surviving rows while serving zero rows. See
-    /// `docs/superpowers/specs/2026-07-14-timetravel-retention-precision-design.md`.
+    /// `git history: 2026-07-14-timetravel-retention-precision-design`.
     ///
     /// `NotFound` if the table is not live at `at`.
     async fn snapshot_intact(

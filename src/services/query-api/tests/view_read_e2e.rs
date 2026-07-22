@@ -8,7 +8,7 @@
 //! catalog delegation (built in earlier tasks); this suite is the governed-read proof.
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
-//! Spec: docs/superpowers/specs/2026-07-13-catalog-views-design.md
+//! Spec: git history: 2026-07-13-catalog-views-design
 
 use std::sync::Arc;
 

@@ -1,7 +1,7 @@
 //! loom's canonical identity for a dataset it governs — a physical Iceberg table.
 //! Bridges catalog `TableRef` and lineage `DatasetRef` so the two stop being joined by
 //! hand-built strings. Pure logic, no I/O. See
-//! docs/superpowers/specs/2026-06-12-qualified-dataset-identity-design.md.
+//! git history: 2026-06-12-qualified-dataset-identity-design.
 
 use crate::catalog::TableRef;
 use crate::lineage::{DatasetRef, EventType, LineageEvent, RunId};

@@ -8,7 +8,7 @@
 
 ## Why we're looking at it
 
-The engine-wire's first slice (`docs/superpowers/specs/…engine-wire…`, pending)
+The engine-wire's first slice (design doc in git history: the `…engine-wire…` spec, pending)
 needs a wire format + RPC mechanism between loom's own Rust processes on **one
 computer**, over a **unix-domain socket**. The user wants Cap'n Proto for its
 zero-copy reads and a language-neutral IDL. This spike checks whether the Rust

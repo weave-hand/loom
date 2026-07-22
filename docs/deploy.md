@@ -398,25 +398,25 @@ init container.
 
 ## Known gaps
 
-Open deploy-area register items (see `docs/ISSUES.md` / `docs/FUTURE.md` for
+Open deploy-area items (see the GitHub issue tracker, label `area:deploy`, for
 full context):
 
-- `#fut-embedded-pg-cache-gc` — stale `pg-<version>/` extract caches are never
+- #581 — stale `pg-<version>/` extract caches are never
   swept after a version-pin bump (bounded disk leak).
-- `#fut-embedded-postgres-pg-upgrade` — no `pg_upgrade` story when a PG major
+- #583 — no `pg_upgrade` story when a PG major
   bump meets an existing `pgdata` (it errors clearly; migration is manual).
-- `#fut-helm-create-admin-job` — the chart has no one-shot `create-admin` Job;
+- #582 — the chart has no one-shot `create-admin` Job;
   first-admin bootstrap in a Helm deploy is a manual CLI run.
-- `#fut-deploy-config-values-wiring` — the typed tuning knobs are not surfaced
+- #584 — the typed tuning knobs are not surfaced
   as `values.yaml` fields; operators set raw env vars.
-- `#fut-deploy-data-path-optional-s3` — `LOOM_DATA_PATH` is required even under
+- #585 — `LOOM_DATA_PATH` is required even under
   an `s3://` warehouse (the chart's S3 path sets an inert value).
-- `#fut-deploy-s3-credentials-identity` — S3 credentials are static-secret
+- #586 — S3 credentials are static-secret
   only; no cloud workload identity (IRSA / GKE WI) yet.
-- `#fut-graceful-shutdown-tls` — the lean per-service binaries have no graceful
+- #587 — the lean per-service binaries have no graceful
   shutdown/signal handling and no TLS (the standalone composite has the signal
   wiring; TLS is open everywhere).
-- `#fut-config-yaml-format` — `LOOM_CONFIG_FILE` is JSON-only; YAML authoring
+- #588 — `LOOM_CONFIG_FILE` is JSON-only; YAML authoring
   awaits a maintained YAML crate.
 
 ## Build rules (the `homelab` external cell)

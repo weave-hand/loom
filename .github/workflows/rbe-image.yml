@@ -5,7 +5,7 @@ name: rbe-image
 # worker. Manual only — the image changes ~never (Chrome-major or base bump).
 # After a successful run, copy the printed digest into platforms/defs.bzl's
 # container-image line. See
-# docs/superpowers/specs/2026-07-02-ui-e2e-hermetic-rbe-image-design.md.
+# git history: 2026-07-02-ui-e2e-hermetic-rbe-image-design.
 on:
   workflow_dispatch:
 

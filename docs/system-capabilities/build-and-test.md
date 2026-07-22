@@ -7,8 +7,8 @@ footguns, workflows) and [`docs/build-execution.md`](../build-execution.md) (the
 RE-vs-local execution model and its cost accounting): those documents carry the
 how-to; this one carries the capability inventory — what guarantees the build and
 test estate provides, why each piece is shaped the way it is, and where the known
-gaps are. Specs live under `docs/superpowers/specs/`; register history in
-`docs/ROADMAP.md`, `docs/FUTURE.md`, and `docs/ISSUES.md`.
+gaps are. Design docs live in git history; planning history in the GitHub
+issue tracker (labels `roadmap`, `idea`, `bug`).
 
 _As of 4861433b._
 
@@ -155,16 +155,15 @@ debt taken on during adoption was fully paid down — all 18 production
 (#200; resolution log in `docs/error-handling-debt.md`).
 
 prek hooks are the gate mechanism, spanning all three git stages: formatting,
-clippy-all, file hygiene, `no-inline-tests`, register validation
-(`docs-validate`), Conventional-Commits enforcement, reindeer drift
+clippy-all, file hygiene, `no-inline-tests`, Conventional-Commits enforcement, reindeer drift
 (`reindeer-check`), and pre-push build/test. The CI `lint` action runs exactly
 these hooks, so local and CI enforcement cannot diverge.
 
 ## Continuous integration
 
 CI is BuildBuddy Workflows, defined in `buildbuddy.yaml` — a deliberate
-**replacement** of GitHub Actions, not a parallel system (spec:
-`2026-06-23-buildbuddy-ci-workflows-design.md`). Three actions: `build-test`
+**replacement** of GitHub Actions, not a parallel system (design doc in git
+history: `2026-06-23-buildbuddy-ci-workflows-design`). Three actions: `build-test`
 (pushes to `main`; full build + test, `main` always fully green), `affected`
 (PRs; build/test only impacted targets), and `lint` (prek on all events). The
 runners are thin orchestrators co-located with the RE cluster: builds run with
@@ -184,7 +183,7 @@ the clean PR head, `git_fetch_depth: 0` for a merge base, and the supertd binary
 built once and executed directly in a throwaway worktree so no second buck2
 daemon ever runs.
 
-## Code health, docs registers, and developer tooling
+## Code health, work tracking, and developer tooling
 
 **Code-health routines.** Scheduled skills generate deterministic census
 registers — `loom-complexity` (rust-code-analysis) and `loom-duplication`
@@ -194,7 +193,7 @@ remediate the worst hotspot/duplication family under TDD and open review PRs,
 proving themselves with a census diff.
 
 **The pillar-idioms audit programme.** The censuses fed a systematic five-agent
-audit of all service pillars (spec: `2026-07-02-pillar-idioms-audit-design.md`)
+audit of all service pillars (design doc in git history: `2026-07-02-pillar-idioms-audit-design`)
 that landed as a coordinated campaign of behavior-preserving quality PRs: the
 query-api governed-read spine (#299), one authoritative PG↔Arrow conversion
 layer (#301), the Iceberg commit skeleton (#302), shared service bootstrap +
@@ -206,17 +205,16 @@ classes (#317), ingest's typed `ApiError` (#313) and pure violation collectors
 where claimed, explicitly whitelisted behavior changes — is itself the
 capability: large-scale refactoring with the test estate as the safety net.
 
-**Docs registers and the work pipeline.** Deferred/planned/defect work lives in
-three parsable markdown registers with a validated grammar; `tools/docs.sh`
-provides `validate`, `query`, and reconciliation, and is itself covered by
-`tools/tests/docs_test.sh`. On top sits a planning/checkout pipeline
-(spec: `2026-06-21-work-item-planning-checkout-design.md`): `loom-work-plan`
-gets an item to a claimable, spec-on-disk state; `loom-work-checkout` claims it
-through a server-side git mutex — an atomic create-only push of the `work/<id>`
-branch, so two concurrent sessions can never build the same item — with
-PR-lifecycle release and stale-claim reaping (claims whose PR merged are reaped
-immediately, #115). `loom-docs-update` and `loom-docs-organise` close and
-reconcile items so the registers stay the source of truth.
+**Work tracking and the work pipeline.** Deferred/planned/defect work lives in
+the GitHub issue tracker (labels `roadmap`/`idea`/`bug`, plus `ready` and
+`meta`), migrated out of the in-repo registers in #466. On top sits a
+planning/checkout pipeline (design doc in git history:
+`2026-06-21-work-item-planning-checkout-design`): `loom-work-plan` gets an issue
+to a claimable, spec-in-body `ready` state; `loom-work-checkout` claims it by
+assignment — the assignment is the mutex, so two concurrent sessions can never
+build the same item — with a timestamped `Claimed:` comment as the staleness
+record and a 240-minute grace window. A PR with `Closes #N` merges the work and
+the landed capability is recorded here in `docs/system-capabilities/`.
 
 **Self-documenting HTTP API.** Both services publish OpenAPI at `/openapi.json`
 and render it at `/docs` (Scalar, chosen over swagger-ui because it needs no

@@ -21,7 +21,7 @@ pub enum StreamKind {
 /// `build_merge_view` merge-on-read) collapse multiple physical rows. A `-D`
 /// winner drops the identity under ALL engines. The durable changelog is
 /// engine-agnostic — engines govern only current-state. See
-/// `docs/superpowers/specs/2026-07-08-stream-merge-engines-design.md`.
+/// `git history: 2026-07-08-stream-merge-engines-design`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeEngine {

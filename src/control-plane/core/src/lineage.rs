@@ -30,7 +30,7 @@ pub struct RunId(pub Uuid);
 /// (`database.schema.table`). That mapping from a loom `TableRef`/`TypeName` to a
 /// `DatasetRef` therefore depends on deployment context (where the data physically
 /// lives), so it belongs to the consuming services, not to `core` — see
-/// `docs/FUTURE.md`.
+/// the GitHub issue tracker.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DatasetRef {
     pub namespace: String,
@@ -40,7 +40,7 @@ pub struct DatasetRef {
 /// The maximum transitive-closure depth a lineage read may request. A request
 /// beyond this is rejected (`Validation`) so a caller can never trigger an
 /// unbounded graph walk. A constant for now; a future env/config seam can make it
-/// tunable (see `docs/FUTURE.md`).
+/// tunable (see the GitHub issue tracker).
 pub const LINEAGE_MAX_DEPTH: u32 = 32;
 
 /// Validate a requested closure depth. `Ok` iff `1 <= depth <= LINEAGE_MAX_DEPTH`.

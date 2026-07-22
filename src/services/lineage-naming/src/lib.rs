@@ -2,7 +2,7 @@
 //! (`TableRef`/`TypeName`) and OpenLineage `DatasetRef`s, and back. Built from the
 //! deployment's `ObjectStoreConfig` so the physical storage location is encoded in
 //! the OpenLineage namespace. Postgres-free, pure logic over config. See
-//! docs/superpowers/specs/2026-07-01-dataset-naming-bridge-design.md.
+//! git history: 2026-07-01-dataset-naming-bridge-design.
 
 use control_plane_core::{
     DatasetId, DatasetRef, LOOM_DATASET_NAMESPACE, LOOM_TYPE_NAMESPACE, TableRef, TypeId, TypeName,

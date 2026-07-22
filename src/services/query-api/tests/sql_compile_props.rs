@@ -4,7 +4,7 @@
 //! quote-wrapped, (3) no caller-supplied value ever appears verbatim in the emitted
 //! SQL (values are always parameterized). Generators tag identifiers with a
 //! private-use marker `\u{E001}` and text operands with `\u{E002}` so the assertions
-//! are collision-free. See docs/superpowers/specs/2026-07-02-pillar-idioms-audit-design.md.
+//! are collision-free. See git history: 2026-07-02-pillar-idioms-audit-design.
 
 use control_plane_core::{CompareOp, TableRef};
 use proptest::prelude::*;

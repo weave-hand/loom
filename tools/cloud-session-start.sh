@@ -69,7 +69,7 @@ fi
 # --- Cold-build hardening -----------------------------------------------------
 # A fresh cloud session builds //src/... from cold, which trips three blockers the
 # snapshot/profile alone do not cover. See
-# docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
+# git history: 2026-06-25-cloud-session-cold-build-reliability-design.
 
 # (1) buck2 shim. /usr/local/sbin precedes /usr/local/bin on PATH, so this shim shadows
 # the real binary. It does three things before exec-ing it: (a) exports the github

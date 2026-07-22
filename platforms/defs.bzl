@@ -6,8 +6,8 @@
 #
 # This is a multi-arch index (linux/amd64 + linux/arm64), published by
 # .github/workflows/rbe-image.yml. Re-publish and repin this digest to refresh
-# the RBE base (see docs/superpowers/specs/
-# 2026-07-22-multi-arch-arm64-images-design.md).
+# the RBE base (design doc in git history:
+# 2026-07-22-multi-arch-arm64-images-design).
 _RBE_IMAGE = "docker://ghcr.io/weave-hand/loom-rbe-browser@sha256:8fe89f64f6b27bae9c3f7917eca7b86a7e3baea0abef357f7c2ca265b53b6e10"
 
 # Base BuildBuddy RE worker properties, shared by the execution platform's

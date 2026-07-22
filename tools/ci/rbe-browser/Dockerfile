@@ -1,7 +1,7 @@
 # Custom BuildBuddy RBE image for loom: the flame-public rbe-ubuntu24-04 base
 # plus the chrome-headless-shell runtime libraries, so //src/ui/e2e:login can
 # start its vendored browser on the RE worker (see
-# docs/superpowers/specs/2026-07-02-ui-e2e-hermetic-rbe-image-design.md).
+# git history: 2026-07-02-ui-e2e-hermetic-rbe-image-design).
 #
 # STRICT SUPERSET of the base: this ONLY adds an apt layer. Do not change USER,
 # ENTRYPOINT, WORKDIR, or the buildbuddy toolchain layout — every loom RE action

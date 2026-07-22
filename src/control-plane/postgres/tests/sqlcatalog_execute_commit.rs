@@ -1,7 +1,7 @@
 //! Regression + characterization tests for the no-transaction (auto-commit) arm of
 //! `SqlCatalog::execute` — the path that begins a tx, runs one statement, then commits.
 //! Fixes [[iss-sqlcatalog-execute-commit-swallow]]
-//! (docs/superpowers/specs/2026-06-29-sqlcatalog-execute-commit-error-design.md).
+//! (git history: 2026-06-29-sqlcatalog-execute-commit-error-design).
 //!
 //! `loom_fixture_test`, not an inline module — loom forbids inline `#[test]`.
 

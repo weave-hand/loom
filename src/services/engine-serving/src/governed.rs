@@ -1,7 +1,7 @@
 //! The governed external-SQL path: translates loom's [`control_plane_core::RowFilter`]
 //! ACL policy into DataFusion `Expr`s so the engine can apply row-level governance
 //! directly in the query plan, matching `query-api::sql::filter_sql`'s SQL semantics.
-//! See docs/superpowers/specs/2026-06-24-engine-serving-execution-wire-design.md.
+//! See git history: 2026-06-24-engine-serving-execution-wire-design.
 
 use std::collections::HashSet;
 use std::sync::Arc;

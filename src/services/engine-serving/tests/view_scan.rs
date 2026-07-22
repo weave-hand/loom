@@ -8,7 +8,7 @@
 //! Harness: `IcebergWriter` seeds a real Iceberg base (`main.customers`) whose
 //! mirror projection makes it a live table `define_view` can attach to.
 //! loom_fixture_test (Postgres).
-//! Spec: docs/superpowers/specs/2026-07-13-catalog-views-design.md
+//! Spec: git history: 2026-07-13-catalog-views-design
 
 use arrow::array::{Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;

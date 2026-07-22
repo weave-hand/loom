@@ -91,13 +91,13 @@ For per-component detail, tradeoffs, and the list of decisions still up for deba
 
 ## Project status & roadmap
 
-Three steps, tracked in the documentation registers — [`docs/ROADMAP.md`](./docs/ROADMAP.md) (committed work), [`docs/FUTURE.md`](./docs/FUTURE.md) (deferred ideas), and [`docs/ISSUES.md`](./docs/ISSUES.md) (known defects); the original narrative roadmap is archived at [`docs/superpowers/specs/2026-06-06-loom-roadmap.md`](./docs/superpowers/specs/2026-06-06-loom-roadmap.md). `main` stays green.
+Three steps, tracked as labeled GitHub issues — `roadmap` (committed work), `idea` (deferred ideas), and `bug` (known defects), organized on the `loom v1` project board; the original narrative roadmap is in git history (design doc: `2026-06-06-loom-roadmap`). `main` stays green.
 
 1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (Iceberg mirror read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
-2. **Harden the control plane.** Correctness and contract gaps catalogued in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are parked in [`docs/FUTURE.md`](./docs/FUTURE.md).
+2. **Harden the control plane.** Correctness and contract gaps catalogued in git history (design doc: `2026-06-06-control-plane-critical-review`) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are tracked as `idea`-labeled GitHub issues.
 3. **The services on top — 🚧 underway.** Built so far: the **engine service** (DataFusion against the Iceberg mirror, internal Flight SQL wire) and the **governed query read path** (ontology resolve + ACL compiled into generated SQL, returned as typed-object JSON), now including **governed link traversal** (FK- and join-table-backed links); **Ingest's** load-bearing primitives — the transactional **snapshot-commit** (loom is a native single-catalog Iceberg writer), the **landing materializer** (Arrow → inferred schema → Parquet → snapshot+lineage), and **dataset→model binding** (validated promotion of a landed dataset to an ontology type) — plus the **DataFusion ingestion compute path** (per-call `SessionContext` → repartitioned multi-file Snappy Parquet → per-file Iceberg stats); the runnable **binaries + plain-HTTP endpoints** on the shared `service_runtime`; and an **MVP deploy** (apko/Wolfi OCI images + a Helm chart). Still to come: **Transform workers** (queue-driven DataFusion on `control-plane-worker`), an external SQL wire for third-party clients, distributed/Ballista escalation, and branching.
 
-The slice-by-slice status of record is the documentation registers linked above; this section tracks the headline shape.
+The slice-by-slice status of record is the GitHub issue tracker; this section tracks the headline shape.
 
 ## Building & running
 
@@ -113,9 +113,9 @@ See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude,
 
 High-value tracks right now:
 
-- **Build out the services** — the next slices are the networked ingest/query shells (binaries + endpoints) over the in-process pipeline that already lands, binds, and serves data, plus Transform workers on `control-plane-worker`. The registers call the current front of work.
+- **Build out the services** — the next slices are the networked ingest/query shells (binaries + endpoints) over the in-process pipeline that already lands, binds, and serves data, plus Transform workers on `control-plane-worker`. The GitHub issue tracker calls the current front of work.
 - **Design pushback** on [`ARCHITECTURE.md`](./ARCHITECTURE.md) — especially the "Open questions" section. Several load-bearing choices haven't been settled; if you see a tradeoff we've gotten wrong, open an issue or a PR against that doc before writing code.
-- **Hardening the control-plane library** — the gaps in [`docs/superpowers/specs/2026-06-06-control-plane-critical-review.md`](./docs/superpowers/specs/2026-06-06-control-plane-critical-review.md) (Step 2) are concrete, scoped, and worth landing as the services lean harder on the library.
+- **Hardening the control-plane library** — the gaps in git history (design doc: `2026-06-06-control-plane-critical-review`) (Step 2) are concrete, scoped, and worth landing as the services lean harder on the library.
 
 Each change goes through the same spec → plan → implement → PR cycle the control plane was built with.
 

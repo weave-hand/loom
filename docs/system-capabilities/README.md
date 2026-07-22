@@ -2,11 +2,10 @@
 
 What loom can do **today**, per subsystem — behaviour, guarantees, and the key
 design decisions behind each landed capability, with PR references inline.
-These docs are the durable record of completed work; the registers
-([`ROADMAP.md`](../ROADMAP.md), [`ISSUES.md`](../ISSUES.md),
-[`FUTURE.md`](../FUTURE.md)) track only what is planned, broken, or deferred,
-and each doc closes with a `## Known gaps` section linking the register ids
-still open for its subsystem. Provenance: every doc carries an
+These docs are the durable record of completed work; the GitHub issue tracker
+(labels `roadmap`, `bug`, `idea`) tracks only what is planned, broken, or
+deferred, and each doc closes with a `## Known gaps` section linking the issue
+numbers still open for its subsystem. Provenance: every doc carries an
 `_As of <short-sha>._` line naming the main commit its claims were verified
 against.
 

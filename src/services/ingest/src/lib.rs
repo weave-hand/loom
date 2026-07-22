@@ -1,6 +1,6 @@
 //! loom ingest: the landing-edge materializer. Arrow batches -> registered
 //! snapshot + lineage via the part-1 snapshot-commit primitive, with an
-//! optional model-conformance gate. See the spec under docs/superpowers/specs/.
+//! optional model-conformance gate. See the design docs in git history.
 
 pub mod bind;
 pub mod config;

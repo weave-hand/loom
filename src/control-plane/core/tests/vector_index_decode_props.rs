@@ -4,7 +4,7 @@
 //! it returns Ok or a graceful Err; (2) `decode(encode(x)) == x` round-trips
 //! byte-exactly for every buildable index with homogeneous keys (the codec's
 //! one-kind contract). See
-//! docs/superpowers/specs/2026-07-02-pillar-idioms-audit-design.md.
+//! git history: 2026-07-02-pillar-idioms-audit-design.
 
 use control_plane_core::{
     FlatIndex, HnswIndex, IvfFlatIndex, Metric, VectorIndex, VectorKey, decode,

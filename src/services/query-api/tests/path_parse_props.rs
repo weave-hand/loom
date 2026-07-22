@@ -2,7 +2,7 @@
 //! caller input through the path/filter parsers never panics — every entry point
 //! returns (Vec/Ok/Err) gracefully — plus a few cheap structural invariants. These
 //! are the crate's designated pure-logic boundary (no ontology/fixture needed). See
-//! docs/superpowers/specs/2026-07-02-pillar-idioms-audit-design.md.
+//! git history: 2026-07-02-pillar-idioms-audit-design.
 
 use proptest::prelude::*;
 use query_api::filter::{coerce_filter, coerce_predicate, split_member, split_or_members};

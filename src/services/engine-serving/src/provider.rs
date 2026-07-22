@@ -3,7 +3,7 @@
 //! `SELECT`. Built for Iceberg inline rows (`iceberg_mirror.inline_<tid>`), where
 //! a fixed *base predicate* carries the per-query MVCC snapshot filter, but the
 //! type is relation-agnostic and reusable for any "DataFusion scans Postgres"
-//! need. See docs/superpowers/specs/2026-06-22-iceberg-inline-pg-tableprovider-design.md.
+//! need. See git history: 2026-06-22-iceberg-inline-pg-tableprovider-design.
 
 use std::sync::Arc;
 

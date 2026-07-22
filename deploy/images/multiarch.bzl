@@ -3,7 +3,7 @@
 homelab's `oci_image` is single-arch by construction: it `regctl image import`s the
 apko base, which collapses a multi-arch index to the host manifest. Composing a
 per-arch binary layer onto each arch therefore needs a different pipeline, proven
-in docs/superpowers/specs/2026-07-22-multi-arch-arm64-images-design.md:
+in git history: 2026-07-22-multi-arch-arm64-images-design:
 
   per arch (amd64, arm64):
     apko build --arch <arch>         # single-arch base (no index → no collapse)
