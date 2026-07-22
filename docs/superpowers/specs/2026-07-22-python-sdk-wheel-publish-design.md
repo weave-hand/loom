@@ -102,11 +102,15 @@ Two legs, split by what each runner can do:
    `buck2 build //src/sdk/python:wheel` then
    `buck2 run deploy//sdk:wheel.push -- sha-<short> edge` — immutable
    per-commit tag plus a moving `edge` channel, mirroring the image/chart
-   scheme. **Prerequisite (operator setup, documented like
-   `BUILDBUDDY_API_KEY`):** a new BuildBuddy org secret `GHCR_PUBLISH_TOKEN` —
-   a fine-grained GitHub PAT with `packages:write` — since BuildBuddy runners
-   have no ambient GitHub token. The action degrades loudly (fails) if the
-   secret is absent.
+   scheme. **Credentials:** per the operator (2026-07-22), a GitHub token is
+   already available to trusted BuildBuddy runs as the injected `GITHUB_TOKEN`
+   env var (BuildBuddy auto-injects org secrets), so no new secret is
+   prescribed. The implementation's first step is to **verify** this on a
+   trusted run — that `GITHUB_TOKEN` is present and can push to ghcr
+   (`packages:write`); if it turns out absent or read-only, fall back to
+   adding a `GHCR_PUBLISH_TOKEN` org secret (fine-grained PAT,
+   `packages:write`) and flag the operator. Either way the action fails
+   loudly when the login fails rather than skipping the push.
 2. **`release.yml` `release` job** (existing `workflow_dispatch X.Y.Z`):
    - validates the input version **equals the committed pyproject/BUCK
      version** (refuses to publish otherwise — no build-time version stamping,
