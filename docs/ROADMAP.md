@@ -35,4 +35,9 @@ documented per subsystem in [`system-capabilities/`](system-capabilities/README.
 
 ## devx
 
+- [ ] **Programmatic ACL admin surface in `loom-sdk` (`client.admin.roles`)** `{#road-python-sdk-acl-admin area:devx status:planned from:2026-07-21-python-sdk-v1-design pr:- spec:2026-07-22-python-sdk-acl-admin-design}`
+  Promoted from `fut-python-sdk-acl-admin`. Wrap the full roles + grants + user-role lifecycle (the nine existing `/admin/roles*` and `/admin/users/{u}/roles*` endpoints) as a typed `client.admin.roles` namespace on both shells: sans-IO builders/parsers in `_core.py`, a `GrantEntry` model, line-identical sync/async shells. Acceptance: the e2e smoke test's `_grant_acl` drops its raw-httpx block and drives the SDK surface. Row-level policies stay deferred ([[fut-python-sdk-policy-admin]]).
+- [ ] **Self-referential `Link` in `loom-sdk`'s pydantic layer** `{#road-python-sdk-link-self-ref area:devx status:planned from:2026-07-21-python-sdk-v1-design pr:- spec:2026-07-22-python-sdk-link-self-ref-design}`
+  Promoted (narrowed) from `fut-python-sdk-link-forward-refs`: support `parent: Link["Node", "parent_id"] | None` inside `class Node` via two-pass resolution in `__pydantic_init_subclass__`, with post-resolution annotation repair + `model_rebuild(force=True)` so the FK stays fully typed; the explicit FK column is required (the one-arg default always collides with the class's own identity). General forward refs and mutual A↔B cycles remain deferred under the narrowed [[fut-python-sdk-link-forward-refs]].
+
 ## cross-cutting
