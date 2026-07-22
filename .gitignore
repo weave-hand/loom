@@ -24,3 +24,7 @@ rust-project.json.tmp
 
 # buck2 user-local config override (e.g. file_watcher workaround)
 .buckconfig.local
+
+# Planning artifacts live in GitHub Issues since #466; specs/plans must never
+# be committed here again (upstream skill defaults still point at this path)
+docs/superpowers/
