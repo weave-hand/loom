@@ -220,6 +220,13 @@ containerSecurityContext:
     drop:
       - ALL
 
+# Image pull secrets for the private ghcr images (loom-ingest / loom-query-api /
+# loom-engine / loom-worker). Rendered onto the ServiceAccount, so every pod that
+# uses it — including the migrations hook Job — inherits them. Each entry is
+# `{name: <secret>}`; the referenced Secret must already exist in the release
+# namespace. Empty by default (public images or node-level registry auth).
+imagePullSecrets: []
+
 serviceAccount:
   create: true
   name: ""

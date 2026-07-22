@@ -255,3 +255,58 @@ fn wide_shape_nulls_skip_value_validation() {
     let b = wide_batch(vec![None], vec![None], vec![None]);
     assert!(validate_values(&wide_constrained_shape(), &[b]).is_ok());
 }
+
+#[test]
+fn capitalized_declared_type_accepts_canonical_lowercase() {
+    // Regression for #358: the gate matches logical types case-insensitively (via
+    // core `satisfies`), not by raw string equality — so a property declared with a
+    // capitalized token like `Long`/`String` accepts the landing map's canonical
+    // lowercase `long`/`string`. Before the fix this 422'd with
+    // `type_mismatch expected "Long" found "long"`.
+    let shape = ModelShape {
+        columns: vec![
+            ColumnShape {
+                name: "id".into(),
+                ty: "Long".into(),
+                required: true,
+                constraints: PropertyConstraints::default(),
+            },
+            ColumnShape {
+                name: "label".into(),
+                ty: "String".into(),
+                required: true,
+                constraints: PropertyConstraints::default(),
+            },
+        ],
+    };
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, false),
+    ]);
+    assert!(
+        validate(&shape, &schema).is_ok(),
+        "capitalized declared types should accept canonical lowercase inferred types"
+    );
+}
+
+#[test]
+fn unrecognized_declared_type_is_still_a_violation() {
+    // `IsoTimestamp` is not a recognized logical token (use `timestamp`); `satisfies`
+    // errs on the declared type, which the gate treats as a mismatch rather than
+    // silently passing.
+    let shape = ModelShape {
+        columns: vec![ColumnShape {
+            name: "id".into(),
+            ty: "IsoTimestamp".into(),
+            required: true,
+            constraints: PropertyConstraints::default(),
+        }],
+    };
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let v = validate(&shape, &schema).unwrap_err();
+    assert!(
+        v.iter()
+            .any(|x| x.column == "id" && matches!(x.reason, ViolationReason::TypeMismatch { .. })),
+        "an unrecognized declared type must still produce a violation"
+    );
+}
