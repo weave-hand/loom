@@ -6,8 +6,10 @@ requires-python = ">=3.13"
 dependencies = [
     "httpx>=0.28",
     "pyarrow>=25",
-    "pydantic>=2.11",
 ]
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.11"]
 
 [tool.uv]
 package = false
