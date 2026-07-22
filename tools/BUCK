@@ -625,3 +625,96 @@ command_alias(
     exe = ":wasm-bindgen-x86_64-linux",
     visibility = ["PUBLIC"],
 )
+
+# muntjac (https://github.com/weave-hand/muntjac) — uv.lock → buck2 rules importer
+# for Python third-party deps (the reindeer analog; see CLAUDE.md "Third-party
+# Python deps"). Consumed from the weave-hand fork's release (upstream
+# rsJames-ttrpg/muntjac ships no prebuilts). The release assets are `.tar.gz`
+# with the binary at the archive ROOT (no wrapper dir, unlike prek), so the
+# genrules untar without --strip-components. To bump: tag a new vX.Y.Z on
+# weave-hand/muntjac, update MUNTJAC_VERSION, refresh each sha256 from the
+# release's `.tar.gz.sha256` sidecars.
+
+MUNTJAC_VERSION = "v0.2.2"
+
+_MUNTJAC_URL = "https://github.com/weave-hand/muntjac/releases/download/{version}/muntjac-{triple}.tar.gz"
+
+http_file(
+    name = "muntjac-x86_64-linux.tar.gz",
+    urls = [_MUNTJAC_URL.format(version = MUNTJAC_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "0ede62e7531951ba36536996621fc9b2ba6d86407504471b677606558667695d",
+)
+
+http_file(
+    name = "muntjac-aarch64-linux.tar.gz",
+    urls = [_MUNTJAC_URL.format(version = MUNTJAC_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "0a3bf70d255de1d584376553b071de38a2497638de239b82a89cffcb44dc21d7",
+)
+
+genrule(
+    name = "muntjac-x86_64-linux",
+    out = "muntjac",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :muntjac-x86_64-linux.tar.gz) -C $TMP/x && cp $TMP/x/muntjac $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "muntjac-aarch64-linux",
+    out = "muntjac",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :muntjac-aarch64-linux.tar.gz) -C $TMP/x && cp $TMP/x/muntjac $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "muntjac",
+    exe = select({
+        "prelude//cpu/constraints:arm64": ":muntjac-aarch64-linux",
+        "prelude//cpu/constraints:x86_64": ":muntjac-x86_64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)
+
+# uv (https://github.com/astral-sh/uv) — the Python package/dependency resolver
+# muntjac drives (`uv lock`). Vendored so tools/pybuckify.sh needs no host uv.
+# Assets are `.tar.gz` with a `uv-<triple>/` wrapper dir (strip-components=1,
+# like prek); each has a `.sha256` sidecar. To bump: replace UV_VERSION and
+# refresh each sha256 from the sidecars.
+
+UV_VERSION = "0.11.30"
+
+_UV_URL = "https://github.com/astral-sh/uv/releases/download/{version}/uv-{triple}.tar.gz"
+
+http_file(
+    name = "uv-x86_64-linux.tar.gz",
+    urls = [_UV_URL.format(version = UV_VERSION, triple = "x86_64-unknown-linux-gnu")],
+    sha256 = "04bc7d180d6138bf6dc08387acf507a823f397a98fea55da36b0ccc7fbce3b68",
+)
+
+http_file(
+    name = "uv-aarch64-linux.tar.gz",
+    urls = [_UV_URL.format(version = UV_VERSION, triple = "aarch64-unknown-linux-gnu")],
+    sha256 = "8c11d90f5f66d232930cf8ae3a085c39877690d409e10878234802b028b20e2a",
+)
+
+genrule(
+    name = "uv-x86_64-linux",
+    out = "uv",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :uv-x86_64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/uv $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+genrule(
+    name = "uv-aarch64-linux",
+    out = "uv",
+    cmd = "mkdir -p $TMP/x && tar -xzf $(location :uv-aarch64-linux.tar.gz) -C $TMP/x --strip-components=1 && cp $TMP/x/uv $OUT && chmod +x $OUT",
+    executable = True,
+)
+
+command_alias(
+    name = "uv",
+    exe = select({
+        "prelude//cpu/constraints:arm64": ":uv-aarch64-linux",
+        "prelude//cpu/constraints:x86_64": ":uv-x86_64-linux",
+    }),
+    visibility = ["PUBLIC"],
+)

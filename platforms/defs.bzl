@@ -10,21 +10,44 @@
 # 2026-07-22-multi-arch-arm64-images-design.md).
 _RBE_IMAGE = "docker://ghcr.io/weave-hand/loom-rbe-browser@sha256:99cada5b232b5d23d16800c3c85d3f959427151856bcf7d249051cc5169042ce"
 
+# Base BuildBuddy RE worker properties, shared by the execution platform's
+# executor config (which adds the per-arch `Arch` key) and by tests that PIN
+# their run to RE via the `remote_execution` attr (see RE_TEST_PROPS).
+RE_EXECUTION_PROPERTIES = {
+    "OSFamily": "Linux",
+    "container-image": _RBE_IMAGE,
+    "dockerUser": "buildbuddy",
+}
+
+# `remote_execution` attr value for tests that must ALWAYS run on RE (the
+# prelude turns it into the test's default executor — no
+# --unstable-allow-all-tests-on-re needed). Today that is every python_test:
+# the inplace par's shebang bakes the interpreter's absolute path from the
+# par-build action's sandbox (RE), so local test execution cannot work until
+# the prelude bootstrap learns a machine-independent shebang
+# (fut-python-par-local-shebang). Escape hatch for RE-less environments:
+# -c fbcode.disable_re_tests=True (prelude re_utils honors it). Tests run on
+# amd64 (no `Arch` key → BuildBuddy's amd64 default).
+RE_TEST_PROPS = {
+    "capabilities": RE_EXECUTION_PROPERTIES,
+    "use_case": "buck2-default",
+}
+
 def _executor_config(arch):
     if read_root_config("project", "remote_enabled", None):
         remote_only = read_root_config("project", "remote_only", None)
+
+        # BuildBuddy executor selection: arm64 is served by self-hosted executors
+        # in the default pool; amd64 is the managed pool. Add `Arch` to the shared
+        # base props per platform.
+        props = dict(RE_EXECUTION_PROPERTIES)
+        props["Arch"] = arch
+
         return CommandExecutorConfig(
             local_enabled = True,
             remote_enabled = True,
             use_limited_hybrid = not remote_only,
-            remote_execution_properties = {
-                # BuildBuddy executor selection. arm64 is served by self-hosted
-                # executors in the default pool; amd64 is the managed pool.
-                "Arch": arch,
-                "OSFamily": "Linux",
-                "container-image": _RBE_IMAGE,
-                "dockerUser": "buildbuddy",
-            },
+            remote_execution_properties = props,
             remote_execution_use_case = "buck2-default",
             remote_output_paths = "output_paths",
         )

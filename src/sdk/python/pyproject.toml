@@ -1,0 +1,15 @@
+[project]
+name = "loom-sdk"
+version = "0.1.0"
+description = "Python SDK for loom — data ingestion and pydantic ontology creation (road-python-sdk-v1 fills in the package)."
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28",
+    "pyarrow>=25",
+]
+
+[project.optional-dependencies]
+pydantic = ["pydantic>=2.11"]
+
+[tool.uv]
+package = false

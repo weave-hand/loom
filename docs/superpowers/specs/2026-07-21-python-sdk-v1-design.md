@@ -1,10 +1,13 @@
 # Python SDK v1 (`loom-sdk`) Design
 
-> **Status:** design (direction). This spec makes `road-python-sdk-v1` build-ready
-> (promoted, with [[road-python-build-infra]], from `fut-python-bindings`). A separate work
-> agent writes the implementation plan from it and builds it. Sequenced **after**
-> `road-python-build-infra`, which provides the muntjac/uv dependency machinery and the
-> `//third-party/python:*` targets this consumes.
+> **Status:** shipped (`road-python-sdk-v1`, closed 2026-07-22). This spec made
+> `road-python-sdk-v1` build-ready (promoted, with `road-python-build-infra`, from
+> `fut-python-bindings`); a separate work agent wrote the implementation plan from
+> it and built it, sequenced **after** `road-python-build-infra`, which provided the
+> muntjac/uv dependency machinery and the `//third-party/python:*` targets this
+> consumes. See `docs/system-capabilities/python-sdk.md` for the as-shipped
+> capability writeup; the corrections below are places the build disproved or
+> deliberately deviated from this design.
 
 ## Problem
 
@@ -31,7 +34,7 @@ Operator decisions taken in the design session:
   `pyarrow` only (Arrow IPC makes pyarrow unavoidable).
 - **Name:** distribution `loom-sdk`, import `loom_sdk`.
 - **Home:** loom monorepo, `src/sdk/python/` — buck2-built via
-  [[road-python-build-infra]], e2e-testable against the real services in-tree.
+  `road-python-build-infra`, e2e-testable against the real services in-tree.
 
 ## Package layout
 
@@ -62,10 +65,20 @@ client.datasets.list() / .get(s, t) / .preview(s, t)
 - `data` accepts `pyarrow.Table`, `pyarrow.RecordBatch`, or `list[dict]` (converted via
   `pyarrow.Table.from_pylist`); encoded once in `_arrow.py` as an IPC stream.
 - ingest and query-api are **two services**: the client resolves each call to the right
-  base URL; the single-`url` form assumes co-deployment behind one host.
+  base URL; the single-`url` form assumes co-deployment behind one host. **As shipped:**
+  `client.admin.*` (`define_model`/`define_link`) is also a query-api call — the admin
+  ontology-definition surface lives on query-api's router (`service_runtime::admin_routes`
+  merged into query-api, not ingest), not on ingest as the endpoint list above might
+  suggest by proximity to the ingest examples.
 - Errors: `LoomError` base → `AuthError` (401/403), `NotFoundError` (404),
   `ConformanceError` (ingest 422, carrying the parsed `ViolationsBody` violations list),
   `ValidationError` (400), `ServerError` (5xx) — each carrying the server's message.
+  **As shipped, this hierarchy changed** (recorded in the implementation plan's Global
+  Constraints, not a build-time discovery): `AuthError` is 401-only, split from a new
+  `ForbiddenError` (403) — the wire distinguishes a bad/expired token from an ACL/admin
+  denial, so a combined class would lose that distinction; `ValidationError` is named
+  `RequestError` instead (avoids colliding with `pydantic.ValidationError` in caller code)
+  and additionally covers 409, not just 400.
 - `AsyncClient` mirrors every method 1:1; both shells call the same `_core` functions.
 
 ## Pydantic layer (`loom_sdk.pydantic`)
@@ -95,10 +108,12 @@ client.models.land_instances([Customer(customer_id=1, name="Ada")])
   this type *and* the `define_link` payload; instances hold the FK value. The FK
   property is named after the target's identity property by default (`customer:
   Link[Customer]` → `customer_id`); a second link to the same target must override the
-  name via the `Link` metadata.
+  name via the `Link` metadata. **As shipped:** the FK link's cardinality defaults to
+  `"One"` (an FK field on the declaring type points at exactly one target, matching the
+  tree's canonical `LinkDef::fk(..., Cardinality::One, ...)` convention) — left unstated
+  in this design and worth recording explicitly now that it's shipped.
 - **`apply` is idempotent and bootstrap-aware.** loom defines models **over an existing
-  table** (`DefineModelReq { name, table, identity, properties }` → the ingest `bind`
-  seam validates physical conformance), so `apply`:
+  table** (`DefineModelReq { name, table, identity, properties }`), so `apply`:
   1. reads the existing type (`GET /ontology/types/{name}`) — full match ⇒ no-op;
      incompatible drift ⇒ error (no silent migration — future work);
   2. if the backing table doesn't exist, lands a **zero-row Arrow IPC stream** with the
@@ -108,6 +123,17 @@ client.models.land_instances([Customer(customer_id=1, name="Ada")])
      verifies);
   3. `define_model` then `define_link` for each `Link` field, in dependency order across
      the passed classes.
+
+  **As shipped, a correction to step 3:** `define_model` does **not** bind-validate
+  physical conformance against the backing table at define time — the handler
+  (`runtime/src/admin.rs::define_model`) builds an `ObjectType` and calls
+  `ontology().define_type(otype)` directly, with no check against the table's actual
+  Iceberg schema. Bind-style structural validation only happens on `POST /models/{type}`
+  (ingest's typed-write path) — not on `POST /admin/models`. Zero-row bootstrap (step 2)
+  still materializes a real table with the right physical schema before `define_model`
+  runs, so `apply`'s own correctness doesn't depend on this — but a caller who
+  hand-writes a mismatched `define_model` payload against an existing table today gets
+  no define-time error for it.
 - `land_instances` converts instances → `pyarrow.Table` (FK fields flattened) → the
   conformance-gated `POST /models/{type}`.
 - The extra is import-guarded: `import loom_sdk` never imports pydantic;

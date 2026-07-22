@@ -278,6 +278,14 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
 - [ ] **YAML config-file format** `{#fut-config-yaml-format area:deploy status:deferred from:2026-06-25-config-seam-unification-design pr:- spec:-}`
   `#road-config-seam-unification` loads the structured config file as JSON (`serde_json`, already vendored). Adding YAML authoring is purely additive (JSON ⊂ YAML) but needs a *maintained* YAML crate — the de-facto `serde_yaml` is archived upstream — so the crate choice is its own decision, deferred until a deployment actually wants to hand-author YAML ConfigMaps.
 
+## build
+
+- [ ] **muntjac `--frozen` staleness error / check mode** `{#fut-muntjac-frozen-staleness-check area:build status:deferred from:2026-07-21-python-build-infra-muntjac-design pr:- spec:-}`
+  Probed while building `#road-python-build-infra`: muntjac's staleness gate for its own (non-frozen) re-lock is a raw mtime comparison between `pyproject.toml` and `uv.lock`, and `--frozen` mode (what `pybuckify.sh --frozen`/the `muntjac-check` hook use, to stay network-free against arbitrary CI checkout mtimes) skips that check entirely rather than erroring — so a `pyproject.toml` edit committed without a matching `uv lock` silently passes the hook and CI. The right fix is upstream in weave-hand/muntjac: either make `--frozen` fail when the manifest's declared dependency set doesn't match what's recorded in the lock (content comparison, not mtime), or add a separate `--check` mode the hook can run that does that comparison without invoking a re-lock. Until then, lock freshness against manifest edits relies on review + the SDK's own CI re-resolving on a real `uv lock`.
+
+- [ ] **Machine-independent shebang for inplace pars (prelude fix)** `{#fut-python-par-local-shebang area:build status:deferred from:2026-07-21-python-build-infra-muntjac-design pr:- spec:-}`
+  `make_py_package_inplace.py` absolutizes the hermetic interpreter path against the par-build action's sandbox cwd, so a par built on RE cannot be exec'd locally (shebang points into `/buildbuddy-execroot`). loom pins python tests to the RE executor as the workaround (`RE_TEST_PROPS`). The real fix is upstream in the prelude bootstrap — e.g. an sh/python polyglot that resolves the interpreter relative to the par's own location — which would let python tests run on either executor; upstream deliberately made the path absolute ("inplace: make python interpreter absolute"), so this needs an upstream conversation or a carried patch.
+
 ## test
 
 - [ ] **Actual-binary subprocess smoke** `{#fut-binary-subprocess-smoke area:test status:deferred from:2026-06-23-e2e-http-client-design pr:- spec:-}`
@@ -318,6 +326,10 @@ defects in shipped code are in [`ISSUES.md`](ISSUES.md). Grammar:
   The new code-health routines render via `//tools:jq`; migrating `loom-stpa` to that same vendored jq (instead of host jq) is a follow-up.
 - [ ] **prek hook: no panicky macros (`expect`/`unwrap` inside `macro_rules!`)** `{#fut-macro-panic-lint-hook area:devx status:deferred from:2026-07-02-pillar-idioms-audit-design pr:- spec:-}`
   `#iss-inline-downcast-panic` exposed a lint-gate loophole: a locally-defined `macro_rules!` body can smuggle `.expect(`/`.unwrap(` past the enforced `clippy::expect_used`/`unwrap_used` panic-safety set (the lint fires at the expansion's *use* site attribution, not the definition). A cheap prek hook in the `tools/check-inline-tests.sh` style — grep for `.expect(`/`.unwrap(` inside `macro_rules!` bodies under first-party `src/**` (tests exempt) — closes the class.
+- [ ] **Row-level policy admin surface in `loom-sdk`** `{#fut-python-sdk-policy-admin area:devx status:deferred from:2026-07-22-python-sdk-acl-admin-design pr:- spec:-}`
+  [[road-python-sdk-acl-admin]] wraps roles/grants/user-role assignment but deliberately not `/admin/roles/{r}/policies` (POST/GET/DELETE): the `RowFilter` predicate-tree request shape (`Compare`/`And`/`Or`/`Not`, ranges, lengths) is much richer than the grant body, and nothing in the SDK's instance-bootstrap path needs it. A future slice models the predicate tree (plausibly on the pydantic extra) and wraps the three endpoints.
+- [ ] **General forward-ref `Link` support in `loom-sdk`'s pydantic layer** `{#fut-python-sdk-link-forward-refs area:devx status:deferred from:2026-07-22-python-sdk-link-self-ref-design pr:- spec:-}`
+  [[road-python-sdk-link-self-ref]] lifts the *self-referential* case (`Link["Node", "col"]` naming the class under construction, resolved within its own class-creation). Still deferred: a string target naming a class defined later, and mutual A↔B link cycles — both need a deferred-resolution point (at `apply()`/first use, or an explicit resolve call), which moves the failure surface from class creation to first use and leaves FK fields weakly typed until resolution.
 
 ## cross-cutting
 

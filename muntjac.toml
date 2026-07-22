@@ -1,0 +1,26 @@
+# muntjac (uv.lock → buck2 rules) config — the Python analog of reindeer.toml.
+# Paths are relative to this file (the repo root). Regenerate third-party/python
+# with ./tools/pybuckify.sh; see CLAUDE.md "Third-party Python deps".
+
+manifest_path = "src/sdk/python/pyproject.toml"
+third_party_dir = "third-party/python"
+# Single version, matching CPYTHON_VERSION in toolchains/BUCK (3.13.6).
+python_versions = ["3.13"]
+
+# pyarrow cp313 ships manylinux_2_28-only wheels; 2_28 also accepts the
+# older-tag (2_17) wheels of pydantic-core. Linux-only, like the Rust toolchain.
+[platforms.linux-x86_64-gnu]
+target = "x86_64-unknown-linux-gnu"
+manylinux = "2_28"
+
+[platforms.linux-aarch64-gnu]
+target = "aarch64-unknown-linux-gnu"
+manylinux = "2_28"
+
+[fixups]
+registry = "none"
+allow_local_overrides = true
+
+[buck]
+file_name = "BUCK"
+vendor = false
