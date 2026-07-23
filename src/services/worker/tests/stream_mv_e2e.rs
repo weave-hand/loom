@@ -209,6 +209,29 @@ fn make_stream_mv_job(
     }
 }
 
+/// Register a micro-batch MV def naming `output` over `source`, with NO data trigger
+/// (`on_input_commit: false`) so landing never auto-fires a run — these tests drive their
+/// runs by hand. Since #627 the watermark CAS a micro-batch commit issues carries a
+/// def-existence guard (`mv_key(output)` must be named by a live micro-batch def), so a
+/// `run_micro_batch` happy path must register its def first; the register-then-run tests
+/// below (`gc_holds_…`, `mv_registered_…`) already do this inline.
+async fn register_mv_def(cp: &PgControlPlane, source: &TableRef, output: &TableRef, sql: &str) {
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName(format!("mv_{}_{}", output.schema, output.name)),
+            body: TransformBody::MicroBatch {
+                source: source.clone(),
+                output: output.clone(),
+                buckets: 1,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv def");
+}
+
 /// Submit + dequeue + run one micro-batch over the REAL queue, mirroring how
 /// `transform_e2e` drives its jobs: a `TransformRun` carrying a frozen
 /// `MicroBatch` body is submitted (record + queued job, atomically), then
@@ -358,6 +381,15 @@ async fn mv_converges_across_micro_batches_and_flush() {
 
     // 1. Seed s.events: (1,10),(2,20),(3,30), declared a 2-bucket log stream.
     let src = tref("s", "events");
+    // #627: register the MV def up front so the micro-batch commits' watermark CAS passes the
+    // def-existence guard (register-before-run, like the tests further down).
+    register_mv_def(
+        &cp,
+        &src,
+        &tref("s", "doubled"),
+        "select id, val * 2 as dbl from events",
+    )
+    .await;
     let (schema, batches) = events_batch(&[1, 2, 3], &[10, 20, 30]);
     land(
         &pool,
@@ -494,6 +526,15 @@ async fn filtering_micro_batch_advances_watermark_with_empty_output() {
 
     // All rows fail the predicate below (val <= 1000).
     let src = tref("f", "events");
+    // #627: register the MV def up front so the micro-batch commit's watermark CAS passes the
+    // def-existence guard.
+    register_mv_def(
+        &cp,
+        &src,
+        &tref("f", "filtered"),
+        "select id, val from events where val > 1000",
+    )
+    .await;
     let (schema, batches) = events_batch(&[1, 2, 3], &[10, 20, 30]);
     land(
         &pool,
