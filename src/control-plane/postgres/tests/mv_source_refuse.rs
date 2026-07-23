@@ -345,3 +345,84 @@ async fn cdc_declare_racing_a_committing_mv_registration_is_refused() {
             .expect("count the committed MV row");
     assert_eq!(mv_rows, 1, "the MV registration is the survivor");
 }
+
+/// THE RACE — order B: a first CDC declaration commits WHILE an MV registration is
+/// in flight. A raw tx simulates the in-flight CDC declaration: it holds
+/// `lock_key(src)` (exactly what the Task 1 fix makes `reconcile_stream_mode` do at
+/// first-declare) and has an UNCOMMITTED `kind='cdc'` `stream.stream_table` row.
+/// The real `define_transform` blocks on `lock_key(src)` (it always takes it for MV
+/// bodies), then — under the lock — `pg_refuse_mv_over_cdc_source` sees the
+/// committed CDC row and refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn mv_registration_racing_a_committing_cdc_declare_is_refused() {
+    use control_plane_postgres::iceberg_flush::lock_key;
+
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let src = tref("s", "events");
+
+    // The CDC declaration needs a live mirror row to key its stream_table row on.
+    let tid = ensure(&pool, &src).await;
+
+    // WINNER (simulated in-flight CDC first-declare): hold `lock_key(src)` and insert
+    // an UNCOMMITTED cdc `stream.stream_table` row for `tid`.
+    let mut winner = pool.begin().await.expect("begin winner tx");
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(lock_key(&src.schema, &src.name))
+        .execute(&mut *winner)
+        .await
+        .expect("winner takes lock_key(src)");
+    sqlx::query(
+        "insert into stream.stream_table \
+         (table_id, bucket_count, kind, bucket_key, merge_engine) \
+         values ($1, 1, 'cdc', 'id', 'last_row')",
+    )
+    .bind(tid)
+    .execute(&mut *winner)
+    .await
+    .expect("winner inserts the cdc stream_table row");
+
+    // LOSER: the real `define_transform`, on the control plane's own pool.
+    let cp2 = cp.clone();
+    let src2 = src.clone();
+    let loser = tokio::spawn(async move { define_mv(&cp2, &src2).await });
+
+    await_lock_blocked(&pool).await;
+    winner
+        .commit()
+        .await
+        .expect("commit winner CDC declaration");
+
+    let err = loser
+        .await
+        .expect("join loser")
+        .expect_err("an MV registration racing a committing CDC declaration must be refused");
+    match err {
+        ControlPlaneError::Validation(m) => assert!(
+            m.contains("cdc"),
+            "the refusal must name the CDC source: {m}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+
+    // WEDGED STATE ABSENT (spec post-condition): the CDC declaration committed; the
+    // refused MV registration rolled back, so no micro-batch body names this source.
+    let cdc_rows: i64 = sqlx::query_scalar(
+        "select count(*) from stream.stream_table where table_id = $1 and kind = 'cdc'",
+    )
+    .bind(tid)
+    .fetch_one(&pool)
+    .await
+    .expect("count cdc stream_table rows for src");
+    assert_eq!(cdc_rows, 1, "the CDC declaration is the survivor");
+    let mv_rows: i64 =
+        sqlx::query_scalar("select count(*) from transforms.transform where name = 'mv_a'")
+            .fetch_one(&pool)
+            .await
+            .expect("count the refused MV row");
+    assert_eq!(
+        mv_rows, 0,
+        "the refused MV registration must have left no transform row"
+    );
+}
