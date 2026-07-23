@@ -182,6 +182,10 @@ async fn build_ctx(sock: &str) -> StreamMvCtx {
     }
 }
 
+/// `on_input_commit` is explicit (not hardcoded) so callers can register a
+/// guard-only stand-in (`false` — satisfies the def-existence guard on
+/// `advance_mv_watermark`, #627, without becoming a data-trigger seam) ahead
+/// of a def that later joins the trigger DAG for real (`true`).
 fn join_mv_def(
     name: &str,
     source: &TableRef,
@@ -189,6 +193,7 @@ fn join_mv_def(
     on: Option<LookupOn>,
     output: &TableRef,
     sql: &str,
+    on_input_commit: bool,
 ) -> TransformDef {
     TransformDef {
         name: TransformName(name.into()),
@@ -201,7 +206,7 @@ fn join_mv_def(
             sql: sql.into(),
         },
         schedule: None,
-        on_input_commit: true,
+        on_input_commit,
     }
 }
 
@@ -416,6 +421,25 @@ async fn enrich_and_source_triggers_compose_downstream() {
     .await
     .expect("land the seed orders row");
 
+    // Register a guard-only "join_mv" def (`on_input_commit: false`) BEFORE
+    // the ad hoc baseline run below advances `s.enriched_orders`'s watermark
+    // — the def-existence guard (#627) refuses the CAS otherwise. `false`
+    // keeps it inert: defining it here fires no data-triggered run, so the
+    // baseline stays a purely ad hoc seed. It is redefined (same name) with
+    // `on_input_commit: true` further down, once the trigger DAG is meant to
+    // go live.
+    cp.define_transform(join_mv_def(
+        "join_mv",
+        &src,
+        &enrich,
+        Some(on.clone()),
+        &dst,
+        join_sql,
+        false,
+    ))
+    .await
+    .expect("define join_mv (guard-only, before the ad hoc baseline run)");
+
     run_micro_batch_join_adhoc(
         &cp,
         &ctx,
@@ -445,6 +469,7 @@ async fn enrich_and_source_triggers_compose_downstream() {
         Some(on.clone()),
         &dst,
         join_sql,
+        true,
     ))
     .await
     .expect("define join_mv");
@@ -663,6 +688,7 @@ async fn enrich_edge_cycle_rejected_at_define_time() {
         None,
         &out1,
         "select 1 from a join out2 on true",
+        true,
     ))
     .await
     .expect("define mv1 -- no cycle yet, mv2 does not exist");
@@ -675,6 +701,7 @@ async fn enrich_edge_cycle_rejected_at_define_time() {
             None,
             &out2,
             "select 1 from out1 join b on true",
+            true,
         ))
         .await
         .expect_err(

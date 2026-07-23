@@ -10,7 +10,8 @@ use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, EventType, Job, JobId, LineageEvent, LookupOn, MergeEngine,
     MvWatermarks, ObjectType, Ontology, Queue, RetryPolicy, RunId, RunState, RunTrigger,
-    STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody, TransformRun, mv_key,
+    STREAM_MV_JOB_KIND, StreamMvJob, StreamTables, TableRef, TransformBody, TransformDef,
+    TransformName, TransformRun, Transforms, mv_key,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -262,6 +263,37 @@ fn make_stream_mv_join_job(
     }
 }
 
+/// Register a `MicroBatchJoin` def whose `output` names `mv_key(output)`,
+/// satisfying the def-existence guard `advance_mv_watermark` enforces (#627):
+/// a watermark CAS is refused unless a live `microbatch`/`microbatch_join`
+/// def names the key it advances. `on_input_commit: false` — every run in
+/// this file is submitted ad hoc via `run_micro_batch_join`, so the def only
+/// needs to EXIST for the guard; it must not itself become a data-trigger
+/// seam and fire a run of its own.
+fn mv_join_def(
+    name: &str,
+    source: &TableRef,
+    enrich: &TableRef,
+    on: Option<LookupOn>,
+    output: &TableRef,
+    buckets: i32,
+    sql: &str,
+) -> TransformDef {
+    TransformDef {
+        name: TransformName(name.into()),
+        body: TransformBody::MicroBatchJoin {
+            source: source.clone(),
+            enrich: enrich.clone(),
+            on,
+            output: output.clone(),
+            buckets,
+            sql: sql.to_string(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    }
+}
+
 /// Read `(id, customer_id, name, amount)` rows of `table` over the engine's SQL
 /// serving path, as an order-independent set.
 async fn enriched_rows(
@@ -435,6 +467,20 @@ async fn lookup_join_emits_enriched_stream_and_converges() {
     )
     .await
     .expect("land orders batch 1");
+
+    // Register the join MV's def BEFORE any run advances its watermark — the
+    // def-existence guard (#627) refuses the CAS otherwise.
+    cp.define_transform(mv_join_def(
+        "enriched_orders_mv",
+        &src,
+        &enrich,
+        Some(on.clone()),
+        &dst,
+        1,
+        sql,
+    ))
+    .await
+    .expect("register enriched_orders join def (guard #627)");
 
     // Case 1: the lookup-join emits the enriched stream.
     let (rid1, result1) =
@@ -675,6 +721,31 @@ async fn keyed_and_unkeyed_join_produce_identical_rows() {
         enrich_col: "id".to_string(),
     };
 
+    // Register both join MVs' defs BEFORE either run advances its watermark —
+    // the def-existence guard (#627) refuses the CAS otherwise.
+    cp.define_transform(mv_join_def(
+        "enriched_keyed_mv",
+        &src,
+        &enrich,
+        Some(on.clone()),
+        &dst_keyed,
+        1,
+        sql,
+    ))
+    .await
+    .expect("register enriched_keyed join def (guard #627)");
+    cp.define_transform(mv_join_def(
+        "enriched_unkeyed_mv",
+        &src,
+        &enrich,
+        None,
+        &dst_unkeyed,
+        1,
+        sql,
+    ))
+    .await
+    .expect("register enriched_unkeyed join def (guard #627)");
+
     let (rid_keyed, result_keyed) =
         run_micro_batch_join(&cp, &ctx, &src, &enrich, Some(on), &dst_keyed, 1, sql).await;
     result_keyed.expect("keyed join run");
@@ -905,6 +976,20 @@ async fn live_but_empty_enrich_joins_as_empty_table_and_succeeds() {
         .await
         .expect("watermarks before");
     assert!(before.is_empty(), "no watermark recorded before any run");
+
+    // Register the join MV's def BEFORE the run advances its watermark — the
+    // def-existence guard (#627) refuses the CAS otherwise.
+    cp.define_transform(mv_join_def(
+        "enriched_empty_mv",
+        &src,
+        &enrich,
+        Some(on.clone()),
+        &dst,
+        1,
+        sql,
+    ))
+    .await
+    .expect("register enriched_empty join def (guard #627)");
 
     let (rid, result) =
         run_micro_batch_join(&cp, &ctx, &src, &enrich, Some(on), &dst, 1, sql).await;
