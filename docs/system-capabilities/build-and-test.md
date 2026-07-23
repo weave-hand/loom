@@ -113,6 +113,15 @@ table seeds, kNN asserts) and `:flight` (`spawn_engine_uds` with connect-retry
 readiness, replacing most of the tree's sleep-based sync flakes), which cut the
 vector-cluster duplication census from 102 pairs to 27 (#324). query-api's e2e
 suites share their seed/router/ACL plumbing through the `:e2e-support` library.
+Ingest's e2e suites now do the same: `//src/services/ingest:e2e-support` owns
+`sample_batch`/`ipc_bytes`/`app_state`/`protected`/`post_model_q`/`post_dataset_q`
+plus the router-support pair `ingest_router(fx, db)` and `post_ipc(app, uri,
+body)`, consumed directly by `http_land`/`http_model`/`stream_declare` rather
+than kept as per-file copies; `iceberg_land`/`runtime_land` stay local by
+design (flush-threshold tuning and real-runtime-connect divergence,
+respectively) (#595). The `#[traced_test]`/`logs_contain` error-path-logging
+standard — assert the logged fault content, not just the HTTP status — is now
+recorded in CLAUDE.md's Testing section.
 
 **End-to-end layers.** Three complementary e2e layers exist. In-process `oneshot`
 suites carry behavioral breadth. An over-the-wire layer boots the real routers on
@@ -253,8 +262,6 @@ all held to the same route-set drift guards (#346).
   ~54 hand-maintained SQL literals.
 - `#fut-testkit-contract-split` — decompose testkit's monolithic 3293-line
   contracts into named sub-contracts for failure attribution.
-- `#fut-test-harness-residuals` — `#[traced_test]` standardization and the
-  ingest router-support trio left out of the shared harness.
 - `#fut-coercion-taxonomy` — one shared value-coercion taxonomy across the seven
   per-direction dispatch functions.
 - `#fut-conformance-enum-consolidation` — consolidate the parallel
