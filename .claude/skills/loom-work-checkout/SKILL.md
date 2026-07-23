@@ -14,7 +14,9 @@ calls to the org repo — use the GitHub MCP tools there instead.
 ## Steps
 
 1. **Pick** an open issue labeled `ready`, unassigned, and not `meta`:
-   `gh issue list --label ready --no-assignee --state open`. If one is
+   `gh issue list --label ready --state open --search "no:assignee"` (the
+   `--no-assignee` flag does not exist on current `gh` — it errors; filter via
+   the search query instead). If one is
    assigned but its newest `Claimed:` comment is older than the grace window
    (240 min) **and** no open PR references it, the claim is stale — you may
    take it over (say so in your comment). If nothing is ready, use
@@ -28,11 +30,19 @@ calls to the org repo — use the GitHub MCP tools there instead.
    loom-work-plan, project `PVT_kwDOEV2iVs4BeJ8b`, Status field
    `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`). Cloud sessions skip board mutations
    (Projects GraphQL unreachable) — assignment + comment are the claim.
-3. **Work it through the rigid pipeline.** Create the branch
-   (`git switch -c work/<N>-<slug>` from up-to-date `main`), then exercise
-   these four superpowers skills **in order — none is optional, even for a
-   one-line fix** (the spec is in the issue body by the gate's precondition,
-   so start at the plan):
+3. **Work it through the rigid pipeline.** Create the branch with
+   **`gh issue develop <N> --name <N>-<slug> --checkout`** (from up-to-date
+   `main`) — NOT a bare `git switch -c`. `gh issue develop` registers the
+   branch in the issue's **Development** section, so GitHub links it natively
+   and a merged PR from it closes the issue **even if the `Closes #<N>` keyword
+   fails to parse** (it silently does — see step 4). A branch name alone never
+   links anything; only this native link (or the keyword) drives the
+   automation. Cloud sessions (no `gh` API) create the linked branch with the
+   GitHub MCP `create_branch` + issue-link tooling, or fall back to a local
+   `git switch -c <N>-<slug>` and lean on the keyword + the step-4 verify.
+   Then exercise these four superpowers skills **in order — none is optional,
+   even for a one-line fix** (the spec is in the issue body by the gate's
+   precondition, so start at the plan):
    1. **Write the plan** — `superpowers:writing-plans`: turn the issue's
       `## Spec` into a task-by-task implementation plan **in the session
       scratchpad — ephemeral, never committed**. (It runs its own self-review
@@ -48,11 +58,28 @@ calls to the org repo — use the GitHub MCP tools there instead.
       `superpowers:subagent-driven-development` ends with. **The final review
       MUST include the metric gate** (below).
 4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR from
-   `work/<N>-<slug>` whose body contains `Closes #<N>` (this is what binds
-   the claim to the PR and auto-closes the issue on merge). Record the landed
-   capability in `docs/system-capabilities/` in the same PR. If the work
-   deferred anything new, file it as a labeled issue (`idea` or `bug` +
-   `area:<a>`) — but read the filing discipline below first.
+   the `<N>-<slug>` branch whose body contains `Closes #<N>` (base `main`, the
+   default branch — the keyword only auto-closes against the default branch).
+   **Then verify the link took — this is a required step, not a courtesy.**
+   `gh pr create` silently fails to register the closing keyword often enough
+   that you must confirm it every time:
+
+   ```bash
+   gh api graphql -f query='{repository(owner:"weave-hand",name:"loom"){
+     pullRequest(number:<PR>){closingIssuesReferences(first:5){nodes{number}}}}}' \
+     -q '.data.repository.pullRequest.closingIssuesReferences.nodes'
+   ```
+
+   If that prints `[]`, the automation will NOT fire on merge. Repair it by
+   re-saving the body (`gh pr edit <PR> --body-file <file>`) and re-running the
+   query until it returns `[{"number":<N>}]`. (The native `gh issue develop`
+   link from step 3 is the belt to this suspenders — with it, merge still
+   closes the issue even if this stays empty, but confirm at least one of the
+   two is in place before calling the PR done.) Cloud sessions run the same
+   check via the GitHub MCP PR tooling. Record the landed capability in
+   `docs/system-capabilities/` in the same PR. If the work deferred anything
+   new, file it as a labeled issue (`idea` or `bug` + `area:<a>`) — but read
+   the filing discipline below first.
 5. **Release** is automatic: merge closes the issue; confirm the board shows
    Done (set option `98236657` if it didn't move). If you abandon before a
    PR, unassign and say so:
