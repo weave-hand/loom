@@ -13,6 +13,19 @@ fn parses_dataset_list_rows() {
 }
 
 #[test]
+fn parses_dataset_row_count() {
+    let body = serde_json::json!({ "datasets": [
+        { "schema": "main", "name": "txns", "project": "main",
+          "updated": "2026-07-01T00:00:00Z", "rows": 1234 },
+        { "schema": "main", "name": "empty", "project": "main",
+          "updated": "", "rows": serde_json::Value::Null },
+    ] });
+    let rows = parse_datasets(&body);
+    assert_eq!(rows[0].rows, Some(1234));
+    assert_eq!(rows[1].rows, None, "null rows parse to None");
+}
+
+#[test]
 fn parses_dataset_detail_columns() {
     let body = serde_json::json!({
         "snapshot_time": "2026-07-01T00:00:00Z",
