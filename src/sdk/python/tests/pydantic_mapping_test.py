@@ -6,11 +6,13 @@ functions.
 from __future__ import annotations
 
 import datetime
+import typing
 import unittest
 
 import pyarrow as pa
 
 from loom_sdk.pydantic import Identity, Link, LoomModel, arrow_schema, model_gate
+from loom_sdk.pydantic import _PendingLink  # noqa: F401  (private marker under test)
 from loom_sdk.pydantic._mapping import loom_type
 
 
@@ -88,6 +90,27 @@ class LoomModelClassMachineryTest(unittest.TestCase):
 
         order = Order(order_id=1, customer=1, total=42.5)
         self.assertEqual(order.customer, 1)
+
+
+class PendingLinkGetitemTest(unittest.TestCase):
+    def test_string_target_two_arg_returns_pending_marker(self) -> None:
+        annotated = Link["Node", "parent_id"]
+        self.assertIs(typing.get_origin(annotated), typing.Annotated)
+        inner, marker = typing.get_args(annotated)
+        self.assertIs(inner, typing.Any)
+        self.assertEqual(marker, _PendingLink(name="Node", column="parent_id"))
+
+    def test_string_target_one_arg_returns_pending_marker_with_no_column(self) -> None:
+        annotated = Link["Node"]
+        _inner, marker = typing.get_args(annotated)
+        self.assertEqual(marker, _PendingLink(name="Node", column=None))
+
+    def test_real_class_target_keeps_eager_link_marker(self) -> None:
+        annotated = Link[Customer]
+        inner, marker = typing.get_args(annotated)
+        self.assertIs(inner, int)  # Customer.customer_id is Identity[int]
+        self.assertIsInstance(marker, Link)
+        self.assertIs(marker.target, Customer)
 
 
 class ArrowSchemaTest(unittest.TestCase):

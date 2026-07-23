@@ -71,6 +71,22 @@ class _LinkSpec:
     fk_column: str
 
 
+@dataclasses.dataclass(frozen=True)
+class _PendingLink:
+    """A string-target `Link[...]` awaiting second-pass resolution.
+
+    Placed in `Annotated` metadata by `Link.__class_getitem__` when the link
+    target is written as a string (`Link["Node", "parent_id"]`, the
+    self-referential spelling). Carries the string target name and the
+    optional explicit FK column; resolved in
+    `LoomModel.__pydantic_init_subclass__`'s second pass, once the declaring
+    class's identity is known.
+    """
+
+    name: str
+    column: str | None
+
+
 class Link:
     """`Annotated` metadata marking a field as an FK-backed link to `target`.
 
@@ -85,18 +101,21 @@ class Link:
     `required=False` and the link spec is still emitted.
 
     **Ordering constraint (v1 limitation):** because resolution is eager,
-    `target` must already be a fully-defined `LoomModel` subclass (with its
-    own `__loom_identity__` already computed) at the point the *declaring*
-    class's annotations are evaluated — in practice, `target` must be
-    declared textually before the class that links to it. **Self-referential
-    links are not supported in v1** (e.g. `parent: Link[Node] | None` inside
-    `class Node(LoomModel, ...)`): `target` would resolve to the very class
-    currently under construction, whose `__loom_identity__` doesn't exist
-    yet. Forward references (whether written as a string, e.g.
-    `Link["Customer"]`, or left unresolved because the target isn't yet
-    defined when the annotation is evaluated) are rejected with a `TypeError`
-    naming this constraint, rather than building forward-ref support — that
-    is out of scope for v1 and tracked as a recorded limitation.
+    a *class-typed* `target` must already be a fully-defined `LoomModel`
+    subclass (with its own `__loom_identity__` computed) at the point the
+    declaring class's annotations are evaluated — in practice, declared
+    textually before the class that links to it.
+
+    **Self-referential links use the string spelling** —
+    `parent: Link["Node", "parent_id"]` inside `class Node(LoomModel, ...)`.
+    A string target is deferred to a second resolution pass in
+    `LoomModel.__pydantic_init_subclass__` (once the class's identity is
+    known); an explicit FK column is required because the default column (the
+    target's identity name) always collides with the class's own identity.
+    A *bare-class* self-link (`Link[Node]`) and general forward references (a
+    string naming a class defined later, or a whole-string annotation like
+    `parent: "Link[Node] | None"`) stay rejected with a `TypeError` naming
+    the constraint — tracked as `fut-python-sdk-link-forward-refs`.
     """
 
     def __init__(self, target: type["LoomModel"], column: str | None = None) -> None:
@@ -106,17 +125,18 @@ class Link:
     def __class_getitem__(cls, params: object) -> object:
         target, column = params if isinstance(params, tuple) else (params, None)
         if isinstance(target, (str, typing.ForwardRef)):
-            raise TypeError(
-                f"Link target {target!r} is a forward reference; link targets must "
-                "be fully-defined LoomModel classes declared before the class that "
-                "links to them — self-referential links are not supported in v1"
-            )
+            name = target.__forward_arg__ if isinstance(target, typing.ForwardRef) else target
+            # Deferred: the target might be the class currently under
+            # construction (a self-referential link), whose identity isn't
+            # known yet. `LoomModel.__pydantic_init_subclass__`'s second pass
+            # resolves it (or rejects a non-self forward reference there).
+            return typing.Annotated[typing.Any, _PendingLink(str(name), column)]
         if getattr(target, "__loom_building__", False):
             raise TypeError(
-                f"Link target {target.__name__!r} is self-referential; "
-                "self-referential links are not supported in v1 — link targets must "
-                "be fully-defined LoomModel classes declared before the class that "
-                "links to them"
+                f"Link target {target.__name__!r} is self-referential; write it "
+                'as a string with an explicit FK column — Link["'
+                f'{target.__name__}", "<fk_column>"] — a bare-class self-link is '
+                "not supported"
             )
         identity_name = getattr(target, "__loom_identity__", None)
         if identity_name is None:
