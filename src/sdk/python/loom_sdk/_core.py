@@ -424,6 +424,120 @@ def parse_create_role(body: bytes) -> str:
     return str(data["role"])
 
 
+def create_role_request(role: str) -> PreparedRequest:
+    """Build `POST /admin/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path="/admin/roles",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps({"role": role}).encode("utf-8"),
+    )
+
+
+def list_roles_request() -> PreparedRequest:
+    """Build `GET /admin/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET", service="query", path="/admin/roles", params={}, headers={}, content=None
+    )
+
+
+def delete_role_request(role: str) -> PreparedRequest:
+    """Build `DELETE /admin/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def assign_role_request(role: str, username: str) -> PreparedRequest:
+    """Build `PUT /admin/users/{username}/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="PUT",
+        service="query",
+        path=f"/admin/users/{username}/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def user_roles_request(username: str) -> PreparedRequest:
+    """Build `GET /admin/users/{username}/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/admin/users/{username}/roles",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def unassign_role_request(role: str, username: str) -> PreparedRequest:
+    """Build `DELETE /admin/users/{username}/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/users/{username}/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def grant_request(
+    role: str, action: str, type: str | None, table: tuple[str, str] | None
+) -> PreparedRequest:
+    """Build `POST /admin/roles/{role}/grants` (routed to the query service).
+
+    Exactly one of `type`/`table` — validated by `grant_payload`, which
+    raises `ValueError` before the request is built.
+    """
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps(grant_payload(action, type, table)).encode("utf-8"),
+    )
+
+
+def grant_list_request(role: str) -> PreparedRequest:
+    """Build `GET /admin/roles/{role}/grants` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def revoke_request(
+    role: str, action: str, type: str | None, table: tuple[str, str] | None
+) -> PreparedRequest:
+    """Build `DELETE /admin/roles/{role}/grants` (routed to the query service).
+
+    Same body as `grant_request`; revoking an absent grant is a server-side no-op.
+    """
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps(grant_payload(action, type, table)).encode("utf-8"),
+    )
+
+
 def parse_grants(body: bytes) -> list[GrantEntry]:
     """Parse a `GET /admin/roles/{role}/grants` 200 response body.
 
