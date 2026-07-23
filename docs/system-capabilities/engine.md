@@ -495,13 +495,14 @@ hold is counted and logged), and that `mv_floor` exists as the primitive the pat
 that *do* create the harm must call. Those are the **end-cap-issuing** paths:
 end-capping an offset an MV has not consumed removes it from the MV's
 current-snapshot delta immediately, and no GC-tier guard can bring it back. That
-half now ships — see **The end-cap seam** below (#443). Two smaller gaps the floor
-exposed remain open: `#iss-mv-register-below-reclaimed-floor` (a newly registered
+half now ships — see **The end-cap seam** below (#443). One smaller gap the floor
+exposed remains open: `#iss-mv-register-below-reclaimed-floor` (a newly registered
 MV floors at `0` over a source whose low offsets may already be gone, plus a
-floor-read/registration race that #443 narrowed but did not close) and
-`#iss-mv-floor-holds-pre-declaration-files` (files written before
-`declare_stream` carry no `loom_offset` stat and are held forever by the
-fail-safe).
+floor-read/registration race that #443 narrowed but did not close). A second,
+`#iss-mv-floor-holds-pre-declaration-files`, is now closed by #625 — declaring a
+stream/CDC table over one that already holds data files or inline rows is
+refused at the primitive, making the pre-declaration hold unreachable for
+routine data (see **Known gaps** below).
 
 The **third GC source** is an **orphaned-object sweep** — the only path that
 reclaims bytes **no mirror row references**, the residue of write-then-commit
@@ -722,6 +723,9 @@ and maintenance schedules.
   from both sides (registration and declaration), but the two guards share no
   lock, so a genuinely concurrent `?mode=cdc` write and `define_transform` can
   still interleave into an unrunnable MV over a CDC source.
-- `#iss-mv-floor-holds-pre-declaration-files` — files written before
-  `declare_stream` carry no `loom_offset` stat, so the fail-safe guard holds
-  them forever and inflates `held_by_mv_floor`.
+- `#iss-mv-floor-holds-pre-declaration-files` — **closed by #625.** A
+  stream/CDC declaration over a table that already holds data files or inline
+  rows is now refused at the primitive (`pg_refuse_declare_over_data`), so
+  this hold-forever case is unreachable for routine pre-declaration data; the
+  NULL-`loom_offset`-stat fail-safe remains only for genuinely corrupt or
+  absent stats.
