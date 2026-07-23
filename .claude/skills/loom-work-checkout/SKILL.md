@@ -76,10 +76,18 @@ calls to the org repo — use the GitHub MCP tools there instead.
    link from step 3 is the belt to this suspenders — with it, merge still
    closes the issue even if this stays empty, but confirm at least one of the
    two is in place before calling the PR done.) Cloud sessions run the same
-   check via the GitHub MCP PR tooling. Record the landed capability in
-   `docs/system-capabilities/` in the same PR. If the work deferred anything
-   new, file it as a labeled issue (`idea` or `bug` + `area:<a>`) — but read
-   the filing discipline below first.
+   check via the GitHub MCP PR tooling. Once the PR is open and the closing
+   link is confirmed, move the `loom v1` board Status → **In review** (option
+   `df73e18b`; same two-mutation `addProjectV2ItemById` +
+   `updateProjectV2ItemFieldValue` pattern as step 2, project
+   `PVT_kwDOEV2iVs4BeJ8b`, Status field `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`) so the
+   item visibly parks in that column until merge — **nothing auto-populates it**
+   (the project's only board automation is merge/close → Done, so without this
+   step the item jumps In progress → Done and never shows In review). Cloud
+   sessions skip this (Projects GraphQL unreachable) — the next local session
+   reconciles. Record the landed capability in `docs/system-capabilities/` in
+   the same PR. If the work deferred anything new, file it as a labeled issue
+   (`idea` or `bug` + `area:<a>`) — but read the filing discipline below first.
 5. **Release** is automatic: merge closes the issue; confirm the board shows
    Done (set option `98236657` if it didn't move). If you abandon before a
    PR, unassign and say so:
