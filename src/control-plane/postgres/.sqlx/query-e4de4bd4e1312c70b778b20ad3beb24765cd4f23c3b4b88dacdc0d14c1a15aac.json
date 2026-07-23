@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(select 1 from iceberg_mirror.data_file where table_id = $1) as \"e!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "e!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e4de4bd4e1312c70b778b20ad3beb24765cd4f23c3b4b88dacdc0d14c1a15aac"
+}

@@ -194,19 +194,18 @@ async fn assert_typed_delete_refused(s: &end_cap_seed::Seeded) {
     );
 }
 
-/// E7, the route that actually reaches the COW fold: a table LANDED PLAIN and declared a
-/// log stream afterwards (`define-then-declare`). Its mirror column set carries no framing,
-/// so `ensure_inline_schema` is happy and — before this fix — the typed DELETE SUCCEEDED:
-/// it wrote an unframed delta row (NULL loom_bucket/loom_offset), set `has_shadow`, and
-/// handed the table to `consolidate_table`'s COW arm, which folds an offset-framed event
-/// log by identity — end-capping every live file and re-projecting only the fold winners,
-/// destroying offsets no MV has read.
+/// #625: a table LANDED PLAIN (Parquet files, no framing) can no longer be
+/// declared a log stream — the primitive refuses it, so no offset-frameless
+/// stream table (whose pre-declaration files the MV floor's fail-safe would hold
+/// forever) can ever be created. This closes the `define-then-declare` route at
+/// its root; the `_at_land_` test below still covers the typed-DELETE refusal for
+/// a table declared a stream at genesis.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn typed_mutation_of_a_table_declared_log_after_landing_is_refused() {
+async fn declaring_a_log_stream_over_a_landed_plain_table_is_refused() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("warehouse");
-    // buckets = None => landed as a PLAIN table (no framing columns in the mirror)...
+    // buckets = None, inline = false => a PLAIN table backed by Parquet DATA FILES.
     let s = seed_source(
         fx,
         &cp,
@@ -218,10 +217,15 @@ async fn typed_mutation_of_a_table_declared_log_after_landing_is_refused() {
         &[],
     )
     .await;
-    // ...and only THEN declared a log stream.
-    cp.declare_stream(s.tid, 1).await.expect("declare_stream");
 
-    assert_typed_delete_refused(&s).await;
+    let err = cp
+        .declare_stream(s.tid, 1)
+        .await
+        .expect_err("declaring a stream over a landed plain table must be refused");
+    assert!(
+        matches!(err, ControlPlaneError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
 }
 
 /// E7, the base-bound route: a table declared a log stream AT LAND time. This shape never

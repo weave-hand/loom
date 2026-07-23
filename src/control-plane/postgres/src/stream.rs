@@ -442,19 +442,67 @@ impl BucketOffsets for PgControlPlane {
     }
 }
 
-/// Declare a log table (idempotent, first-wins on bucket_count).
-pub(crate) async fn pg_declare_stream<'e, E: sqlx::PgExecutor<'e>>(
-    ex: E,
+/// Refuse a stream/CDC declaration on a table that ALREADY holds data — the
+/// "no retroactive batch->stream conversion" policy, enforced at the PRIMITIVE so
+/// the raw `StreamTables` trait is no longer a back door around
+/// [`reconcile_stream_mode`]'s `pre_existing` guard (#625).
+///
+/// A table with existing Parquet `data_file` rows or inline rows was never
+/// offset-framed; a stream/CDC declaration over it would leave those files/rows
+/// carrying NULL `loom_offset`/`loom_bucket`, which the MV floor's fail-safe holds
+/// FOREVER (`iceberg_gc::victim_data_files` / `delete_end_capped_inline_rows`) once
+/// any MV registers — "GC never converges for this table". Refuse it here so that
+/// hold-forever state is unreachable. A GENESIS declaration (the only one a
+/// production write reaches — reconcile declares before the row/file write in the
+/// same tx) has neither, so it passes. `Validation`, not `Backend`/`Conflict`.
+async fn pg_refuse_declare_over_data(conn: &mut sqlx::PgConnection, table_id: i64) -> Result<()> {
+    let has_files = sqlx::query_scalar!(
+        "select exists(select 1 from iceberg_mirror.data_file where table_id = $1) as \"e!\"",
+        table_id,
+    )
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(backend)?;
+    if has_files {
+        return Err(ControlPlaneError::Validation(format!(
+            "cannot declare a stream/cdc table over table_id {table_id}: it already \
+             has data files (no retroactive batch->stream conversion)"
+        )));
+    }
+    if crate::iceberg_inline::inline_table_exists(&mut *conn, table_id).await? {
+        let inline = crate::iceberg_inline::inline_table_name(table_id);
+        let inline_rows: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            "select count(*) from {inline}"
+        )))
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(backend)?;
+        if inline_rows > 0 {
+            return Err(ControlPlaneError::Validation(format!(
+                "cannot declare a stream/cdc table over table_id {table_id}: it already \
+                 has inline rows (no retroactive batch->stream conversion)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Declare a log table (idempotent, first-wins on bucket_count). Refuses a table
+/// that already holds data (#625) before the insert — see
+/// [`pg_refuse_declare_over_data`].
+pub(crate) async fn pg_declare_stream(
+    conn: &mut sqlx::PgConnection,
     table_id: i64,
     bucket_count: i32,
 ) -> Result<()> {
+    pg_refuse_declare_over_data(&mut *conn, table_id).await?;
     sqlx::query!(
         "insert into stream.stream_table (table_id, bucket_count) values ($1, $2) \
          on conflict (table_id) do nothing",
         table_id,
         bucket_count,
     )
-    .execute(ex)
+    .execute(&mut *conn)
     .await
     .map_err(backend)?;
     Ok(())
@@ -621,14 +669,17 @@ pub(crate) async fn pg_stream_meta_for_typed_write(
     Ok(meta)
 }
 
-/// Declare a PK/CDC table (idempotent, first-wins on all fields).
-pub(crate) async fn pg_declare_cdc<'e, E: sqlx::PgExecutor<'e>>(
-    ex: E,
+/// Declare a PK/CDC table (idempotent, first-wins on all fields). Refuses a table
+/// that already holds data (#625) before the insert — see
+/// [`pg_refuse_declare_over_data`].
+pub(crate) async fn pg_declare_cdc(
+    conn: &mut sqlx::PgConnection,
     table_id: i64,
     bucket_count: i32,
     bucket_key: &str,
     merge_engine: control_plane_core::MergeEngine,
 ) -> Result<()> {
+    pg_refuse_declare_over_data(&mut *conn, table_id).await?;
     sqlx::query!(
         "insert into stream.stream_table (table_id, bucket_count, kind, bucket_key, merge_engine) \
          values ($1, $2, 'cdc', $3, $4) on conflict (table_id) do nothing",
@@ -637,7 +688,7 @@ pub(crate) async fn pg_declare_cdc<'e, E: sqlx::PgExecutor<'e>>(
         bucket_key,
         merge_engine.as_str(),
     )
-    .execute(ex)
+    .execute(&mut *conn)
     .await
     .map_err(backend)?;
     Ok(())
@@ -701,7 +752,8 @@ pub(crate) async fn pg_set_changelog_table_id<'e, E: sqlx::PgExecutor<'e>>(
 impl StreamTables for PgControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
     async fn declare_stream(&self, table_id: i64, bucket_count: i32) -> Result<()> {
-        pg_declare_stream(self.pool(), table_id, bucket_count).await
+        let mut conn = self.pool().acquire().await.map_err(backend)?;
+        pg_declare_stream(&mut conn, table_id, bucket_count).await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
@@ -717,14 +769,8 @@ impl StreamTables for PgControlPlane {
         bucket_key: &str,
         merge_engine: control_plane_core::MergeEngine,
     ) -> Result<()> {
-        pg_declare_cdc(
-            self.pool(),
-            table_id,
-            bucket_count,
-            bucket_key,
-            merge_engine,
-        )
-        .await
+        let mut conn = self.pool().acquire().await.map_err(backend)?;
+        pg_declare_cdc(&mut conn, table_id, bucket_count, bucket_key, merge_engine).await
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
