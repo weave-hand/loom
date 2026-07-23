@@ -104,13 +104,19 @@ matching the tree's canonical `LinkDef::fk(..., Cardinality::One, ...)`
 convention; the design spec originally left this unstated and has been
 corrected to say so explicitly).
 
-**Self-referential and forward-referenced links are a recorded v1
-limitation, not a bug**: `Link` resolution is eager, at the declaring class's
-own class-creation, so a link target must already be a fully-defined
-`LoomModel` subclass — declared textually before the class that links to it.
-`parent: Link[Node] | None` inside `class Node(...)`, or any string/forward
-annotation, raises a clear `TypeError` naming the constraint rather than
-silently doing the wrong thing. Deferred: `fut-python-sdk-link-forward-refs`.
+**Self-referential links use the string spelling.** `Link` resolution is
+eager for class-typed targets (declared textually before the linking class),
+but a *string* target is deferred to a second resolution pass in
+`LoomModel.__pydantic_init_subclass__`: `parent: Link["Node", "parent_id"]`
+inside `class Node(...)` resolves to `target = Node` once the class's identity
+is known, then repairs the FK field's annotation and `model_rebuild(force=True)`s
+so the FK value stays fully pydantic-typed. An explicit FK column is
+**required** (the default column — the target's identity name — always
+collides with the class's own identity for a self-link). Still a recorded
+limitation, not a bug: a *bare-class* self-link (`Link[Node]`), a string
+naming a class defined later, and whole-string annotations
+(`parent: "Link[Node] | None"`) raise a clear `TypeError`. Deferred:
+`fut-python-sdk-link-forward-refs` (general forward refs / mutual A↔B cycles).
 
 `client.ontology.apply(*models)` is idempotent and bootstrap-aware: per model,
 it reads the existing type (200 + matching shape ⇒ unchanged; 200 + differing
@@ -161,7 +167,9 @@ wrapped by `client.admin.roles` (above), rather than needing raw HTTP.
 
 ## Known gaps
 
-- `fut-python-sdk-link-forward-refs` — self-referential and forward-referenced
-  `Link` declarations are rejected with a clear error rather than supported.
+- `fut-python-sdk-link-forward-refs` — *general* forward-referenced `Link`
+  declarations (a string naming a class defined later, mutual A↔B cycles) are
+  rejected with a clear error. Self-referential links (`Link["Self", "col"]`)
+  are supported as of `road-python-sdk-link-self-ref`.
 - Row-level policies (`POST`/`GET`/`DELETE /admin/roles/{r}/policies`) stay
   unwrapped — deferred, tracked as `#635`.
