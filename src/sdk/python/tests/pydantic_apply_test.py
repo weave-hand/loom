@@ -20,6 +20,7 @@ from loom_sdk import OntologyDriftError
 from loom_sdk.aclient import AsyncClient
 from loom_sdk.client import Client
 from loom_sdk.pydantic import Identity, Link, LoomModel, model_gate
+from loom_sdk.pydantic._apply import define_link_request_for, instance_row, links_to_create
 
 
 class Customer(LoomModel, table=("crm", "customers")):
@@ -306,6 +307,39 @@ class AsyncApplyTest(unittest.TestCase):
             await client.aclose()
 
         asyncio.run(run())
+
+
+class Node(LoomModel, table=("graph", "nodes")):
+    node_id: Identity[int]
+    parent: Link["Node", "parent_id"] | None = None
+
+
+class SelfLinkApplyTest(unittest.TestCase):
+    def test_define_link_request_emits_from_equals_to(self) -> None:
+        (spec,) = Node.__loom_links__
+        request = define_link_request_for(Node, spec)
+        payload = json.loads(request.content)
+        self.assertEqual(payload["name"], "Node_parent")
+        self.assertEqual(payload["from"], "Node")
+        self.assertEqual(payload["to"], "Node")
+        self.assertEqual(
+            payload["backing"],
+            {"ForeignKey": {"from_column": "parent_id", "to_column": "node_id"}},
+        )
+
+    def test_links_to_create_skips_already_registered_self_link(self) -> None:
+        self.assertEqual(links_to_create(Node, ["Node_parent"]), [])
+        self.assertEqual([s.field for s in links_to_create(Node, [])], ["parent"])
+
+    def test_instance_row_flattens_parent_to_fk_column(self) -> None:
+        self.assertEqual(
+            instance_row(Node(node_id=2, parent=1)),
+            {"node_id": 2, "parent_id": 1},
+        )
+        self.assertEqual(
+            instance_row(Node(node_id=1)),
+            {"node_id": 1, "parent_id": None},
+        )
 
 
 if __name__ == "__main__":

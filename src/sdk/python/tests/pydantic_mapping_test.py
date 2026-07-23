@@ -6,11 +6,14 @@ functions.
 from __future__ import annotations
 
 import datetime
+import typing
 import unittest
 
 import pyarrow as pa
+import pydantic
 
 from loom_sdk.pydantic import Identity, Link, LoomModel, arrow_schema, model_gate
+from loom_sdk.pydantic import _PendingLink  # noqa: F401  (private marker under test)
 from loom_sdk.pydantic._mapping import loom_type
 
 
@@ -88,6 +91,27 @@ class LoomModelClassMachineryTest(unittest.TestCase):
 
         order = Order(order_id=1, customer=1, total=42.5)
         self.assertEqual(order.customer, 1)
+
+
+class PendingLinkGetitemTest(unittest.TestCase):
+    def test_string_target_two_arg_returns_pending_marker(self) -> None:
+        annotated = Link["Node", "parent_id"]
+        self.assertIs(typing.get_origin(annotated), typing.Annotated)
+        inner, marker = typing.get_args(annotated)
+        self.assertIs(inner, typing.Any)
+        self.assertEqual(marker, _PendingLink(name="Node", column="parent_id"))
+
+    def test_string_target_one_arg_returns_pending_marker_with_no_column(self) -> None:
+        annotated = Link["Node"]
+        _inner, marker = typing.get_args(annotated)
+        self.assertEqual(marker, _PendingLink(name="Node", column=None))
+
+    def test_real_class_target_keeps_eager_link_marker(self) -> None:
+        annotated = Link[Customer]
+        inner, marker = typing.get_args(annotated)
+        self.assertIs(inner, int)  # Customer.customer_id is Identity[int]
+        self.assertIsInstance(marker, Link)
+        self.assertIs(marker.target, Customer)
 
 
 class ArrowSchemaTest(unittest.TestCase):
@@ -265,6 +289,105 @@ class OptionalLinkTest(unittest.TestCase):
         self.assertEqual(link.field, "customer")
         self.assertIs(link.target, Customer)
         self.assertEqual(link.fk_column, "customer_id")
+
+
+class SelfReferentialLinkTest(unittest.TestCase):
+    def test_optional_self_link_builds_derived_attributes(self) -> None:
+        class Node(LoomModel, table=("graph", "nodes")):
+            node_id: Identity[int]
+            label: str
+            parent: Link["Node", "parent_id"] | None = None
+
+        self.assertEqual(Node.__loom_identity__, "node_id")
+        self.assertEqual(
+            Node.__loom_properties__,
+            [("node_id", "long", True), ("label", "string", True), ("parent_id", "long", False)],
+        )
+        self.assertEqual(len(Node.__loom_links__), 1)
+        link = Node.__loom_links__[0]
+        self.assertEqual(link.field, "parent")
+        self.assertIs(link.target, Node)
+        self.assertEqual(link.fk_column, "parent_id")
+
+    def test_arrow_schema_and_gate_include_nullable_fk(self) -> None:
+        class Node(LoomModel, table=("graph", "nodes")):
+            node_id: Identity[int]
+            parent: Link["Node", "parent_id"] | None = None
+
+        schema = arrow_schema(Node)
+        self.assertEqual(schema.field("parent_id").type, pa.int64())
+        self.assertTrue(schema.field("parent_id").nullable)
+        self.assertEqual(
+            model_gate(Node)[-1], {"name": "parent_id", "ty": "long", "required": False}
+        )
+
+    def test_post_rebuild_validation_rejects_non_int_fk(self) -> None:
+        class Node(LoomModel, table=("graph", "nodes")):
+            node_id: Identity[int]
+            parent: Link["Node", "parent_id"] | None = None
+
+        # Annotation repair restored full pydantic typing of the FK value.
+        Node(node_id=1, parent=2)          # valid
+        Node(node_id=1)                    # default None
+        with self.assertRaises(pydantic.ValidationError):
+            Node(node_id=1, parent="not-an-int")
+
+    def test_non_optional_self_link_builds(self) -> None:
+        class Tree(LoomModel, table=("graph", "trees")):
+            tree_id: Identity[int]
+            root: Link["Tree", "root_id"]
+
+        self.assertEqual(
+            Tree.__loom_properties__,
+            [("tree_id", "long", True), ("root_id", "long", True)],
+        )
+        self.assertEqual(Tree.__loom_links__[0].fk_column, "root_id")
+        with self.assertRaises(pydantic.ValidationError):
+            Tree(tree_id=1, root="nope")
+
+    def test_one_arg_self_link_raises_collision_naming_column_hint(self) -> None:
+        with self.assertRaises(TypeError) as ctx:
+
+            class BadNode(LoomModel, table=("graph", "nodes")):
+                node_id: Identity[int]
+                parent: Link["BadNode"] | None = None
+
+        message = str(ctx.exception)
+        self.assertIn("node_id", message)
+        self.assertIn("other_column", message)
+        # The disambiguation hint must suggest the string spelling
+        # (Link["BadNode", ...]) — the bare-class spelling (Link[BadNode, ...])
+        # is not writable inside the class's own body.
+        self.assertIn('Link["BadNode"', message)
+
+    def test_self_link_declared_before_plain_property_appends_fk_last(self) -> None:
+        # Deferred (pass-2) self-links append their FK column to the end of
+        # __loom_properties__, so a self-link declared before a plain property
+        # emits its FK column last. Column order is not contractual — this pins
+        # the current, intended behavior.
+        class Folder(LoomModel, table=("graph", "folders")):
+            folder_id: Identity[int]
+            parent: Link["Folder", "parent_id"] | None = None
+            label: str
+
+        self.assertEqual(
+            Folder.__loom_properties__,
+            [("folder_id", "long", True), ("label", "string", True), ("parent_id", "long", False)],
+        )
+
+    def test_string_target_naming_other_class_raises_forward_ref_error(self) -> None:
+        with self.assertRaisesRegex(TypeError, "forward reference"):
+
+            class Widget(LoomModel, table=("s", "w")):
+                widget_id: Identity[int]
+                other: Link["SomethingElse", "other_id"] | None = None
+
+    def test_whole_string_annotation_still_raises(self) -> None:
+        with self.assertRaisesRegex(TypeError, "not supported in v1"):
+
+            class Stringy(LoomModel, table=("s", "n")):
+                node_id: Identity[int]
+                parent: "Link[Stringy] | None" = None
 
 
 if __name__ == "__main__":
