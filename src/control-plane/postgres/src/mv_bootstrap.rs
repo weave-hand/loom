@@ -20,8 +20,11 @@
 //! So every uncertainty resolves DOWNWARD, to 0:
 //!
 //! - a live file with no `loom_offset` min stat: we cannot prove where it starts ⇒ 0;
-//! - a live inline row with a NULL `loom_bucket`/`loom_offset` (written before the table was
-//!   declared a stream — see `#iss-mv-floor-holds-pre-declaration-files`) ⇒ 0.
+//! - a live inline row with a NULL `loom_bucket`/`loom_offset` — since #625 refuses declaring a
+//!   stream/CDC table over one that already holds data files or inline rows
+//!   (`pg_refuse_declare_over_data`), this is no longer the routine "written before
+//!   `declare_stream`" case (`#iss-mv-floor-holds-pre-declaration-files`, closed); it now means
+//!   corrupt or absent framing stats ⇒ 0.
 //!
 //! This fail-safe direction is the INVERSE of [`crate::mv_floor`]'s, which guards a `max` and so
 //! resolves a missing stat UPWARD (hold the file). Same principle — never let a missing stat
@@ -128,9 +131,12 @@ pub async fn earliest_surviving_offsets(
             lower_exact(&mut exact, bucket, off);
         }
 
-        // An UNFRAMED live row — written before this table was declared a stream, so it carries
-        // no bucket/offset at all. We cannot place it, so we cannot prove any bucket starts above
-        // 0. Round down. (The read-side twin of `#iss-mv-floor-holds-pre-declaration-files`.)
+        // An UNFRAMED live row — carries no bucket/offset at all. Before #625 this was routinely
+        // a row written before this table was declared a stream; #625 now refuses declaring a
+        // stream/CDC table over one that already holds data, so a live unframed row here means
+        // corrupt or absent framing stats, not routine pre-declaration data. Either way we cannot
+        // place it, so we cannot prove any bucket starts above 0. Round down. (The read-side twin
+        // of `#iss-mv-floor-holds-pre-declaration-files`, closed by #625.)
         let unframed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "select exists(select 1 from {inline} \
              where end_snapshot is null \

@@ -48,6 +48,22 @@ validated before any row is written:
   derive `pre_existing` this way, so a stream declare that loses the mirror-row
   create race sees the winner's table as pre-existing and is rejected rather
   than converting it.
+- **The same "no retroactive conversion" policy is now also enforced
+  structurally at the primitive (#625).** `pg_declare_stream`/`pg_declare_cdc`
+  (`postgres/src/stream.rs`) each call a shared guard,
+  `pg_refuse_declare_over_data`, before creating the registry row — refusing
+  any declaration when the table already holds Iceberg `data_file` rows or
+  live inline rows, as a `Validation` error, independent of and in addition to
+  the `pre_existing` mirror-row witness above. This closes a back door where
+  the raw `StreamTables` trait (`declare_stream`/`declare_cdc`) could be
+  called directly, bypassing `reconcile_stream_mode`'s witness check
+  entirely. Its effect on GC: the MV floor's fail-safe hold-forever case for a
+  file or inline row with no `loom_offset`/`loom_bucket` framing
+  (`iceberg_gc::victim_data_files` / `delete_end_capped_inline_rows`, see
+  *Retention* below) is now UNREACHABLE for routine pre-declaration data — the
+  guard refuses the declaration before such a row could ever exist under a
+  stream registry — leaving that hold in place only as defense-in-depth for
+  genuinely corrupt or absent stats.
 - A request against a table already declared a **different kind** is rejected as
   `Validation`, in **either** direction (#432): `mode=cdc` against an existing
   `log` table, and `mode=stream` (log) against an existing `cdc` table — the
@@ -823,9 +839,13 @@ from the continuous-query slice.
   the ingest declaration path does not yet, so a concurrent `?mode=cdc` write and
   `define_transform` can still interleave into an MV that can never run over a
   CDC source.
-- `#iss-mv-floor-holds-pre-declaration-files` — data files written before
-  `declare_stream` carry no `loom_offset` stat and are held forever by the
-  floor's fail-safe, inflating `held_by_mv_floor`.
+- `#iss-mv-floor-holds-pre-declaration-files` — **closed by #625.** A
+  stream/CDC declaration over a table that already holds data files or inline
+  rows is now refused at the primitive (`pg_refuse_declare_over_data`), so
+  this hold-forever case is unreachable for routine pre-declaration data; the
+  NULL-`loom_offset`-stat hold in `iceberg_gc::victim_data_files`/
+  `delete_end_capped_inline_rows` remains only as a fail-safe for genuinely
+  corrupt or absent stats.
 
 Two residuals noted during review, not yet tracked as separate register
 items: `consolidate_stream`'s pre-lock metadata reads (`stream_meta`,

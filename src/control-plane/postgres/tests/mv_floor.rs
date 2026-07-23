@@ -8,7 +8,10 @@
 
 use std::time::Duration;
 
-use control_plane_core::{ControlPlane, RunId, SnapshotId, TableRef, TransformName, mv_key};
+use control_plane_core::{
+    ControlPlane, ControlPlaneError, RunId, SnapshotId, StreamTables, TableRef, TransformName,
+    mv_key,
+};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_gc::gc_table;
@@ -404,6 +407,110 @@ async fn caught_up_mv_releases_end_capped_files() {
         data_file_count(&s.pool, s.tid).await,
         0,
         "no data_file row survives naming a deleted object"
+    );
+}
+
+/// #625: declaring a stream over a table that holds INLINE rows is refused too —
+/// the inline tier of the same hold-forever bug (`delete_end_capped_inline_rows`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn declaring_a_stream_over_inline_rows_is_refused() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // buckets = None, inline = true => a PLAIN table whose rows are kept INLINE.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        4,
+        None,
+        true,
+        &[],
+    )
+    .await;
+
+    let err = cp
+        .declare_stream(s.tid, 2)
+        .await
+        .expect_err("declaring a stream over inline rows must be refused");
+    assert!(
+        matches!(err, ControlPlaneError::Validation(_)),
+        "expected Validation, got {err:?}"
+    );
+}
+
+/// #625 fail-safe pin: the guard makes the "offset-frameless file under an active MV
+/// floor" state UNREACHABLE via declaration — but the fail-safe that would have held
+/// such a file FOREVER must stay intact for the stats-disabled/corrupt-file case.
+///
+/// This is the counterpart of `caught_up_mv_releases_end_capped_files`: same shape,
+/// same floor ABOVE every offset (so a file with an intact `loom_offset` max stat is
+/// RELEASED there) — but here the file's `loom_offset` `data_file_column_stat` row is
+/// deleted first, an honest analogue of a file whose offset stat was never written or
+/// was corrupted. `victim_data_files`'s scalar subquery then yields NULL, the guard
+/// goes NULL, and the file is HELD (never a dangling-mirror delete). If this test ever
+/// flips to "released", the fail-safe regressed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_with_no_loom_offset_stat_is_held_by_an_active_floor() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    // 6 events landed straight to FILES (offsets 0..6) in one bucket, one MV.
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        false,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+
+    // Floor 6 > every offset: with an intact stat this file would be RELEASED
+    // (that is `caught_up_mv_releases_end_capped_files`).
+    advance(&cp, &mv_key(&tref("s", "out_a")), s.tid, 0, 0, 6).await;
+
+    let files_before = data_file_count(&s.pool, s.tid).await;
+    assert!(files_before > 0, "the source landed at least one file");
+
+    // Drop the `loom_offset` max stat for every one of this table's files — the
+    // stats-disabled/corrupt-file analogue. Now the floor guard cannot prove any
+    // file is below the floor.
+    sqlx::query(
+        "delete from iceberg_mirror.data_file_column_stat cs \
+         using iceberg_mirror.data_file df \
+         where cs.data_file_id = df.data_file_id and df.table_id = $1 \
+           and cs.column_name = 'loom_offset'",
+    )
+    .bind(s.tid)
+    .execute(&s.pool)
+    .await
+    .expect("delete loom_offset stats");
+
+    let snap = current_snapshot_id(&s.pool, &s.src).await;
+    end_cap_data_files(&s.pool, &s.src, s.tid, snap).await;
+    age_all_snapshots(&s.pool).await;
+
+    let summary = gc_table(&s.catalog, &s.pool, &s.src, SEVEN_DAYS)
+        .await
+        .expect("gc");
+    assert_eq!(
+        summary.data_file_rows, 0,
+        "a file with no loom_offset stat cannot be proven below the floor: none reclaimed"
+    );
+    assert_eq!(summary.objects_deleted, 0, "no Parquet object deleted");
+    assert_eq!(
+        summary.held_by_mv_floor,
+        u64::try_from(files_before).expect("count fits u64"),
+        "the stat-less file is HELD by the active floor's fail-safe"
+    );
+    assert_eq!(
+        data_file_count(&s.pool, s.tid).await,
+        files_before,
+        "the mirror rows survive"
     );
 }
 

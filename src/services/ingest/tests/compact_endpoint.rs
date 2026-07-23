@@ -21,7 +21,7 @@ use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_compact::{CompactTriggerCfg, maybe_enqueue_compact};
 use control_plane_postgres::iceberg_inline::set_has_shadow;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::live_table_id;
+use control_plane_postgres::iceberg_mirror::{ensure_table, live_table_id, next_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use e2e_support::{
     admin_session_token, app_state, compact_app, ipc_bytes, merged_app, post_dataset_q,
@@ -129,6 +129,34 @@ async fn land_n_small(pool: &PgPool, catalog: &SqlCatalog, table: &TableRef, n: 
         .await
         .expect("land");
     }
+}
+
+/// Land one small Parquet file against `table`, declaring it a log stream of
+/// `buckets` buckets at GENESIS — `buckets` rides this, the table's FIRST land
+/// call (see `land`'s `stream_buckets` doc: it declares on first write).
+/// Declaring at genesis, before any data ever lands, is legal both before and
+/// after the not-over-existing-data stream/CDC declare guard (#625). Mirrors
+/// `postgres/tests/compact_trigger.rs::land_genesis_stream`.
+async fn land_genesis_stream(pool: &PgPool, catalog: &SqlCatalog, table: &TableRef, buckets: i32) {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![0i64]))])
+        .expect("batch");
+    land(
+        pool,
+        catalog,
+        table,
+        &columns(),
+        schema,
+        vec![batch],
+        InlineLimits {
+            inline_byte_limit: 0,
+            flush_byte_threshold: i64::MAX,
+        },
+        lineage(table),
+        Some(buckets),
+    )
+    .await
+    .expect("land");
 }
 
 async fn available_jobs(pool: &PgPool) -> i64 {
@@ -288,15 +316,11 @@ async fn declared_stream_table_is_refused() {
     let (_seed, db) = fx.fresh_db().await;
     let (pg, pool, catalog, _wh, state) = harness(fx, &db).await;
     let t = table("events");
-    land_n_small(&pool, &catalog, &t, 2).await;
-
-    let mut conn = pool.acquire().await.expect("acquire");
-    let tid = live_table_id(&mut conn, &t.schema, &t.name)
-        .await
-        .expect("live_table_id")
-        .expect("table has a live row");
-    drop(conn);
-    pg.declare_stream(tid, 4).await.expect("declare_stream");
+    // Declare the table a stream at GENESIS — `buckets=4` rides the FIRST land,
+    // before any data has landed — then keep landing to reach the same 2 files
+    // the original test seeded.
+    land_genesis_stream(&pool, &catalog, &t, 4).await;
+    land_n_small(&pool, &catalog, &t, 1).await;
 
     let token = admin_session_token(&pg, "root").await;
     let (status, body) = post_compact(compact_app(state, pg.clone()), "wh", "events", &token).await;
@@ -314,23 +338,32 @@ async fn changelog_table_is_refused() {
     let (pg, pool, catalog, _wh, state) = harness(fx, &db).await;
     let base = table("base");
     let changelog = table("base__changelog");
-    land_n_small(&pool, &catalog, &changelog, 2).await;
-    land_n_small(&pool, &catalog, &base, 1).await;
 
-    let mut conn = pool.acquire().await.expect("acquire");
-    let base_tid = live_table_id(&mut conn, &base.schema, &base.name)
+    // `base` must be declared CDC at GENESIS — before any data lands on it.
+    // Mirrors `postgres/tests/compact_trigger.rs::changelog_table_skips`: an
+    // explicit tx for `ensure_table` (its savepoint retry needs one) to get the
+    // empty mirror row + tid, commit, THEN declare_cdc. `set_changelog_table_id`
+    // UPDATEs an existing stream_table row, so this declare is required
+    // regardless — `base` never needs any landed data of its own for this test.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let base_tid = ensure_table(&mut tx, &base.schema, &base.name, at0)
         .await
-        .expect("live_table_id")
-        .expect("base has a live row");
+        .expect("ensure_table");
+    tx.commit().await.expect("commit");
+    pg.declare_cdc(base_tid, 1, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
+
+    // `changelog` accrues the small files; `base`'s stream_table row (declared
+    // above) points its changelog_table_id at `changelog`'s tid.
+    land_n_small(&pool, &catalog, &changelog, 2).await;
+    let mut conn = pool.acquire().await.expect("acquire");
     let clog_tid = live_table_id(&mut conn, &changelog.schema, &changelog.name)
         .await
         .expect("live_table_id")
         .expect("changelog has a live row");
     drop(conn);
-    // set_changelog_table_id UPDATEs an existing stream_table row, so declare first.
-    pg.declare_cdc(base_tid, 1, "id", control_plane_core::MergeEngine::LastRow)
-        .await
-        .expect("declare_cdc");
     pg.set_changelog_table_id(base_tid, clog_tid)
         .await
         .expect("set_changelog_table_id");
