@@ -10,9 +10,13 @@ label set — then you **stop and hand back to the operator.** A separate
 the spec* (ephemeral, never committed), and builds it. Your job is direction,
 never completion. Planning touches **zero repo files**.
 
-Environment: use `gh` locally; in cloud sessions the git proxy 403s `gh` API
-calls to the org repo — use the GitHub MCP tools there instead (same
-operations: list/view/edit/label/comment).
+Environment: use `gh` locally. In cloud sessions the Claude GitHub App proxy
+403s `gh` API calls to `api.github.com`, so use the GitHub MCP tools as the
+primary path (same operations: list/view/edit/label/comment). The
+`api.github.com` NO_PROXY bypass `board-status.sh` uses also makes `gh` reach the
+whole API in cloud — prefix `NO_PROXY=api.github.com` and add `-R weave-hand/loom`
+(the `origin` remote points at the proxy) — but MCP stays primary; the bypass is
+the fallback.
 
 ## Boundary — do NOT cross it
 
