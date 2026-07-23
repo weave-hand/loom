@@ -4,6 +4,7 @@ roles + grants + user-role lifecycle, and the `client.admin.roles` namespace.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 
@@ -24,6 +25,7 @@ from loom_sdk._core import (
     unassign_role_request,
     user_roles_request,
 )
+from loom_sdk.aclient import AsyncClient
 from loom_sdk.client import Client
 from loom_sdk.models import GrantEntry, TableRef
 
@@ -274,6 +276,45 @@ class RolesNamespaceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.admin.roles.grant("analyst", "read")
         client.close()
+
+
+class AsyncRolesNamespaceTest(unittest.TestCase):
+    def test_create_and_grants_roundtrip(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.method == "POST" and request.url.path == "/admin/roles":
+                return httpx.Response(201, json={"role": "analyst"})
+            if request.method == "GET" and request.url.path == "/admin/roles/analyst/grants":
+                return httpx.Response(
+                    200,
+                    json={"grants": [{"action": "read", "target": {"Table": {"schema": "raw", "name": "c"}}, "effect": "allow"}]},
+                )
+            return httpx.Response(200, json={})
+
+        async def run() -> None:
+            client = AsyncClient(url="http://loom.invalid")
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            self.assertEqual(await client.admin.roles.create("analyst"), "analyst")
+            self.assertIsNone(await client.admin.roles.grant("analyst", "read", type="Customer"))
+            self.assertEqual(
+                await client.admin.roles.grants("analyst"),
+                [GrantEntry(action="read", effect="allow", type=None, table=TableRef("raw", "c"))],
+            )
+            await client.aclose()
+
+        asyncio.run(run())
+
+    def test_grant_bad_target_raises_before_send(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover
+            raise AssertionError("should not send")
+
+        async def run() -> None:
+            client = AsyncClient(url="http://loom.invalid")
+            client._http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            with self.assertRaises(ValueError):
+                await client.admin.roles.grant("analyst", "read")
+            await client.aclose()
+
+        asyncio.run(run())
 
 
 if __name__ == "__main__":

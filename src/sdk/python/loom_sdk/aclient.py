@@ -12,33 +12,45 @@ import pyarrow as pa
 from ._arrow import to_ipc
 from ._core import (
     PreparedRequest,
+    assign_role_request,
     build_headers,
+    create_role_request,
     define_link_request,
     define_model_request,
+    delete_role_request,
     get_dataset_request,
+    grant_list_request,
+    grant_request,
     land_dataset_request,
     land_model_request,
     list_datasets_request,
+    list_roles_request,
     login_request,
     ontology_type_request,
     ontology_types_request,
+    parse_create_role,
     parse_dataset_detail,
     parse_dataset_list,
     parse_define_model_ack,
+    parse_grants,
     parse_land_ack,
     parse_login,
     parse_model_ack,
     parse_ontology_types,
     parse_preview,
+    parse_role_list,
     parse_type_detail,
     preview_dataset_request,
     resolve_base,
+    revoke_request,
+    unassign_role_request,
+    user_roles_request,
 )
 from .errors import NotFoundError, raise_for_response
 from .models import ApplyReport
 
 if TYPE_CHECKING:
-    from .models import DatasetDetail, DatasetEntry, LandAck, ModelLandAck, Preview, TypeDetail
+    from .models import DatasetDetail, DatasetEntry, GrantEntry, LandAck, ModelLandAck, Preview, TypeDetail
     from .pydantic import LoomModel
 
 
@@ -212,11 +224,68 @@ class _AsyncModelsNamespace:
         return parse_model_ack(response.content)
 
 
+class _AsyncRolesNamespace:
+    """`client.admin.roles` — the ACL roles + grants + user-role lifecycle."""
+
+    def __init__(self, client: AsyncClient) -> None:
+        self._client = client
+
+    async def create(self, role: str) -> str:
+        """Declare a role (`POST /admin/roles`), returning its id."""
+        response = await self._client._send(create_role_request(role))
+        return parse_create_role(response.content)
+
+    async def list(self) -> list[str]:
+        """List all declared role ids (`GET /admin/roles`)."""
+        response = await self._client._send(list_roles_request())
+        return parse_role_list(response.content)
+
+    async def delete(self, role: str) -> None:
+        """Delete a role and everything hanging off it (`DELETE /admin/roles/{role}`; idempotent)."""
+        await self._client._send(delete_role_request(role))
+
+    async def assign(self, role: str, username: str) -> None:
+        """Assign a role to a user (`PUT /admin/users/{u}/roles/{r}`; idempotent)."""
+        await self._client._send(assign_role_request(role, username))
+
+    async def assigned(self, username: str) -> list[str]:
+        """List the roles assigned to a user (`GET /admin/users/{u}/roles`)."""
+        response = await self._client._send(user_roles_request(username))
+        return parse_role_list(response.content)
+
+    async def unassign(self, role: str, username: str) -> None:
+        """Unassign a role from a user (`DELETE /admin/users/{u}/roles/{r}`; idempotent)."""
+        await self._client._send(unassign_role_request(role, username))
+
+    async def grant(self, role: str, action: str, *, type: str | None = None, table: tuple[str, str] | None = None) -> None:
+        """Grant a role Read/Write on a type or table (`POST /admin/roles/{r}/grants`).
+
+        Exactly one of `type` (an ontology type name) or `table` (a
+        `(schema, name)` tuple) must be set — else `ValueError` before any
+        request is sent. `action` is `"read"`/`"write"` (the server 400s
+        anything else).
+        """
+        await self._client._send(grant_request(role, action, type, table))
+
+    async def grants(self, role: str) -> list[GrantEntry]:
+        """List a role's coarse grants (`GET /admin/roles/{r}/grants`)."""
+        response = await self._client._send(grant_list_request(role))
+        return parse_grants(response.content)
+
+    async def revoke(self, role: str, action: str, *, type: str | None = None, table: tuple[str, str] | None = None) -> None:
+        """Revoke a coarse grant (`DELETE /admin/roles/{r}/grants`; idempotent).
+
+        Same exactly-one-of-`type`/`table` rule as `grant`.
+        """
+        await self._client._send(revoke_request(role, action, type, table))
+
+
 class _AsyncAdminNamespace:
     """`client.admin` — the admin ontology-write surface (admin role required)."""
 
     def __init__(self, client: AsyncClient) -> None:
         self._client = client
+        self.roles = _AsyncRolesNamespace(client)
 
     async def define_model(self, payload: dict) -> str:
         """Register an ontology type (`POST /admin/models`), returning its name.
