@@ -585,6 +585,34 @@ where
         2,
         "two files live by the second batch"
     );
+    // row_count: SUM(record_count) over files live at a snapshot. row_batches
+    // vec![10, 20] => 10 rows at the first snapshot, 30 by the second.
+    assert_eq!(
+        catalog.row_count(&t, seeded[0].snapshot).await.unwrap(),
+        10,
+        "10 rows live at the first batch"
+    );
+    assert_eq!(
+        catalog.row_count(&t, seeded[1].snapshot).await.unwrap(),
+        30,
+        "30 rows live by the second batch"
+    );
+    // A never-existed table => NotFound, mirroring files()' not-live gate.
+    // NOTE: do NOT use `SnapshotId(seeded[0].snapshot.0 - 1)` — the memory seeder
+    // allocates a table-creation snapshot BEFORE the first batch, so that id is a
+    // LIVE (creation) snapshot and row_count returns Ok(0), not NotFound. Asserting
+    // on a table that was never seeded sidesteps the trap and holds on both adapters.
+    let never = TableRef {
+        schema: "main".into(),
+        name: "does_not_exist".into(),
+    };
+    assert!(
+        matches!(
+            catalog.row_count(&never, seeded[1].snapshot).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "row_count on a never-existed table is NotFound"
+    );
     // snapshots: ascending history, includes both batch snapshots, ends at current.
     let hist = catalog
         .snapshots(&t, PageReq::unbounded())

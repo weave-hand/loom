@@ -624,6 +624,30 @@ impl Catalog for IcebergCatalog {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn row_count(&self, table: &TableRef, at: SnapshotId) -> Result<i64> {
+        let resolved; // borrow gymnastics: delegate view -> base
+        let (table, _projection) = match fetch_view(&self.pool, table).await? {
+            Some(v) => {
+                resolved = v.base;
+                (&resolved, v.columns)
+            }
+            None => (table, None),
+        };
+        let tid = self.resolve_table(table, at).await?;
+        let rows = sqlx::query_scalar!(
+            "select coalesce(sum(record_count), 0)::bigint as \"rows!\" \
+             from iceberg_mirror.data_file \
+             where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2)",
+            tid,
+            at.0,
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(backend)?;
+        Ok(rows)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let resolved; // borrow gymnastics: delegate view -> base
         let (table, projection) = match fetch_view(&self.pool, table).await? {

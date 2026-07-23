@@ -216,6 +216,12 @@ pub trait Catalog {
     /// results are a single full page.
     async fn files(&self, table: &TableRef, at: SnapshotId, page: PageReq)
     -> Result<Page<FileRef>>;
+    /// The exact live row count for `table` at snapshot `at`: the sum of
+    /// `record_count` over the data files live at `at`. `Ok(0)` when the table is
+    /// live but empty; `NotFound` when the table is not live at `at` (same liveness
+    /// gate as [`Catalog::files`]). A single cheap aggregate — no file rows are
+    /// materialized to the caller.
+    async fn row_count(&self, table: &TableRef, at: SnapshotId) -> Result<i64>;
     /// `table`'s column schema at snapshot `at`, in column order. `NotFound` if
     /// the table is not live at `at`.
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema>;
