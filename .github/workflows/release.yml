@@ -182,9 +182,19 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: |
           set -euo pipefail
-          buck2 run deploy//sdk:wheel.push -- "$V" latest
+          # Tie the guard to the real artifact: the wheel's version is stamped from
+          # the BUCK _WHEEL_VERSION constant (kept == pyproject by :wheel-test), so
+          # assert the built filename matches $V before publishing anything — this
+          # catches a _WHEEL_VERSION/$V mismatch even if it slipped past the
+          # pyproject guard (e.g. a release fired against a red main).
           wheel="$(buck2 build //src/sdk/python:wheel --show-simple-output)"
-          cp "$wheel" "loom_sdk-$V-py3-none-any.whl"
+          want="loom_sdk-$V-py3-none-any.whl"
+          if [ "$(basename "$wheel")" != "$want" ]; then
+            echo "built wheel '$(basename "$wheel")' != expected '$want' — refusing to publish a mismatched wheel." >&2
+            exit 1
+          fi
+          buck2 run deploy//sdk:wheel.push -- "$V" latest
+          cp "$wheel" "$want"
 
       - name: Tag & GitHub Release
         uses: softprops/action-gh-release@v2

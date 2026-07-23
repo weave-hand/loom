@@ -185,6 +185,8 @@ actions:
       BUCK_PREFER_REMOTE: "true"
     steps:
       - run: ./tools/ci/buildbuddy-setup.sh
+      # Fail-fast: build the hermetic wheel (natural config) before touching the
+      # registry, so a broken wheel fails the action before any push/login attempt.
       - run: buck2 build //src/sdk/python:wheel
       - run: |
           set -euo pipefail

@@ -19,7 +19,7 @@ With the pydantic ontology layer:
 
 From the ghcr OCI package (immutable `sha-<commit>` tags + moving `edge`/`latest`):
 
-    regctl artifact get ghcr.io/weave-hand/loom-sdk:edge --file loom_sdk-*.whl
+    oras pull ghcr.io/weave-hand/loom-sdk:edge   # writes loom_sdk-*.whl into the cwd
     pip install loom_sdk-*.whl
 
 ## Building the wheel
