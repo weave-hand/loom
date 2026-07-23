@@ -496,16 +496,19 @@ source_table_id, bucket)`) tracks, per micro-batch standing query and source
 bucket, the next offset to read. It is keyed by `mv_key(output)` —
 `"{schema}.{name}"` of the **output**, not the def name (`core/src/stream.rs:151`)
 — so the watermark survives a def rename/redefine exactly when the output
-table is kept (which is exactly when resuming is correct), and ad-hoc
-(nameless) micro-batch runs work with no special case. A fresh MV is
-bootstrapped at registration to its source's earliest surviving offset (see the
-registration-bootstrap section below), so an absent row is not the fresh-MV
-case; an absent row that does occur (an ad-hoc run) reads as offset `0`. The core
-`MvWatermarks` trait (`mv_watermarks`/`advance_mv_watermark`,
-`stream.rs:173`/`:181`) is implemented by the memory fake, a postgres adapter
-(`pg_mv_watermarks`/`pg_advance_mv_watermark`, `postgres/src/stream.rs:552`/
-`:575` — executor-generic over `PgExecutor`, runtime `AssertSqlSafe` like
-`version_for_table`, no `.sqlx` regen needed), and a shared testkit contract.
+table is kept (which is exactly when resuming is correct). Every watermark key
+is named by a live micro-batch def: ad-hoc (nameless) micro-batch runs are
+**rejected at the admin route** (`POST /admin/transforms/run`, #627), and the
+CAS itself refuses any advance whose key no live def names (the def-existence
+guard below). A fresh MV is bootstrapped at registration to its source's
+earliest surviving offset (see the registration-bootstrap section below), so an
+absent row is not the fresh-MV case. The core `MvWatermarks` trait
+(`mv_watermarks`/`advance_mv_watermark`, `stream.rs:173`/`:181`) is implemented
+by the memory fake, a postgres adapter (`pg_mv_watermarks`/
+`pg_advance_mv_watermark`, `postgres/src/stream.rs`) — the CAS takes a
+`&mut PgConnection` so its def-existence guard runs on the same transaction; the
+branched CAS statement stays `AssertSqlSafe` while that guard is a compile-time
+`query_scalar!` (committed `.sqlx`) — and a shared testkit contract.
 The advance is a plain CAS: `update ... set next_offset = $to where ... and
 next_offset = $from` (insert-where-absent when `from = 0`); **zero rows
 affected is a `Conflict`**, and because the advance runs inside the same
@@ -650,6 +653,27 @@ source** but keeps its output releases the watermark rows the MV held on its
 **prior** source, so a stale reader can no longer floor a source the MV no
 longer reads — completing the registration→watermark reconciliation alongside
 the output-change release already documented above.
+
+**A run that outlives its def is refused, not merely cleaned up after (#627).**
+The admin-path reconciliation above deletes an MV's watermark rows in the same
+transaction as the def, but leaves one racy gap: a micro-batch run already in
+flight — or a job still sitting in the queue — whose watermark CAS commits
+*after* its def was deleted (or redefined away). Such a run would re-insert rows
+under a now-defless key, resurrecting the output table and re-materializing the
+whole source on top of it, and flooring the source forever at a key no def
+points to. `advance_mv_watermark` now **guards on def existence in both
+backends**: an advance whose `mv_key` is named by no live `microbatch`/
+`microbatch_join` def returns `Validation` (an honest message — not the
+`Conflict` the worker surfaces as "superseded"), and because the CAS runs inside
+the output-commit transaction, that `Validation` rolls the whole commit back —
+so a queued job that outlives its def re-creates no output table, lands no
+duplicate rows, and leaves no defless "ghost" watermark. Paired with rejecting
+ad-hoc micro-batch runs at the admin route, this makes "every watermark key is
+named by a live def" a **structural** invariant rather than best-effort. (A
+distinct admin-path defect remains out of scope for this in-flight-race fix:
+because a watermark key is the *output* and `delete_transform` keys deletion by
+output alone, two defs sharing one output would let deleting either wipe the
+other's watermarks — filed as #644, needing its own design.)
 
 **That GC tier is byte-retention defense, not hole-freedom** — read the
 distinction before relying on it. GC only reclaims **end-capped** rows
