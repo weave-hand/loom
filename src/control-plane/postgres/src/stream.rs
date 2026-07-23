@@ -318,41 +318,7 @@ pub async fn reconcile_stream_mode(
                 )?;
                 Some(meta.bucket_count)
             } else {
-                // The CDC-over-MV guard, RELOCATED here from the top of the function and
-                // run UNDER the lock: a micro-batch MV registration that committed before
-                // we took the key is now visible, and this refuses the CDC declaration.
-                // Steady-state CDC appends (the arm above) no longer pay this per-land
-                // `pg_micro_batch_readers` scan.
-                pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
-                // The declare itself is `insert … on conflict (table_id) do nothing`.
-                match decl {
-                    StreamDecl::Cdc {
-                        bucket_key,
-                        merge_engine,
-                        ..
-                    } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
-                    StreamDecl::Log(_) | StreamDecl::None => {
-                        pg_declare_stream(&mut *conn, tid, n).await?;
-                    }
-                }
-                let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
-                    ControlPlaneError::Backend(
-                        "stream_table row missing immediately after declare".into(),
-                    )
-                })?;
-                validate_against_recorded(decl, n, requested_kind, &stored, table, Recorded::Race)?;
-                if matches!(decl, StreamDecl::Cdc { .. }) {
-                    let clog = crate::iceberg_landing::changelog_table_ref(table);
-                    let clog_tid = crate::iceberg_mirror::ensure_table(
-                        &mut *conn,
-                        &clog.schema,
-                        &clog.name,
-                        at,
-                    )
-                    .await?;
-                    pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
-                }
-                Some(stored.bucket_count)
+                Some(pg_first_declare(&mut *conn, tid, n, decl, requested_kind, table, at).await?)
             }
         }
         (None, existing) => existing.map(|meta| meta.bucket_count),
@@ -373,6 +339,47 @@ pub async fn reconcile_stream_mode(
     }
 
     Ok(effective)
+}
+
+/// The fresh first-declare path, run under the per-table advisory lock with no
+/// committed `stream_table` row yet: refuse a CDC declaration over a micro-batch
+/// MV source, declare (log or cdc), re-read what was actually recorded (ours, or a
+/// concurrent race winner's — the declare is `on conflict do nothing`), validate
+/// against it, and — for CDC — stamp the changelog table. Returns the recorded
+/// bucket count. Extracted from [`reconcile_stream_mode`]'s first-declare arm to
+/// keep that function's branching in check; the guard placement and lock ordering
+/// are unchanged (the caller holds `lock_key(table)` across this call).
+async fn pg_first_declare(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    n: i32,
+    decl: &StreamDecl,
+    requested_kind: StreamKind,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<i32> {
+    pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
+    match decl {
+        StreamDecl::Cdc {
+            bucket_key,
+            merge_engine,
+            ..
+        } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
+        StreamDecl::Log(_) | StreamDecl::None => {
+            pg_declare_stream(&mut *conn, tid, n).await?;
+        }
+    }
+    let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
+        ControlPlaneError::Backend("stream_table row missing immediately after declare".into())
+    })?;
+    validate_against_recorded(decl, n, requested_kind, &stored, table, Recorded::Race)?;
+    if matches!(decl, StreamDecl::Cdc { .. }) {
+        let clog = crate::iceberg_landing::changelog_table_ref(table);
+        let clog_tid =
+            crate::iceberg_mirror::ensure_table(&mut *conn, &clog.schema, &clog.name, at).await?;
+        pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
+    }
+    Ok(stored.bucket_count)
 }
 
 /// Allocate a contiguous run of `count` offsets for `(table_id, bucket)` on the
