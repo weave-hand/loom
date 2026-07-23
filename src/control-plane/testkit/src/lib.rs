@@ -6403,8 +6403,44 @@ pub async fn stream_tables_contract<CP: StreamTables>(cp: &CP) {
 /// Contract for the MvWatermarks concern: absent reads empty; from=0 inserts;
 /// CAS advances; a stale `from` is Conflict and leaves the row untouched; keys
 /// (mv, source_table_id, bucket) are independent.
-pub async fn mv_watermarks_contract(cp: &(impl control_plane_core::MvWatermarks + Sync)) {
-    use control_plane_core::{ControlPlaneError, WatermarkAdvance};
+pub async fn mv_watermarks_contract(
+    cp: &(impl control_plane_core::MvWatermarks + control_plane_core::Transforms + Sync),
+) {
+    use control_plane_core::{
+        ControlPlaneError, TableRef, TransformBody, TransformDef, TransformName, WatermarkAdvance,
+    };
+    // #627: the CAS now refuses an advance whose key is not named by a live micro-batch def, so
+    // every key this contract advances must first be registered. DRY the four defs behind a helper.
+    async fn seed_mv(cp: &(impl control_plane_core::Transforms + Sync), out: &str) {
+        let (schema, name) = out.split_once('.').expect("qualified output name");
+        cp.define_transform(TransformDef {
+            name: TransformName(format!("def_{schema}_{name}")),
+            body: TransformBody::MicroBatch {
+                source: TableRef {
+                    schema: "src".into(),
+                    name: format!("in_{name}"),
+                },
+                output: TableRef {
+                    schema: schema.into(),
+                    name: name.into(),
+                },
+                buckets: 8,
+                sql: "select * from mv_delta".into(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("seed mv def");
+    }
+    for out in [
+        "s.out",
+        "s.other",
+        "main.cas_relax_out",
+        "main.degenerate_out",
+    ] {
+        seed_mv(cp, out).await;
+    }
     // Absent: empty map.
     let wm = cp.mv_watermarks("s.out", 1).await.expect("read");
     assert!(wm.is_empty(), "no rows yet");

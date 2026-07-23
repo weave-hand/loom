@@ -1,4 +1,4 @@
-use control_plane_core::{ControlPlaneError, MvWatermarks, WatermarkAdvance};
+use control_plane_core::{ControlPlaneError, MvWatermarks, Transforms, WatermarkAdvance};
 use control_plane_postgres::fixture::PgFixture;
 
 #[tokio::test]
@@ -26,6 +26,29 @@ async fn a_watermark_row_at_zero_refuses_a_non_advancing_advance() {
     let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;
     let (mv, tid) = ("s.out", 7_i64);
+
+    // #627: the CAS now refuses an advance whose key no live micro-batch def names — register one
+    // for `s.out` before planting the row, so this test exercises the malformed-advance refusal
+    // rather than the def-existence guard.
+    cp.define_transform(control_plane_core::TransformDef {
+        name: control_plane_core::TransformName("def_s_out".into()),
+        body: control_plane_core::TransformBody::MicroBatch {
+            source: control_plane_core::TableRef {
+                schema: "src".into(),
+                name: "in".into(),
+            },
+            output: control_plane_core::TableRef {
+                schema: "s".into(),
+                name: "out".into(),
+            },
+            buckets: 8,
+            sql: "select * from mv_delta".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    })
+    .await
+    .expect("seed def");
 
     // Plant the bootstrapped-at-zero row directly — `mv_bootstrap`'s outcome, without its setup.
     sqlx::query(sqlx::AssertSqlSafe(
