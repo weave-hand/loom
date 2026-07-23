@@ -8,8 +8,10 @@
 _REGCTL = "@homelab//buck2/bin:regctl"
 
 # Media/artifact types so the Packages UI renders the artifact sensibly. The wheel
-# blob is a zip; PyPI's own simple-index wheel type is used as the artifactType.
-_ARTIFACT_TYPE = "application/vnd.pypi.simple.v1+json"
+# blob is a zip; the artifactType marks the OCI artifact as a PyPI wheel. There is no
+# IANA-registered wheel type, so a vendor-tree value is used; confirm/refine it on the
+# first trusted push (regctl's exact type handling is part of that manual acceptance).
+_ARTIFACT_TYPE = "application/vnd.pypi.wheel"
 _WHEEL_MEDIA_TYPE = "application/zip"
 
 def _wheel_push_impl(ctx: AnalysisContext) -> list[Provider]:
