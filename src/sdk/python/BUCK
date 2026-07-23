@@ -1,4 +1,8 @@
 load("//platforms:defs.bzl", "RE_TEST_PROPS")
+load("@prelude//python:python_wheel.bzl", "python_wheel")
+
+# The wheel version. Kept equal to pyproject.toml [project] version by :wheel-test.
+_WHEEL_VERSION = "0.1.0"
 
 python_test(
     name = "imports",
@@ -37,6 +41,7 @@ python_test(
             "tests/imports_test.py",  # the infra acceptance test — its own :imports target
             "tests/pydantic_*_test.py",  # :units-pydantic (Task 5; needs the pydantic dep)
             "tests/e2e_*_test.py",  # :e2e (Task 7; needs the fixture env)
+            "tests/wheel_test.py",  # :wheel-test (needs the $(location :wheel) env)
         ],
     ),
     remote_execution = RE_TEST_PROPS,
@@ -105,4 +110,46 @@ python_test(
         ":loom-sdk",
         ":loom-sdk-pydantic",
     ],
+)
+
+# Buck2-built distribution wheel (no uv build / PEP 517 backend). Packages the two
+# first-party python_library targets; third-party deps stay out and are declared via
+# `requires` (emitted as Requires-Dist). `platform = "any"` overrides the toolchain
+# default so the tag is py3-none-any (pure Python). Hermetic ⇒ joins the //src/... CI
+# sweep. Version MUST match pyproject.toml [project] version — guarded by :wheel-test.
+python_wheel(
+    name = "wheel",
+    dist = "loom-sdk",
+    version = _WHEEL_VERSION,
+    libraries = [":loom-sdk", ":loom-sdk-pydantic"],
+    requires = [
+        "httpx>=0.28",
+        "pyarrow>=25",
+        'pydantic>=2.11; extra == "pydantic"',
+    ],
+    extra_metadata = {"Provides-Extra": "pydantic"},
+    platform = "any",
+    visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "pyproject",
+    src = "pyproject.toml",
+    visibility = ["PUBLIC"],
+)
+
+# Guards the buck2-built wheel: (1) pyproject version has not drifted from the BUCK
+# python_wheel version, (2) the wheel ships loom_sdk/ + loom_sdk/pydantic/ and its
+# METADATA carries the pydantic extra + Requires-Dist. RE-pinned like every python_test
+# here (inplace-par shebang footgun). Excluded from :units' glob because it needs this
+# bespoke env.
+python_test(
+    name = "wheel-test",
+    srcs = ["tests/wheel_test.py"],
+    env = {
+        "WHEEL_PATH": "$(location :wheel)",
+        "PYPROJECT_PATH": "$(location :pyproject)",
+        "EXPECTED_WHEEL_VERSION": _WHEEL_VERSION,
+    },
+    remote_execution = RE_TEST_PROPS,
 )

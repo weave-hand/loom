@@ -5,10 +5,11 @@ hand-written, first-party Python client for loom's write path and verification
 reads: sync `Client` and `AsyncClient` with identical surfaces over a shared
 sans-IO core, plus an optional pydantic layer that turns a class declaration
 into an ontology type. It is buck2-built on the muntjac/uv Python dependency
-machinery (`docs/system-capabilities/build-and-test.md`), consumed in-tree
-only — no PyPI publishing yet.
+machinery (`docs/system-capabilities/build-and-test.md`); the built wheel is
+published to ghcr and attached to GitHub Releases (see "Wheel build and
+publish" below) — PyPI proper stays out of scope.
 
-_As of b27064f7._
+_As of 7a6959c._
 
 ## Client shells and the two-URL model
 
@@ -164,6 +165,20 @@ implicit grants (`postgres::acl::check` is a pure grant lookup, no admin
 bypass). A freshly bootstrapped admin subject cannot `land_instances` or
 `preview` anything until roles/grants are set up via `/admin/roles*` — now
 wrapped by `client.admin.roles` (above), rather than needing raw HTTP.
+
+## Wheel build and publish
+
+The SDK ships as a buck2-built wheel — `//src/sdk/python:wheel` (the prelude's
+`python_wheel` rule, no `uv build`), packaging the `:loom-sdk` and
+`:loom-sdk-pydantic` libraries into `loom_sdk-0.1.0-py3-none-any.whl`. It is hermetic
+and rides the normal `//src/...` CI sweep. `//src/sdk/python:wheel-test` guards two
+invariants: the `pyproject.toml` version never drifts from the BUCK `version` attr,
+and the wheel ships both modules plus the `pydantic` extra in its METADATA.
+
+Publishing is `deploy//sdk:wheel.push` (`regctl artifact put` → `ghcr.io/weave-hand/loom-sdk`),
+driven two ways: a BuildBuddy `publish-wheel` action pushes `sha-<commit>` + `edge` on
+every push to main, and `release.yml`'s versioned leg pushes `X.Y.Z` + `latest` and
+attaches the `.whl` to the `vX.Y.Z` GitHub Release for a plain-pip install URL.
 
 ## Known gaps
 

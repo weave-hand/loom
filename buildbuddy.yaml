@@ -166,3 +166,30 @@ actions:
     steps:
       - run: ./tools/ci/buildbuddy-setup.sh
       - run: buck2 run //tools:prek -- run --all-files --show-diff-on-failure
+
+  # Publish the loom-sdk wheel to ghcr on pushes to main: immutable per-commit
+  # tag (sha-<short>) + a moving `edge` channel, mirroring the image/chart scheme.
+  # The wheel builds hermetically in the //src sweep; this action does the
+  # credentialed push (kept off build-test for the same reason images are off it).
+  # Credentials: GITHUB_TOKEN is auto-injected into trusted BuildBuddy runs; the
+  # first main run must verify it is present and has packages:write (see the PR body).
+  - name: publish-wheel
+    triggers:
+      push:
+        branches: [main]
+    os: linux
+    arch: amd64
+    container_image: ubuntu-24.04
+    git_clean_exclude: ["buck-out"]
+    env:
+      BUCK_PREFER_REMOTE: "true"
+    steps:
+      - run: ./tools/ci/buildbuddy-setup.sh
+      # Fail-fast: build the hermetic wheel (natural config) before touching the
+      # registry, so a broken wheel fails the action before any push/login attempt.
+      - run: buck2 build //src/sdk/python:wheel
+      - run: |
+          set -euo pipefail
+          short="$(git rev-parse --short=7 HEAD)"
+          echo "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:crane -- auth login ghcr.io -u "${GITHUB_ACTOR:-weave-hand}" --password-stdin
+          buck2 run deploy//sdk:wheel.push -- "sha-$short" edge
