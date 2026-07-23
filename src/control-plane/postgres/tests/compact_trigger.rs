@@ -18,7 +18,7 @@ use control_plane_postgres::iceberg_compact::{CompactTriggerCfg, compact_table};
 use control_plane_postgres::iceberg_control_plane::IcebergControlPlane;
 use control_plane_postgres::iceberg_inline::set_has_shadow;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::live_table_id;
+use control_plane_postgres::iceberg_mirror::{ensure_table, live_table_id, next_snapshot};
 use loom_test_seed::local_sql_catalog;
 
 fn columns() -> Vec<control_plane_core::ColumnSpec> {
@@ -91,6 +91,33 @@ async fn land_n_small(
         .await
         .expect("land");
     }
+}
+
+/// Land one small Parquet file against `table`, declaring it a log stream of
+/// `buckets` buckets at GENESIS — `buckets` rides this, the table's FIRST land
+/// call (see `land`'s `stream_buckets` doc: it declares on first write).
+/// Declaring at genesis, before any data ever lands, is legal both before and
+/// after the not-over-existing-data stream/CDC declare guard (#625).
+async fn land_genesis_stream(
+    pool: &sqlx::PgPool,
+    catalog: &control_plane_postgres::iceberg_sql_catalog::SqlCatalog,
+    table: &TableRef,
+    buckets: i32,
+) {
+    let (schema, batches) = ipc_body(0);
+    land(
+        pool,
+        catalog,
+        table,
+        &columns(),
+        schema,
+        batches,
+        small_limits(),
+        lineage(RunId(uuid::Uuid::new_v4()), table),
+        Some(buckets),
+    )
+    .await
+    .expect("land");
 }
 
 /// A hand-built loom `DataFile` well under the trigger cfg's 1 MiB cutoff —
@@ -320,7 +347,7 @@ async fn disabled_catalog_enqueues_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stream_table_skips() {
     let fx = PgFixture::shared();
-    let (cp, db) = fx.fresh_db().await;
+    let (_cp, db) = fx.fresh_db().await;
     let wh = tempfile::tempdir().expect("wh");
     let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string())
         .await
@@ -331,17 +358,9 @@ async fn stream_table_skips() {
         name: "t".into(),
     };
 
-    // Land one file first so the table has a live mirror row, declare it a
-    // stream table, then cross the threshold.
-    land_n_small(&pool, &catalog, &table, 1).await;
-    let mut conn = pool.acquire().await.expect("acquire");
-    let tid = live_table_id(&mut conn, &table.schema, &table.name)
-        .await
-        .expect("live_table_id")
-        .expect("table has a live row");
-    drop(conn);
-    cp.declare_stream(tid, 4).await.expect("declare_stream");
-
+    // Declare the table a stream at GENESIS — `buckets=4` rides the FIRST land,
+    // before any data has landed — then keep landing to cross the threshold.
+    land_genesis_stream(&pool, &catalog, &table, 4).await;
     land_n_small(&pool, &catalog, &table, 2).await;
     assert_eq!(
         available_jobs(&pool).await,
@@ -397,26 +416,31 @@ async fn changelog_table_skips() {
         name: "base__changelog".into(),
     };
 
-    // Two independent tables: `changelog` accrues the small files; `base`'s
-    // stream_table row points its changelog_table_id at `changelog`'s tid.
+    // `base` must be declared CDC at GENESIS — before any data lands on it.
+    // Mirrors `stream_cdc_dual_flush.rs`: an explicit tx for `ensure_table`
+    // (its savepoint retry needs one) to get the empty mirror row + tid,
+    // commit, THEN declare_cdc. `set_changelog_table_id` UPDATEs an existing
+    // stream.stream_table row, so this declare is required regardless — base
+    // never needs any landed data of its own for this test.
+    let mut tx = pool.begin().await.expect("begin");
+    let at0 = next_snapshot(&mut tx, None).await.expect("next_snapshot");
+    let base_tid = ensure_table(&mut tx, &base.schema, &base.name, at0)
+        .await
+        .expect("ensure_table");
+    tx.commit().await.expect("commit");
+    cp.declare_cdc(base_tid, 1, "id", control_plane_core::MergeEngine::LastRow)
+        .await
+        .expect("declare_cdc");
+
+    // `changelog` accrues the small files; `base`'s stream_table row (declared
+    // above) points its changelog_table_id at `changelog`'s tid.
     land_n_small(&pool, &catalog, &changelog, 1).await;
-    land_n_small(&pool, &catalog, &base, 1).await;
     let mut conn = pool.acquire().await.expect("acquire");
     let changelog_tid = live_table_id(&mut conn, &changelog.schema, &changelog.name)
         .await
         .expect("live_table_id")
         .expect("changelog has a live row");
-    let base_tid = live_table_id(&mut conn, &base.schema, &base.name)
-        .await
-        .expect("live_table_id")
-        .expect("base has a live row");
     drop(conn);
-    // `set_changelog_table_id` UPDATEs an existing stream.stream_table row, so
-    // `base` must first be declared CDC (mirrors stream_cdc_dual_flush.rs) —
-    // otherwise the update is a silent no-op against a non-existent row.
-    cp.declare_cdc(base_tid, 1, "id", control_plane_core::MergeEngine::LastRow)
-        .await
-        .expect("declare_cdc");
     cp.set_changelog_table_id(base_tid, changelog_tid)
         .await
         .expect("set_changelog_table_id");
