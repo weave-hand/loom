@@ -75,6 +75,34 @@ pub fn ipc_bytes(batch: &RecordBatch) -> Vec<u8> {
     buf
 }
 
+/// Build the ungoverned ingest data-plane `Router` over a fresh Iceberg-backed
+/// `AppState`, returning the control-plane handle, pool, and warehouse temp dir
+/// the caller keeps alive. The `Router` is `Clone` — issue several requests by
+/// cloning it per `oneshot` (axum's `oneshot` consumes the service).
+pub async fn ingest_router(
+    fx: &PgFixture,
+    db: &str,
+) -> (Router, Arc<PgControlPlane>, PgPool, tempfile::TempDir) {
+    let (pg, pool, wh, state) = app_state(fx, db).await;
+    (router(state), pg, pool, wh)
+}
+
+/// POST an Arrow-IPC `body` to `uri` on the given (ungoverned) router and return
+/// the raw response for the caller to assert status/body on. No auth header — the
+/// data plane's `POST /datasets/...` land path is authn-only at the gate, which
+/// the ungoverned `router` omits by construction.
+pub async fn post_ipc(app: Router, uri: &str, body: Vec<u8>) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
 /// Build an Iceberg-backed `AppState` over the fixture db + temp warehouse, returning
 /// the concrete `PgControlPlane` (needed for auth/ACL setup) and the pool.
 pub async fn app_state(
