@@ -203,22 +203,31 @@ async fn ensure_versioned_orderable(
 /// Rejections, all raised BEFORE any `pg_declare_stream`/`pg_declare_cdc`: a
 /// `< 1` requested count → `Validation`; a `merge_engine=versioned` declare whose
 /// type has no orderable version property → `Validation`; a batch→stream
-/// conversion of a PRE-EXISTING table → `Validation`; and — against a recorded
-/// declaration, whether pre-existing or written by a concurrent first-declarer
-/// that won the race — the four [`validate_against_recorded`] guards.
+/// conversion of a PRE-EXISTING table → `Validation`; a CDC declaration whose
+/// source a micro-batch MV already reads → `Validation` (raised inside the
+/// first-declare arm, under the per-table lock — see below — not at the top of
+/// this function); and — against a recorded declaration, whether pre-existing or
+/// written by a concurrent first-declarer that won the race — the four
+/// [`validate_against_recorded`] guards.
 ///
 /// For a fresh `(Some(n), None)` request on a brand-new table (`!pre_existing`)
-/// it declares the stream (as a log or cdc table, per `decl`), then re-reads what
-/// was ACTUALLY recorded — the declare is `on conflict (table_id) do nothing`, so
-/// a concurrent first-writer may have won it — and validates against that. The
-/// re-read's rejection MUST precede the CDC changelog writes below it: those are
-/// unconditional writes to the winner's registry row, so a rejected declare would
-/// otherwise mutate it. Runs entirely on the caller's transaction so the declare
-/// commits iff the write does. Because `ensure_table_witnessed` now serializes the
-/// mirror-row create via a partial unique index, no two production transactions
-/// can actually reach this contended `on conflict do nothing` path any more — it
-/// is defense-in-depth today, exercised only by tests driving this seam directly
-/// with a synthetic `tid`.
+/// it first takes `lock_key(table)` (`iceberg_flush::lock_key`) for the rest of
+/// this transaction — the SAME per-table key `define_transform` holds while
+/// registering a micro-batch MV — so a first CDC/stream declaration and a
+/// concurrent MV registration over the same table can never both proceed
+/// unserialized; whichever loses the lock re-reads and observes the winner's
+/// committed row. Only then does it declare the stream (as a log or cdc table,
+/// per `decl`), then re-reads what was ACTUALLY recorded — the declare is `on
+/// conflict (table_id) do nothing`, so a concurrent first-writer may have won it
+/// — and validates against that. The re-read's rejection MUST precede the CDC
+/// changelog writes below it: those are unconditional writes to the winner's
+/// registry row, so a rejected declare would otherwise mutate it. Runs entirely
+/// on the caller's transaction so the declare commits iff the write does, and the
+/// lock releases on commit/rollback. Because `ensure_table_witnessed` now
+/// serializes the mirror-row create via a partial unique index, no two
+/// production transactions can actually reach this contended `on conflict do
+/// nothing` path any more — it is defense-in-depth today, exercised only by
+/// tests driving this seam directly with a synthetic `tid`.
 ///
 /// `pre_existing`: whether the table's mirror row existed BEFORE this write began
 /// (the batch→stream conversion guard). `tid`: the mirror table id (already
@@ -256,7 +265,6 @@ pub async fn reconcile_stream_mode(
         )));
     }
 
-    pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
     ensure_versioned_orderable(&mut *conn, decl, table).await?;
 
     // The requested stream KIND (log vs cdc). Exhaustive (no `_` arm) so a future
@@ -283,47 +291,35 @@ pub async fn reconcile_stream_mode(
                     table.schema, table.name
                 )));
             }
-            // The declare itself is `insert … on conflict (table_id) do nothing`: it
-            // blocks against a concurrent uncommitted first-declare and no-ops if that
-            // writer won.
-            match decl {
-                StreamDecl::Cdc {
-                    bucket_key,
-                    merge_engine,
-                    ..
-                } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
-                // Spelled out (not `_`) so a future `StreamDecl` variant fails closed
-                // the same way `requested_kind` above does.
-                StreamDecl::Log(_) | StreamDecl::None => {
-                    pg_declare_stream(&mut *conn, tid, n).await?;
-                }
+            // Serialize this FIRST-DECLARE against a concurrent micro-batch MV
+            // registration. `define_transform` holds `lock_key(source)` for its whole
+            // transaction (transforms.rs); taking the SAME per-table key here makes the
+            // two mutually exclusive. Whoever takes the key second blocks until the
+            // first commits, then its guard read below sees the winner's committed row.
+            // Held for the rest of the landing transaction (xact-scoped), released on
+            // commit/rollback. Only reachable at first-declare — steady-state appends
+            // (the `(Some, Some)` arm) never take it, so the ingest hot path is unchanged.
+            let key = crate::iceberg_flush::lock_key(&table.schema, &table.name);
+            sqlx::query!("select pg_advisory_xact_lock($1)", key)
+                .execute(&mut *conn)
+                .await
+                .map_err(backend)?;
+            // A concurrent first-declare may have committed while we waited on the lock
+            // (READ COMMITTED gives this fresh-snapshot statement the just-committed
+            // row). If so, honour it exactly as the steady-state redeclare arm does.
+            if let Some(meta) = pg_stream_meta(&mut *conn, tid).await? {
+                validate_against_recorded(
+                    decl,
+                    n,
+                    requested_kind,
+                    &meta,
+                    table,
+                    Recorded::Redeclare,
+                )?;
+                Some(meta.bucket_count)
+            } else {
+                Some(pg_first_declare(&mut *conn, tid, n, decl, requested_kind, table, at).await?)
             }
-            // Re-read what was ACTUALLY recorded (ours, or a concurrent winner's) and
-            // honour it, so the rows we stamp always agree with the registry. Same
-            // statement as the read above — no new SQL.
-            //
-            // Load-bearing isolation assumption: under READ COMMITTED (Postgres's
-            // default, and what this pool runs), each statement gets a fresh snapshot —
-            // so this re-read, issued after the loser's blocked insert is unblocked by
-            // the winner's commit, observes the just-committed winner's row rather than
-            // the pre-commit snapshot the top-of-function read saw.
-            let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
-                ControlPlaneError::Backend(
-                    "stream_table row missing immediately after declare".into(),
-                )
-            })?;
-            validate_against_recorded(decl, n, requested_kind, &stored, table, Recorded::Race)?;
-            // CDC-only, and BELOW every guard above: both writes here are unconditional
-            // mutations of this table_id's rows, so a declare that lost the race to a
-            // different-kind winner must have been rejected before reaching them.
-            if matches!(decl, StreamDecl::Cdc { .. }) {
-                let clog = crate::iceberg_landing::changelog_table_ref(table);
-                let clog_tid =
-                    crate::iceberg_mirror::ensure_table(&mut *conn, &clog.schema, &clog.name, at)
-                        .await?;
-                pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
-            }
-            Some(stored.bucket_count)
         }
         (None, existing) => existing.map(|meta| meta.bucket_count),
     };
@@ -343,6 +339,47 @@ pub async fn reconcile_stream_mode(
     }
 
     Ok(effective)
+}
+
+/// The fresh first-declare path, run under the per-table advisory lock with no
+/// committed `stream_table` row yet: refuse a CDC declaration over a micro-batch
+/// MV source, declare (log or cdc), re-read what was actually recorded (ours, or a
+/// concurrent race winner's — the declare is `on conflict do nothing`), validate
+/// against it, and — for CDC — stamp the changelog table. Returns the recorded
+/// bucket count. Extracted from [`reconcile_stream_mode`]'s first-declare arm to
+/// keep that function's branching in check; the guard placement and lock ordering
+/// are unchanged (the caller holds `lock_key(table)` across this call).
+async fn pg_first_declare(
+    conn: &mut sqlx::PgConnection,
+    tid: i64,
+    n: i32,
+    decl: &StreamDecl,
+    requested_kind: StreamKind,
+    table: &TableRef,
+    at: SnapshotId,
+) -> Result<i32> {
+    pg_refuse_cdc_over_mv_source(&mut *conn, decl, table).await?;
+    match decl {
+        StreamDecl::Cdc {
+            bucket_key,
+            merge_engine,
+            ..
+        } => pg_declare_cdc(&mut *conn, tid, n, bucket_key, *merge_engine).await?,
+        StreamDecl::Log(_) | StreamDecl::None => {
+            pg_declare_stream(&mut *conn, tid, n).await?;
+        }
+    }
+    let stored = pg_stream_meta(&mut *conn, tid).await?.ok_or_else(|| {
+        ControlPlaneError::Backend("stream_table row missing immediately after declare".into())
+    })?;
+    validate_against_recorded(decl, n, requested_kind, &stored, table, Recorded::Race)?;
+    if matches!(decl, StreamDecl::Cdc { .. }) {
+        let clog = crate::iceberg_landing::changelog_table_ref(table);
+        let clog_tid =
+            crate::iceberg_mirror::ensure_table(&mut *conn, &clog.schema, &clog.name, at).await?;
+        pg_set_changelog_table_id(&mut *conn, tid, clog_tid).await?;
+    }
+    Ok(stored.bucket_count)
 }
 
 /// Allocate a contiguous run of `count` offsets for `(table_id, bucket)` on the

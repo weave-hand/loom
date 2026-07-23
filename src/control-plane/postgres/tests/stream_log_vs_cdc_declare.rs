@@ -180,6 +180,87 @@ async fn log_declare_matching_count_against_cdc_table_is_validation_error() {
     drop(catalog);
 }
 
+/// THE MIRROR DIRECTION: mode=cdc with a MATCHING bucket count against an
+/// already-declared LOG table must also be rejected with Validation, leaving the
+/// registry kind='log'. Confirms the kind-change guard is symmetric — a redeclare
+/// can transition neither Log->Cdc nor Cdc->Log — which is what makes it safe for
+/// `reconcile_stream_mode`'s steady-state `(Some, Some)` arm to skip the
+/// CDC-over-MV guard entirely: an already-declared table's kind can never change
+/// underneath it, so no steady-state append can turn a table CDC.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cdc_declare_matching_count_against_log_table_is_validation_error() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+
+    let table = TableRef {
+        schema: "s".into(),
+        name: "w_log2".into(),
+    };
+
+    // Declare the table as a LOG stream (buckets=2), as POST /datasets/{schema}/{table}?mode=stream does.
+    let (schema, batches) = batch();
+    land(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        schema,
+        batches,
+        always_inline(),
+        lineage(),
+        Some(2),
+    )
+    .await
+    .expect("log declare lands");
+
+    // A cdc declare with the MATCHING count (2) against the LOG table, as
+    // POST /models/{type}?mode=cdc does.
+    let (schema, batches) = batch();
+    let res = land_cdc(
+        &pool,
+        &catalog,
+        &table,
+        &columns(),
+        schema,
+        batches,
+        always_inline(),
+        lineage(),
+        None,
+        Some(CdcDecl {
+            buckets: 2,
+            bucket_key: "id".into(),
+            merge_engine: MergeEngine::LastRow,
+        }),
+        &[],
+    )
+    .await;
+    assert!(
+        matches!(&res, Err(ControlPlaneError::Validation(msg)) if msg.contains("different stream kind")),
+        "cdc declare with a matching count against a log table must be a kind-mismatch Validation, got {res:?}"
+    );
+
+    // The registry row is untouched: still kind='log'.
+    let mut conn = pool.acquire().await.expect("acquire");
+    let tid = live_table_id(&mut conn, &table.schema, &table.name)
+        .await
+        .expect("live_table_id")
+        .expect("log table has a live mirror row");
+    drop(conn);
+    let meta = cp
+        .stream_meta(tid)
+        .await
+        .expect("stream_meta")
+        .expect("declared stream table");
+    assert_eq!(meta.kind, StreamKind::Log, "registry stays kind='log'");
+    assert_eq!(meta.bucket_count, 2, "bucket count unchanged");
+
+    drop(wh);
+    drop(catalog);
+}
+
 /// Control (non-regression): a second same-count log declare against a LOG
 /// table is still accepted — the pure log redeclare path the slice-2
 /// byte-identical constraint pins.
