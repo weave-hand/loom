@@ -9,8 +9,8 @@
 use std::time::Duration;
 
 use control_plane_core::{
-    ControlPlane, ControlPlaneError, RunId, SnapshotId, StreamTables, TableRef, TransformName,
-    mv_key,
+    ControlPlane, ControlPlaneError, MvWatermarks, RunId, SnapshotId, StreamTables, TableRef,
+    TransformName, WatermarkAdvance, mv_key,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -677,6 +677,85 @@ async fn deleting_the_mv_registration_releases_the_floor() {
     assert_eq!(second.inline_rows, 3, "the dead MV's hold is released");
     assert_eq!(second.held_by_mv_floor, 0, "no reader, no floor");
     assert_eq!(end_capped_inline_count(&s.pool, s.tid).await, 0);
+}
+
+/// The floor returns to empty after a REFUSED post-delete CAS (#627). A run that was
+/// queued before its def was deleted still tries to advance the watermark; that CAS must
+/// be refused (`Validation`, the def-existence guard) AND leave NO residual floor. Without
+/// the guard, a `from == 0` advance takes the INSERT branch and re-plants a watermark row
+/// under the now-defless key — re-pinning `mv_floor` at a ghost the delete just released,
+/// flooring the source forever. This is the sibling of
+/// `deleting_the_mv_registration_releases_the_floor`: that proves the delete releases the
+/// floor; this proves a straggler CAS cannot silently re-take it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mv_floor_stays_empty_after_a_refused_post_delete_cas() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let s = seed_source(
+        fx,
+        &cp,
+        &db,
+        &wh.path().display().to_string(),
+        6,
+        Some(1),
+        true,
+        &[("mv_a", "out_a")],
+    )
+    .await;
+    let mv = mv_key(&tref("s", "out_a"));
+
+    // The MV runs once: its watermark advances to 3, so it pins a real floor.
+    advance(&cp, &mv, s.tid, 0, 0, 3).await;
+    {
+        let mut conn = s.pool.acquire().await.expect("conn");
+        let floor = mv_floor(&mut conn, &s.src, s.tid)
+            .await
+            .expect("floor")
+            .expect("the live MV pins a floor");
+        assert_eq!(
+            floor.min_offset(),
+            3,
+            "sanity: the floor sits at the watermark"
+        );
+    }
+
+    // The def is deleted (the escape hatch): its watermark rows go with it.
+    cp.transforms()
+        .delete_transform(&TransformName("mv_a".into()))
+        .await
+        .expect("delete the mv registration");
+
+    // A run that outlived the def tries to advance from offset 0 — the INSERT branch that,
+    // unguarded, would re-plant a watermark row and re-pin the floor at the ghost key.
+    let err = cp
+        .advance_mv_watermark(
+            &mv,
+            s.tid,
+            &[WatermarkAdvance {
+                bucket: 0,
+                from: 0,
+                to: 3,
+            }],
+        )
+        .await
+        .expect_err("a post-delete CAS must be refused, not silently re-plant a floor");
+    assert!(
+        matches!(err, ControlPlaneError::Validation(_)),
+        "the def-existence guard rejects with Validation, got: {err:?}"
+    );
+    assert!(
+        err.to_string().contains("no micro-batch def names"),
+        "the refusal names the missing def, got: {err}"
+    );
+
+    // The floor is gone and STAYS gone: the refused CAS planted nothing.
+    let mut conn = s.pool.acquire().await.expect("conn");
+    assert_eq!(
+        mv_floor(&mut conn, &s.src, s.tid).await.expect("floor"),
+        None,
+        "no def, no watermark row -> no residual floor at the ghost key"
+    );
 }
 
 /// The over-refusal guard, on the REAL path: a flush with an MV still at 3 of 6 must

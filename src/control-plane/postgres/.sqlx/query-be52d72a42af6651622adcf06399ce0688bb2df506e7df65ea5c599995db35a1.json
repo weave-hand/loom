@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select exists(\n             select 1 from transforms.transform\n             where body->>'kind' in ('microbatch', 'microbatch_join')\n               and (body->'output'->>'schema') || '.' || (body->'output'->>'name') = $1\n           ) as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "be52d72a42af6651622adcf06399ce0688bb2df506e7df65ea5c599995db35a1"
+}

@@ -209,6 +209,29 @@ fn make_stream_mv_job(
     }
 }
 
+/// Register a micro-batch MV def naming `output` over `source`, with NO data trigger
+/// (`on_input_commit: false`) so landing never auto-fires a run — these tests drive their
+/// runs by hand. Since #627 the watermark CAS a micro-batch commit issues carries a
+/// def-existence guard (`mv_key(output)` must be named by a live micro-batch def), so a
+/// `run_micro_batch` happy path must register its def first; the register-then-run tests
+/// below (`gc_holds_…`, `mv_registered_…`) already do this inline.
+async fn register_mv_def(cp: &PgControlPlane, source: &TableRef, output: &TableRef, sql: &str) {
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName(format!("mv_{}_{}", output.schema, output.name)),
+            body: TransformBody::MicroBatch {
+                source: source.clone(),
+                output: output.clone(),
+                buckets: 1,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv def");
+}
+
 /// Submit + dequeue + run one micro-batch over the REAL queue, mirroring how
 /// `transform_e2e` drives its jobs: a `TransformRun` carrying a frozen
 /// `MicroBatch` body is submitted (record + queued job, atomically), then
@@ -358,6 +381,15 @@ async fn mv_converges_across_micro_batches_and_flush() {
 
     // 1. Seed s.events: (1,10),(2,20),(3,30), declared a 2-bucket log stream.
     let src = tref("s", "events");
+    // #627: register the MV def up front so the micro-batch commits' watermark CAS passes the
+    // def-existence guard (register-before-run, like the tests further down).
+    register_mv_def(
+        &cp,
+        &src,
+        &tref("s", "doubled"),
+        "select id, val * 2 as dbl from events",
+    )
+    .await;
     let (schema, batches) = events_batch(&[1, 2, 3], &[10, 20, 30]);
     land(
         &pool,
@@ -494,6 +526,15 @@ async fn filtering_micro_batch_advances_watermark_with_empty_output() {
 
     // All rows fail the predicate below (val <= 1000).
     let src = tref("f", "events");
+    // #627: register the MV def up front so the micro-batch commit's watermark CAS passes the
+    // def-existence guard.
+    register_mv_def(
+        &cp,
+        &src,
+        &tref("f", "filtered"),
+        "select id, val from events where val > 1000",
+    )
+    .await;
     let (schema, batches) = events_batch(&[1, 2, 3], &[10, 20, 30]);
     land(
         &pool,
@@ -1212,5 +1253,130 @@ async fn mv_over_a_gcd_cross_bucket_source_commits_from_an_undershooting_bootstr
         HashSet::from([(10, 200), (11, 220), (12, 240), (13, 260)]),
         "the output holds EXACTLY the 4 surviving rows across both buckets — not short, not \
          re-reading the reclaimed prefix"
+    );
+}
+
+/// The big symptom (#627): a queued MV run that OUTLIVES its def must re-create nothing.
+/// `delete_transform` cancels no queue job, so a run enqueued-but-not-yet-executed before the
+/// delete runs after it. With an empty `mv_watermarks` it would scan from offset 0, every
+/// advance would be `from == 0` (the INSERT branch), and it would RESURRECT the output table
+/// with a full re-materialization while re-pinning the source's MV floor at a defless key. The
+/// def-existence guard turns this into a clean abandon with NO side effects: the CAS runs inside
+/// the output-commit tx, so its `Validation` rolls the whole commit back — output uncreated,
+/// watermark untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_mv_run_outliving_its_def_recreates_nothing() {
+    let MvEnv {
+        cp,
+        pool,
+        catalog,
+        ctx,
+        engine: _engine,
+        sql_client: _sql_client,
+        fx: _fx,
+        db: _db,
+        eng: _eng,
+        wh: _wh,
+    } = setup_mv_env().await;
+
+    let src = tref("s", "events");
+    let out = tref("s", "doubled");
+    let sql = "select id, val * 2 as dbl from events";
+
+    // 1. Seed the source log stream (3 rows, offsets 0,1,2) and register the MV over it.
+    land_events(&pool, &catalog, &src, &[1, 2, 3], &[10, 20, 30], 1).await;
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("mv_doubled".into()),
+            body: TransformBody::MicroBatch {
+                source: src.clone(),
+                output: out.clone(),
+                buckets: 1,
+                sql: sql.to_string(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv");
+
+    // 2. Enqueue ONE MV run — the exact submit the happy path does — but do NOT run it yet.
+    let rid = uuid::Uuid::new_v4();
+    let body = TransformBody::MicroBatch {
+        source: src.clone(),
+        output: out.clone(),
+        buckets: 1,
+        sql: sql.to_string(),
+    };
+    let run = TransformRun {
+        run_id: rid,
+        transform: None,
+        trigger: RunTrigger::AdHoc,
+        state: RunState::Queued,
+        body: body.clone(),
+        queued_at: time::OffsetDateTime::now_utc(),
+        started_at: None,
+        finished_at: None,
+        snapshot_id: None,
+        error: None,
+    };
+    cp.transforms()
+        .submit_run(run, body.to_job(rid))
+        .await
+        .expect("enqueue the mv run");
+
+    // 3. Delete the def while its run sits queued: the run now outlives its def.
+    cp.transforms()
+        .delete_transform(&TransformName("mv_doubled".into()))
+        .await
+        .expect("delete the mv def");
+
+    // 4. Run the worker job to completion: dequeue the still-queued job and handle it.
+    let job = ctx
+        .control
+        .dequeue(&[STREAM_MV_JOB_KIND.to_string()], "e2e-worker")
+        .await
+        .expect("dequeue")
+        .expect("the queued stream_mv job survives the def delete");
+    let err = handle_stream_mv(&ctx, job)
+        .await
+        .expect_err("a run whose def is gone must not commit");
+
+    // (b) Abandoned/Failed, and the message names the guard's refusal.
+    assert!(
+        matches!(err.policy, RetryPolicy::Abandon),
+        "a deleted def is deterministic (Abandon), got {:?}",
+        err.policy
+    );
+    assert!(
+        err.error.contains("no micro-batch def names"),
+        "the failure names the def-existence guard, got: {}",
+        err.error
+    );
+
+    // (a) The output table was never resurrected: no columns were ever declared for it.
+    let listed = ctx
+        .control
+        .list_files(out.schema.clone(), out.name.clone())
+        .await
+        .expect("list output");
+    assert!(
+        listed.columns.is_none(),
+        "the refused commit rolled back: the output table does not exist"
+    );
+
+    // (c) No ghost watermark row was planted under the defless key.
+    let mut conn = pool.acquire().await.expect("conn");
+    let src_tid = live_table_id(&mut conn, &src.schema, &src.name)
+        .await
+        .expect("live_table_id")
+        .expect("source is declared");
+    drop(conn);
+    assert!(
+        cp.mv_watermarks(&mv_key(&out), src_tid)
+            .await
+            .expect("watermarks")
+            .is_empty(),
+        "the guard rolled back the CAS: no watermark row survives at the ghost key"
     );
 }

@@ -841,7 +841,7 @@ pub struct MvCommit {
 pub async fn advance_mv_watermark_only(pool: &PgPool, mv: &MvCommit) -> Result<()> {
     let mut tx = pool.begin().await.map_err(backend)?;
     for adv in &mv.advances {
-        crate::stream::pg_advance_mv_watermark(&mut *tx, &mv.mv, mv.source_table_id, adv).await?;
+        crate::stream::pg_advance_mv_watermark(&mut tx, &mv.mv, mv.source_table_id, adv).await?;
     }
     if let Some(rid) = mv.run_id {
         crate::transforms::pg_mark_run_succeeded(&mut *tx, rid, 0).await?;

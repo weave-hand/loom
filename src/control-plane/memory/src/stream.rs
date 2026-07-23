@@ -119,6 +119,31 @@ impl MvWatermarks for MemoryControlPlane {
         source_table_id: i64,
         advances: &[WatermarkAdvance],
     ) -> Result<()> {
+        // An empty advance writes nothing, so it is a no-op success on BOTH backends — postgres's
+        // trait impl loops over `advances` and calls the guarded CAS per element, so an empty slice
+        // never reaches the def-existence guard. Short-circuit here to keep the two backends identical
+        // on that degenerate input (nothing is written, so a defless key is harmless either way).
+        if advances.is_empty() {
+            return Ok(());
+        }
+        // DEF-EXISTENCE GUARD (#627) — mirrors `pg_advance_mv_watermark`. Lock order: take
+        // `transforms`, decide, DROP it, THEN take `mv_watermarks` (never both at once).
+        let has_def = {
+            let st = self.transforms.lock();
+            st.defs.values().any(|d| match &d.body {
+                control_plane_core::TransformBody::MicroBatch { output, .. }
+                | control_plane_core::TransformBody::MicroBatchJoin { output, .. } => {
+                    control_plane_core::mv_key(output) == mv
+                }
+                _ => false,
+            })
+        };
+        if !has_def {
+            return Err(ControlPlaneError::Validation(format!(
+                "mv watermark advance refused: no micro-batch def names {mv} (its def was deleted or \
+                 redefined away); the source cannot be floored at a key no def points to"
+            )));
+        }
         let mut map = self.mv_watermarks.lock();
         for adv in advances {
             // The same kind-agnostic precondition postgres applies before either CAS branch (see

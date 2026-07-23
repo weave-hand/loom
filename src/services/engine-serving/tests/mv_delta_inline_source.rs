@@ -29,7 +29,8 @@ use std::sync::Arc;
 use arrow::array::{Int32Array, Int64Array, RecordBatch};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use control_plane_core::{
-    ColumnSpec, DatasetId, EventType, LineageEvent, MvWatermarks, RunId, TableRef, WatermarkAdvance,
+    ColumnSpec, ControlPlane, DatasetId, EventType, LineageEvent, MvWatermarks, RunId, TableRef,
+    TransformBody, TransformDef, TransformName, WatermarkAdvance,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -43,7 +44,10 @@ use sqlx::PgPool;
 
 /// The MV key every case reads under. A key with no `stream.mv_watermark` rows
 /// reads every bucket at offset 0 (the documented "absent reads as 0" contract).
-const MV: &str = "mv:test";
+/// Must be a valid `mv_key` ("schema.name") — was "mv:test" (a colon), which
+/// `advance_mv_watermark`'s #627 def-existence guard could never match against
+/// a registered def's `mv_key(output)`.
+const MV: &str = "mv.test";
 
 fn tref(schema: &str, name: &str) -> TableRef {
     TableRef {
@@ -182,6 +186,25 @@ fn names(schema: &SchemaRef) -> Vec<String> {
 /// same `advance_mv_watermark` a micro-batch commit issues. After this the MV has
 /// "consumed" that delta.
 async fn consume(cp: &PgControlPlane, tid: i64, batches: &[RecordBatch]) {
+    // #627: `advance_mv_watermark` below now requires a live micro-batch def naming
+    // `MV`. Register it before computing the CAS advances — idempotent, since
+    // `define_transform` is a per-name upsert and re-registering an unchanged def is
+    // a no-op for the watermark bootstrap seed (`on conflict ... do nothing`).
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("def_mv_test".into()),
+            body: TransformBody::MicroBatch {
+                source: tref("s", "mv_out"),
+                output: tref("mv", "test"),
+                buckets: 2,
+                sql: "select * from mv_delta".into(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv.test def");
+
     let mut maxes: BTreeMap<i32, i64> = BTreeMap::new();
     for (bucket, offset) in framing(batches) {
         let e = maxes.entry(bucket).or_insert(offset);

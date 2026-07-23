@@ -327,9 +327,14 @@ pub fn framed_cdc_batch(id: i64, val: i64, bucket: i32, offset: i64) -> RecordBa
 }
 
 /// A declared CDC table with an append + an update, carrying a watermark row
-/// against it — so `mv_floor` is `Some` (a ghost key: `advance_mv_watermark` is
-/// a bare CAS that never checks a def exists). Declared CDC BEFORE any write,
-/// because the physical schema must carry framing from the start.
+/// against it — so `mv_floor` is `Some` (a ghost key: no live micro-batch def
+/// names it). Declared CDC BEFORE any write, because the physical schema must
+/// carry framing from the start.
+///
+/// The ghost watermark row is planted via a direct SQL insert, not
+/// `advance_mv_watermark` — #627 added a def-existence guard to that CAS
+/// (`ControlPlaneError::Validation` when no live `microbatch`/`microbatch_join`
+/// def names the key), and this row is deliberately defless.
 pub struct FlooredCdc {
     pub pool: sqlx::PgPool,
     pub catalog: SqlCatalog,
@@ -396,18 +401,20 @@ pub async fn seed_floored_cdc(fx: &PgFixture, cp: &PgControlPlane, db: &str) -> 
     .await
     .expect("cdc update delta");
 
-    // Plant the floor: a watermark row against this CDC source.
-    cp.advance_mv_watermark(
-        &mv_key(&tref("main", "out_a")),
-        tid,
-        &[WatermarkAdvance {
-            bucket: 0,
-            from: 0,
-            to: 1,
-        }],
-    )
+    // Plant the floor: a watermark row against this CDC source. Direct SQL, not
+    // `advance_mv_watermark` — no def names `main.out_a`, and #627's guard now
+    // refuses that CAS for a defless key.
+    sqlx::query(sqlx::AssertSqlSafe(
+        "insert into stream.mv_watermark (mv, source_table_id, bucket, next_offset) \
+         values ($1, $2, $3, $4)",
+    ))
+    .bind(mv_key(&tref("main", "out_a")))
+    .bind(tid)
+    .bind(0_i32)
+    .bind(1_i64)
+    .execute(&pool)
     .await
-    .expect("advance watermark");
+    .expect("plant ghost watermark row");
     let mut conn = pool.acquire().await.expect("conn");
     assert!(
         mv_floor(&mut conn, &table, tid)

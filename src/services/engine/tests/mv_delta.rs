@@ -8,7 +8,8 @@ use std::sync::Arc;
 use arrow_array::{Int32Array, Int64Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema};
 use control_plane_core::{
-    ColumnSpec, EventType, LineageEvent, MvWatermarks, RunId, TableRef, WatermarkAdvance,
+    ColumnSpec, ControlPlane, EventType, LineageEvent, MvWatermarks, RunId, TableRef,
+    TransformBody, TransformDef, TransformName, WatermarkAdvance,
 };
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_flush::flush_table;
@@ -144,6 +145,31 @@ async fn mv_delta_full_watermarked_tail_and_independent_consumer() {
     )
     .await
     .expect("append 1..4");
+
+    // #627: `advance_mv_watermark("s.out", ...)` in leg 2 below now requires a live
+    // micro-batch def naming the key. Register it HERE — right after `s.events` is
+    // declared a 2-bucket stream table (so `bootstrap_mv_watermarks` can resolve its
+    // bucket count) but BEFORE the flush. Ordering is load-bearing:
+    // `define_transform` -> `reconcile_mv_watermarks` -> `bootstrap_mv_watermarks`
+    // seeds `s.out`'s watermark to the source's earliest surviving offset, which is 0
+    // at this point (nothing reclaimed yet). That keeps leg 2's `from: 0` advance
+    // matching the seeded row; registering after the flush would risk seeding a
+    // non-zero row and changing the CAS semantics under test.
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName("def_s_out".into()),
+            body: TransformBody::MicroBatch {
+                source: src.clone(),
+                output: tref("s", "out"),
+                buckets: 2,
+                sql: "select * from mv_delta".into(),
+            },
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register s.out mv def");
+
     flush_table(&catalog, &pool, &src, run)
         .await
         .expect("flush")
