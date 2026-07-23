@@ -355,6 +355,25 @@ class SelfReferentialLinkTest(unittest.TestCase):
         message = str(ctx.exception)
         self.assertIn("node_id", message)
         self.assertIn("other_column", message)
+        # The disambiguation hint must suggest the string spelling
+        # (Link["BadNode", ...]) — the bare-class spelling (Link[BadNode, ...])
+        # is not writable inside the class's own body.
+        self.assertIn('Link["BadNode"', message)
+
+    def test_self_link_declared_before_plain_property_appends_fk_last(self) -> None:
+        # Deferred (pass-2) self-links append their FK column to the end of
+        # __loom_properties__, so a self-link declared before a plain property
+        # emits its FK column last. Column order is not contractual — this pins
+        # the current, intended behavior.
+        class Folder(LoomModel, table=("graph", "folders")):
+            folder_id: Identity[int]
+            parent: Link["Folder", "parent_id"] | None = None
+            label: str
+
+        self.assertEqual(
+            Folder.__loom_properties__,
+            [("folder_id", "long", True), ("label", "string", True), ("parent_id", "long", False)],
+        )
 
     def test_string_target_naming_other_class_raises_forward_ref_error(self) -> None:
         with self.assertRaisesRegex(TypeError, "forward reference"):

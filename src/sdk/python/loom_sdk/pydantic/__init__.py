@@ -172,10 +172,19 @@ def _record_link(
     fk_column = column or target.__loom_identity__
     if fk_column in seen_properties:
         other_field, _ = seen_properties[fk_column]
+        # A self-link's target is the class currently under construction, so
+        # the bare-class spelling (Link[Target, ...]) is unwritable there —
+        # referencing the class inside its own body raises NameError. Only
+        # the string spelling (Link["Target", ...]) is actually usable.
+        hint = (
+            f'Link["{target.__name__}", "other_column"]'
+            if target is declaring_cls
+            else f'Link[{target.__name__}, "other_column"]'
+        )
         raise TypeError(
             f"{declaring_cls.__name__}: property {fk_column!r} is declared by both "
             f"{other_field!r} and {field_name!r}; pass "
-            f'Link[{target.__name__}, "other_column"] to disambiguate'
+            f"{hint} to disambiguate"
         )
     seen_properties[fk_column] = (field_name, target.__name__)
     properties.append((fk_column, ty, required))
