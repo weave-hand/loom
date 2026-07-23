@@ -72,8 +72,10 @@ fn starts_with_ci(haystack: &str, prefix: &str) -> bool {
 /// Suggestions for the given cursor context.
 /// - `qualifier = Some(t)` → columns of the table named `t` (case-insensitive),
 ///   filtered by `prefix`; empty if no such table.
-/// - `qualifier = None` → table names + all column names + SQL keywords,
-///   each filtered by `prefix`. Order: tables, columns, keywords.
+/// - `qualifier = None` → table names + de-duplicated column names (a column
+///   shared across tables is offered once; the first table's type wins and the
+///   table origin is dropped) + SQL keywords, each filtered by `prefix`.
+///   Order: tables, columns, keywords.
 #[must_use]
 pub fn sql_completions(
     schema: &CompletionSchema,
@@ -112,16 +114,29 @@ pub fn sql_completions(
             });
         }
     }
+    // A column name shared across tables (e.g. `id` in two inputs) must be
+    // offered once, not once per table. Dedup by lowercased name, first-wins:
+    // the first table's `detail` (logical type) is kept, and the column's table
+    // origin is deliberately dropped — inherent to a union suggestion list, and
+    // the chosen design (#622). A type conflict between same-named columns of
+    // different tables resolves to the first table's type for the same reason.
+    let mut seen_cols: Vec<String> = Vec::new();
     for t in &schema.tables {
         for c in &t.columns {
-            if starts_with_ci(&c.name, prefix) {
-                out.push(Suggestion {
-                    label: c.name.clone(),
-                    kind: SuggestionKind::Column,
-                    detail: Some(c.ty.clone()),
-                    insert_text: c.name.clone(),
-                });
+            if !starts_with_ci(&c.name, prefix) {
+                continue;
             }
+            let key = c.name.to_ascii_lowercase();
+            if seen_cols.contains(&key) {
+                continue;
+            }
+            seen_cols.push(key);
+            out.push(Suggestion {
+                label: c.name.clone(),
+                kind: SuggestionKind::Column,
+                detail: Some(c.ty.clone()),
+                insert_text: c.name.clone(),
+            });
         }
     }
     for kw in SQL_KEYWORDS {
