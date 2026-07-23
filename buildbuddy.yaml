@@ -171,8 +171,17 @@ actions:
   # tag (sha-<short>) + a moving `edge` channel, mirroring the image/chart scheme.
   # The wheel builds hermetically in the //src sweep; this action does the
   # credentialed push (kept off build-test for the same reason images are off it).
-  # Credentials: GITHUB_TOKEN is auto-injected into trusted BuildBuddy runs; the
-  # first main run must verify it is present and has packages:write (see the PR body).
+  #
+  # Credentials: unlike GitHub Actions, BuildBuddy does NOT auto-inject a GitHub
+  # token — the GitHub App/OAuth link authorizes BuildBuddy to clone + report
+  # status, but that credential is never surfaced into the action env, and its
+  # App-install scopes don't include packages:write anyway. So ghcr push needs an
+  # explicit BuildBuddy org secret: GITHUB_TOKEN, a *classic* PAT with the
+  # `write:packages` scope (ghcr accepts classic PATs only — fine-grained tokens
+  # have no packages scope), created at
+  # https://app.buildbuddy.io/settings/org/secrets. GHCR_USER (the PAT owner's
+  # GitHub username) is optional; it defaults to the org. Secrets are only exposed
+  # to trusted runs (pushes to main from collaborators qualify).
   - name: publish-wheel
     triggers:
       push:
@@ -190,6 +199,10 @@ actions:
       - run: buck2 build //src/sdk/python:wheel
       - run: |
           set -euo pipefail
+          # Fail loudly if the secret is missing/empty rather than piping an empty
+          # password into crane (which writes a broken credential and only fails
+          # later at push time). ${VAR:?msg} aborts with a clear diagnostic.
+          : "${GITHUB_TOKEN:?GITHUB_TOKEN org secret not set — add a classic PAT with write:packages in BuildBuddy org secrets}"
           short="$(git rev-parse --short=7 HEAD)"
-          echo "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:crane -- auth login ghcr.io -u "${GITHUB_ACTOR:-weave-hand}" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:crane -- auth login ghcr.io -u "${GHCR_USER:-weave-hand}" --password-stdin
           buck2 run deploy//sdk:wheel.push -- "sha-$short" edge
