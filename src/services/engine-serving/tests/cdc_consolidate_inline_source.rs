@@ -12,7 +12,7 @@
 //! `iss-mv-delta-inline-source-unflushed` (#436) fixed in `mv_delta_locked`.
 //!
 //! loom_fixture_test (Postgres + a local `tempfile` warehouse).
-//! Spec: docs/superpowers/specs/2026-07-14-consolidate-inline-only-base-design.md
+//! Spec: git history: 2026-07-14-consolidate-inline-only-base-design
 
 use std::sync::Arc;
 

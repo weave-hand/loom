@@ -5,7 +5,7 @@
 //! still yields no provider. Harness: `IcebergControlPlane`
 //! create+empty-append (the live-zero-file fixture from
 //! `worker/tests/transform_e2e.rs`). loom_fixture_test (Postgres).
-//! Spec: docs/superpowers/specs/2026-07-09-serving-empty-table-not-found-design.md
+//! Spec: git history: 2026-07-09-serving-empty-table-not-found-design
 
 use std::sync::Arc;
 

@@ -107,5 +107,5 @@ versions by i64, so the integer id is portable enough.
 - Serving port: `query-api/src/serving.rs`; SQL generation `query-api/src/handler.rs` +
   `render.rs`.
 - Type vocabulary: `core/src/logical_type.rs` (the logical → physical affinity table).
-- The single-catalog write recipe this all rests on:
-  `docs/superpowers/specs/2026-06-09-ducklake-single-catalog-write-recipe.md`.
+- The single-catalog write recipe this all rests on (design doc in git history:
+  `2026-06-09-ducklake-single-catalog-write-recipe`).

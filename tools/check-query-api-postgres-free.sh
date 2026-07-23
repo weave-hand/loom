@@ -2,7 +2,7 @@
 # Slice-1 boundary guard: query-api's LIBRARY target must not directly depend
 # on the control-plane/postgres crate (direct deps, depth=1). Transitive postgres
 # via //src/services/runtime is accepted and deferred to slice 2. See
-# docs/superpowers/specs/2026-06-29-engine-serving-write-relocation-design.md.
+# git history: 2026-06-29-engine-serving-write-relocation-design.
 set -euo pipefail
 out="$(buck2 cquery 'deps(//src/services/query-api:query-api, 1)' 2>/dev/null)"
 if grep -q '//src/control-plane/postgres:postgres' <<<"$out"; then

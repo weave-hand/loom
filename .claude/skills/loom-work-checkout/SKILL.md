@@ -1,53 +1,63 @@
 ---
 name: loom-work-checkout
-description: Claim a documentation-register work item before building it, so two sessions/agents never work the same item. Claiming atomically creates the work/<id> branch (the branch the PR is opened from) as a distributed mutex. Use when starting work on a ROADMAP/FUTURE/ISSUES item, when picking up the next planned item, or in a scheduled session that builds register items. The item must already reference an on-disk spec (use loom-work-plan to get an item to that state).
+description: Claim a ready GitHub issue before building it, so two sessions/agents never work the same item. Claiming = assigning the issue plus a timestamped Claimed comment; work lands via a PR that says Closes #N. Use when starting work on a roadmap/bug issue, when picking up the next ready item, or in a scheduled session that builds tracker items. The issue must already carry a spec in its body and the ready label (use loom-work-plan to get it there).
 ---
 
-Claim a register item, work it on a conventional branch, and let the claim
-self-release when the PR lands. The claim is a server-side git mutex: it
-atomically creates the `work/<id>` branch (`refs/heads/work/<id>`) — the very
-branch the eventual PR is opened from — so claiming and starting the branch are
-one step. The registers and grammar are defined in
-`docs/superpowers/specs/2026-06-21-work-item-planning-checkout-design.md`.
+Claim a `ready` issue, work it on a conventional branch, and let the PR close
+it. The claim is the **issue assignment plus a `Claimed:` comment** — every
+session authenticates as the same GitHub account, so the comment timestamp is
+the true claim record and the assignment is the visible flag.
+
+Environment: use `gh` locally; in cloud sessions the git proxy 403s `gh` API
+calls to the org repo — use the GitHub MCP tools there instead.
 
 ## Steps
 
-1. **Pick** an open, ready item: `bash tools/docs.sh query open`. Ready means it
-   has a `spec:` set (the claim gate rejects `spec:-`); if nothing is ready, use
-   `loom-work-plan` first. Avoid items already listed by
-   `bash tools/docs.sh claims`.
-2. **Claim** it: `bash tools/docs.sh claim <id>`. On success it has created the
-   `work/<id>` branch on `origin`. If the claim is lost or already held, pick
-   another.
-3. **Work it through the rigid pipeline.** Check out the branch the claim created
-   (`git fetch origin work/<id> && git switch work/<id>`), then exercise
+1. **Pick** an open issue labeled `ready`, unassigned, and not `meta`:
+   `gh issue list --label ready --no-assignee --state open`. If one is
+   assigned but its newest `Claimed:` comment is older than the grace window
+   (240 min) **and** no open PR references it, the claim is stale — you may
+   take it over (say so in your comment). If nothing is ready, use
+   `loom-work-plan` first. Never claim a `meta` issue — build its children.
+2. **Claim** it:
+   `gh issue edit <N> --add-assignee @me && gh issue comment <N> --body "Claimed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"`.
+   Re-read the issue after claiming; if someone else's fresher `Claimed:`
+   comment appears, back off and pick another. Then set the `loom v1` board
+   Status → In progress (option `47fc9ee4`; same two-mutation
+   `addProjectV2ItemById` + `updateProjectV2ItemFieldValue` pattern as in
+   loom-work-plan, project `PVT_kwDOEV2iVs4BeJ8b`, Status field
+   `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`). Cloud sessions skip board mutations
+   (Projects GraphQL unreachable) — assignment + comment are the claim.
+3. **Work it through the rigid pipeline.** Create the branch
+   (`git switch -c work/<N>-<slug>` from up-to-date `main`), then exercise
    these four superpowers skills **in order — none is optional, even for a
-   one-line fix** (the spec already exists by the gate's precondition, so start at
-   the plan):
-   1. **Write the plan** — `superpowers:writing-plans`: turn the spec into a
-      task-by-task implementation plan under `docs/superpowers/plans/`. (It runs
-      its own self-review at the end.)
+   one-line fix** (the spec is in the issue body by the gate's precondition,
+   so start at the plan):
+   1. **Write the plan** — `superpowers:writing-plans`: turn the issue's
+      `## Spec` into a task-by-task implementation plan **in the session
+      scratchpad — ephemeral, never committed**. (It runs its own self-review
+      at the end.)
    2. **Review the plan** — before any code, gate the plan against the spec:
       dispatch a fresh reviewer subagent (`superpowers:dispatching-parallel-agents`)
-      to check spec coverage, no placeholders, and type/signature consistency. Fix
-      every gap and do not start implementing until the plan passes.
-   3. **Implement with subagents** — `superpowers:subagent-driven-development`: one
-      fresh subagent per task, each followed by the mandatory two-stage review
-      (spec-compliance, then code-quality), looping until both pass. This skill
-      uses `superpowers:requesting-code-review` / `receiving-code-review` and has
-      the subagents follow `superpowers:test-driven-development`.
-   4. **Final review** — after all tasks, the whole-implementation review that
-      `superpowers:subagent-driven-development` ends with (a final code-reviewer
-      subagent) before finishing. **The final review MUST include the metric
-      gate** (below).
-4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR whose head
-   branch is `work/<id>` (this is what binds the claim to the PR). In that PR,
-   close the register item via `loom-docs-update` — remove its entry and fold
-   the landed capability into `docs/system-capabilities/`, naming the id + PR
-   in the PR body (registers carry open work only).
-5. **Release** is automatic: once the PR merges/closes, the claim is reaped by
-   `bash tools/docs.sh claims --reap` (run by routines). If you abandon before a
-   PR, release explicitly: `bash tools/docs.sh release <id>`.
+      to check spec coverage, no placeholders, and type/signature consistency.
+      Fix every gap and do not start implementing until the plan passes.
+   3. **Implement with subagents** — `superpowers:subagent-driven-development`:
+      one fresh subagent per task, each followed by the mandatory two-stage
+      review (spec-compliance, then code-quality), looping until both pass.
+   4. **Final review** — the whole-implementation review that
+      `superpowers:subagent-driven-development` ends with. **The final review
+      MUST include the metric gate** (below).
+4. **Finish** — `superpowers:finishing-a-development-branch`: open a PR from
+   `work/<N>-<slug>` whose body contains `Closes #<N>` (this is what binds
+   the claim to the PR and auto-closes the issue on merge). Record the landed
+   capability in `docs/system-capabilities/` in the same PR. If the work
+   deferred anything new, file it as a labeled issue (`idea` or `bug` +
+   `area:<a>`) — but read the filing discipline below first.
+5. **Release** is automatic: merge closes the issue; confirm the board shows
+   Done (set option `98236657` if it didn't move). If you abandon before a
+   PR, unassign and say so:
+   `gh issue edit <N> --remove-assignee @me && gh issue comment <N> --body "Released"`
+   (and set the board back to Ready, `61e4505c`, when you can reach it).
 
 ## The metric gate is a FIX step, not a reporting step
 
@@ -111,8 +121,8 @@ it, and fix it — fix it in this PR.** This includes bugs you find in code your
 does not name (a second instance of the same bug is the commonest case, and the
 cheapest possible fix: you have the pattern, the test idiom, and the context).
 
-**Filing is the exception.** You may file a new item ONLY when one of these holds,
-and you must say which in the item's prose:
+**Filing is the exception.** You may open a new issue with the right `area:`/kind
+labels ONLY when one of these holds, and you must say which in the item's prose:
 
 1. The fix needs a **design decision a human must make** (competing approaches with
    different blast radii — the kind of thing `loom-work-plan` writes a spec for), or
@@ -133,8 +143,9 @@ needed in `collect_vectors`", and the actual fix turned out to need a second cha
 it forces you to find that out; filing it does not.
 
 When you do fix a found defect, it rides the same rules as the item itself: a failing
-test first (watch it fail for the right reason), then the fix, then the register close
-if it had an entry — and the capability recorded in `docs/system-capabilities/`.
+test first (watch it fail for the right reason), then the fix, then close its issue
+if it had one (`Closes #N` in the PR body) — and the capability recorded in
+`docs/system-capabilities/`.
 
 | Rationalization | Reality |
 |---|---|
@@ -147,29 +158,20 @@ if it had an entry — and the capability recorded in `docs/system-capabilities/
 
 **Red flags — stop and fix instead:**
 
-- You are adding an entry to `docs/ISSUES.md` for something you found *while your
+- You are opening a new `bug` issue for something you found *while your
   own branch was open*, and you have not tried to fix it.
 - Your PR body says "files N new issues" and N > 0 while "closes" is 1.
 - You are describing a **fix shape** in an issue you could just apply.
 
 ## Notes
 
-- A claim with no PR older than the grace window (default 240 min,
-  `LOOM_CLAIM_GRACE_MIN`) is reapable — open the PR promptly, or re-run
-  `claim <id>` to refresh it. The default is sized to a full
-  plan → plan-review → implement → final-review arc; refresh the claim at the
-  start of each long phase anyway if the arc may exceed it.
-- **Lease-check before every push to `work/<id>`.** A reaped-and-reclaimed
-  branch means another session may hold it now: before pushing, run
-  `git ls-remote origin work/<id>` and verify the remote tip is an ancestor of
-  your local branch (i.e. your history contains it). If it is not — someone
-  else's commits are on the branch — STOP and surface the collision to the
-  user rather than force-pushing over live work. (This rule exists because two
-  sessions once built the same item after a stale reap; see PR #324.)
-- Cloud sessions can **acquire** claims (a `refs/heads/*` create, which the web
-  git proxy allows) but cannot `release`/`claims --reap` (the proxy forbids ref
-  deletion). That is fine: a cloud session only needs to claim; the branch is
-  deleted when its PR merges (reap-on-merge) or by a local `release`/`--reap`.
-- `claim` refuses items that are closed, non-actionable, already claimed, or whose
-  `spec:` is `-` / missing on disk. A direction-less item is not claimable; give it
-  a spec first via `loom-work-plan`.
+- Refresh a long-running claim by posting a fresh `Claimed:` comment at the
+  start of each long phase (plan → review → implement → final review can
+  exceed the 240-min grace window).
+- **Before every push**, check no *other* open PR references the issue
+  (`gh pr list --search "<N> in:body" --state open`). If one exists — someone
+  else built it after a stale takeover — STOP and surface the collision
+  rather than racing the PR. (Two sessions once built the same item after a
+  stale reap; see PR #324.)
+- Cloud sessions claim via the GitHub MCP tools (assign + comment); the `gh`
+  CLI cannot reach the org repo's API through the git proxy.

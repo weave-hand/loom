@@ -1,67 +1,77 @@
 ---
 name: loom-work-plan
-description: Triage the documentation registers and get ONE item ready to build — author a spec on disk and land it in main, then STOP. Use to decide what to work next, promote a FUTURE idea to ROADMAP, retire dead work, or batch-prepare items for checkout. PLANS ONLY — it never claims, writes the implementation plan, or implements; a separate work agent does that via loom-work-checkout. For a full register rebuild use loom-docs-organise; to close items at completion use loom-docs-update.
+description: Triage the GitHub issue tracker and get ONE work item ready to build — write the spec into the issue body, label it ready, then STOP. Use to decide what to work next, promote an idea to roadmap, retire dead work, mint a meta for a large slice, or batch-prepare issues for checkout. PLANS ONLY — it never claims, writes the implementation plan, or implements; a separate work agent does that via loom-work-checkout.
 ---
 
-This is a **planning loop, not a build.** Per item you produce exactly one thing —
-a committed spec on disk, landed in `main`, with the work-item's `spec:` tag set —
-then you **stop and hand back to the operator.** The operator runs this repeatedly
-to prepare a *batch* of to-be-planned items quickly; a separate **work agent**
-later checks one out, writes the implementation plan *from the spec*, and builds
-it. Your job is direction (a landed spec), never completion.
+This is a **planning loop, not a build.** Per item you produce exactly one
+thing — a spec written into the issue body under `## Spec`, with the `ready`
+label set — then you **stop and hand back to the operator.** A separate
+**work agent** later claims the issue, writes the implementation plan *from
+the spec* (ephemeral, never committed), and builds it. Your job is direction,
+never completion. Planning touches **zero repo files**.
+
+Environment: use `gh` locally; in cloud sessions the git proxy 403s `gh` API
+calls to the org repo — use the GitHub MCP tools there instead (same
+operations: list/view/edit/label/comment).
 
 ## Boundary — do NOT cross it
 
-Landing the spec is the finish line for this item. After it, do NOT:
+Setting `ready` is the finish line for this item. After it, do NOT:
 
-- `bash tools/docs.sh claim <id>` — claiming is the **work agent's** first step, not yours;
+- assign the issue or post a `Claimed:` comment — claiming is the **work
+  agent's** first step, not yours;
 - invoke `superpowers:writing-plans` or write any implementation plan;
-- start a `work/<id>` branch, implement, or touch code;
+- start a `work/<N>-<slug>` branch, implement, or touch code;
 - offer to "go ahead and build it" — that is the single most common failure here.
-
-Completing the item during planning defeats the loop and steps on the work agent.
-Plan it, land the spec, return to the operator.
-
-Composition-only (no new tooling): `tools/docs.sh` reads, `loom-docs-update` edit
-mechanics, `superpowers:brainstorming` for spec authoring, and the
-`loom-docs-organise` PR-on-green pattern to land. Registers + grammar:
-`docs/superpowers/specs/2026-06-21-work-item-planning-checkout-design.md`.
 
 ## Per-item steps (one item per pass)
 
 1. **Triage.** Survey open work and recommend what's next:
-   - `bash tools/docs.sh query open` (optionally `--area <a>`), `query by-area` for
-     the distribution, `shipped-open` / `shipped-open --stale` to reconcile.
-   - Flag the un-actionable / in-flight: items with `spec:-` (no direction yet),
-     FUTURE ideas with no `road-` promotion, items blocked by `[[links]]` to
-     still-open items, and anything in `bash tools/docs.sh claims` (already
-     checked out — don't plan over it).
-   - Output a short ranked shortlist with one-line reasons (unblocks others, area
-     balance, quick win).
-2. **Promote / retire.** The registers carry open items only (closed entries are
-   removed; git history is the record). For a FUTURE idea being committed to:
-   remove the FUTURE entry and mint a ROADMAP item `road-<slug>`,
-   `- [ ] status:planned`, carrying the same `area:`, the `spec:` slug (or `-`),
-   and the removed `#fut-…` id mentioned in the prose as a code span (a `[[…]]`
-   link to a removed item would dangle). The reverse is the same mechanics: drop
-   a dead FUTURE idea by removing its entry (record why in the commit/PR body)
-   or demote an abandoned ROADMAP `planned` item back to a FUTURE `deferred`
-   idea, recording why in the prose. (ISSUES defects are orthogonal — they stay
-   in ISSUES until fixed, then are removed by the fixing PR; do not move them to
-   ROADMAP.) Validate edits: `bash tools/docs.sh validate`.
-3. **Ready (direction gate).** Checkout requires `docs/superpowers/specs/<spec>.md`
-   to exist. If the chosen item has `spec:-` or the file is missing, invoke
-   `superpowers:brainstorming` to author the spec (a human sets direction). **Stop
-   at the committed spec — do NOT transition to writing-plans.** Record the produced
-   slug on the item's `spec:` tag.
-4. **Land.** Bundle the promotion/retirement register edits and the new spec into a
-   small `plan/<slug>` PR to `main`, merged on green (the `loom-docs-organise`
-   PR-on-green pattern, scoped to one item). After merge the item's direction is
-   visible and it is claimable — by a **work agent**, not by you.
+   - `gh issue list --label roadmap --state open` and
+     `gh issue list --label bug --state open` — committed work and defects;
+     items **without** `ready` need direction, items **with** `ready` and no
+     assignee are waiting for a work agent (don't re-plan them).
+   - `gh issue list --label idea --state open --limit 200` for the deferred
+     pile (add `--label area:<a>` to focus an area).
+   - Skip issues that are assigned (claimed — check for staleness only if
+     picking them matters) and `meta` issues (they are never planned directly;
+     plan their children).
+   - Output a short ranked shortlist with one-line reasons (unblocks others,
+     area balance, quick win).
+2. **Promote / retire / decompose.**
+   - Promote an idea being committed to: `gh issue edit <N> --remove-label idea --add-label roadmap`.
+   - Retire dead work: `gh issue close <N> --comment "<why>"`.
+   - Demote an abandoned roadmap item back to an idea: swap the labels the
+     other way, comment why.
+   - **Too big for one PR → make it a meta:** relabel the issue `meta`, write
+     the workstream goal + a `- [ ] #N` child checklist into its body, file
+     each child as its own labeled issue ("Part of #<meta>" in the body), and
+     attach them as native sub-issues
+     (`gh api -X POST repos/{owner}/{repo}/issues/<meta>/sub_issues -F sub_issue_id=$(gh api repos/{owner}/{repo}/issues/<child> --jq .id)`).
+     Metas are never `ready` and never claimed; plan each child separately.
+3. **Ready (direction gate).** For the chosen issue, invoke
+   `superpowers:brainstorming` to author the design (a human sets direction).
+   Write the approved design into the issue body under a `## Spec` heading
+   (`gh issue view <N> --json body`, append, `gh issue edit <N> --body-file`),
+   then `gh issue edit <N> --add-label ready`, and mirror it on the `loom v1`
+   board — Status → Ready:
+
+   ```bash
+   iid=$(gh api graphql -f query='mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}' \
+     -f p=PVT_kwDOEV2iVs4BeJ8b -f c=$(gh api repos/weave-hand/loom/issues/<N> --jq .node_id) \
+     --jq '.data.addProjectV2ItemById.item.id')
+   gh api graphql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' \
+     -f p=PVT_kwDOEV2iVs4BeJ8b -f i=$iid -f f=PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk -f o=61e4505c
+   ```
+
+   (Cloud sessions skip the board mutation — Projects GraphQL is unreachable
+   there; the `ready` label is authoritative and the next local session
+   reconciles the board.) **Stop at the committed spec — do NOT transition to
+   writing-plans.**
 
 ## Then loop or stop — never build
 
-The item is now ready for a work agent (`loom-work-checkout`) to claim, plan, and
-build. That is **not this session's job.** Return to the operator: if they want to
-prepare more, go back to **Triage** for the next item; otherwise stop. Do not claim
-and do not build, no matter how ready the item looks.
+The issue is now ready for a work agent (`loom-work-checkout`) to claim, plan,
+and build. That is **not this session's job.** Return to the operator: if they
+want to prepare more, go back to **Triage** for the next item; otherwise stop.
+Do not claim and do not build, no matter how ready the issue looks.

@@ -240,8 +240,8 @@ action.
 
 - Reference: [`system-capabilities/control-plane.md`](../system-capabilities/control-plane.md)
   § *Ontology and typed writes (actions)*.
-- Design: `docs/superpowers/specs/2026-07-01-action-multi-object-design.md`.
-- Deferred extensions: `fut-action-step-control-flow` (DAG / conditional / fan-out
-  / loops), `fut-action-cross-step-expr-refs` (`@bind.prop` inside expressions) in
-  [`FUTURE.md`](../FUTURE.md).
+- Design: design doc in git history: `2026-07-01-action-multi-object-design`.
+- Deferred extensions: #495 (DAG / conditional / fan-out
+  / loops), #496 (`@bind.prop` inside expressions) in
+  the GitHub issue tracker.
 </content>

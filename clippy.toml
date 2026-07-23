@@ -2,7 +2,7 @@
 # action via the :rust toolchain's clippy_toml field (toolchains/BUCK).
 # These configure lint *parameters* only — lint groups/levels are set with
 # warn_lints/allow_lints in toolchains/BUCK. See
-# docs/superpowers/specs/2026-06-26-stricter-clippy-config-design.md.
+# git history: 2026-06-26-stricter-clippy-config-design.
 
 # Exempt test code from the panic-policy restriction lints. NOTE: loom's tests
 # are separate rust_test crates, not #[cfg(test)] modules; Task 1 Step 7

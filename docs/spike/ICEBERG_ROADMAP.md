@@ -2,8 +2,8 @@
 
 > Status snapshot as of 2026-06-17. Captures what the Iceberg table-format
 > adapter is, what's shipped, and what's deferred. This is a spike/roadmap
-> note, not a spec — each remaining slice gets its own
-> `docs/superpowers/specs/` design before implementation.
+> note, not a spec — each remaining slice gets its own design doc before
+> implementation.
 
 ## What it is
 
@@ -15,14 +15,14 @@ owns `update_table`, which is what makes atomic pointer+mirror commits possible.
 Original decisions: adopt iceberg-rust · coexist (maybe replace later) ·
 pointer+mirror storage · read-path first · vendor the catalog.
 
-## Tracking moved to the registers
+## Tracking moved to GitHub Issues
 
-Item-level tracking for this adapter (shipped slices, deferred work, known
-defects) now lives in the documentation registers, filterable by `area:iceberg`:
+Item-level tracking for this adapter (roadmap slices, deferred work, known
+defects) now lives in the GitHub issue tracker, filterable by `area:iceberg`:
 
-- shipped slices → [`docs/ROADMAP.md`](../ROADMAP.md) — `bash tools/docs.sh query done --area iceberg`
-- deferred capabilities → [`docs/FUTURE.md`](../FUTURE.md) — `bash tools/docs.sh query open --area iceberg`
-- known defects/gaps → [`docs/ISSUES.md`](../ISSUES.md)
+- committed slices → `gh issue list --label roadmap --label "area:iceberg"`
+- deferred capabilities → `gh issue list --label idea --label "area:iceberg"`
+- known defects/gaps → `gh issue list --label bug --label "area:iceberg"`
 
 This file is kept as the spike's narrative ("What it is" above); see CLAUDE.md
-("Documentation registers") for the grammar and tooling.
+("Work tracking (GitHub Issues)") for the labels and tooling.

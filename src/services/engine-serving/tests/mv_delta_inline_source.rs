@@ -21,7 +21,7 @@
 //! loom_fixture_test (Postgres + a local `tempfile` warehouse), harness mirrored
 //! from `serving_empty_table.rs` (PgFixture + `local_sql_catalog`) and
 //! `postgres/tests/iceberg_flush.rs` (land/flush seeding).
-//! Spec: docs/superpowers/specs/2026-07-12-mv-delta-inline-source-design.md
+//! Spec: git history: 2026-07-12-mv-delta-inline-source-design
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -40,7 +40,7 @@
 #    cloud-only, so local dev / a developer's `buck2 test` is unaffected. (The flag is
 #    `--unstable-*`; it is stable for the pinned buck2 and should be re-checked on bump.)
 #
-# See docs/superpowers/specs/2026-06-25-cloud-session-cold-build-reliability-design.md.
+# See git history: 2026-06-25-cloud-session-cold-build-reliability-design.
 set -u
 
 export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"

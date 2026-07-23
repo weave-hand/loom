@@ -5,7 +5,7 @@
 //! assembled *visible* set with the existing dataset keyset cursor. A denied
 //! intermediate node is dropped AND not expanded (cut, not skip), so nodes reachable
 //! only through it are never discovered. See
-//! docs/superpowers/specs/2026-07-01-lineage-acl-filtering-design.md.
+//! git history: 2026-07-01-lineage-acl-filtering-design.
 
 use control_plane_core::{
     Acl, ControlPlaneError, DatasetRef, Lineage, LineageEvent, Ontology, Page, PageReq, SubjectId,

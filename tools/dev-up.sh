@@ -197,7 +197,7 @@ fi
 # Arch, whose system libxml2 carries soname .so.16) don't provide under that name.
 # If postgres won't load with only its own lib dir, symlink the newest system
 # libxml2 as .so.2 and prepend it. Proper fix: bundle libxml2 in the embed archive
-# (docs/ISSUES.md → iss-embedded-pg-libxml2).
+# (a since-fixed issue).
 PGLD="$PGROOT/lib"
 if ! env LD_LIBRARY_PATH="$PGROOT/lib" "$PGROOT/bin/postgres" -V >/dev/null 2>&1; then
   sys_xml="$(ls /usr/lib/libxml2.so.2 2>/dev/null \

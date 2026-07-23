@@ -2,7 +2,7 @@
 //! Reads the `iceberg_mirror` projection (via `IcebergCatalog`), registers each
 //! live table's Parquet files (absolute paths: `file://` or `s3://`) as a DataFusion
 //! table, and runs the governed/compiled SQL through DataFusion.
-//! See docs/superpowers/specs/2026-06-17-iceberg-datafusion-serving-engine-design.md.
+//! See git history: 2026-06-17-iceberg-datafusion-serving-engine-design.
 
 use std::sync::Arc;
 

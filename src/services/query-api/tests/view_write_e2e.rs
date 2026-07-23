@@ -12,7 +12,7 @@
 //!      still succeeds.
 //!
 //! loom_fixture_test (Postgres + LocalFsStorage warehouse).
-//! Spec: docs/superpowers/specs/2026-07-13-catalog-views-design.md
+//! Spec: git history: 2026-07-13-catalog-views-design
 
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Catalog, CompareOp, ControlPlane,

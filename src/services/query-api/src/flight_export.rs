@@ -4,7 +4,7 @@
 //! vectors carried natively as `List<Float32>`, never flattened through `SqlValue`. The
 //! Flight ticket/command carries a loom `ExportCommand`, NOT SQL; loom compiles the ACL'd
 //! SQL server-side per `do_get`, so a forged/replayed ticket is still a governed request.
-//! See docs/superpowers/specs/2026-06-26-governed-flight-export-design.md.
+//! See git history: 2026-06-26-governed-flight-export-design.
 
 use std::pin::Pin;
 use std::sync::Arc;

@@ -2,7 +2,7 @@
 //! ontology types, applies ACL policy by generating SQL, and runs it on the
 //! loom-native DataFusion serving engine over the Iceberg mirror (reads stream over
 //! the engine wire via `EngineServingClient`).
-//! See docs/superpowers/specs/2026-06-10-query-governed-object-read-slice-design.md.
+//! See git history: 2026-06-10-query-governed-object-read-slice-design.
 
 pub mod action;
 pub mod chain_filter;
