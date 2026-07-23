@@ -135,8 +135,11 @@ pub async fn sweep_orphans(
     }
 
     // 3+4. Diff (listed − referenced) + grace filter, then 5. delete survivors
-    //      outside any tx. Grace is applied at ms precision so a just-written file
-    //      is deterministically past a zero grace.
+    //      outside any tx. Grace is applied at ms precision; an object is held
+    //      only if it is STRICTLY younger than the grace age (`modified_ms >
+    //      cutoff_ms`). An object whose age has reached exactly `grace` is
+    //      sweepable, so under a zero grace a just-written file (mtime <= now)
+    //      is deterministically deletable — only a future-dated mtime is held.
     #[expect(
         clippy::integer_division,
         reason = "ms-precision truncation is intentional; sub-millisecond precision is not needed for grace-window comparison"
@@ -149,9 +152,9 @@ pub async fn sweep_orphans(
         if referenced.contains(key) {
             continue; // referenced — never a candidate
         }
-        if modified_ms >= cutoff_ms {
+        if modified_ms > cutoff_ms {
             summary.candidates_skipped_grace += 1;
-            continue; // orphan, but younger than grace — hold
+            continue; // orphan, but strictly younger than the grace age — hold
         }
         match store.delete(&loc).await {
             Ok(()) => {
