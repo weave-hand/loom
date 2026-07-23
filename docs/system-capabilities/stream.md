@@ -668,8 +668,17 @@ remove the lossy paths outright:
 - a **micro-batch MV over a CDC source is refused in both directions** — at
   registration (`define_transform`) and at declaration (`reconcile_stream_mode`);
   `mv_delta_scan` reads log sources only, so such an MV could never run and would
-  pin its source at offset `0` forever (the residual concurrent interleave is
-  `#iss-mv-cdc-declare-register-race`).
+  pin its source at offset `0` forever. The two guards run in separate
+  transactions, so a concurrent first CDC declaration and MV registration could
+  once interleave past both and commit the wedged state; that race is now closed
+  (#626). `reconcile_stream_mode`'s **first-declare arm** takes the per-table
+  advisory lock `lock_key(table)` — the same key `define_transform` already holds
+  for an MV source — re-reads the registry under it, and runs the CDC-over-MV
+  refusal under the lock, so whichever of {first CDC declaration, MV registration}
+  takes the key second blocks, then sees the winner's committed row and refuses.
+  Both orderings converge to exactly one of the two existing. Steady-state appends
+  (an already-declared table) take no lock and no longer scan `transforms.transform`
+  per land. The whole exclusion lifts when CDC MV sources land (#555).
 
 With those in place, **no production path can `Removing`-end-cap a declared log
 stream table** — the refusals are the fix; the seam is the type-level constraint
