@@ -30,6 +30,32 @@ fn mv_output_key(body: &TransformBody) -> Option<String> {
     }
 }
 
+/// One output ↔ one micro-batch def (#644). Refuse `def` if its micro-batch OUTPUT (`mv_key`) is
+/// already claimed by a DIFFERENTLY-NAMED micro-batch def in `defs`. Same-name redefinition (the
+/// upsert/resume path) passes; a non-MV body has no output to contest. Mirrors the postgres
+/// `refuse_shared_mv_output`; this define-time invariant is what makes the unqualified
+/// `mv_key(output)` watermark deletes in `delete_transform` correct — no surviving def can share
+/// the output whose cursor a delete drops.
+fn refuse_shared_mv_output(defs: &HashMap<String, TransformDef>, def: &TransformDef) -> Result<()> {
+    let Some(want) = mv_output_key(&def.body) else {
+        return Ok(());
+    };
+    if let Some(other) = defs
+        .iter()
+        .find(|(name, d)| {
+            **name != def.name.0 && mv_output_key(&d.body).as_deref() == Some(want.as_str())
+        })
+        .map(|(name, _)| name.clone())
+    {
+        return Err(ControlPlaneError::Validation(format!(
+            "micro-batch output {want} is already claimed by def '{other}'; an output table is \
+             materialized by at most one micro-batch def (def '{}' refused)",
+            def.name.0
+        )));
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Transforms for MemoryControlPlane {
     #[tracing::instrument(skip(self), level = "debug")]
@@ -66,6 +92,9 @@ impl Transforms for MemoryControlPlane {
             .map(|e| next_cron_occurrence(e, OffsetDateTime::now_utc()))
             .transpose()?;
         let mut st = self.transforms.lock();
+        // One output ↔ one micro-batch def (#644): refuse an output already claimed by a
+        // differently-named micro-batch def, before any mutation. See `refuse_shared_mv_output`.
+        refuse_shared_mv_output(&st.defs, &def)?;
         if def.on_input_commit {
             // Edge set over data-triggered defs (the candidate replaces any
             // same-name predecessor), validated atomically with the insert.
@@ -131,7 +160,9 @@ impl Transforms for MemoryControlPlane {
         // Same semantic as the postgres adapter: an MV's watermarks are part of its
         // registration and go with it (the GC floor's escape hatch — see
         // `control_plane_postgres::mv_floor`). Keep the two backends in step; the
-        // testkit contract certifies it.
+        // testkit contract certifies it. Keying the release by output alone is safe
+        // because `define_transform` enforces one-output ↔ one-def (#644): no other
+        // live def can hold a watermark under this output.
         let mut st = self.transforms.lock();
         let mv = st
             .defs

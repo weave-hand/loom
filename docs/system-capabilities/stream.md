@@ -500,7 +500,17 @@ table is kept (which is exactly when resuming is correct). Every watermark key
 is named by a live micro-batch def: ad-hoc (nameless) micro-batch runs are
 **rejected at the admin route** (`POST /admin/transforms/run`, #627), and the
 CAS itself refuses any advance whose key no live def names (the def-existence
-guard below). A fresh MV is bootstrapped at registration to its source's
+guard below). Complementing that key↔def guard, an output table is claimed by
+**at most one** micro-batch def: `define_transform` refuses a second,
+differently-named `MicroBatch`/`MicroBatchJoin` def over an already-claimed
+output (#644, `refuse_shared_mv_output` in the postgres adapter, mirrored in the
+memory fake and certified by the shared `transforms_contract`). Same-name
+redefinition (the upsert/resume path) still passes. This one-output↔one-def
+invariant is exactly what makes the *unqualified* `mv_key(output)` watermark
+deletes in `delete_transform` and `reconcile_mv_watermarks` correct — no
+surviving def can hide a live cursor behind a deleted or redefined def's key, so
+deleting one def can never re-materialize another from offset 0. A fresh MV is
+bootstrapped at registration to its source's
 earliest surviving offset (see the registration-bootstrap section below), so an
 absent row is not the fresh-MV case. The core `MvWatermarks` trait
 (`mv_watermarks`/`advance_mv_watermark`, `stream.rs:173`/`:181`) is implemented

@@ -5999,6 +5999,10 @@ where
         "nothing lands after refusal"
     );
 
+    // #644 — one output ↔ one micro-batch def. Kept in its own contract fn (below) so this
+    // already-large contract does not grow further; certified on both backends via this call.
+    shared_output_guard_contract(cp).await;
+
     // --- rebind cycle: a define_type that re-points a binding into a trigger
     // cycle among data-triggered defs is rejected (not silently allowed) ---
     let ta = tref("main", "rc_a");
@@ -6048,6 +6052,136 @@ where
     cp.define_type(mk_type("RcC", &tc))
         .await
         .expect("RcC still bound to its original table");
+}
+
+/// #644 — one output ↔ one micro-batch def. An output table is materialized by AT MOST one
+/// micro-batch def; a second, differently-named def over the same output is REFUSED at define
+/// time. This invariant is what makes the unqualified `mv_key(output)` watermark deletes in
+/// `delete_transform` / `reconcile_mv_watermarks` correct — with it, deleting or redefining one
+/// def can never wipe a surviving def's cursor. Exercised by [`transforms_contract`] on both
+/// backends. Kept a separate fn so that already-large contract does not grow further.
+async fn shared_output_guard_contract<CP>(cp: &CP)
+where
+    CP: Transforms + control_plane_core::MvWatermarks,
+{
+    use control_plane_core::{
+        TransformBody, TransformDef, TransformName, WatermarkAdvance, mv_key,
+    };
+
+    let shared_out = tref("share", "out");
+    let mk_mb = |name: &str, source: &TableRef, output: &TableRef| TransformDef {
+        name: TransformName(name.into()),
+        body: TransformBody::MicroBatch {
+            source: source.clone(),
+            output: output.clone(),
+            buckets: 1,
+            sql: "select id from events".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    };
+    cp.define_transform(mk_mb("share_a", &tref("share", "src_a"), &shared_out))
+        .await
+        .unwrap();
+    let shared_key = mv_key(&shared_out);
+    let share_tid = 9100_i64;
+    cp.advance_mv_watermark(
+        &shared_key,
+        share_tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 4,
+        }],
+    )
+    .await
+    .unwrap();
+
+    // Case 1: a DIFFERENTLY-NAMED def claiming the same output is refused; the incumbent's
+    // watermark row is untouched (the bug: the old code let it in, then that def's delete /
+    // redefine wiped the incumbent's cursor). The error names both defs and the output.
+    let refused = cp
+        .define_transform(mk_mb("share_b", &tref("share", "src_b"), &shared_out))
+        .await;
+    match refused {
+        Err(ControlPlaneError::Validation(msg)) => {
+            assert!(
+                msg.contains(&shared_key) && msg.contains("share_a") && msg.contains("share_b"),
+                "refusal must name the contested output and both defs, got: {msg}"
+            );
+        }
+        other => panic!("second def over a claimed output must be Validation, got {other:?}"),
+    }
+    assert_eq!(
+        cp.mv_watermarks(&shared_key, share_tid)
+            .await
+            .unwrap()
+            .get(&0),
+        Some(&4),
+        "the refused define left the incumbent def's watermark untouched"
+    );
+    assert!(
+        matches!(
+            cp.get_transform(&TransformName("share_b".into())).await,
+            Err(ControlPlaneError::NotFound(_))
+        ),
+        "the refused def was not persisted"
+    );
+
+    // Case 2: same-name redefine keeping the output is the upsert/resume path — accepted.
+    cp.define_transform(mk_mb("share_a", &tref("share", "src_a2"), &shared_out))
+        .await
+        .expect("same-name redefine keeping the output is accepted (resume)");
+    assert_eq!(
+        cp.mv_watermarks(&shared_key, share_tid)
+            .await
+            .unwrap()
+            .get(&0),
+        Some(&4),
+        "same-name redefine keeps the incumbent watermark"
+    );
+
+    // Case 3: redefining an EXISTING def (currently on its own output) ONTO the claimed output
+    // is refused too — the upsert path hits the same guard.
+    cp.define_transform(mk_mb(
+        "share_c",
+        &tref("share", "src_c"),
+        &tref("share", "out_c"),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        matches!(
+            cp.define_transform(mk_mb("share_c", &tref("share", "src_c"), &shared_out))
+                .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "redefining an existing def onto a claimed output is refused"
+    );
+
+    // Case 4: kind-cross — a MicroBatchJoin claiming a MicroBatch's output is refused. The join
+    // body is otherwise valid (distinct source/enrich/output, distinct input names, no lookup
+    // key), so the refusal is attributable to the one-output guard, not base validation.
+    assert!(
+        matches!(
+            cp.define_transform(TransformDef {
+                name: TransformName("share_join".into()),
+                body: TransformBody::MicroBatchJoin {
+                    source: tref("share", "src_j"),
+                    enrich: tref("share", "enrich_j"),
+                    on: None,
+                    output: shared_out.clone(),
+                    buckets: 1,
+                    sql: "select id from events".into(),
+                },
+                schedule: None,
+                on_input_commit: false,
+            })
+            .await,
+            Err(ControlPlaneError::Validation(_))
+        ),
+        "a MicroBatchJoin claiming a MicroBatch's output is refused (kind-cross)"
+    );
 }
 
 /// A `DataFile` with representative stats, copying the full 7-field literal
