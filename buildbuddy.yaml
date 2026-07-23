@@ -206,3 +206,72 @@ actions:
           short="$(git rev-parse --short=7 HEAD)"
           printf '%s' "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:crane -- auth login ghcr.io -u "${GHCR_USER:-weave-hand}" --password-stdin
           buck2 run deploy//sdk:wheel.push -- "sha-$short" edge
+
+  # Publish the four service images + Helm chart to ghcr on pushes to main:
+  # immutable sha-<short> images for ingest/query-api/engine/worker, then the chart
+  # as the moving `bleeding-edge` channel (digest-pinned to those images), plus a
+  # versioned chart when deploy/chart/chart/Chart.yaml's `version` is new (bump it
+  # to cut one). Ported from the release.yml `edge` job so ALL main-push publishing
+  # lives on BuildBuddy; the intentional versioned `release` (a workflow_dispatch
+  # with a typed version input that cuts a GitHub Release) stays on GitHub Actions —
+  # BuildBuddy's push/PR/cron trigger model can't express it.
+  #
+  # Credentials: the same GITHUB_TOKEN org secret as publish-wheel (a classic PAT
+  # with write:packages; see that action's note). GHCR_USER is optional and defaults
+  # to the org. The deploy// image/chart targets build locally (apko fetches over the
+  # network) with the Rust binaries on RE, so they're off the //src sweep.
+  - name: publish-images
+    triggers:
+      push:
+        branches: [main]
+    os: linux
+    arch: amd64
+    container_image: ubuntu-24.04
+    git_clean_exclude: ["buck-out"]
+    env:
+      BUCK_PREFER_REMOTE: "true"
+      CHART_OCI: ghcr.io/weave-hand/charts/loom
+    steps:
+      - run: ./tools/ci/buildbuddy-setup.sh
+      # Single block so the crane/helm credentials (written to ~/.docker/config.json
+      # and helm's registry config by the logins) persist through the pushes below.
+      - run: |
+          set -euo pipefail
+          : "${GITHUB_TOKEN:?GITHUB_TOKEN org secret not set — add a classic PAT with write:packages in BuildBuddy org secrets}"
+          user="${GHCR_USER:-weave-hand}"
+          short="$(git rev-parse --short=7 HEAD)"
+
+          # crane (image push) reads ~/.docker/config.json; helm (chart push) keeps
+          # its own registry config. Log both in via the pinned CLIs.
+          printf '%s' "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:crane -- auth login ghcr.io -u "$user" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | buck2 run deploy//buck2/bin:helm  -- registry login ghcr.io -u "$user" --password-stdin
+
+          # Immutable per-commit image tags only — the moving channel is the chart
+          # (bleeding-edge), which digest-pins these exact images.
+          buck2 run deploy//images/ingest:image.push    -- "sha-$short"
+          buck2 run deploy//images/query-api:image.push -- "sha-$short"
+          buck2 run deploy//images/engine:image.push    -- "sha-$short"
+          buck2 run deploy//images/worker:image.push    -- "sha-$short"
+
+          cv="$(awk '/^version:/{print $2; exit}' deploy/chart/chart/Chart.yaml)"
+
+          # Bleeding-edge chart: a moving SemVer `0.0.0-edge` (helm-pullable via
+          # --version 0.0.0-edge), then crane-tagged `bleeding-edge` to mirror the
+          # image tag (helm push can't emit a non-SemVer tag itself). appVersion is
+          # the main snapshot; the images it deploys are digest-pinned at build time.
+          sed -i -E "s/^version:.*/version: 0.0.0-edge/; s/^appVersion:.*/appVersion: \"sha-$short\"/" \
+            deploy/chart/chart/Chart.yaml
+          buck2 run deploy//chart:chart.push
+          buck2 run deploy//buck2/bin:crane -- tag "$CHART_OCI:0.0.0-edge" bleeding-edge
+          echo "published bleeding-edge chart (0.0.0-edge, appVersion sha-$short)"
+
+          # Released chart: publish at the committed Chart.yaml version, but only
+          # when that version isn't already in ghcr (bump it to cut a chart release).
+          git checkout -- deploy/chart/chart/Chart.yaml
+          if buck2 run deploy//buck2/bin:crane -- manifest "$CHART_OCI:$cv" >/dev/null 2>&1; then
+            echo "chart $cv already published — bump deploy/chart/chart/Chart.yaml 'version' to release a new chart."
+          else
+            sed -i -E "s/^appVersion:.*/appVersion: \"sha-$short\"/" deploy/chart/chart/Chart.yaml
+            buck2 run deploy//chart:chart.push
+            echo "published chart $cv (appVersion sha-$short) to $CHART_OCI"
+          fi
