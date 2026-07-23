@@ -54,19 +54,17 @@ Setting `ready` is the finish line for this item. After it, do NOT:
    Write the approved design into the issue body under a `## Spec` heading
    (`gh issue view <N> --json body`, append, `gh issue edit <N> --body-file`),
    then `gh issue edit <N> --add-label ready`, and mirror it on the `loom v1`
-   board — Status → Ready:
+   board — Status → Ready (option `61e4505c`):
 
    ```bash
-   iid=$(gh api graphql -f query='mutation($p:ID!,$c:ID!){addProjectV2ItemById(input:{projectId:$p,contentId:$c}){item{id}}}' \
-     -f p=PVT_kwDOEV2iVs4BeJ8b -f c=$(gh api repos/weave-hand/loom/issues/<N> --jq .node_id) \
-     --jq '.data.addProjectV2ItemById.item.id')
-   gh api graphql -f query='mutation($p:ID!,$i:ID!,$f:ID!,$o:String!){updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{singleSelectOptionId:$o}}){projectV2Item{id}}}' \
-     -f p=PVT_kwDOEV2iVs4BeJ8b -f i=$iid -f f=PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk -f o=61e4505c
+   tools/board-status.sh <N> 61e4505c
    ```
 
-   (Cloud sessions skip the board mutation — Projects GraphQL is unreachable
-   there; the `ready` label is authoritative and the next local session
-   reconciles the board.) **Stop at the committed spec — do NOT transition to
+   (`tools/board-status.sh` is the single home for the ProjectV2 mutation and is
+   fail-soft: a cloud session uses `$LOOM_PROJECT_TOKEN` to reach Projects GraphQL
+   around the App proxy, and if that token is unset or unreachable it skips the
+   board update non-fatally — the `ready` label stays authoritative and a local
+   session reconciles.) **Stop at the committed spec — do NOT transition to
    writing-plans.**
 
 ## Then loop or stop — never build

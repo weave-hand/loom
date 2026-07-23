@@ -45,6 +45,12 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     [ -n "${BUILDBUDDY_API_KEY:-}" ] && printf 'export BUILDBUDDY_API_KEY=%q\n' "$BUILDBUDDY_API_KEY"
     [ -n "${GITHUB_TOKEN:-}" ]       && printf 'export GITHUB_TOKEN=%q\n' "$GITHUB_TOKEN"
     [ -n "${GITHUB_TOKEN:-}" ]       && printf 'export GH_TOKEN=%q\n' "$GITHUB_TOKEN"
+    # LOOM_PROJECT_TOKEN: a PAT with `project` scope, used ONLY by
+    # tools/board-status.sh to mutate the loom v1 Projects board. The platform
+    # GITHUB_TOKEN is scoped by the GitHub App proxy and cannot reach Projects
+    # GraphQL; this token + the api.github.com NO_PROXY bypass are the cloud board
+    # path. Optional — board-status.sh skips softly (no regression) when it's unset.
+    [ -n "${LOOM_PROJECT_TOKEN:-}" ] && printf 'export LOOM_PROJECT_TOKEN=%q\n' "$LOOM_PROJECT_TOKEN"
     # Bypass the egress proxy for github asset hosts so buck2 can fetch toolchains.
     # buck2's http_archive lowers to a `download_file` action that ALWAYS runs on the
     # local daemon (never on RE — it can't be offloaded), and toolchains/BUCK pulls the
@@ -60,7 +66,12 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     # shim installed below is what carries this bypass to the daemon, which is the
     # process that actually runs `download_file`. Written single-quoted so each shell
     # APPENDS to the live NO_PROXY rather than baking a stale snapshot of it.
-    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
+    # `api.github.com` is here too so the board mutation (tools/board-status.sh)
+    # can reach Projects GraphQL directly with LOOM_PROJECT_TOKEN, around the
+    # App proxy that 403s it. (board-status.sh also self-injects this for its own
+    # non-interactive shell, which skips ~/.bashrc — this line covers interactive
+    # shells and the daemon.)
+    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,api.github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
     echo 'export no_proxy="$NO_PROXY"'
     echo '# --- end LOOM_CLOUD_ENV ---'
   } >> "$PROFILE"
