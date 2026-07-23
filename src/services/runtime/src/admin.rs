@@ -1671,7 +1671,9 @@ async fn run_transform_route(State(st): State<AdminState>, Path(name): Path<Stri
 /// `POST /admin/transforms/run` — run an ad-hoc `TransformBody` (no saved
 /// definition), submitted with `RunTrigger::AdHoc`. `TransformBody` carries
 /// no `ToSchema`, so the body is documented as its serde shape and
-/// deserialized inside the handler.
+/// deserialized inside the handler. `microbatch`/`microbatch_join` bodies are
+/// rejected with 400: a micro-batch MV's watermark key is named by a live
+/// `define_transform` def, so an ad-hoc run would create a defless watermark.
 #[utoipa::path(
     post, path = "/admin/transforms/run",
     request_body(
@@ -1700,6 +1702,18 @@ async fn run_adhoc_route(
                 .into_response();
         }
     };
+    if matches!(
+        body,
+        TransformBody::MicroBatch { .. } | TransformBody::MicroBatchJoin { .. }
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "ad-hoc micro-batch runs are not supported: a micro-batch MV must be registered with \
+             define_transform (its watermark key must be named by a live def)"
+                .to_string(),
+        )
+            .into_response();
+    }
     submit_new_run(&st, None, RunTrigger::AdHoc, body).await
 }
 

@@ -932,6 +932,28 @@ async fn run_now_and_adhoc_submit_runs() {
 }
 
 #[tokio::test]
+async fn adhoc_microbatch_run_is_rejected() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/transforms/run",
+            &token,
+            r#"{"kind":"microbatch","source":{"schema":"main","name":"a"},
+                "output":{"schema":"main","name":"b"},"buckets":1,"sql":"select * from mv_delta"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body was: {body}");
+    assert!(
+        body.contains("micro-batch"),
+        "message names the rejected kind: {body}"
+    );
+}
+
+#[tokio::test]
 async fn define_transform_rejects_reserved_name() {
     let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
     let token = seed_admin_session(&cp, ADMIN).await;
