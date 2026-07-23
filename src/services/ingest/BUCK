@@ -179,10 +179,8 @@ loom_fixture_test(
         ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow",
         "//third-party:axum",
         "//third-party:http-body-util",
-        "//third-party:iceberg",
         "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
@@ -199,7 +197,6 @@ loom_fixture_test(
     deps = [
         ":ingest",
         ":e2e-support",
-        "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
         "//third-party:axum",
