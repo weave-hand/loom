@@ -684,6 +684,7 @@ loom_fixture_test(
         ":end-cap-seed",
         ":postgres",
         "//src/control-plane/core:core",
+        "//third-party:serde_json",
         "//third-party:sqlx",
         "//third-party:tempfile",
         "//third-party:tokio",

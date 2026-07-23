@@ -30,6 +30,38 @@ use control_plane_postgres::iceberg_mirror::{ensure_table, next_snapshot};
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use end_cap_seed::{batch, columns, lineage, tref};
 use loom_test_seed::local_sql_catalog;
+use sqlx::PgPool;
+
+/// Barrier: block until some backend in this database is waiting on an ADVISORY
+/// lock — i.e. a first-declaring `reconcile_stream_mode` (or a `define_transform`)
+/// is blocked on `pg_advisory_xact_lock(lock_key(source))` held by another tx.
+/// `wait_event_type='Lock' / wait_event='advisory'` is exactly what
+/// `pg_advisory_xact_lock` waits on (verified against the pinned PG 17.9). Polls
+/// `pg_stat_activity`; panics rather than hanging.
+///
+/// Load-bearing: only once the loser is observably blocked may the caller commit
+/// the winner. Commit any earlier and the loser's guard read could see the
+/// winner's row without ever contending on the lock — a green test for the wrong
+/// reason (it would pass even if the lock were removed).
+async fn await_lock_blocked(pool: &PgPool) {
+    for _ in 0..600 {
+        let blocked: i64 = sqlx::query_scalar(
+            "select count(*) from pg_stat_activity \
+             where datname = current_database() \
+               and wait_event_type = 'Lock' \
+               and wait_event = 'advisory' \
+               and query like 'select pg_advisory_xact_lock%'",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("pg_stat_activity advisory barrier probe");
+        if blocked >= 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the losing operation never blocked on the per-table advisory lock");
+}
 
 /// Register a micro-batch MV named `mv_a` over `source`.
 async fn define_mv(cp: &PgControlPlane, source: &TableRef) -> Result<(), ControlPlaneError> {
@@ -218,4 +250,98 @@ async fn declaring_a_log_stream_on_a_table_an_mv_sources_is_allowed() {
     declare_log_via_land(&pool, &catalog, &src)
         .await
         .expect("a LOG declaration over an MV source is the supported configuration");
+}
+
+/// THE RACE — order A: a micro-batch MV registration commits WHILE a first CDC
+/// declaration is in flight. The registration wins the per-table lock; the CDC
+/// declaration blocks on it, then — re-reading its `pg_micro_batch_readers` guard
+/// UNDER the lock — sees the committed MV and is refused. Without the fix the CDC
+/// declaration takes no lock, never blocks (the barrier would time out), and both
+/// commit into the wedged state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cdc_declare_racing_a_committing_mv_registration_is_refused() {
+    use control_plane_postgres::iceberg_flush::lock_key;
+
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let src = tref("s", "events");
+
+    // WINNER (simulated in-flight `define_transform`): hold `lock_key(src)` and
+    // insert an UNCOMMITTED micro-batch transform row naming `src` as its source.
+    // `pg_micro_batch_readers` reads `transforms.transform` directly and decodes
+    // the `body` with `serde_json::from_value`, so a body serialized with
+    // `serde_json::to_value` (exactly what `define_transform` stores) round-trips.
+    let mut winner = pool.begin().await.expect("begin winner tx");
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(lock_key(&src.schema, &src.name))
+        .execute(&mut *winner)
+        .await
+        .expect("winner takes lock_key(src)");
+    let body = serde_json::to_value(TransformBody::MicroBatch {
+        source: src.clone(),
+        output: tref("s", "out_a"),
+        buckets: 1,
+        sql: "select id from src".into(),
+    })
+    .expect("serialize micro-batch body");
+    sqlx::query("insert into transforms.transform (name, body) values ($1, $2)")
+        .bind("mv_a")
+        .bind(body)
+        .execute(&mut *winner)
+        .await
+        .expect("winner inserts the MV registration row");
+
+    // LOSER: the real production CDC declaration path, on its own connection.
+    let pool_b = pool.clone();
+    let src_b = src.clone();
+    let loser = tokio::spawn(async move { declare_cdc_via_land(&pool_b, &catalog, &src_b).await });
+
+    // Only once the loser is observably blocked on the advisory lock do we commit
+    // the winner — so the loser is guaranteed to contend on the lock, not race
+    // past the guard.
+    await_lock_blocked(&pool).await;
+    winner
+        .commit()
+        .await
+        .expect("commit winner MV registration");
+
+    let err = loser
+        .await
+        .expect("join loser")
+        .expect_err("a CDC declaration racing a committing MV registration must be refused");
+    match err {
+        ControlPlaneError::Validation(m) => assert!(
+            m.contains("micro-batch"),
+            "the refusal must name the reader: {m}"
+        ),
+        other => panic!("expected Validation, got {other:?}"),
+    }
+
+    // WEDGED STATE ABSENT (spec post-condition): the MV row committed, but its
+    // source has NO stream_table row — the refused CDC declaration rolled back with
+    // its landing tx, so it is never "both a CDC stream_table row and an MV body
+    // naming that source".
+    let cdc_rows: i64 = sqlx::query_scalar(
+        "select count(*) from stream.stream_table st \
+         join iceberg_mirror.\"table\" t on t.table_id = st.table_id \
+         where t.table_namespace = $1 and t.table_name = $2 and st.kind = 'cdc'",
+    )
+    .bind(&src.schema)
+    .bind(&src.name)
+    .fetch_one(&pool)
+    .await
+    .expect("count cdc stream_table rows for src");
+    assert_eq!(
+        cdc_rows, 0,
+        "the refused CDC declaration must have left no cdc row"
+    );
+    let mv_rows: i64 =
+        sqlx::query_scalar("select count(*) from transforms.transform where name = 'mv_a'")
+            .fetch_one(&pool)
+            .await
+            .expect("count the committed MV row");
+    assert_eq!(mv_rows, 1, "the MV registration is the survivor");
 }
