@@ -321,19 +321,25 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
             Ok(false) => continue,
             Err(e) => return internal_error("catalog dataset acl fault", e),
         }
-        // Best-effort updated-time: a table with no readable snapshot renders "".
-        let updated = match catalog.current_snapshot(t).await {
-            Ok(s) => s
-                .time
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
-            Err(_) => String::new(),
+        // Best-effort: a table with no readable snapshot renders "" / null rows.
+        let (updated, rows) = match catalog.current_snapshot(t).await {
+            Ok(s) => {
+                let updated = s
+                    .time
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default();
+                // Cheap exact count; a count hiccup must not 500 the list.
+                let rows = catalog.row_count(t, s.id).await.ok();
+                (updated, rows)
+            }
+            Err(_) => (String::new(), None),
         };
         datasets.push(serde_json::json!({
             "schema": t.schema,
             "name": t.name,
             "project": t.schema,
             "updated": updated,
+            "rows": rows,
             "kind": "table",
         }));
     }
@@ -363,6 +369,7 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
             "name": v.view.name,
             "project": v.view.schema,
             "updated": updated,
+            "rows": serde_json::Value::Null,
             "kind": "view",
             "base": { "schema": v.base.schema, "name": v.base.name },
         }));

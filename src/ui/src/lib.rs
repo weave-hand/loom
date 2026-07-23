@@ -420,6 +420,7 @@ pub struct DatasetRow {
     pub name: String,
     pub project: String,
     pub updated: String,
+    pub rows: Option<u64>,
 }
 
 /// Decode `GET /datasets`. Missing array → empty; missing scalars → "".
@@ -434,6 +435,7 @@ pub fn parse_datasets(body: &Value) -> Vec<DatasetRow> {
                     name: str_field(d, "name"),
                     project: str_field(d, "project"),
                     updated: str_field(d, "updated"),
+                    rows: d.get("rows").and_then(Value::as_u64),
                 })
                 .collect()
         })

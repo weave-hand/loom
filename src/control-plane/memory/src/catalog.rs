@@ -216,6 +216,28 @@ impl Catalog for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
+    async fn row_count(&self, table: &TableRef, at: SnapshotId) -> Result<i64> {
+        let cat = self.catalog.lock();
+        let (table, _) = cat.resolve_view(table);
+        let table = &table;
+        let live = cat.tables.get(table).is_some_and(|t| t.live_at(at.0));
+        if !live {
+            return Err(ControlPlaneError::NotFound(format!(
+                "{}.{} @ {}",
+                table.schema, table.name, at.0
+            )));
+        }
+        Ok(cat
+            .files
+            .get(table)
+            .into_iter()
+            .flatten()
+            .filter(|f| f.live_at(at.0))
+            .map(|f| f.val.record_count)
+            .sum())
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
     async fn schema(&self, table: &TableRef, at: SnapshotId) -> Result<TableSchema> {
         let cat = self.catalog.lock();
         let (table, projection) = cat.resolve_view(table);

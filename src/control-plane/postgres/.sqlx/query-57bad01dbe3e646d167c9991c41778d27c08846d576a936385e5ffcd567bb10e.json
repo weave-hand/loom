@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select coalesce(sum(record_count), 0)::bigint as \"rows!\" from iceberg_mirror.data_file where table_id = $1 and begin_snapshot <= $2 and (end_snapshot is null or end_snapshot > $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "57bad01dbe3e646d167c9991c41778d27c08846d576a936385e5ffcd567bb10e"
+}

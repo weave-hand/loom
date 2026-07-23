@@ -347,6 +347,21 @@ async fn datasets_lists_the_seeded_table() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn datasets_reports_row_count() {
+    let (cp, _) = seeded(); // seed_catalog(&table, &cols, &[3, 2]) => 5 live rows
+    grant_analyst_table(&cp).await;
+    let app = app(cp);
+    let (status, json) = get(&app, "/datasets").await;
+    assert_eq!(status, StatusCode::OK);
+    let ds = &json["datasets"][0];
+    assert_eq!(
+        ds["rows"],
+        serde_json::json!(5),
+        "rows is the batch-size sum"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn dataset_detail_composes_snapshot_and_columns() {
     let (cp, latest) = seeded();
     grant_analyst_table(&cp).await;

@@ -201,6 +201,9 @@ pub struct DatasetListEntry {
     pub project: String,
     /// RFC3339 timestamp of the dataset's current snapshot (empty when none is readable).
     pub updated: String,
+    /// Live row count at the current snapshot. Present for physical tables
+    /// (`0` when empty); `null` for views and when a count is unavailable.
+    pub rows: Option<i64>,
     /// `"table"` | `"view"`.
     pub kind: String,
     /// The view's physical base — present only for `kind: "view"`.

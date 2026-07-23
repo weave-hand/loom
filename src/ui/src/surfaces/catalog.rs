@@ -9,12 +9,14 @@ use super::ontology::LoadStatus;
 use loom_ui_components::{
     Button, Column, DataTable, LineageDagView, LineageFullStub, Panel, TabItem, TableRow, Tabs,
 };
-use loom_ui_core::{Align, ButtonVariant, DatasetDetail, DatasetRow, LineageDag, PreviewData};
+use loom_ui_core::{
+    Align, ButtonVariant, DatasetDetail, DatasetRow, LineageDag, PreviewData, format_count,
+};
 use stylist::yew::styled_component;
 use yew::prelude::*;
 
-/// One row of the Catalog list. `rows` is always `"—"` for now — the list view does
-/// not pay for a per-dataset row count.
+/// One row of the Catalog list. `rows` is the live count (K/M-scaled) or `—` when
+/// unknown.
 #[derive(Clone, PartialEq)]
 struct CatalogRow {
     name: String,
@@ -61,7 +63,7 @@ fn to_rows(datasets: &[DatasetRow]) -> Vec<CatalogRow> {
         .map(|d| CatalogRow {
             name: d.name.clone(),
             project: d.project.clone(),
-            rows: "—".into(),
+            rows: d.rows.map_or_else(|| "—".into(), format_count),
             updated: d.updated.clone(),
         })
         .collect()
