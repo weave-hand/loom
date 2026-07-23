@@ -5,99 +5,10 @@
 //! `stream.stream_table` row). Hermetic Postgres fixture + a temp file warehouse;
 //! tower oneshot, no socket. Mirrors `tests/http_land.rs`'s harness.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
-use arrow::array::{Int64Array, RecordBatch, StringArray};
-use arrow::datatypes::{DataType, Field, Schema};
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use control_plane_core::ControlPlane;
+use axum::http::StatusCode;
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
-};
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
-use ingest::http::{AppState, router};
-use ingest::landing::IcebergMaterializer;
+use e2e_support::{ingest_router, ipc_bytes, post_ipc, sample_batch};
 use sqlx::PgPool;
-use tower::ServiceExt;
-
-/// A 2-row batch: id: Int64 (required), name: Utf8 (nullable).
-fn sample_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![1i64, 2])),
-            Arc::new(StringArray::from(vec!["a", "b"])),
-        ],
-    )
-    .unwrap()
-}
-
-/// Encode a batch as an Arrow IPC *stream* (schema + batch messages).
-fn ipc_bytes(batch: &RecordBatch) -> Vec<u8> {
-    let mut buf = Vec::new();
-    {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema()).unwrap();
-        w.write(batch).unwrap();
-        w.finish().unwrap();
-    }
-    buf
-}
-
-/// Build an Iceberg-backed `AppState` over the fixture db + a temp file warehouse.
-/// The `TempDir` is returned so the caller keeps the warehouse alive for the test.
-async fn app_state(fx: &PgFixture, db: &str) -> (PgPool, tempfile::TempDir, AppState) {
-    let pool = fx.pool_for(db).await;
-    let wh = tempfile::tempdir().unwrap();
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", wh.path().display()),
-    );
-    let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog");
-    let cp: Arc<dyn ControlPlane> = Arc::new(service_runtime::control_plane(
-        pool.clone(),
-        Duration::from_millis(300),
-    ));
-    let state = AppState {
-        materializer: Arc::new(IcebergMaterializer {
-            catalog: Arc::new(catalog),
-            pool: pool.clone(),
-            inline_byte_limit: 16 * 1024 * 1024,
-            flush_byte_threshold: 64 * 1024 * 1024,
-        }),
-        cp,
-        pool: pool.clone(),
-        compact_small_file_bytes: 1 << 20,
-    };
-    (pool, wh, state)
-}
-
-async fn post(state: AppState, uri: &str) -> axum::http::Response<Body> {
-    router(state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .body(Body::from(ipc_bytes(&sample_batch())))
-                .unwrap(),
-        )
-        .await
-        .unwrap()
-}
 
 /// The declared bucket count for `schema.table`, or `None` if it has no
 /// `stream.stream_table` row (i.e. it is a batch table, or does not exist).
@@ -117,9 +28,14 @@ async fn stream_bucket_count(pool: &PgPool, schema: &str, table: &str) -> Option
 async fn first_write_declares_stream_with_bucket_count() {
     let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pool, _wh, state) = app_state(fx, &db).await;
+    let (app, _pg, pool, _wh) = ingest_router(fx, &db).await;
 
-    let res = post(state, "/datasets/main/events?mode=stream&buckets=2").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/events?mode=stream&buckets=2",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
 
     let bucket_count = stream_bucket_count(&pool, "main", "events").await;
@@ -134,12 +50,22 @@ async fn first_write_declares_stream_with_bucket_count() {
 async fn bucket_count_mismatch_on_second_write_is_400() {
     let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pool, _wh, state) = app_state(fx, &db).await;
+    let (app, _pg, pool, _wh) = ingest_router(fx, &db).await;
 
-    let res = post(state.clone(), "/datasets/main/events?mode=stream&buckets=2").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/events?mode=stream&buckets=2",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let res = post(state, "/datasets/main/events?mode=stream&buckets=3").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/events?mode=stream&buckets=3",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
@@ -155,13 +81,23 @@ async fn bucket_count_mismatch_on_second_write_is_400() {
 async fn stream_mode_on_existing_batch_table_is_400() {
     let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pool, _wh, state) = app_state(fx, &db).await;
+    let (app, _pg, pool, _wh) = ingest_router(fx, &db).await;
 
     // Land as a plain batch table first.
-    let res = post(state.clone(), "/datasets/main/customer").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/customer",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
 
-    let res = post(state, "/datasets/main/customer?mode=stream&buckets=2").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/customer?mode=stream&buckets=2",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(
         res.status(),
         StatusCode::BAD_REQUEST,
@@ -179,9 +115,14 @@ async fn stream_mode_on_existing_batch_table_is_400() {
 async fn plain_write_stays_batch_with_no_stream_table_row() {
     let fx = PgFixture::shared();
     let (_seed, db) = fx.fresh_db().await;
-    let (pool, _wh, state) = app_state(fx, &db).await;
+    let (app, _pg, pool, _wh) = ingest_router(fx, &db).await;
 
-    let res = post(state, "/datasets/main/customer").await;
+    let res = post_ipc(
+        app.clone(),
+        "/datasets/main/customer",
+        ipc_bytes(&sample_batch()),
+    )
+    .await;
     assert_eq!(res.status(), StatusCode::OK);
 
     let bucket_count = stream_bucket_count(&pool, "main", "customer").await;

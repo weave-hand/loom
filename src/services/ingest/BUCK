@@ -198,7 +198,7 @@ loom_fixture_test(
     crate_root = "tests/stream_declare.rs",
     deps = [
         ":ingest",
-        "//src/services/runtime:runtime",
+        ":e2e-support",
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//third-party:arrow",
