@@ -22,7 +22,9 @@ async fn adopting_a_mismatched_major_fails_clearly() {
     let sock = tmp.path().join("pgrun");
 
     // Fresh initdb writes the real major into PG_VERSION; capture it, then shut down.
-    let pg = EmbeddedPg::start(cfg(&data, &sock)).await.expect("first start");
+    let pg = EmbeddedPg::start(cfg(&data, &sock))
+        .await
+        .expect("first start");
     let real_major: u32 = std::fs::read_to_string(data.join("PG_VERSION"))
         .expect("read PG_VERSION")
         .trim()
@@ -39,9 +41,18 @@ async fn adopting_a_mismatched_major_fails_clearly() {
         .await
         .expect_err("mismatched adopt must fail");
     match err {
-        EmbeddedPgError::VersionMismatch { data_major, binary_major } => {
-            assert_eq!(data_major, 1, "data major read from the (rewritten) PG_VERSION");
-            assert_eq!(binary_major, real_major, "binary major from `postgres --version`");
+        EmbeddedPgError::VersionMismatch {
+            data_major,
+            binary_major,
+        } => {
+            assert_eq!(
+                data_major, 1,
+                "data major read from the (rewritten) PG_VERSION"
+            );
+            assert_eq!(
+                binary_major, real_major,
+                "binary major from `postgres --version`"
+            );
         }
         other => panic!("expected VersionMismatch, got {other:?}"),
     }

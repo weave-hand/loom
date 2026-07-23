@@ -22,10 +22,7 @@ fn pg_version_major_rejects_garbage() {
 
 #[test]
 fn parse_binary_major_reads_standard_banner() {
-    assert_eq!(
-        parse_binary_major("postgres (PostgreSQL) 17.4\n"),
-        Some(17)
-    );
+    assert_eq!(parse_binary_major("postgres (PostgreSQL) 17.4\n"), Some(17));
 }
 
 #[test]

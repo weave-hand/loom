@@ -294,7 +294,10 @@ impl EmbeddedPg {
         if data_major == binary_major {
             Ok(())
         } else {
-            Err(EmbeddedPgError::VersionMismatch { data_major, binary_major })
+            Err(EmbeddedPgError::VersionMismatch {
+                data_major,
+                binary_major,
+            })
         }
     }
 
