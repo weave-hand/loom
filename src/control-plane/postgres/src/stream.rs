@@ -865,20 +865,15 @@ pub async fn pg_mv_watermarks<'e, E: sqlx::PgExecutor<'e>>(
 /// CAS stays `AssertSqlSafe` (its SQL is chosen dynamically on `adv.from == 0`, so
 /// it cannot be a single `query!` literal); the def-existence guard below IS
 /// compile-time `query_scalar!`, verified against the committed `.sqlx` cache.
-pub async fn pg_advance_mv_watermark(
-    conn: &mut sqlx::PgConnection,
-    mv: &str,
-    source_table_id: i64,
-    adv: &control_plane_core::WatermarkAdvance,
-) -> Result<()> {
-    // DEF-EXISTENCE GUARD (#627). The watermark key is `mv_key(output)`; a run that outlives its
-    // def (queue latency, or a redefinition that moved the MV off this output) would otherwise
-    // re-insert rows under a now-defless key via the `from == 0` INSERT branch, resurrecting the
-    // output table in the same commit tx and flooring the source forever. Reject here: the error
-    // propagates via `?` and rolls back the whole output commit (the exactly-once mechanism).
-    // `Validation`, not `Conflict` — the worker maps `Conflict` to "superseded", a lie for a
-    // deleted def (`worker/src/stream_mv.rs:253-261`). Ad-hoc micro-batch runs (which would write
-    // a defless key) are rejected at the admin route, so "named by a live def" is exhaustive.
+/// DEF-EXISTENCE GUARD (#627). The watermark key is `mv_key(output)`; a run that outlives its
+/// def (queue latency, or a redefinition that moved the MV off this output) would otherwise
+/// re-insert rows under a now-defless key via the `from == 0` INSERT branch, resurrecting the
+/// output table in the same commit tx and flooring the source forever. Reject here: the error
+/// propagates via `?` and rolls back the whole output commit (the exactly-once mechanism).
+/// `Validation`, not `Conflict` — the worker maps `Conflict` to "superseded", a lie for a
+/// deleted def (`worker/src/stream_mv.rs:253-261`). Ad-hoc micro-batch runs (which would write
+/// a defless key) are rejected at the admin route, so "named by a live def" is exhaustive.
+async fn pg_guard_mv_key_has_def(conn: &mut sqlx::PgConnection, mv: &str) -> Result<()> {
     let has_def = sqlx::query_scalar!(
         r#"select exists(
              select 1 from transforms.transform
@@ -896,6 +891,16 @@ pub async fn pg_advance_mv_watermark(
              redefined away); the source cannot be floored at a key no def points to"
         )));
     }
+    Ok(())
+}
+
+pub async fn pg_advance_mv_watermark(
+    conn: &mut sqlx::PgConnection,
+    mv: &str,
+    source_table_id: i64,
+    adv: &control_plane_core::WatermarkAdvance,
+) -> Result<()> {
+    crate::stream::pg_guard_mv_key_has_def(&mut *conn, mv).await?;
     // KIND-AGNOSTIC PRECONDITION, checked BEFORE either branch: an advance must move the watermark
     // strictly FORWARD. `to <= from` is MALFORMED, not a race — hence `Validation`, never
     // `Conflict`: a `Conflict` tells the caller "a concurrent run beat me, roll back and let the
