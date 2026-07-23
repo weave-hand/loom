@@ -38,6 +38,15 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "version",
+    crate = "version",
+    srcs = ["tests/version.rs"],
+    crate_root = "tests/version.rs",
+    edition = "2024",
+    deps = [":managed-postgres"],
+)
+
 loom_fixture_test(
     name = "embedded-lifecycle",
     crate = "embedded_lifecycle",
@@ -57,6 +66,19 @@ loom_fixture_test(
     crate = "embedded_hardening",
     srcs = ["tests/embedded_hardening.rs"],
     crate_root = "tests/embedded_hardening.rs",
+    edition = "2024",
+    deps = [
+        ":managed-postgres",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "embedded-version-skew",
+    crate = "embedded_version_skew",
+    srcs = ["tests/embedded_version_skew.rs"],
+    crate_root = "tests/embedded_version_skew.rs",
     edition = "2024",
     deps = [
         ":managed-postgres",

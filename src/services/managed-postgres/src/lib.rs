@@ -57,6 +57,13 @@ pub enum EmbeddedPgError {
     CreateDatabase(sqlx::Error),
     #[error("pg_ctl stop failed: exit {0}")]
     Stop(std::process::ExitStatus),
+    #[error(
+        "embedded Postgres data dir is PostgreSQL {data_major} but the binary is \
+         PostgreSQL {binary_major}; automated major-version upgrade of an existing \
+         data dir is not supported — back up and re-initialise, or migrate the \
+         cluster manually with pg_upgrade (see docs/deploy.md)"
+    )]
+    VersionMismatch { data_major: u32, binary_major: u32 },
 }
 
 /// Extract the missing library name from a dynamic-loader failure line, if the
@@ -87,6 +94,26 @@ pub fn validate_db_name(name: &str) -> Result<(), EmbeddedPgError> {
     } else {
         Err(EmbeddedPgError::InvalidDbName(name.to_string()))
     }
+}
+
+/// The Postgres *major* version a data dir was created by, from its `PG_VERSION`
+/// file. PG 10+ writes just the major (e.g. `17`); pre-10 wrote `9.6`, whose
+/// compatibility major is the first segment. Pure so it is unit-testable.
+#[must_use]
+pub fn pg_version_major(pg_version_file: &str) -> Option<u32> {
+    let first_line = pg_version_file.lines().next()?.trim();
+    first_line.split('.').next()?.parse().ok()
+}
+
+/// The Postgres *major* version of a `postgres --version` banner, e.g.
+/// `postgres (PostgreSQL) 17.4` → `17`. Takes the first whitespace token whose
+/// leading run is ASCII digits. Pure so it is unit-testable.
+#[must_use]
+pub fn parse_binary_major(version_output: &str) -> Option<u32> {
+    version_output.split_whitespace().find_map(|token| {
+        let digits: String = token.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    })
 }
 
 /// A running, owned embedded Postgres. Prefer `shutdown()` for a clean
@@ -246,6 +273,34 @@ impl EmbeddedPg {
         Ok(())
     }
 
+    /// On adopt, refuse a Postgres *major*-version skew between the existing data
+    /// dir and the binary that would run it — a mismatch otherwise crashes the
+    /// postmaster cryptically. Fail-open: if either major is unparseable we do not
+    /// fabricate a mismatch (a false positive would brick a working deployment),
+    /// leaving today's behaviour. Major-only: same major ⇒ compatible on-disk format.
+    async fn check_version_compatibility(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
+        let raw = std::fs::read_to_string(cfg.data_dir.join("PG_VERSION"))?;
+        let Some(data_major) = pg_version_major(&raw) else {
+            return Ok(());
+        };
+        let out = pg_command(cfg.bin_dir.join("postgres"), &cfg.ld_library_path)
+            .arg("--version")
+            .output()
+            .await?;
+        let banner = String::from_utf8_lossy(&out.stdout);
+        let Some(binary_major) = parse_binary_major(&banner) else {
+            return Ok(());
+        };
+        if data_major == binary_major {
+            Ok(())
+        } else {
+            Err(EmbeddedPgError::VersionMismatch {
+                data_major,
+                binary_major,
+            })
+        }
+    }
+
     async fn run_initdb(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
         let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
             .arg("-D")
@@ -365,7 +420,11 @@ impl EmbeddedPg {
         check_not_already_running(&cfg.data_dir)?;
 
         // Idempotent init: PG_VERSION present ⇒ adopt the existing cluster.
-        if !cfg.data_dir.join("PG_VERSION").exists() {
+        if cfg.data_dir.join("PG_VERSION").exists() {
+            // Adopting: refuse a major-version skew before spawn (clear error, no
+            // silent data loss). Automated pg_upgrade is out of scope.
+            Self::check_version_compatibility(&cfg).await?;
+        } else {
             Self::run_initdb(&cfg).await?;
         }
         let server = Self::spawn_postgres(&cfg)?;
