@@ -219,9 +219,10 @@ spec/plan trees were migrated in #466 (their content is in git history).
 - **The `loom v1` Projects board** (org project #1, id `PVT_kwDOEV2iVs4BeJ8b`,
   Status field `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`) mirrors the labels for the
   workstream overview: Backlog → Ready (spec lands, with the `ready` label) →
-  In progress (claimed) → Done (PR merged). Labels are authoritative; cloud
-  sessions can't reach Projects GraphQL and skip board updates — the next
-  local session reconciles.
+  In progress (claimed) → In review (PR open — `loom-work-checkout` sets option
+  `df73e18b`; nothing auto-populates this column) → Done (PR merged). Labels are
+  authoritative; cloud sessions can't reach Projects GraphQL and skip board
+  updates — the next local session reconciles.
 - Query it like: `gh issue list --label roadmap --state open`,
   `--label ready --no-assignee`, `--label "area:acl"`. Cloud sessions must
   use the GitHub MCP tools (the git proxy 403s `gh` API calls to the org
