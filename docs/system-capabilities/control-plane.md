@@ -113,7 +113,11 @@ the manual enqueue endpoints — a payload naming a table absent from the mirror
 /admin/schedules/{name}` (204, or 404 unknown). A `gc_table` / `compact_table` /
 `sweep_orphans` schedule is proven end to end — cron fire → deduped enqueue → zero-pool
 worker drain (`handle_gc` / `handle_compact` / `handle_sweep_orphans`) over the engine
-wire — by `worker/tests/scheduled_maintenance_e2e.rs`.
+wire — by `worker/tests/scheduled_maintenance_e2e.rs`. The sweep's grace filter holds an
+unreferenced object only while it is **strictly younger** than the grace age
+(`modified_ms > cutoff_ms`); an object whose age has reached exactly `grace` is sweepable,
+so under a zero grace a just-written file (mtime ≤ now) is deterministically deletable and
+only a future-dated mtime is held.
 
 ## Catalog and the Iceberg mirror
 
