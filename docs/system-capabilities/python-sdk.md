@@ -72,6 +72,24 @@ only happens on `POST /models/{type}`, ingest's typed-write path, not on
 `client.datasets.list()` / `.get()` / `.preview()` mirror the query-api
 verification-read wire shapes 1:1, typed via `loom_sdk/models.py` dataclasses.
 
+`client.admin.roles` wraps the ACL roles + grants + user-role lifecycle, all
+on query-api: `.create(role)`, `.list()`, `.delete(role)`, `.assign(role,
+username)`, `.assigned(username)`, `.unassign(role, username)`, `.grant(role,
+action, *, type=None, table=None)`, `.grants(role)`, `.revoke(role, action, *,
+type=None, table=None)` — nine methods, identical on both shells (sync
+`client.admin.roles` and `AsyncClient`'s awaited equivalents). `action` is
+`"read"`/`"write"`, passed through verbatim to the server (an unrecognized
+value 400s there, not client-side). `grant`/`revoke` require **exactly one**
+of `type=` (an ontology type name) or `table=(schema, name)` — enforced
+client-side with a `ValueError` before any request is sent; the request body is
+flat (`{"action": ..., "type": "Foo"}` or `{"action": ...,
+"table": {"schema": ..., "name": ...}}`). `.grants(role)` returns
+`list[GrantEntry]` (`action`, `effect`, `type`, `table` — exactly one of the
+latter two non-`None`), decoded from the wire `PolicyTarget` shape
+(`{"Type": name}` / `{"Table": {...}}`). Row-level policies
+(`POST`/`GET`/`DELETE /admin/roles/{r}/policies`) stay deferred — see
+"Known gaps" below.
+
 ## Pydantic layer (`loom_sdk[pydantic]`)
 
 An optional extra (`loom-sdk[pydantic]`, buck target `:loom-sdk-pydantic`):
@@ -122,8 +140,9 @@ CLAUDE.md's "Third-party Python deps" footgun note):
   standalone composite binary (embedded Postgres, `LOOM_WAREHOUSE_URI=file://`,
   engine + ingest + query-api + worker) as a subprocess, runs `create-admin`
   out-of-band, and drives the **async** client end to end over real HTTP: login
-  → `ontology.apply` → ACL grant (raw HTTP — no SDK grant surface, see
-  `fut-python-sdk-acl-admin` below) → `land_instances` ×2 → idempotent
+  → `ontology.apply` → ACL grant (via `client.admin.roles.{create,assign,grant,
+  assigned,grants}` — the SDK's own grant surface, no raw HTTP) →
+  `land_instances` ×2 → idempotent
   re-`apply` → `datasets.preview` / `ontology.type` read-back → one deliberate
   422 asserting `ConformanceError`. Wired via a `configured_alias` pinning the
   referenced `//src/services/standalone:loom` binary to
@@ -137,12 +156,12 @@ ACL is **deny-by-default even for the `admin` role** — holding `ADMIN_ROLE`
 only gates `/admin/*` routes (`service_runtime::require_admin`), it carries no
 implicit grants (`postgres::acl::check` is a pure grant lookup, no admin
 bypass). A freshly bootstrapped admin subject cannot `land_instances` or
-`preview` anything until roles/grants are set up via `/admin/roles*` — which
-the SDK does not yet wrap (below).
+`preview` anything until roles/grants are set up via `/admin/roles*` — now
+wrapped by `client.admin.roles` (above), rather than needing raw HTTP.
 
 ## Known gaps
 
-- `fut-python-sdk-acl-admin` — no typed `client.admin.roles`/`.grants` surface
-  over `/admin/roles*`; programmatic ACL setup from Python is raw-HTTP-only.
 - `fut-python-sdk-link-forward-refs` — self-referential and forward-referenced
   `Link` declarations are rejected with a clear error rather than supported.
+- Row-level policies (`POST`/`GET`/`DELETE /admin/roles/{r}/policies`) stay
+  unwrapped — deferred, tracked as `#635`.
