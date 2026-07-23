@@ -1,4 +1,8 @@
 load("//platforms:defs.bzl", "RE_TEST_PROPS")
+load("@prelude//python:python_wheel.bzl", "python_wheel")
+
+# The wheel version. Kept equal to pyproject.toml [project] version by :wheel-test.
+_WHEEL_VERSION = "0.1.0"
 
 python_test(
     name = "imports",
@@ -105,4 +109,24 @@ python_test(
         ":loom-sdk",
         ":loom-sdk-pydantic",
     ],
+)
+
+# Buck2-built distribution wheel (no uv build / PEP 517 backend). Packages the two
+# first-party python_library targets; third-party deps stay out and are declared via
+# `requires` (emitted as Requires-Dist). `platform = "any"` overrides the toolchain
+# default so the tag is py3-none-any (pure Python). Hermetic ⇒ joins the //src/... CI
+# sweep. Version MUST match pyproject.toml [project] version — guarded by :wheel-test.
+python_wheel(
+    name = "wheel",
+    dist = "loom-sdk",
+    version = _WHEEL_VERSION,
+    libraries = [":loom-sdk", ":loom-sdk-pydantic"],
+    requires = [
+        "httpx>=0.28",
+        "pyarrow>=25",
+        'pydantic>=2.11; extra == "pydantic"',
+    ],
+    extra_metadata = {"Provides-Extra": "pydantic"},
+    platform = "any",
+    visibility = ["PUBLIC"],
 )

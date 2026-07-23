@@ -2,7 +2,7 @@ load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
 load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
-load("@prelude//toolchains:python.bzl", "remote_python_toolchain")
+load("@prelude//toolchains:python.bzl", "remote_python_toolchain", "system_python_wheel_toolchain")
 load(":cxx_dist.bzl", "hermetic_cxx_tools", "native_re_cxx_toolchain", "wasm_cxx_toolchain")
 load(":rust_dist.bzl", "hermetic_rust_toolchain")
 
@@ -223,6 +223,17 @@ remote_python_toolchain(
     name = "python",
     bootstrap = True,
     cpython_urls = CPYTHON_URLS,
+    visibility = ["PUBLIC"],
+)
+
+# The prelude's python_wheel rule needs a python_wheel toolchain providing
+# PythonWheelToolchainInfo (loom hand-wires toolchains and never calls
+# system_demo_toolchains(), which would otherwise register this). Pure-Python
+# wheels: platform "any", tag py3, abi none — the wheel target overrides platform
+# explicitly, but keep the toolchain default at "any" so it is never linux-only.
+system_python_wheel_toolchain(
+    name = "python_wheel",
+    platform = "any",
     visibility = ["PUBLIC"],
 )
 
