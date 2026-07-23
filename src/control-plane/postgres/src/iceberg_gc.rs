@@ -393,12 +393,14 @@ struct Victims {
 /// row → NULL → nothing matches), which is how a run could once destroy a Parquet object
 /// while keeping the mirror row that names it.
 ///
-/// A file with NO `loom_offset` stat is HELD — the scalar subquery yields NULL, so the
-/// comparison is NULL and the row is not selected. That is the fail-safe direction, and
-/// it is reachable: `declare_stream` may be applied to a table that ALREADY has data
-/// files, and those pre-declaration files carry no framing column and hence no offset
-/// stat. They are held for as long as any MV reads the table — bounded, visible in
-/// `held_by_mv_floor`, never lossy.
+/// A file with NO `loom_offset` stat is HELD — the scalar subquery yields NULL, so
+/// the comparison is NULL and the row is not selected. That is the fail-safe
+/// direction. On a DECLARED stream table it is UNREACHABLE: a stream/CDC
+/// declaration over a table that already holds data files is refused at the
+/// primitive (`stream::pg_refuse_declare_over_data`, #625), and every file written
+/// AFTER a genesis declaration carries a `loom_offset` stat. The hold therefore
+/// guards only genuinely missing/corrupt stats (parquet stats disabled, an
+/// all-NULL `loom_offset` column) — never a routine pre-declaration file.
 ///
 /// The cast lives OUTSIDE the subquery on purpose: `max_value` is `text` holding every
 /// column's bound (including string columns), and Postgres may reorder quals inside one
@@ -507,8 +509,11 @@ async fn bump_reclaimed_through(
 /// row is reclaimable only strictly below ITS
 /// bucket's floor (inline rows carry `loom_bucket`/`loom_offset`, so this tier is
 /// per-bucket precise); a bucket at floor 0 contributes no clause (nothing in it is
-/// reclaimable); an unframed row (NULL bucket/offset — impossible on a stream table)
-/// is held.
+/// reclaimable); an unframed row (NULL bucket/offset) is held — a fail-safe direction
+/// only. On a DECLARED stream table it is UNREACHABLE: a stream/CDC declaration over
+/// a table that already holds inline rows is refused at the primitive
+/// (`stream::pg_refuse_declare_over_data`, #625), so the hold guards only corrupt or
+/// absent framing, never a routine pre-declaration row.
 ///
 /// The SQL is already dynamic (`AssertSqlSafe` + the `inline_<tid>` identifier), so the
 /// predicate is built from the floor map — the bucket/offset literals come from our own
