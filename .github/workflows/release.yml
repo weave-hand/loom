@@ -165,12 +165,34 @@ jobs:
           buck2 run deploy//images/engine:image.push    -- "$V" latest
           buck2 run deploy//images/worker:image.push    -- "$V" latest
 
+      - name: Guard wheel version matches pyproject
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          pv="$(grep -E '^version = ' src/sdk/python/pyproject.toml | head -1 | sed -E 's/version = "([^"]+)"/\1/')"
+          if [ "$pv" != "$V" ]; then
+            echo "release version '$V' != committed pyproject version '$pv' — refusing to publish a mismatched wheel." >&2
+            exit 1
+          fi
+
+      - name: Push SDK wheel + stage the Release asset
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          buck2 run deploy//sdk:wheel.push -- "$V" latest
+          wheel="$(buck2 build //src/sdk/python:wheel --show-simple-output)"
+          cp "$wheel" "loom_sdk-$V-py3-none-any.whl"
+
       - name: Tag & GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.v.outputs.version }}
           name: v${{ steps.v.outputs.version }}
           generate_release_notes: true
+          files: loom_sdk-*.whl
 
   # Dev-image preview on every PR commit (same-repo branches only — fork PRs get a
   # read-only token + no secrets, so they're skipped). Dev tags are SemVer
