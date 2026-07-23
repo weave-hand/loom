@@ -60,7 +60,12 @@ if ! grep -q 'LOOM_CLOUD_ENV' "$PROFILE" 2>/dev/null; then
     # shim installed below is what carries this bypass to the daemon, which is the
     # process that actually runs `download_file`. Written single-quoted so each shell
     # APPENDS to the live NO_PROXY rather than baking a stale snapshot of it.
-    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
+    # `api.github.com` is here too so the board mutation (tools/board-status.sh)
+    # can reach Projects GraphQL directly with the ambient gh token, around the
+    # App proxy that 403s it. (board-status.sh also self-injects this for its own
+    # non-interactive shell, which skips ~/.bashrc — this line covers interactive
+    # shells and the daemon.)
+    echo 'export NO_PROXY="${NO_PROXY:+$NO_PROXY,}github.com,api.github.com,objects.githubusercontent.com,release-assets.githubusercontent.com,codeload.github.com,.githubusercontent.com"'
     echo 'export no_proxy="$NO_PROXY"'
     echo '# --- end LOOM_CLOUD_ENV ---'
   } >> "$PROFILE"
