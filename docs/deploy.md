@@ -283,7 +283,15 @@ external-DB deploy, with no second backend:
   socket at `<LOOM_DATA_PATH>/pgrun` (socket-only; no TCP port). First boot
   runs `initdb`; subsequent boots adopt the cluster in place (no re-init, data
   survives restarts). A single-owner guard fails fast if another loom already
-  holds the data dir. Hardening (#247) added `0700` perms on `pgdata`/`pgrun`
+  holds the data dir. On adopt, a **version-skew guard** (#583) compares the
+  data dir's `PG_VERSION` major against the bundled binary's major
+  (`postgres --version`) and refuses a mismatch with a clear
+  `EmbeddedPgError::VersionMismatch { data_major, binary_major }` **before**
+  any postmaster spawn — no silent data loss, no cryptic
+  `database files are incompatible with server` crash. The check is major-only
+  (minor differences are on-disk compatible) and fail-open (an unparseable
+  major never fabricates a mismatch that would brick a working deployment).
+  Hardening (#247) added `0700` perms on `pgdata`/`pgrun`
   and fast-fail readiness (a dead `postgres` child surfaces its real error
   instead of burning the readiness timeout).
 - **Self-extracting distribution.** The PG binaries ride inside `loom`
@@ -403,8 +411,10 @@ full context):
 
 - #581 — stale `pg-<version>/` extract caches are never
   swept after a version-pin bump (bounded disk leak).
-- #583 — no `pg_upgrade` story when a PG major
-  bump meets an existing `pgdata` (it errors clearly; migration is manual).
+- #646 — no *automated* `pg_upgrade` story when a PG major
+  bump meets an existing `pgdata`. The skew is now detected and refused with a
+  clear error (#583); migrating an existing cluster across a major is still
+  manual (back up + re-init, or `pg_upgrade` by hand).
 - #582 — the chart has no one-shot `create-admin` Job;
   first-admin bootstrap in a Helm deploy is a manual CLI run.
 - #584 — the typed tuning knobs are not surfaced
