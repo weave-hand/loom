@@ -34,6 +34,7 @@ import typing
 
 try:
     import pydantic
+    from pydantic.fields import FieldInfo
 except ImportError as exc:  # pragma: no cover - exercised only without the extra
     raise ImportError("install loom-sdk[pydantic]") from exc
 
@@ -136,7 +137,7 @@ class Link:
                 f"Link target {target.__name__!r} is self-referential; write it "
                 'as a string with an explicit FK column — Link["'
                 f'{target.__name__}", "<fk_column>"] — a bare-class self-link is '
-                "not supported"
+                "not supported in v1"
             )
         identity_name = getattr(target, "__loom_identity__", None)
         if identity_name is None:
@@ -146,6 +147,40 @@ class Link:
             )
         identity_ty = target.model_fields[identity_name].annotation
         return typing.Annotated[identity_ty, cls(target, column)]
+
+
+def _record_link(
+    declaring_cls: type["LoomModel"],
+    target: type["LoomModel"],
+    column: str | None,
+    field_name: str,
+    ty: str,
+    required: bool,
+    *,
+    properties: list[tuple[str, str, bool]],
+    links: list[_LinkSpec],
+    seen_properties: dict[str, tuple[str, str | None]],
+) -> str:
+    """Record one resolved FK link into `properties`/`links`, guarding the FK
+    column against collision with an already-seen property (Finding 3).
+    Returns the resolved FK column name.
+
+    Shared by the eager (`Link[Class]`) and pending (`Link["Self", col]`)
+    resolution paths — both arrive here with a concrete `target` and the FK
+    column type already reduced to `(ty, required)`.
+    """
+    fk_column = column or target.__loom_identity__
+    if fk_column in seen_properties:
+        other_field, _ = seen_properties[fk_column]
+        raise TypeError(
+            f"{declaring_cls.__name__}: property {fk_column!r} is declared by both "
+            f"{other_field!r} and {field_name!r}; pass "
+            f'Link[{target.__name__}, "other_column"] to disambiguate'
+        )
+    seen_properties[fk_column] = (field_name, target.__name__)
+    properties.append((fk_column, ty, required))
+    links.append(_LinkSpec(field=field_name, target=target, fk_column=fk_column))
+    return fk_column
 
 
 class LoomModel(pydantic.BaseModel):
@@ -190,11 +225,15 @@ class LoomModel(pydantic.BaseModel):
         properties: list[tuple[str, str, bool]] = []
         links: list[_LinkSpec] = []
         identity_fields: list[str] = []
-        # property name -> (declaring field name, link target name or None);
-        # tracks both plain fields and FK columns so a plain property can't
-        # silently collide with an FK column of the same name (Finding 3).
+        # property name -> (declaring field name, link target name or None).
         seen_properties: dict[str, tuple[str, str | None]] = {}
+        # (field name, marker, is_optional) — string-target links deferred to pass 2.
+        pending: list[tuple[str, _PendingLink, bool]] = []
 
+        # Pass 1: plain properties, eager links, identity discovery. A pending
+        # (string-target) link is deferred — its FK column can only be checked
+        # after every plain/eager property is in `seen_properties`, and its FK
+        # type needs `__loom_identity__` (self-link ⇒ the class's own identity).
         for field_name, field_info in cls.model_fields.items():
             if isinstance(field_info.annotation, typing.ForwardRef):
                 forward_str = field_info.annotation.__forward_arg__
@@ -207,11 +246,16 @@ class LoomModel(pydantic.BaseModel):
                         "self-referential links are not supported in v1"
                     )
 
-            # Merge top-level Annotated metadata (the common case) with
-            # metadata hiding inside an Optional wrapper (`Link[X] | None` /
-            # `Identity[T] | None`) — pydantic only lifts the former into
-            # `field_info.metadata`.
-            metadata = (*field_info.metadata, *optional_metadata(field_info.annotation))
+            optional_meta = optional_metadata(field_info.annotation)
+            metadata = (*field_info.metadata, *optional_meta)
+
+            top_pending = next((m for m in field_info.metadata if isinstance(m, _PendingLink)), None)
+            opt_pending = next((m for m in optional_meta if isinstance(m, _PendingLink)), None)
+            if top_pending is not None or opt_pending is not None:
+                marker = top_pending if top_pending is not None else opt_pending
+                pending.append((field_name, marker, opt_pending is not None))
+                continue
+
             link_marker = next((meta for meta in metadata if isinstance(meta, Link)), None)
             is_identity = any(meta is LOOM_IDENTITY for meta in metadata)
 
@@ -224,18 +268,10 @@ class LoomModel(pydantic.BaseModel):
                 raise TypeError(f"{cls.__name__}.{field_name}: identity property cannot be optional")
 
             if link_marker is not None:
-                fk_column = link_marker.column or link_marker.target.__loom_identity__
-                if fk_column in seen_properties:
-                    other_field, _ = seen_properties[fk_column]
-                    raise TypeError(
-                        f"{cls.__name__}: property {fk_column!r} is declared by both "
-                        f"{other_field!r} and {field_name!r}; pass "
-                        f"Link[{link_marker.target.__name__}, \"other_column\"] to disambiguate"
-                    )
-                seen_properties[fk_column] = (field_name, link_marker.target.__name__)
-                properties.append((fk_column, ty, required))
-                links.append(_LinkSpec(field=field_name, target=link_marker.target, fk_column=fk_column))
-                property_name = fk_column
+                property_name = _record_link(
+                    cls, link_marker.target, link_marker.column, field_name, ty, required,
+                    properties=properties, links=links, seen_properties=seen_properties,
+                )
             else:
                 if field_name in seen_properties:
                     other_field, other_target = seen_properties[field_name]
@@ -256,9 +292,56 @@ class LoomModel(pydantic.BaseModel):
             raise TypeError(
                 f"{cls.__name__} must declare exactly one Identity field, found {len(identity_fields)}"
             )
+        identity_name = identity_fields[0]
+        # Set identity BEFORE pass 2: a self-link resolves `target = cls`, and
+        # `_record_link`'s default FK column reads `target.__loom_identity__`.
+        # For the one-arg `Link["Node"]` case this must be set so the lookup
+        # yields "node_id" (→ collision TypeError), not AttributeError.
+        cls.__loom_identity__ = identity_name
+
+        # Pass 2: resolve string-target links now that identity is known. Only a
+        # self-reference (the string names the class under construction) is
+        # supported; any other name is an unsupported forward reference.
+        repaired: list[tuple[str, object]] = []
+        for field_name, marker, is_optional in pending:
+            if marker.name != cls.__name__:
+                raise TypeError(
+                    f"{cls.__name__}.{field_name}: link target {marker.name!r} is a "
+                    "forward reference; only self-referential string links (naming the "
+                    "class under construction) are supported — link targets must "
+                    "otherwise be fully-defined LoomModel classes declared before the "
+                    "class that links to them"
+                )
+            identity_ty = cls.model_fields[identity_name].annotation
+            ty, _ = loom_type(identity_ty)
+            _record_link(
+                cls, cls, marker.column, field_name, ty, not is_optional,
+                properties=properties, links=links, seen_properties=seen_properties,
+            )
+            resolved: object = typing.Annotated[identity_ty, Link(cls, marker.column)]
+            if is_optional:
+                resolved = typing.Optional[resolved]
+            repaired.append((field_name, resolved))
 
         cls.__loom_table__ = table
-        cls.__loom_identity__ = identity_fields[0]
+        # __loom_identity__ was set before pass 2 (above).
         cls.__loom_properties__ = properties
         cls.__loom_links__ = links
         cls.__loom_building__ = False
+
+        # Annotation repair: swap each self-link's placeholder `Any` FieldInfo
+        # for the real FK type, then rebuild the validator so pydantic type-checks
+        # the FK value. No weakly-typed FK survives class creation.
+        #
+        # `model_rebuild(force=True)` rebuilds the core schema from
+        # `cls.__pydantic_fields__` (pydantic 2.13's `complete_model_class` →
+        # `GenerateSchema._model_schema` reads the FieldInfos directly; it does
+        # NOT re-collect from `__annotations__`, and it does NOT re-invoke
+        # `__pydantic_init_subclass__`, so this is not re-entrant).
+        if repaired:
+            for field_name, resolved in repaired:
+                existing = cls.__pydantic_fields__[field_name]
+                cls.__pydantic_fields__[field_name] = FieldInfo.from_annotated_attribute(
+                    resolved, existing.default
+                )
+            cls.model_rebuild(force=True)
