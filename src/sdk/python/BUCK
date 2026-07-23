@@ -41,6 +41,7 @@ python_test(
             "tests/imports_test.py",  # the infra acceptance test — its own :imports target
             "tests/pydantic_*_test.py",  # :units-pydantic (Task 5; needs the pydantic dep)
             "tests/e2e_*_test.py",  # :e2e (Task 7; needs the fixture env)
+            "tests/wheel_test.py",  # :wheel-test (needs the $(location :wheel) env)
         ],
     ),
     remote_execution = RE_TEST_PROPS,
@@ -129,4 +130,26 @@ python_wheel(
     extra_metadata = {"Provides-Extra": "pydantic"},
     platform = "any",
     visibility = ["PUBLIC"],
+)
+
+export_file(
+    name = "pyproject",
+    src = "pyproject.toml",
+    visibility = ["PUBLIC"],
+)
+
+# Guards the buck2-built wheel: (1) pyproject version has not drifted from the BUCK
+# python_wheel version, (2) the wheel ships loom_sdk/ + loom_sdk/pydantic/ and its
+# METADATA carries the pydantic extra + Requires-Dist. RE-pinned like every python_test
+# here (inplace-par shebang footgun). Excluded from :units' glob because it needs this
+# bespoke env.
+python_test(
+    name = "wheel-test",
+    srcs = ["tests/wheel_test.py"],
+    env = {
+        "WHEEL_PATH": "$(location :wheel)",
+        "PYPROJECT_PATH": "$(location :pyproject)",
+        "EXPECTED_WHEEL_VERSION": _WHEEL_VERSION,
+    },
+    remote_execution = RE_TEST_PROPS,
 )
