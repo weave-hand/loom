@@ -4,7 +4,9 @@
 //! => Retry with backoff) — captured by `run_wire_job`.
 use std::future::Future;
 
-use control_plane_core::{BuildVectorIndexJob, FlushJob, GcJob, Job, JobFailure, OrphanSweepJob};
+use control_plane_core::{
+    BuildVectorIndexJob, ControlPlaneError, FlushJob, GcJob, Job, JobFailure, OrphanSweepJob,
+};
 use engine_wire::client::GrpcQueueClient;
 use loom_config::WorkerTuning;
 
@@ -48,7 +50,25 @@ pub async fn handle_gc(
     job: Job,
 ) -> std::result::Result<(), JobFailure> {
     run_wire_job(job, tuning, "gc", |GcJob { schema, name }| async move {
-        engine.gc_table(schema, name).await.map(|_| ())
+        let counts = engine.gc_table(schema.clone(), name.clone()).await?;
+        tracing::info!(
+            schema = %schema,
+            table = %name,
+            data_file_rows = counts.data_file_rows,
+            inline_rows = counts.inline_rows,
+            objects_deleted = counts.objects_deleted,
+            held_by_mv_floor = counts.held_by_mv_floor,
+            "gc_table reclaimed",
+        );
+        if counts.held_by_mv_floor > 0 {
+            tracing::warn!(
+                schema = %schema,
+                table = %name,
+                held_by_mv_floor = counts.held_by_mv_floor,
+                "gc_table: the MV read-position floor held candidates back; see the engine log for the laggard MV",
+            );
+        }
+        Ok::<(), ControlPlaneError>(())
     })
     .await
 }

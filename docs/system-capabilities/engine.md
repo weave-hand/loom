@@ -467,7 +467,13 @@ only if its `(loom_bucket, loom_offset)` is strictly below that bucket's own
 floor. A table no MV reads takes a `None` floor and GCs byte-identically to the
 pre-floor behavior. Holds are observable — `GcSummary.held_by_mv_floor` counts
 the candidates withheld, and a `tracing::warn!` names the per-bucket laggard MV
-(the operator's lead to a wedged MV). The **dropped-incarnation** reclaim
+(the operator's lead to a wedged MV). That count no longer dies inside the engine:
+`GcTableResponse` carries it as a fourth proto field, the wire client returns the
+four reclaim/hold counts as a named `engine_wire::client::GcCounts` struct (not a
+bare tuple, and not the postgres `GcSummary` leaked across the boundary), and the
+worker's `handle_gc` logs all four counts per GC job — `info!` on completion, plus
+a `warn!` when `held_by_mv_floor > 0` that points the operator at the engine log
+for the laggard identity (#468). The laggard-MV name strings stay engine-log-only. The **dropped-incarnation** reclaim
 deliberately **bypasses** the floor — drop-GC must converge on a table that no
 longer exists — and warns, naming the MVs it strands. The escape hatch out of a
 dead MV's floor is real: `Transforms::delete_transform` deletes the MV's

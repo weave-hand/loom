@@ -161,6 +161,20 @@ pub struct GrpcQueueClient {
     inner: EngineControlClient<Channel>,
 }
 
+/// Reclaim + hold counts returned by a `gc_table` run over the wire. Mirrors
+/// `control_plane_postgres::iceberg_gc::GcSummary` but stays a wire-crate type —
+/// the postgres `GcSummary` does not cross the wire boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GcCounts {
+    pub data_file_rows: u64,
+    pub inline_rows: u64,
+    pub objects_deleted: u64,
+    /// Age-eligible candidates the MV read-position floor held back (see the
+    /// `GcSummary` doc: `data_file` rows plus end-capped inline rows). > 0 means a
+    /// lagging MV blocked reclaim; the engine log names the laggard.
+    pub held_by_mv_floor: u64,
+}
+
 impl GrpcQueueClient {
     /// Connect to the engine's `EngineControl` service at the given UDS path.
     pub async fn connect(socket: impl Into<String>) -> Result<Self> {
@@ -259,9 +273,8 @@ impl GrpcQueueClient {
         Ok(())
     }
 
-    /// GC a table by schema + name; returns the reclaim counts
-    /// `(data_file_rows, inline_rows, objects_deleted)`.
-    pub async fn gc_table(&self, schema: String, name: String) -> Result<(u64, u64, u64)> {
+    /// GC a table by schema + name; returns the reclaim + hold counts.
+    pub async fn gc_table(&self, schema: String, name: String) -> Result<GcCounts> {
         let resp = self
             .inner
             .clone()
@@ -269,7 +282,12 @@ impl GrpcQueueClient {
             .await
             .map_err(be)?
             .into_inner();
-        Ok((resp.data_file_rows, resp.inline_rows, resp.objects_deleted))
+        Ok(GcCounts {
+            data_file_rows: resp.data_file_rows,
+            inline_rows: resp.inline_rows,
+            objects_deleted: resp.objects_deleted,
+            held_by_mv_floor: resp.held_by_mv_floor,
+        })
     }
 
     /// Sweep orphaned warehouse objects (no mirror row references them and older
