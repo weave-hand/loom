@@ -13,7 +13,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use control_plane_core::{
     Catalog, ColumnSpec, ControlPlane, ControlPlaneError, DatasetRef, EventType, LineageEvent,
     MvWatermarks, RunId, RunState, RunTrigger, StreamKind, StreamTables, TableRef, TransformBody,
-    TransformRun,
+    TransformDef, TransformName, TransformRun,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -117,6 +117,22 @@ async fn submit_microbatch_run(
         buckets,
         sql: "select * from mv_delta".into(),
     };
+    // #627: `CommitMicroBatch` CAS-advances the watermark, which now guards on a live
+    // `microbatch`/`microbatch_join` def still naming the output. The run stays ad-hoc
+    // (`transform: None` below), but a real def must exist for the CAS to pass — matching
+    // production, where a micro-batch run always has a registered def. `define_transform`
+    // is a per-name upsert and re-registering an unchanged def is a no-op for the watermark
+    // bootstrap (`on conflict ... do nothing`), so calling this for every run sharing an
+    // output (e.g. two runs both targeting "s.out") is safe.
+    cp.transforms()
+        .define_transform(TransformDef {
+            name: TransformName(format!("def_{}_{}", output.schema, output.name)),
+            body: body.clone(),
+            schedule: None,
+            on_input_commit: false,
+        })
+        .await
+        .expect("register mv def");
     let run = TransformRun {
         run_id: rid,
         transform: None,
