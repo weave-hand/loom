@@ -1,0 +1,40 @@
+load(":defs.bzl", "wheel_push")
+
+# `root//src/sdk/python:wheel`'s third-party python deps (e.g. pydantic) only
+# resolve under the py313-linux-<arch>-gnu config produced by the
+# `set_cfg_modifiers` wired in `src/sdk/PACKAGE` / `third-party/python/PACKAGE`
+# (root cell). Those PACKAGE-based modifiers apply only when the modified
+# target is itself the top-level pattern; reached purely as a `deploy//sdk`
+# dependency, the wheel would otherwise inherit deploy's plain
+# `prelude//platforms:default` config and its third-party python select()s
+# would fail to resolve (see BUILD FAILED note in 2026-07-23 push-rule design).
+# `configured_alias` re-pins the wheel's own config explicitly, mirroring
+# `deploy/images/multiarch.bzl`'s per-arch binary aliasing.
+configured_alias(
+    name = "wheel-cfg",
+    actual = "root//src/sdk/python:wheel",
+    platform = ":wheel-platform",
+    visibility = [],
+)
+
+platform(
+    name = "wheel-platform",
+    constraint_values = [
+        "prelude//cpu/constraints:x86_64",
+        "prelude//os/constraints:linux",
+        "root//third-party/python/config:linux-x86_64-gnu",
+        "root//third-party/python/config:py313",
+    ],
+    visibility = [],
+)
+
+# Runnable: `buck2 run deploy//sdk:wheel.push -- <tag>...` pushes the built wheel to
+# ghcr as an OCI artifact. Off the //src/... sweep (network/credentialed), beside the
+# image/chart publish machinery. The wheel builds under its own (src/sdk) config; this
+# rule is a plain run-only rule, so deploy/sdk needs no python PACKAGE.
+wheel_push(
+    name = "wheel.push",
+    repository = "ghcr.io/weave-hand/loom-sdk",
+    wheel = ":wheel-cfg",
+    visibility = ["PUBLIC"],
+)
