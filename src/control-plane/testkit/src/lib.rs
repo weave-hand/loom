@@ -5850,6 +5850,127 @@ where
         .await
         .unwrap();
 
+    // --- #627: a CAS whose def is gone must be REFUSED (Validation), leaving no ghost row.
+    // A run whose watermark CAS commits AFTER its def is deleted would otherwise re-insert a
+    // watermark under a now-defless key (the `from == 0` INSERT branch), flooring the source
+    // forever and resurrecting the output. Both backends' CAS now guard on a live micro-batch
+    // def naming `mv_key(output)`. ---
+    let out = TableRef {
+        schema: "gc".into(),
+        name: "ghost_out".into(),
+    };
+    let src = TableRef {
+        schema: "gc".into(),
+        name: "ghost_src".into(),
+    };
+    let gk = mv_key(&out);
+    let tid = 909_i64;
+    cp.define_transform(TransformDef {
+        name: TransformName("ghost_def".into()),
+        body: TransformBody::MicroBatch {
+            source: src.clone(),
+            output: out.clone(),
+            buckets: 4,
+            sql: "select * from mv_delta".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    })
+    .await
+    .expect("define ghost mv");
+    cp.advance_mv_watermark(
+        &gk,
+        tid,
+        &[WatermarkAdvance {
+            bucket: 0,
+            from: 0,
+            to: 3,
+        }],
+    )
+    .await
+    .expect("advance while def exists");
+    cp.delete_transform(&TransformName("ghost_def".into()))
+        .await
+        .expect("delete def");
+    // delete_transform already removed the watermark rows (certified above); the key is now defless.
+    let refused = cp
+        .advance_mv_watermark(
+            &gk,
+            tid,
+            &[WatermarkAdvance {
+                bucket: 0,
+                from: 0,
+                to: 6,
+            }],
+        )
+        .await;
+    assert!(
+        matches!(refused, Err(ControlPlaneError::Validation(_))),
+        "post-delete CAS must be Validation, got {refused:?}"
+    );
+    assert!(
+        cp.mv_watermarks(&gk, tid).await.expect("read").is_empty(),
+        "no ghost watermark row may exist after a refused post-delete advance"
+    );
+
+    // --- #627 mixed-advance: the `from > 0` leg ALREADY rolls back on refusal (the guard is not
+    // what makes that safe); here the guard fires first because the def is gone, so assert the
+    // WHOLE batch is refused and nothing lands. Re-define, bootstrap bucket 1 to 5, delete, then a
+    // mixed [{b0 from0}, {b1 from5}] advance. ---
+    cp.define_transform(TransformDef {
+        name: TransformName("ghost_def2".into()),
+        body: TransformBody::MicroBatch {
+            source: src.clone(),
+            output: out.clone(),
+            buckets: 4,
+            sql: "select * from mv_delta".into(),
+        },
+        schedule: None,
+        on_input_commit: false,
+    })
+    .await
+    .expect("re-define");
+    cp.advance_mv_watermark(
+        &gk,
+        tid,
+        &[WatermarkAdvance {
+            bucket: 1,
+            from: 0,
+            to: 5,
+        }],
+    )
+    .await
+    .expect("seed bucket 1");
+    cp.delete_transform(&TransformName("ghost_def2".into()))
+        .await
+        .expect("delete def2");
+    let mixed = cp
+        .advance_mv_watermark(
+            &gk,
+            tid,
+            &[
+                WatermarkAdvance {
+                    bucket: 0,
+                    from: 0,
+                    to: 3,
+                },
+                WatermarkAdvance {
+                    bucket: 1,
+                    from: 5,
+                    to: 9,
+                },
+            ],
+        )
+        .await;
+    assert!(
+        matches!(mixed, Err(ControlPlaneError::Validation(_))),
+        "mixed advance refused: {mixed:?}"
+    );
+    assert!(
+        cp.mv_watermarks(&gk, tid).await.expect("read").is_empty(),
+        "nothing lands after refusal"
+    );
+
     // --- rebind cycle: a define_type that re-points a binding into a trigger
     // cycle among data-triggered defs is rejected (not silently allowed) ---
     let ta = tref("main", "rc_a");
