@@ -22,6 +22,7 @@ use control_plane_postgres::iceberg_flush::flush_table;
 use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::iceberg_mirror::live_table_id;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
+use engine_wire::client::GcCounts;
 use engine_wire::client::GrpcQueueClient;
 use engine_wire::flight::{FlightSqlClient, FlightTableClient};
 use loom_test_flight::{EngineGuard, EngineOpts, spawn_engine_uds};
@@ -829,7 +830,12 @@ async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
     // 6. GC over the wire. The floor (next_offset = 3) is above every offset in file A
     //    (max 2) but not file B (max 5): A is reclaimed, B is HELD — mirror row and
     //    Parquet object alike. Without the floor, BOTH would go.
-    let (file_rows, _inline_rows, objects) = engine
+    let GcCounts {
+        data_file_rows: file_rows,
+        objects_deleted: objects,
+        held_by_mv_floor: held,
+        ..
+    } = engine
         .gc_table(src.schema.clone(), src.name.clone())
         .await
         .expect("gc over the wire");
@@ -838,6 +844,10 @@ async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
         "only file A — wholly below the floor — is taken"
     );
     assert_eq!(objects, 1, "and exactly one Parquet object is deleted");
+    assert_eq!(
+        held, 1,
+        "file B (max offset 5) sits above the floor (next_offset 3): its one data_file row is held by the MV floor"
+    );
 
     assert_eq!(
         data_files(&pool, tid).await,
@@ -868,12 +878,21 @@ async fn gc_holds_a_lagging_mvs_end_capped_files_and_converges_on_catch_up() {
     .await
     .expect("the mv catches up past the tail");
 
-    let (file_rows2, _, objects2) = engine
+    let GcCounts {
+        data_file_rows: file_rows2,
+        objects_deleted: objects2,
+        held_by_mv_floor: held2,
+        ..
+    } = engine
         .gc_table(src.schema.clone(), src.name.clone())
         .await
         .expect("second gc");
     assert_eq!(file_rows2, 1, "the held file is now reclaimed");
     assert_eq!(objects2, 1, "and its Parquet object with it");
+    assert_eq!(
+        held2, 0,
+        "with the MV caught up, the floor holds nothing back"
+    );
     assert!(
         data_files(&pool, tid).await.is_empty(),
         "with the MV caught up, GC converges: no data_file row survives"
@@ -954,7 +973,11 @@ async fn mv_registered_over_a_gcd_source_reads_the_surviving_range_and_commits()
     end_cap_data_files(&pool, tid, snap).await;
     age_all_snapshots(&pool).await;
 
-    let (file_rows, _inline_rows, objects) = engine
+    let GcCounts {
+        data_file_rows: file_rows,
+        objects_deleted: objects,
+        ..
+    } = engine
         .gc_table(src.schema.clone(), src.name.clone())
         .await
         .expect("gc over the wire");
@@ -1108,7 +1131,11 @@ async fn mv_over_a_gcd_cross_bucket_source_commits_from_an_undershooting_bootstr
     end_cap_data_files(&pool, tid, snap).await;
     age_all_snapshots(&pool).await;
 
-    let (file_rows, _inline_rows, objects) = engine
+    let GcCounts {
+        data_file_rows: file_rows,
+        objects_deleted: objects,
+        ..
+    } = engine
         .gc_table(src.schema.clone(), src.name.clone())
         .await
         .expect("gc over the wire");

@@ -66,7 +66,7 @@ message FlushTableRequest  { string schema = 1; string name = 2; }
 message FlushTableResponse { optional int64 snapshot_id = 1; }   // absent = None
 
 message GcTableRequest  { string schema = 1; string name = 2; }
-message GcTableResponse { uint64 data_file_rows = 1; uint64 inline_rows = 2; uint64 objects_deleted = 3; }
+message GcTableResponse { uint64 data_file_rows = 1; uint64 inline_rows = 2; uint64 objects_deleted = 3; uint64 held_by_mv_floor = 4; }
 
 message SweepOrphansRequest  {}
 message SweepOrphansResponse { uint64 objects_deleted = 1; uint64 bytes_deleted = 2; uint64 candidates_skipped_grace = 3; }

@@ -397,6 +397,7 @@ impl pb::engine_control_server::EngineControl for EngineControlService {
             data_file_rows: summary.data_file_rows,
             inline_rows: summary.inline_rows,
             objects_deleted: summary.objects_deleted,
+            held_by_mv_floor: summary.held_by_mv_floor,
         }))
     }
 
