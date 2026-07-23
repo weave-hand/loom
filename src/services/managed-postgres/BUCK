@@ -38,6 +38,15 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "version",
+    crate = "version",
+    srcs = ["tests/version.rs"],
+    crate_root = "tests/version.rs",
+    edition = "2024",
+    deps = [":managed-postgres"],
+)
+
 loom_fixture_test(
     name = "embedded-lifecycle",
     crate = "embedded_lifecycle",
