@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import unittest
 
+import httpx
+
 from loom_sdk._core import (
     assign_role_request,
     create_role_request,
@@ -22,6 +24,7 @@ from loom_sdk._core import (
     unassign_role_request,
     user_roles_request,
 )
+from loom_sdk.client import Client
 from loom_sdk.models import GrantEntry, TableRef
 
 
@@ -179,6 +182,98 @@ class RequestBuilderTest(unittest.TestCase):
     def test_grant_request_bad_target_raises_before_build(self) -> None:
         with self.assertRaises(ValueError):
             grant_request("analyst", "read", None, None)
+
+
+def _mock_client(handler) -> Client:
+    client = Client(url="http://loom.invalid")
+    client._http = httpx.Client(transport=httpx.MockTransport(handler))
+    return client
+
+
+class RolesNamespaceTest(unittest.TestCase):
+    def test_create_returns_role(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(201, json={"role": "analyst"})
+
+        client = _mock_client(handler)
+        self.assertEqual(client.admin.roles.create("analyst"), "analyst")
+        self.assertEqual(seen[0].url.path, "/admin/roles")
+        self.assertEqual(json.loads(seen[0].content), {"role": "analyst"})
+        client.close()
+
+    def test_list_and_assigned_share_parser(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"roles": ["admin", "analyst"]})
+
+        client = _mock_client(handler)
+        self.assertEqual(client.admin.roles.list(), ["admin", "analyst"])
+        self.assertEqual(client.admin.roles.assigned("ada"), ["admin", "analyst"])
+        client.close()
+
+    def test_assign_unassign_delete_return_none(self) -> None:
+        seen: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(f"{request.method} {request.url.path}")
+            return httpx.Response(200, json={})
+
+        client = _mock_client(handler)
+        self.assertIsNone(client.admin.roles.assign("analyst", "ada"))
+        self.assertIsNone(client.admin.roles.unassign("analyst", "ada"))
+        self.assertIsNone(client.admin.roles.delete("analyst"))
+        self.assertEqual(
+            seen,
+            [
+                "PUT /admin/users/ada/roles/analyst",
+                "DELETE /admin/users/ada/roles/analyst",
+                "DELETE /admin/roles/analyst",
+            ],
+        )
+        client.close()
+
+    def test_grant_and_revoke(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            # grant → 201 "granted"; revoke → 200 "revoked" (server fidelity)
+            status = 201 if request.method == "POST" else 200
+            return httpx.Response(status, text="granted" if status == 201 else "revoked")
+
+        client = _mock_client(handler)
+        self.assertIsNone(client.admin.roles.grant("analyst", "read", type="Customer"))
+        self.assertIsNone(client.admin.roles.revoke("analyst", "write", table=("raw", "customers")))
+        self.assertEqual(json.loads(seen[0].content), {"action": "read", "type": "Customer"})
+        self.assertEqual(
+            json.loads(seen[1].content), {"action": "write", "table": {"schema": "raw", "name": "customers"}}
+        )
+        client.close()
+
+    def test_grants_parses_entries(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={"grants": [{"action": "read", "target": {"Type": "Customer"}, "effect": "allow"}]},
+            )
+
+        client = _mock_client(handler)
+        self.assertEqual(
+            client.admin.roles.grants("analyst"),
+            [GrantEntry(action="read", effect="allow", type="Customer", table=None)],
+        )
+        client.close()
+
+    def test_grant_bad_target_raises_before_send(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover — never reached
+            raise AssertionError("should not send")
+
+        client = _mock_client(handler)
+        with self.assertRaises(ValueError):
+            client.admin.roles.grant("analyst", "read")
+        client.close()
 
 
 if __name__ == "__main__":
