@@ -210,7 +210,7 @@ class CompositeSmokeTest(unittest.TestCase):
                 self.assertEqual(report.unchanged, [])
                 self.assertEqual(report.links_created, ["Order_customer"])
 
-                await self._grant_acl(client, query_url)
+                await self._grant_acl(client)
 
                 await client.models.land_instances(
                     [
@@ -247,36 +247,27 @@ class CompositeSmokeTest(unittest.TestCase):
             print(_dump_log("composite log", log_path), file=sys.stderr)
             raise
 
-    async def _grant_acl(self, client: AsyncClient, query_url: str) -> None:
-        """Grant the admin subject Read+Write on Customer/Order.
+    async def _grant_acl(self, client: AsyncClient) -> None:
+        """Grant the admin subject Read+Write on Customer/Order via the SDK.
 
         loom's ACL is deny-by-default even for the `admin` role: holding
         `ADMIN_ROLE` only gates `/admin/*` (`service_runtime::require_admin`) —
         it carries no implicit ACL grants, so a governed write (`POST
         /models/{type}`) or read (dataset preview) still 403s/404s without an
-        explicit grant. The pydantic SDK layer has no ACL admin surface (out of
-        scope for v1 — `client.admin` only wraps `define_model`/`define_link`),
-        so this one setup step drives the raw `/admin/roles*` HTTP endpoints
-        directly instead of going through the SDK. Both `Customer` and `Order`
-        already exist at this point (the preceding `apply()` created them) —
-        `POST /admin/roles/{role}/grants` 400s on an unknown type.
+        explicit grant. Both `Customer` and `Order` already exist at this point
+        (the preceding `apply()` created them) — a grant on an unknown type 400s.
+        This drives the SDK's `client.admin.roles` surface (the acceptance
+        criterion for road-python-sdk-acl-admin) rather than raw HTTP.
         """
-        headers = {"Authorization": f"Bearer {client._token}"}  # test-only, no public accessor
-        async with httpx.AsyncClient(base_url=query_url, headers=headers) as raw:
-            resp = await raw.post("/admin/roles", json={"role": ACL_ROLE})
-            assert resp.status_code == 201, f"create role: {resp.status_code} {resp.text}"
-            resp = await raw.put(f"/admin/users/{ADMIN_USERNAME}/roles/{ACL_ROLE}")
-            assert resp.status_code == 200, f"assign role: {resp.status_code} {resp.text}"
-            for action, type_name in (
-                ("write", "Customer"),
-                ("write", "Order"),
-                ("read", "Customer"),
-            ):
-                resp = await raw.post(
-                    f"/admin/roles/{ACL_ROLE}/grants",
-                    json={"action": action, "type": type_name},
-                )
-                assert resp.status_code == 201, f"grant {action} {type_name}: {resp.status_code} {resp.text}"
+        await client.admin.roles.create(ACL_ROLE)
+        await client.admin.roles.assign(ACL_ROLE, ADMIN_USERNAME)
+        for action, type_name in (("write", "Customer"), ("write", "Order"), ("read", "Customer")):
+            await client.admin.roles.grant(ACL_ROLE, action, type=type_name)
+
+        # Read-backs prove the writes landed through the same surface.
+        self.assertIn(ACL_ROLE, await client.admin.roles.assigned(ADMIN_USERNAME))
+        granted = {(g.action, g.type) for g in await client.admin.roles.grants(ACL_ROLE)}
+        self.assertEqual(granted, {("write", "Customer"), ("write", "Order"), ("read", "Customer")})
 
 
 if __name__ == "__main__":

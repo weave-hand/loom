@@ -137,3 +137,19 @@ class Preview:
     columns: list[str]
     rows: list[list[str]]
     sampled: bool
+
+
+@dataclass(frozen=True)
+class GrantEntry:
+    """One row of `client.admin.roles.grants(role)` (`GET /admin/roles/{r}/grants`).
+
+    Exactly one of `type`/`table` is non-`None`, matching the wire
+    `PolicyTarget` shape (`{"Type": name}` → `type`, `{"Table": {...}}` →
+    `table`). `action` is `"read"`/`"write"`; `effect` is `"allow"`/`"deny"`
+    (grants created via the admin surface are always `"allow"`).
+    """
+
+    action: str
+    effect: str
+    type: str | None
+    table: TableRef | None

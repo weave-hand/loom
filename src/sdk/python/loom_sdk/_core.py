@@ -14,6 +14,7 @@ from .models import (
     ColumnView,
     DatasetDetail,
     DatasetEntry,
+    GrantEntry,
     LandAck,
     LinkView,
     ModelLandAck,
@@ -391,6 +392,185 @@ def parse_define_model_ack(body: bytes) -> str:
     """Extract the type name from a `POST /admin/models` 201 response body."""
     data = json.loads(body)
     return str(data["name"])
+
+
+def grant_payload(action: str, type: str | None, table: tuple[str, str] | None) -> dict:
+    """Build the shared grant/revoke JSON body (`POST`/`DELETE .../grants`).
+
+    Exactly one of `type` (an ontology type name) or `table` (a
+    `(schema, name)` tuple) must be set — zero or both raises `ValueError`
+    before any request is built, mirroring the server's 400. `action` is
+    passed through verbatim (the server rejects anything but `read`/`write`).
+    """
+    if (type is None) == (table is None):
+        raise ValueError("exactly one of type or table must be set")
+    payload: dict = {"action": action}
+    if type is not None:
+        payload["type"] = type
+    else:
+        payload["table"] = {"schema": table[0], "name": table[1]}
+    return payload
+
+
+def parse_role_list(body: bytes) -> list[str]:
+    """Parse a `{"roles": [...]}` body (role list and user-role list share it)."""
+    data = json.loads(body)
+    return [str(role) for role in data["roles"]]
+
+
+def parse_create_role(body: bytes) -> str:
+    """Extract the role id from a `POST /admin/roles` 201 response body."""
+    data = json.loads(body)
+    return str(data["role"])
+
+
+def create_role_request(role: str) -> PreparedRequest:
+    """Build `POST /admin/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path="/admin/roles",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps({"role": role}).encode("utf-8"),
+    )
+
+
+def list_roles_request() -> PreparedRequest:
+    """Build `GET /admin/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET", service="query", path="/admin/roles", params={}, headers={}, content=None
+    )
+
+
+def delete_role_request(role: str) -> PreparedRequest:
+    """Build `DELETE /admin/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def assign_role_request(role: str, username: str) -> PreparedRequest:
+    """Build `PUT /admin/users/{username}/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="PUT",
+        service="query",
+        path=f"/admin/users/{username}/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def user_roles_request(username: str) -> PreparedRequest:
+    """Build `GET /admin/users/{username}/roles` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/admin/users/{username}/roles",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def unassign_role_request(role: str, username: str) -> PreparedRequest:
+    """Build `DELETE /admin/users/{username}/roles/{role}` (routed to the query service)."""
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/users/{username}/roles/{role}",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def grant_request(
+    role: str, action: str, type: str | None, table: tuple[str, str] | None
+) -> PreparedRequest:
+    """Build `POST /admin/roles/{role}/grants` (routed to the query service).
+
+    Exactly one of `type`/`table` — validated by `grant_payload`, which
+    raises `ValueError` before the request is built.
+    """
+    return PreparedRequest(
+        method="POST",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps(grant_payload(action, type, table)).encode("utf-8"),
+    )
+
+
+def grant_list_request(role: str) -> PreparedRequest:
+    """Build `GET /admin/roles/{role}/grants` (routed to the query service)."""
+    return PreparedRequest(
+        method="GET",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={},
+        content=None,
+    )
+
+
+def revoke_request(
+    role: str, action: str, type: str | None, table: tuple[str, str] | None
+) -> PreparedRequest:
+    """Build `DELETE /admin/roles/{role}/grants` (routed to the query service).
+
+    Same body as `grant_request`; revoking an absent grant is a server-side no-op.
+    """
+    return PreparedRequest(
+        method="DELETE",
+        service="query",
+        path=f"/admin/roles/{role}/grants",
+        params={},
+        headers={"Content-Type": "application/json"},
+        content=json.dumps(grant_payload(action, type, table)).encode("utf-8"),
+    )
+
+
+def parse_grants(body: bytes) -> list[GrantEntry]:
+    """Parse a `GET /admin/roles/{role}/grants` 200 response body.
+
+    Each grant's `target` is the `PolicyTarget` serde shape: `{"Type": name}`
+    or `{"Table": {"schema", "name"}}`. An unrecognized variant raises
+    `ValueError` naming the shape rather than guessing.
+    """
+    data = json.loads(body)
+    grants: list[GrantEntry] = []
+    for row in data["grants"]:
+        target = row["target"]
+        if "Type" in target:
+            grants.append(
+                GrantEntry(
+                    action=str(row["action"]),
+                    effect=str(row["effect"]),
+                    type=str(target["Type"]),
+                    table=None,
+                )
+            )
+        elif "Table" in target:
+            tbl = target["Table"]
+            grants.append(
+                GrantEntry(
+                    action=str(row["action"]),
+                    effect=str(row["effect"]),
+                    type=None,
+                    table=TableRef(schema=str(tbl["schema"]), name=str(tbl["name"])),
+                )
+            )
+        else:
+            raise ValueError(f"unrecognized grant target shape: {target!r}")
+    return grants
 
 
 def define_link_request(payload: dict) -> PreparedRequest:
