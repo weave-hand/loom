@@ -25,11 +25,11 @@ calls to the org repo — use the GitHub MCP tools there instead.
    `gh issue edit <N> --add-assignee @me && gh issue comment <N> --body "Claimed: $(date -u +%Y-%m-%dT%H:%M:%SZ)"`.
    Re-read the issue after claiming; if someone else's fresher `Claimed:`
    comment appears, back off and pick another. Then set the `loom v1` board
-   Status → In progress (option `47fc9ee4`; same two-mutation
-   `addProjectV2ItemById` + `updateProjectV2ItemFieldValue` pattern as in
-   loom-work-plan, project `PVT_kwDOEV2iVs4BeJ8b`, Status field
-   `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`). Cloud sessions skip board mutations
-   (Projects GraphQL unreachable) — assignment + comment are the claim.
+   Status → In progress: `tools/board-status.sh <N> 47fc9ee4` (the helper owns
+   the ProjectV2 mutation and its cloud/local egress; a cloud session reaches the
+   board with the ambient gh token via the `api.github.com` proxy bypass and
+   skips softly if that egress is blocked — assignment + comment remain the
+   authoritative claim regardless).
 3. **Work it through the rigid pipeline.** Create the branch with
    **`gh issue develop <N> --name <N>-<slug> --checkout`** (from up-to-date
    `main`) — NOT a bare `git switch -c`. `gh issue develop` registers the
@@ -77,22 +77,21 @@ calls to the org repo — use the GitHub MCP tools there instead.
    closes the issue even if this stays empty, but confirm at least one of the
    two is in place before calling the PR done.) Cloud sessions run the same
    check via the GitHub MCP PR tooling. Once the PR is open and the closing
-   link is confirmed, move the `loom v1` board Status → **In review** (option
-   `df73e18b`; same two-mutation `addProjectV2ItemById` +
-   `updateProjectV2ItemFieldValue` pattern as step 2, project
-   `PVT_kwDOEV2iVs4BeJ8b`, Status field `PVTSSF_lADOEV2iVs4BeJ8bzhYmQKk`) so the
-   item visibly parks in that column until merge — **nothing auto-populates it**
-   (the project's only board automation is merge/close → Done, so without this
-   step the item jumps In progress → Done and never shows In review). Cloud
-   sessions skip this (Projects GraphQL unreachable) — the next local session
-   reconciles. Record the landed capability in `docs/system-capabilities/` in
-   the same PR. If the work deferred anything new, file it as a labeled issue
+   link is confirmed, move the `loom v1` board Status → **In review**:
+   `tools/board-status.sh <N> df73e18b` — so the item visibly parks in that
+   column until merge. **Nothing auto-populates it** (the project's only board
+   automation is merge/close → Done, so without this step the item jumps In
+   progress → Done and never shows In review). The helper is fail-soft: a cloud
+   session reaches the board with the ambient gh token via the `api.github.com`
+   proxy bypass and skips softly if that egress is blocked (next local session
+   reconciles). Record the landed capability in `docs/system-capabilities/`
+   in the same PR. If the work deferred anything new, file it as a labeled issue
    (`idea` or `bug` + `area:<a>`) — but read the filing discipline below first.
 5. **Release** is automatic: merge closes the issue; confirm the board shows
-   Done (set option `98236657` if it didn't move). If you abandon before a
-   PR, unassign and say so:
+   Done (`tools/board-status.sh <N> 98236657` if it didn't move). If you abandon
+   before a PR, unassign and say so:
    `gh issue edit <N> --remove-assignee @me && gh issue comment <N> --body "Released"`
-   (and set the board back to Ready, `61e4505c`, when you can reach it).
+   (and `tools/board-status.sh <N> 61e4505c` to set the board back to Ready).
 
 ## The metric gate is a FIX step, not a reporting step
 
