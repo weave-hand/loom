@@ -229,9 +229,14 @@ spec/plan trees were migrated in #466 (their content is in git history).
   `api.github.com` NO_PROXY bypass the helper self-injects — and if that egress
   is blocked it skips softly so the next local session reconciles.
 - Query it like: `gh issue list --label roadmap --state open`,
-  `--label ready --no-assignee`, `--label "area:acl"`. Cloud sessions must
-  use the GitHub MCP tools (the git proxy 403s `gh` API calls to the org
-  repo; `ls-remote`/pushes still work).
+  `--label ready --no-assignee`, `--label "area:acl"`. Cloud sessions use the
+  GitHub MCP tools as the primary path (the App proxy 403s `gh` API calls to
+  `api.github.com`; `ls-remote`/pushes still work over the git lane). The same
+  `api.github.com` NO_PROXY bypass the board helper self-injects also makes `gh`
+  reach the whole REST/GraphQL API in cloud — prefix `NO_PROXY=api.github.com`
+  and pass `-R weave-hand/loom` (the `origin` remote points at the proxy) — which
+  is how a cloud session runs `gh issue develop` for the native issue→branch
+  link; MCP stays primary.
 
 ## Cell layout
 
