@@ -426,3 +426,46 @@ async fn mv_registration_racing_a_committing_cdc_declare_is_refused() {
         "the refused MV registration must have left no transform row"
     );
 }
+
+/// HOT-PATH PIN: a steady-state CDC append (to an already-declared CDC table) takes
+/// NO per-table advisory lock. Proof: hold `lock_key(src)` from a side transaction
+/// and show a second CDC append still completes. A first-declare would block here;
+/// a steady-state append reaches the `(Some, Some)` redeclare arm, which takes no
+/// lock and no longer runs the `pg_micro_batch_readers` scan.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn steady_state_cdc_append_takes_no_per_table_lock() {
+    use control_plane_postgres::iceberg_flush::lock_key;
+
+    let fx = PgFixture::shared();
+    let (_cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let wh = tempfile::tempdir().expect("warehouse");
+    let catalog = local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await;
+    let src = tref("s", "events");
+
+    // First declare (committed): this one DID take the lock, but it is released.
+    declare_cdc_via_land(&pool, &catalog, &src)
+        .await
+        .expect("first CDC declaration");
+
+    // Hold `lock_key(src)` from a side tx for the duration of the steady-state append.
+    let mut holder = pool.begin().await.expect("begin holder tx");
+    sqlx::query("select pg_advisory_xact_lock($1)")
+        .bind(lock_key(&src.schema, &src.name))
+        .execute(&mut *holder)
+        .await
+        .expect("holder takes lock_key(src)");
+
+    // The steady-state append must COMPLETE despite the held lock — if it took the
+    // lock it would block until `holder` ends. A generous timeout turns a
+    // regression (append started taking the lock) into a clean failure, not a hang.
+    let appended = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        declare_cdc_via_land(&pool, &catalog, &src),
+    )
+    .await
+    .expect("steady-state CDC append must not block on the per-table lock");
+    appended.expect("steady-state CDC append succeeds");
+
+    drop(holder.rollback().await);
+}
