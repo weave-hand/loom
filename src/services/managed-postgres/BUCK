@@ -73,3 +73,16 @@ loom_fixture_test(
         "//third-party:tokio",
     ],
 )
+
+loom_fixture_test(
+    name = "embedded-version-skew",
+    crate = "embedded_version_skew",
+    srcs = ["tests/embedded_version_skew.rs"],
+    crate_root = "tests/embedded_version_skew.rs",
+    edition = "2024",
+    deps = [
+        ":managed-postgres",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)

@@ -273,6 +273,31 @@ impl EmbeddedPg {
         Ok(())
     }
 
+    /// On adopt, refuse a Postgres *major*-version skew between the existing data
+    /// dir and the binary that would run it — a mismatch otherwise crashes the
+    /// postmaster cryptically. Fail-open: if either major is unparseable we do not
+    /// fabricate a mismatch (a false positive would brick a working deployment),
+    /// leaving today's behaviour. Major-only: same major ⇒ compatible on-disk format.
+    async fn check_version_compatibility(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
+        let raw = std::fs::read_to_string(cfg.data_dir.join("PG_VERSION"))?;
+        let Some(data_major) = pg_version_major(&raw) else {
+            return Ok(());
+        };
+        let out = pg_command(cfg.bin_dir.join("postgres"), &cfg.ld_library_path)
+            .arg("--version")
+            .output()
+            .await?;
+        let banner = String::from_utf8_lossy(&out.stdout);
+        let Some(binary_major) = parse_binary_major(&banner) else {
+            return Ok(());
+        };
+        if data_major == binary_major {
+            Ok(())
+        } else {
+            Err(EmbeddedPgError::VersionMismatch { data_major, binary_major })
+        }
+    }
+
     async fn run_initdb(cfg: &EmbeddedPgConfig) -> Result<(), EmbeddedPgError> {
         let out = pg_command(cfg.bin_dir.join("initdb"), &cfg.ld_library_path)
             .arg("-D")
@@ -392,7 +417,11 @@ impl EmbeddedPg {
         check_not_already_running(&cfg.data_dir)?;
 
         // Idempotent init: PG_VERSION present ⇒ adopt the existing cluster.
-        if !cfg.data_dir.join("PG_VERSION").exists() {
+        if cfg.data_dir.join("PG_VERSION").exists() {
+            // Adopting: refuse a major-version skew before spawn (clear error, no
+            // silent data loss). Automated pg_upgrade is out of scope.
+            Self::check_version_compatibility(&cfg).await?;
+        } else {
             Self::run_initdb(&cfg).await?;
         }
         let server = Self::spawn_postgres(&cfg)?;
