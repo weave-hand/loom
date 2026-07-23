@@ -4,7 +4,6 @@
 //! path. Plus the 422 (non-conforming), 403 (ACL deny), 403 (unknown type — no
 //! existence leak), and the infer-and-create paths.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,82 +20,13 @@ use control_plane_core::{
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
-use control_plane_postgres::iceberg_sql_catalog::{
-    SQL_CATALOG_PROP_URI, SQL_CATALOG_PROP_WAREHOUSE, SqlCatalogBuilder,
-};
+use e2e_support::{app_state, ipc_bytes, sample_batch};
 use http_body_util::BodyExt;
-use iceberg::CatalogBuilder;
-use iceberg::io::LocalFsStorageFactory;
 use ingest::http::{AppState, router};
-use ingest::landing::IcebergMaterializer;
 use service_runtime::{AuthState, generate_session_token, protect, token_sha256};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use tower::ServiceExt;
-
-/// A 2-row batch matching the `Thing` model: id: Int64 (required), name: Utf8.
-fn sample_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("name", DataType::Utf8, true),
-    ]));
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![1i64, 2])),
-            Arc::new(StringArray::from(vec!["a", "b"])),
-        ],
-    )
-    .unwrap()
-}
-
-/// Encode a batch as an Arrow IPC stream.
-fn ipc_bytes(batch: &RecordBatch) -> Vec<u8> {
-    let mut buf = Vec::new();
-    {
-        let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &batch.schema()).unwrap();
-        w.write(batch).unwrap();
-        w.finish().unwrap();
-    }
-    buf
-}
-
-/// Build an Iceberg-backed `AppState` over the fixture db + temp warehouse, returning
-/// the concrete `PgControlPlane` (needed for auth/ACL/ontology setup) and the pool.
-async fn app_state(
-    fx: &PgFixture,
-    db: &str,
-) -> (Arc<PgControlPlane>, PgPool, tempfile::TempDir, AppState) {
-    let pool = fx.pool_for(db).await;
-    let wh = tempfile::tempdir().unwrap();
-    let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), fx.pg_dsn(db));
-    props.insert(
-        SQL_CATALOG_PROP_WAREHOUSE.to_string(),
-        format!("file://{}", wh.path().display()),
-    );
-    let catalog = SqlCatalogBuilder::default()
-        .with_storage_factory(Arc::new(LocalFsStorageFactory))
-        .load("loom", props)
-        .await
-        .expect("catalog");
-    let pg = Arc::new(service_runtime::control_plane(
-        pool.clone(),
-        Duration::from_millis(300),
-    ));
-    let state = AppState {
-        materializer: Arc::new(IcebergMaterializer {
-            catalog: Arc::new(catalog),
-            pool: pool.clone(),
-            inline_byte_limit: 16 * 1024 * 1024,
-            flush_byte_threshold: 64 * 1024 * 1024,
-        }),
-        cp: pg.clone(),
-        pool: pool.clone(),
-        compact_small_file_bytes: 1 << 20,
-    };
-    (pg, pool, wh, state)
-}
 
 /// Wrap the router with the auth gate, exactly as the binary does.
 fn protected(state: AppState, pg: Arc<PgControlPlane>) -> Router {

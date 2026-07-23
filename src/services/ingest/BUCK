@@ -220,6 +220,7 @@ loom_fixture_test(
     crate_root = "tests/http_model.rs",
     deps = [
         ":ingest",
+        ":e2e-support",
         "//src/services/runtime:runtime",
         "//src/services/engine-serving:engine-serving",
         "//src/control-plane/core:core",
