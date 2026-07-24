@@ -2,7 +2,7 @@
 //! project filter, stable sort with a (schema,name) ascending tiebreak, and the
 //! order-preserving default (no sort param). No axum, no control plane.
 
-use query_api::dataset_list::{apply, DatasetListParams, DatasetSummary};
+use query_api::dataset_list::{DatasetListParams, DatasetSummary, apply};
 
 fn sum(schema: &str, name: &str, updated: &str, rows: Option<i64>) -> DatasetSummary {
     DatasetSummary {
@@ -17,31 +17,45 @@ fn sum(schema: &str, name: &str, updated: &str, rows: Option<i64>) -> DatasetSum
 }
 
 fn names(v: &[DatasetSummary]) -> Vec<String> {
-    v.iter().map(|d| format!("{}.{}", d.schema, d.name)).collect()
+    v.iter()
+        .map(|d| format!("{}.{}", d.schema, d.name))
+        .collect()
 }
 
 #[test]
 fn default_params_preserve_input_order() {
     // No sort param => order untouched (existing-caller compatibility).
     let p = DatasetListParams::from_params(&[]).unwrap();
-    let items = vec![sum("main", "zzz", "t2", Some(1)), sum("main", "aaa", "t1", Some(9))];
+    let items = vec![
+        sum("main", "zzz", "t2", Some(1)),
+        sum("main", "aaa", "t1", Some(9)),
+    ];
     assert_eq!(names(&apply(items, &p)), vec!["main.zzz", "main.aaa"]);
 }
 
 #[test]
 fn sort_name_asc_and_desc_case_insensitive() {
-    let items = || vec![
-        sum("main", "Zebra", "t", None),
-        sum("main", "apple", "t", None),
-        sum("main", "Mango", "t", None),
-    ];
+    let items = || {
+        vec![
+            sum("main", "Zebra", "t", None),
+            sum("main", "apple", "t", None),
+            sum("main", "Mango", "t", None),
+        ]
+    };
     let asc = DatasetListParams::from_params(&[("sort".into(), "name".into())]).unwrap();
-    assert_eq!(names(&apply(items(), &asc)), vec!["main.apple", "main.Mango", "main.Zebra"]);
+    assert_eq!(
+        names(&apply(items(), &asc)),
+        vec!["main.apple", "main.Mango", "main.Zebra"]
+    );
     let desc = DatasetListParams::from_params(&[
         ("sort".into(), "name".into()),
         ("dir".into(), "desc".into()),
-    ]).unwrap();
-    assert_eq!(names(&apply(items(), &desc)), vec!["main.Zebra", "main.Mango", "main.apple"]);
+    ])
+    .unwrap();
+    assert_eq!(
+        names(&apply(items(), &desc)),
+        vec!["main.Zebra", "main.Mango", "main.apple"]
+    );
 }
 
 #[test]
@@ -54,7 +68,8 @@ fn sort_rows_desc_orders_by_count_none_last() {
     let p = DatasetListParams::from_params(&[
         ("sort".into(), "rows".into()),
         ("dir".into(), "desc".into()),
-    ]).unwrap();
+    ])
+    .unwrap();
     // desc: 10, 3, then None (None is the smallest, so last in desc).
     assert_eq!(names(&apply(items, &p)), vec!["main.b", "main.a", "main.c"]);
 }
@@ -69,7 +84,8 @@ fn tiebreak_is_schema_name_ascending_regardless_of_dir() {
     let desc = DatasetListParams::from_params(&[
         ("sort".into(), "updated".into()),
         ("dir".into(), "desc".into()),
-    ]).unwrap();
+    ])
+    .unwrap();
     assert_eq!(names(&apply(items, &desc)), vec!["main.a", "main.b"]);
 }
 
@@ -107,9 +123,13 @@ fn last_occurrence_wins_for_repeated_sort() {
     let p = DatasetListParams::from_params(&[
         ("sort".into(), "name".into()),
         ("sort".into(), "rows".into()),
-    ]).unwrap();
+    ])
+    .unwrap();
     // rows wins; assert via behavior: rows asc puts smaller count first.
-    let items = vec![sum("m", "big", "t", Some(9)), sum("m", "small", "t", Some(1))];
+    let items = vec![
+        sum("m", "big", "t", Some(9)),
+        sum("m", "small", "t", Some(1)),
+    ];
     assert_eq!(names(&apply(items, &p)), vec!["m.small", "m.big"]);
 }
 
