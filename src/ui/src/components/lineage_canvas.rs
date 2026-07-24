@@ -19,41 +19,25 @@ pub struct LineageCanvasViewProps {
 pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
     let cls = css!(
         r#"
-        display: flex; flex-direction: column;
-        min-height: 320px;
+        display: flex; flex-direction: column; min-height: 320px; overflow: hidden;
         border: 1px solid var(--loom-border); border-radius: var(--loom-radius);
         background: var(--loom-panel);
-        overflow: hidden;
-
-        .head {
-            display: flex; align-items: center; justify-content: space-between;
-            gap: 8px; padding: 10px 12px;
-            border-bottom: 1px solid var(--loom-border);
-        }
+        .head { padding: 10px 12px; border-bottom: 1px solid var(--loom-border); }
         .caption { color: var(--loom-text-mut); font-size: 12px; }
-        .legend { display: flex; align-items: center; gap: 6px; color: var(--loom-text-mut); font-size: 11px; }
-        .dot { width: 9px; height: 9px; border-radius: 3px; background: var(--loom-panel-2);
-               border: 1px solid var(--loom-accent);
-               box-shadow: 0 0 0 3px color-mix(in srgb, var(--loom-accent) 16%, transparent); }
-
-        /* The canvas scrolls in both axes: a wide closure overflows horizontally and
-           a tall column overflows vertically, and this is the full-page surface, so
-           unlike the drawer mini-DAG both scrollbars are welcome. */
+        /* Both axes scroll — a wide closure overflows horizontally, a tall column
+           vertically; unlike the drawer mini-DAG both scrollbars are welcome here. */
         .scroll { flex: 1; overflow: auto; padding: 16px; }
         .canvas {
             position: relative; margin: 0 auto;
-            background: radial-gradient(#1b222b 1px, transparent 1px);
-            background-size: 24px 24px;
-            border: 1px solid var(--loom-border);
-            border-radius: var(--loom-radius);
+            background: radial-gradient(#1b222b 1px, transparent 1px); background-size: 24px 24px;
+            border: 1px solid var(--loom-border); border-radius: var(--loom-radius);
         }
         .wires { position: absolute; inset: 0; pointer-events: none; }
         .node {
             position: absolute; box-sizing: border-box;
             display: flex; align-items: center; justify-content: center;
-            padding: 0 12px; border-radius: 7px;
-            background: var(--loom-panel-2); border: 1px solid var(--loom-border);
-            color: var(--loom-text); font-size: 13px;
+            padding: 0 12px; border-radius: 7px; font-size: 13px;
+            background: var(--loom-panel-2); border: 1px solid var(--loom-border); color: var(--loom-text);
         }
         .node.current {
             border-color: var(--loom-accent);
@@ -73,11 +57,7 @@ pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
         .edges
         .iter()
         .map(|e| {
-            let stroke = if e.touches_current {
-                "var(--loom-accent)"
-            } else {
-                "#2d3640"
-            };
+            let stroke = if e.touches_current { "var(--loom-accent)" } else { "#2d3640" };
             html! {
                 <line x1={e.x1.to_string()} y1={e.y1.to_string()}
                       x2={e.x2.to_string()} y2={e.y2.to_string()}
@@ -91,11 +71,7 @@ pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
         .iter()
         .map(|n| {
             let style = format!("left:{}px; top:{}px; width:{}px; height:{}px;", n.x, n.y, n.w, n.h);
-            let class = if n.kind == NodeKind::Current {
-                "node current"
-            } else {
-                "node"
-            };
+            let class = if n.kind == NodeKind::Current { "node current" } else { "node" };
             html! {
                 <div class={class} style={style} title={n.id.clone()}>
                     <span class="lbl">{ n.label.clone() }</span>
@@ -108,7 +84,6 @@ pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
         <div class={cls}>
             <div class="head">
                 <span class="caption">{ format!("{up} upstream · {down} downstream") }</span>
-                <span class="legend"><span class="dot"></span>{ "this dataset" }</span>
             </div>
             <div class="scroll">
                 <div class="canvas" style={format!("width:{}px; height:{}px;", layout.width, layout.height)}>

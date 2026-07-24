@@ -242,15 +242,8 @@ fn gallery() -> Html {
                     <Panel title="Lineage">
                         <LineageCanvasView dag={lineage_dag(
                             ("finance", "transactions"),
-                            &[
-                                ("raw".into(), "card_events".into()),
-                                ("raw".into(), "fx_rates".into()),
-                            ],
-                            &[
-                                ("marts".into(), "revenue_daily".into()),
-                                ("marts".into(), "chargebacks".into()),
-                                ("marts".into(), "ledger".into()),
-                            ],
+                            &[("raw".into(), "card_events".into()), ("raw".into(), "fx_rates".into())],
+                            &[("marts".into(), "revenue_daily".into()), ("marts".into(), "ledger".into())],
                         )} />
                     </Panel>
                 </section>
