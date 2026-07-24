@@ -121,6 +121,10 @@ pub fn router(state: AppState) -> Router {
             get(get_lineage_downstream),
         )
         .route("/lineage/runs/:run_id/events", get(get_lineage_run_events))
+        .route(
+            "/lineage/datasets/:namespace/:name/runs",
+            get(get_lineage_dataset_runs),
+        )
         .route("/ontology/types", get(list_ontology_types))
         .route("/ontology/types/:name", get(get_ontology_type))
         .route("/datasets", get(list_datasets))
@@ -1717,5 +1721,63 @@ async fn get_lineage_run_events(
             }
         }
         Err(e) => lineage_visibility_error(crate::lineage_filter::LineageVisibilityError::Cp(e)),
+    }
+}
+
+/// List the lineage runs that touched a dataset, newest-first.
+///
+/// Per-dataset ACL-gated by seed readability (same predicate the `/lineage`
+/// closures use). A denied or unknown dataset returns an empty page, never a 404 —
+/// the endpoint is not a dataset-existence oracle. Paginated via `after`/`limit`.
+#[utoipa::path(
+    get, path = "/lineage/datasets/{namespace}/{name}/runs",
+    params(
+        ("namespace" = String, Path, description = "OpenLineage dataset namespace"),
+        ("name" = String, Path, description = "OpenLineage dataset name"),
+        ("after" = Option<String>, Query, description = "Opaque next-page cursor"),
+        ("limit" = Option<u32>, Query, description = "Max runs per page"),
+    ),
+    responses(
+        (status = 200, description = "Runs that touched the dataset (empty if unreadable/unknown)", body = crate::lineage_read::DatasetRunsResponse),
+        (status = 400, description = "Malformed limit"),
+        (status = 500, description = "Internal error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "lineage",
+)]
+async fn get_lineage_dataset_runs(
+    State(st): State<AppState>,
+    Path((namespace, name)): Path<(String, String)>,
+    Query(params): Query<Vec<(String, String)>>,
+    subject: Subject,
+) -> axum::response::Response {
+    let (reserved, _) = crate::query_params::split_reserved(params, &["after", "limit"]);
+    let after = reserved.last("after").map(String::from);
+    let limit = reserved.last("limit").map(String::from);
+    let page = match crate::lineage_read::parse_lineage_page(after, limit) {
+        Ok(p) => p,
+        Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let dataset = DatasetRef { namespace, name };
+    let vis = crate::dataset_acl::DatasetVisibility::new(
+        st.cp.acl(),
+        st.cp.ontology(),
+        st.naming.as_ref(),
+    );
+    match vis.is_readable(&subject.0, &dataset).await {
+        Ok(true) => {}
+        // Denied seed ≡ unknown seed: an empty page, never 404 (non-oracle),
+        // matching the closure reads' seed gating.
+        Ok(false) => {
+            return Json(crate::lineage_read::dataset_runs_body(
+                control_plane_core::Page::from_full(Vec::new()),
+            ))
+            .into_response();
+        }
+        Err(e) => return cp_read_error("dataset runs acl fault", e),
+    }
+    match st.cp.lineage().runs_for(&dataset, page).await {
+        Ok(page) => Json(crate::lineage_read::dataset_runs_body(page)).into_response(),
+        Err(e) => cp_read_error("dataset runs read fault", e),
     }
 }

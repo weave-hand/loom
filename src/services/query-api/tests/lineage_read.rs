@@ -1,9 +1,12 @@
 //! Pure unit tests for the lineage read DTOs + param/serialization helpers. No
 //! router, no Postgres — runs on remote execution.
 
-use control_plane_core::{Cursor, DatasetRef, EventType, LineageEvent, Page, PageReq, RunId};
+use control_plane_core::{
+    Cursor, DatasetRef, EventType, LineageEvent, Page, PageReq, RunId, RunRole, RunSummary,
+};
 use query_api::lineage_read::{
-    dataset_closure_body, event_type_str, lineage_event_view, parse_lineage_page, run_events_body,
+    dataset_closure_body, dataset_runs_body, event_type_str, lineage_event_view, parse_lineage_page,
+    run_events_body, run_role_str,
 };
 
 fn ds(ns: &str, name: &str) -> DatasetRef {
@@ -115,4 +118,53 @@ fn run_events_body_wraps_events_and_cursor() {
     let json = serde_json::to_value(run_events_body(page)).unwrap();
     assert_eq!(json["events"][0]["event_type"], "running");
     assert!(json["next_cursor"].is_null());
+}
+
+#[test]
+fn run_role_strings_cover_both_variants() {
+    assert_eq!(run_role_str(RunRole::Input), "input");
+    assert_eq!(run_role_str(RunRole::Output), "output");
+}
+
+#[test]
+fn dataset_runs_body_shapes_run_time_type_role_and_cursor() {
+    let page = Page {
+        items: vec![
+            RunSummary {
+                run_id: RunId(uuid::Uuid::nil()),
+                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_010).unwrap(),
+                latest_event_type: EventType::Complete,
+                role: RunRole::Input,
+            },
+            RunSummary {
+                run_id: RunId(uuid::Uuid::nil()),
+                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+                latest_event_type: EventType::Fail,
+                role: RunRole::Output,
+            },
+        ],
+        next: Some(Cursor("nc".to_string())),
+    };
+    let json = serde_json::to_value(dataset_runs_body(page)).unwrap();
+    assert_eq!(json["runs"][0]["run_id"], "00000000-0000-0000-0000-000000000000");
+    assert_eq!(json["runs"][0]["role"], "input");
+    assert_eq!(json["runs"][0]["latest_event_type"], "complete");
+    assert!(
+        json["runs"][0]["latest_event_time"].as_str().unwrap().contains('T'),
+        "rfc3339 time"
+    );
+    assert_eq!(json["runs"][1]["role"], "output");
+    assert_eq!(json["runs"][1]["latest_event_type"], "fail");
+    assert_eq!(json["next_cursor"], "nc");
+}
+
+#[test]
+fn dataset_runs_body_last_page_has_null_cursor() {
+    let page: Page<RunSummary> = Page {
+        items: vec![],
+        next: None,
+    };
+    let json = serde_json::to_value(dataset_runs_body(page)).unwrap();
+    assert!(json["next_cursor"].is_null());
+    assert_eq!(json["runs"].as_array().unwrap().len(), 0);
 }

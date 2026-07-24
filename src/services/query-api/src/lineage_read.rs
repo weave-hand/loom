@@ -4,7 +4,9 @@
 //! or Postgres: the response shapes, the `after`/`limit` -> `PageReq` parse, and
 //! the `Page<T>` -> JSON serialization.
 
-use control_plane_core::{Cursor, DatasetRef, EventType, LineageEvent, Page, PageReq};
+use control_plane_core::{
+    Cursor, DatasetRef, EventType, LineageEvent, Page, PageReq, RunRole, RunSummary,
+};
 use utoipa::ToSchema;
 
 /// One provenance node: an OpenLineage `{namespace, name}` dataset identity.
@@ -119,6 +121,57 @@ pub fn run_events_body(page: Page<LineageEvent>) -> RunEventsResponse {
     let next_cursor = page.next.map(|c| c.0);
     RunEventsResponse {
         events: page.items.into_iter().map(lineage_event_view).collect(),
+        next_cursor,
+    }
+}
+
+/// Stable string tag for a run role (matches the adapter's own encoding).
+#[must_use]
+pub fn run_role_str(r: RunRole) -> &'static str {
+    match r {
+        RunRole::Input => "input",
+        RunRole::Output => "output",
+    }
+}
+
+/// One run that touched a dataset: the run id, its latest event's RFC3339 time and
+/// string-tagged type, and the matched role (`input`/`output`).
+#[derive(serde::Serialize, ToSchema)]
+pub struct DatasetRunView {
+    pub run_id: String,
+    pub latest_event_time: String,
+    pub latest_event_type: String,
+    pub role: String,
+}
+
+/// Response for the per-dataset runs read.
+#[derive(serde::Serialize, ToSchema)]
+pub struct DatasetRunsResponse {
+    pub runs: Vec<DatasetRunView>,
+    pub next_cursor: Option<String>,
+}
+
+/// Serialize one run summary into its view DTO (RFC3339 time, string tags).
+#[must_use]
+pub fn dataset_run_view(s: RunSummary) -> DatasetRunView {
+    let latest_event_time = s
+        .latest_event_time
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    DatasetRunView {
+        run_id: s.run_id.0.to_string(),
+        latest_event_time,
+        latest_event_type: event_type_str(s.latest_event_type).to_string(),
+        role: run_role_str(s.role).to_string(),
+    }
+}
+
+/// Serialize a per-dataset runs page into its response DTO.
+#[must_use]
+pub fn dataset_runs_body(page: Page<RunSummary>) -> DatasetRunsResponse {
+    let next_cursor = page.next.map(|c| c.0);
+    DatasetRunsResponse {
+        runs: page.items.into_iter().map(dataset_run_view).collect(),
         next_cursor,
     }
 }

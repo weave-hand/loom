@@ -275,6 +275,7 @@ pub struct DatasetPreviewResponse {
         crate::http::get_lineage_upstream,
         crate::http::get_lineage_downstream,
         crate::http::get_lineage_run_events,
+        crate::http::get_lineage_dataset_runs,
         crate::http::list_ontology_types,
         crate::http::get_ontology_type,
         crate::http::list_datasets,
@@ -309,6 +310,8 @@ pub struct DatasetPreviewResponse {
         crate::lineage_read::DatasetClosureResponse,
         crate::lineage_read::LineageEventView,
         crate::lineage_read::RunEventsResponse,
+        crate::lineage_read::DatasetRunView,
+        crate::lineage_read::DatasetRunsResponse,
     ))
 )]
 pub struct ApiDoc;
