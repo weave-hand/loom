@@ -104,110 +104,127 @@ fn line_cols(chars: &[char]) -> Vec<(u32, u32)> {
     out
 }
 
+/// Index just past a `delim`-quoted span whose opening `delim` is at `i`; a
+/// doubled delimiter (`''` / `""`) is an escape, not a terminator. Returns the
+/// input length if the span is unterminated.
+fn scan_quoted_span(chars: &[char], i: usize, delim: char) -> usize {
+    let n = chars.len();
+    let mut j = i + 1;
+    while j < n {
+        if chars.get(j).copied() == Some(delim) {
+            if chars.get(j + 1).copied() == Some(delim) {
+                j += 2;
+                continue;
+            }
+            return j + 1;
+        }
+        j += 1;
+    }
+    j
+}
+
+/// Index just past a `-- ...` line comment whose `--` starts at `i` (stops at the
+/// newline, which the caller then treats as whitespace).
+fn scan_line_comment(chars: &[char], i: usize) -> usize {
+    let n = chars.len();
+    let mut j = i + 2;
+    while j < n && chars.get(j).copied() != Some('\n') {
+        j += 1;
+    }
+    j
+}
+
+/// Index just past a `/* ... */` block comment whose `/*` starts at `i`.
+fn scan_block_comment(chars: &[char], i: usize) -> usize {
+    let n = chars.len();
+    let mut j = i + 2;
+    while j < n && !(chars.get(j).copied() == Some('*') && chars.get(j + 1).copied() == Some('/')) {
+        j += 1;
+    }
+    (j + 2).min(n)
+}
+
+/// Index just past an identifier `[A-Za-z_][A-Za-z0-9_]*` whose first char is at `i`.
+fn scan_ident(chars: &[char], i: usize) -> usize {
+    let n = chars.len();
+    let mut j = i + 1;
+    while j < n && chars.get(j).copied().is_some_and(is_ident_cont) {
+        j += 1;
+    }
+    j
+}
+
+/// Classify a single punctuation char into its token kind.
+fn punct_kind(c: char) -> TokKind {
+    match c {
+        '(' => TokKind::LParen,
+        ')' => TokKind::RParen,
+        ',' => TokKind::Comma,
+        '.' => TokKind::Dot,
+        _ => TokKind::Other,
+    }
+}
+
+/// Build a token spanning `chars[s..end]` at the 1-based `(line, col)` position.
+fn make_token(chars: &[char], kind: TokKind, s: usize, end: usize, pos: (u32, u32)) -> Token {
+    let text: String = chars.get(s..end).unwrap_or_default().iter().collect();
+    Token {
+        kind,
+        text,
+        line: pos.0,
+        col: pos.1,
+    }
+}
+
 /// Lex `text` into significant tokens, dropping whitespace, `--` line comments,
-/// `/* */` block comments, and `'...'` string literals.
+/// `/* */` block comments, and `'...'` string literals. Inner scans are delegated
+/// to `scan_*` helpers so this stays a flat dispatch loop.
 fn tokenize(text: &str) -> Vec<Token> {
     let chars: Vec<char> = text.chars().collect();
     let pos = line_cols(&chars);
     let n = chars.len();
     let mut tokens = Vec::new();
     let mut i = 0usize;
-
-    let at = |k: usize| chars.get(k).copied();
     let start_pos = |k: usize| pos.get(k).copied().unwrap_or((1, 1));
 
     while i < n {
-        let Some(c) = at(i) else { break };
+        let Some(c) = chars.get(i).copied() else {
+            break;
+        };
+        let next = chars.get(i + 1).copied();
 
         if c.is_whitespace() {
             i += 1;
-            continue;
-        }
-        if c == '-' && at(i + 1) == Some('-') {
-            i += 2;
-            while i < n && at(i) != Some('\n') {
-                i += 1;
-            }
-            continue;
-        }
-        if c == '/' && at(i + 1) == Some('*') {
-            i += 2;
-            while i < n && !(at(i) == Some('*') && at(i + 1) == Some('/')) {
-                i += 1;
-            }
-            i = (i + 2).min(n);
-            continue;
-        }
-        if c == '\'' {
-            i += 1;
-            while i < n {
-                if at(i) == Some('\'') {
-                    if at(i + 1) == Some('\'') {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            continue;
-        }
-        if c == '"' {
-            let s = i;
-            i += 1;
-            while i < n {
-                if at(i) == Some('"') {
-                    if at(i + 1) == Some('"') {
-                        i += 2;
-                        continue;
-                    }
-                    i += 1;
-                    break;
-                }
-                i += 1;
-            }
-            let (line, col) = start_pos(s);
-            let text: String = chars.get(s..i).unwrap_or_default().iter().collect();
+        } else if c == '-' && next == Some('-') {
+            i = scan_line_comment(&chars, i);
+        } else if c == '/' && next == Some('*') {
+            i = scan_block_comment(&chars, i);
+        } else if c == '\'' {
+            i = scan_quoted_span(&chars, i, '\'');
+        } else if c == '"' {
+            let end = scan_quoted_span(&chars, i, '"');
+            tokens.push(make_token(
+                &chars,
+                TokKind::QuotedIdent,
+                i,
+                end,
+                start_pos(i),
+            ));
+            i = end;
+        } else if is_ident_start(c) {
+            let end = scan_ident(&chars, i);
+            tokens.push(make_token(&chars, TokKind::Ident, i, end, start_pos(i)));
+            i = end;
+        } else {
+            let (line, col) = start_pos(i);
             tokens.push(Token {
-                kind: TokKind::QuotedIdent,
-                text,
+                kind: punct_kind(c),
+                text: c.to_string(),
                 line,
                 col,
             });
-            continue;
-        }
-        if is_ident_start(c) {
-            let s = i;
             i += 1;
-            while i < n && at(i).is_some_and(is_ident_cont) {
-                i += 1;
-            }
-            let (line, col) = start_pos(s);
-            let text: String = chars.get(s..i).unwrap_or_default().iter().collect();
-            tokens.push(Token {
-                kind: TokKind::Ident,
-                text,
-                line,
-                col,
-            });
-            continue;
         }
-        let kind = match c {
-            '(' => TokKind::LParen,
-            ')' => TokKind::RParen,
-            ',' => TokKind::Comma,
-            '.' => TokKind::Dot,
-            _ => TokKind::Other,
-        };
-        let (line, col) = start_pos(i);
-        tokens.push(Token {
-            kind,
-            text: c.to_string(),
-            line,
-            col,
-        });
-        i += 1;
     }
     tokens
 }
