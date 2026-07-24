@@ -20,7 +20,9 @@ use loom_ui_core::{
     run_action_effect, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use stylist::yew::styled_component;
 use surfaces::{
     CatalogControls, CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList,
@@ -50,6 +52,80 @@ fn app() -> Html {
         };
     }
     html! { <Login on_login={Callback::from({ let token = token.clone(); move |t: String| { session::store(&t); token.set(Some(t)); } })} /> }
+}
+
+/// Fetch the dataset list for `query` and commit it under the generation guard:
+/// the response is applied only if `catalog_gen` has not advanced since this fetch
+/// was spawned (so an out-of-order arrival can't stale the list). On an unfiltered
+/// load (`project_is_all`) the project chip options are refreshed from the result.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mechanical extraction of the load-effect's closure captures; each param is a distinct piece of Yew state the async body needs (#619)"
+)]
+fn spawn_catalog_load(
+    datasets: UseStateHandle<Vec<DatasetRow>>,
+    catalog_status: UseStateHandle<LoadStatus>,
+    catalog_all_projects: UseStateHandle<Vec<String>>,
+    catalog_gen: Rc<RefCell<FetchGeneration>>,
+    token: String,
+    on_logout: Callback<()>,
+    query: String,
+    project_is_all: bool,
+) {
+    let my_gen = catalog_gen.borrow_mut().bump();
+    wasm_bindgen_futures::spawn_local(async move {
+        match net::fetch_datasets(&net::api_base(), &token, &query).await {
+            Ok(d) => {
+                if catalog_gen.borrow().is_current(my_gen) {
+                    if project_is_all {
+                        catalog_all_projects.set(distinct_projects(&d));
+                    }
+                    datasets.set(d);
+                    catalog_status.set(LoadStatus::Idle);
+                }
+            }
+            Err(FetchError::Unauthorized) => on_logout.emit(()),
+            Err(e) => {
+                if catalog_gen.borrow().is_current(my_gen) {
+                    catalog_status.set(LoadStatus::Error(e.to_string()));
+                }
+            }
+        }
+    });
+}
+
+/// The three Catalog controls-bar callbacks. Each sets its control's state and clears
+/// the drawer selection — reordering/filtering shifts row indices, so a stale index
+/// could point at the wrong dataset once the next fetch lands.
+fn catalog_control_callbacks(
+    catalog_sort: UseStateHandle<DatasetSort>,
+    catalog_dir: UseStateHandle<CatalogSortDir>,
+    catalog_project: UseStateHandle<Option<String>>,
+    selected_dataset: UseStateHandle<Option<usize>>,
+) -> (
+    Callback<DatasetSort>,
+    Callback<CatalogSortDir>,
+    Callback<Option<String>>,
+) {
+    let on_sort = {
+        let selected_dataset = selected_dataset.clone();
+        Callback::from(move |s: DatasetSort| {
+            catalog_sort.set(s);
+            selected_dataset.set(None);
+        })
+    };
+    let on_dir = {
+        let selected_dataset = selected_dataset.clone();
+        Callback::from(move |d: CatalogSortDir| {
+            catalog_dir.set(d);
+            selected_dataset.set(None);
+        })
+    };
+    let on_project = Callback::from(move |p: Option<String>| {
+        catalog_project.set(p);
+        selected_dataset.set(None);
+    });
+    (on_sort, on_dir, on_project)
 }
 
 #[derive(Properties, PartialEq)]
@@ -162,27 +238,16 @@ fn workspace(props: &WorkspaceProps) -> Html {
         use_effect_with((sort, dir, project.clone()), move |(sort, dir, project)| {
             catalog_status.set(LoadStatus::Loading);
             let query = loom_ui_core::dataset_list_query(*sort, *dir, project.as_deref());
-            let project_is_all = project.is_none();
-            let my_gen = catalog_gen.borrow_mut().bump();
-            wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_datasets(&net::api_base(), &token, &query).await {
-                    Ok(d) => {
-                        if catalog_gen.borrow().is_current(my_gen) {
-                            if project_is_all {
-                                catalog_all_projects.set(distinct_projects(&d));
-                            }
-                            datasets.set(d);
-                            catalog_status.set(LoadStatus::Idle);
-                        }
-                    }
-                    Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    Err(e) => {
-                        if catalog_gen.borrow().is_current(my_gen) {
-                            catalog_status.set(LoadStatus::Error(e.to_string()));
-                        }
-                    }
-                }
-            });
+            spawn_catalog_load(
+                datasets,
+                catalog_status,
+                catalog_all_projects,
+                catalog_gen,
+                token,
+                on_logout,
+                query,
+                project.is_none(),
+            );
             || ()
         });
     }
@@ -568,30 +633,12 @@ fn workspace(props: &WorkspaceProps) -> Html {
             // Control-change callbacks also reset `selected_dataset`: reordering or
             // filtering the list shifts row indices, so a stale selection index could
             // point at the wrong dataset (or none) after the next fetch lands.
-            let on_sort = {
-                let catalog_sort = catalog_sort.clone();
-                let selected_dataset = selected_dataset.clone();
-                Callback::from(move |s: DatasetSort| {
-                    catalog_sort.set(s);
-                    selected_dataset.set(None);
-                })
-            };
-            let on_dir = {
-                let catalog_dir = catalog_dir.clone();
-                let selected_dataset = selected_dataset.clone();
-                Callback::from(move |d: CatalogSortDir| {
-                    catalog_dir.set(d);
-                    selected_dataset.set(None);
-                })
-            };
-            let on_project = {
-                let catalog_project = catalog_project.clone();
-                let selected_dataset = selected_dataset.clone();
-                Callback::from(move |p: Option<String>| {
-                    catalog_project.set(p);
-                    selected_dataset.set(None);
-                })
-            };
+            let (on_sort, on_dir, on_project) = catalog_control_callbacks(
+                catalog_sort.clone(),
+                catalog_dir.clone(),
+                catalog_project.clone(),
+                selected_dataset.clone(),
+            );
             let list = html! {
                 <>
                     <CatalogControls

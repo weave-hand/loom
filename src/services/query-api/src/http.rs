@@ -23,7 +23,7 @@ use axum::response::{IntoResponse, Json};
 use axum::routing::{get, post};
 use control_plane_core::{
     ActionKind, ControlPlane, ControlPlaneError, Cursor, DatasetRef, DerivedPropertyDef,
-    GC_JOB_KIND, LinkDef, NewJob, PageReq, RunId, TableRef, TypeName, VectorIndexDef,
+    GC_JOB_KIND, LinkDef, NewJob, PageReq, RunId, SubjectId, TableRef, TypeName, VectorIndexDef,
 };
 use lineage_naming::LineageNaming;
 use service_runtime::Subject;
@@ -318,23 +318,42 @@ async fn list_datasets(
         Ok(p) => p,
         Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
     };
-    let catalog = st.cp.catalog();
-    let page = match catalog.list_tables(PageReq::unbounded()).await {
-        Ok(p) => p,
-        Err(e) => return internal_error("catalog list_tables fault", e),
+    let mut datasets = match collect_table_summaries(&st, &subject.0).await {
+        Ok(d) => d,
+        Err(r) => return r,
     };
+    match collect_view_summaries(&st, &subject.0).await {
+        Ok(mut v) => datasets.append(&mut v),
+        Err(r) => return r,
+    }
+    let ordered = crate::dataset_list::apply(datasets, &list_params);
+    let out: Vec<serde_json::Value> = ordered.iter().map(|d| d.to_json()).collect();
+    Json(serde_json::json!({ "datasets": out })).into_response()
+}
+
+/// Collect the ACL-readable physical tables as `DatasetSummary`s (best-effort
+/// `updated`/`rows`, exactly as the inline loop did). An ACL or catalog fault
+/// short-circuits to the 500 response.
+async fn collect_table_summaries(
+    st: &AppState,
+    subject: &SubjectId,
+) -> Result<Vec<crate::dataset_list::DatasetSummary>, axum::response::Response> {
+    let catalog = st.cp.catalog();
     let vis = crate::dataset_acl::DatasetVisibility::new(
         st.cp.acl(),
         st.cp.ontology(),
         st.naming.as_ref(),
     );
-    let mut datasets: Vec<crate::dataset_list::DatasetSummary> =
-        Vec::with_capacity(page.items.len());
+    let page = catalog
+        .list_tables(PageReq::unbounded())
+        .await
+        .map_err(|e| internal_error("catalog list_tables fault", e))?;
+    let mut out = Vec::with_capacity(page.items.len());
     for t in &page.items {
-        match vis.is_table_readable(&subject.0, t).await {
+        match vis.is_table_readable(subject, t).await {
             Ok(true) => {}
             Ok(false) => continue,
-            Err(e) => return internal_error("catalog dataset acl fault", e),
+            Err(e) => return Err(internal_error("catalog dataset acl fault", e)),
         }
         // Best-effort: a table with no readable snapshot renders "" / null rows.
         let (updated, rows) = match catalog.current_snapshot(t).await {
@@ -349,7 +368,7 @@ async fn list_datasets(
             }
             Err(_) => (String::new(), None),
         };
-        datasets.push(crate::dataset_list::DatasetSummary {
+        out.push(crate::dataset_list::DatasetSummary {
             schema: t.schema.clone(),
             name: t.name.clone(),
             project: t.schema.clone(),
@@ -359,19 +378,33 @@ async fn list_datasets(
             base: None,
         });
     }
-    // Views share the (schema, name) namespace and gate identically to a physical
-    // table (`is_table_readable` already resolves a view ref: Table grant on the view
-    // OR a type bound to it). Their `updated` delegates through `current_snapshot` to
-    // the base, mirroring the physical loop's best-effort posture.
-    let views = match catalog.list_views(PageReq::unbounded()).await {
-        Ok(p) => p,
-        Err(e) => return internal_error("catalog list_views fault", e),
-    };
+    Ok(out)
+}
+
+/// Collect the ACL-readable views as `DatasetSummary`s. A view gates identically to
+/// a physical table (`is_table_readable` resolves a view ref); `updated` delegates
+/// through `current_snapshot` to the base, `rows` is `null`, and `base` carries the
+/// physical `{schema,name}`.
+async fn collect_view_summaries(
+    st: &AppState,
+    subject: &SubjectId,
+) -> Result<Vec<crate::dataset_list::DatasetSummary>, axum::response::Response> {
+    let catalog = st.cp.catalog();
+    let vis = crate::dataset_acl::DatasetVisibility::new(
+        st.cp.acl(),
+        st.cp.ontology(),
+        st.naming.as_ref(),
+    );
+    let views = catalog
+        .list_views(PageReq::unbounded())
+        .await
+        .map_err(|e| internal_error("catalog list_views fault", e))?;
+    let mut out = Vec::with_capacity(views.items.len());
     for v in &views.items {
-        match vis.is_table_readable(&subject.0, &v.view).await {
+        match vis.is_table_readable(subject, &v.view).await {
             Ok(true) => {}
             Ok(false) => continue,
-            Err(e) => return internal_error("catalog dataset acl fault", e),
+            Err(e) => return Err(internal_error("catalog dataset acl fault", e)),
         }
         let updated = match catalog.current_snapshot(&v.view).await {
             Ok(s) => s
@@ -380,7 +413,7 @@ async fn list_datasets(
                 .unwrap_or_default(),
             Err(_) => String::new(),
         };
-        datasets.push(crate::dataset_list::DatasetSummary {
+        out.push(crate::dataset_list::DatasetSummary {
             schema: v.view.schema.clone(),
             name: v.view.name.clone(),
             project: v.view.schema.clone(),
@@ -390,9 +423,7 @@ async fn list_datasets(
             base: Some((v.base.schema.clone(), v.base.name.clone())),
         });
     }
-    let ordered = crate::dataset_list::apply(datasets, &list_params);
-    let out: Vec<serde_json::Value> = ordered.iter().map(|d| d.to_json()).collect();
-    Json(serde_json::json!({ "datasets": out })).into_response()
+    Ok(out)
 }
 
 /// Dataset detail: the table's snapshot (current, or the `?as_of`/`?as_of_snapshot`
