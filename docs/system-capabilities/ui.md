@@ -89,6 +89,18 @@ the Yew view glue is browser-verified. The shared `Shell` also gained a **resiza
 persisted drawer** (left-edge drag handle, width clamp, localStorage) that every
 surface inherits.
 
+The Catalog drawer's **Lineage tab** now opens a real **full-canvas lineage view**
+(#615). Its "Open full view ↗" button previously swapped in a `LineageFullStub`
+placeholder; it now renders `LineageCanvasView` — the same producer → current →
+consumer DAG as the compact mini-DAG, but at a generous full-page scale with a
+header caption and both-axis scrolling. Both views share one source of geometry: the
+pure, `rust_test`'d `loom_ui_core::lineage_layout` (`:lineage-layout`), which the
+mini-DAG renders at `MINI` scale and the canvas at `CANVAS` scale — so the pixel
+layout (column grouping, non-empty-column slotting, vertical centering, edge
+endpoints, current-node accenting) is unit-tested once and never duplicated across
+the two component files. No backend change: the view is driven by the
+upstream/downstream closures already fetched for the drawer.
+
 ## How it's built, served, and tested
 
 The crate lives inside `//src/...`, so CI and the strict pedantic/restriction

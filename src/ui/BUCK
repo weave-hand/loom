@@ -9,7 +9,7 @@ load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "ui-core",
     crate = "loom_ui_core",
-    srcs = ["src/lib.rs", "src/completion.rs", "src/transforms.rs"],
+    srcs = ["src/lib.rs", "src/completion.rs", "src/transforms.rs", "src/lineage_layout.rs"],
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
@@ -86,6 +86,15 @@ rust_test(
     crate = "lineage_dag",
     srcs = ["tests/lineage_dag.rs"],
     crate_root = "tests/lineage_dag.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "lineage-layout",
+    crate = "lineage_layout",
+    srcs = ["tests/lineage_layout.rs"],
+    crate_root = "tests/lineage_layout.rs",
     edition = "2024",
     deps = [":ui-core"],
 )

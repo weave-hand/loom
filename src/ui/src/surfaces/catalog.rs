@@ -7,7 +7,7 @@
 
 use super::ontology::LoadStatus;
 use loom_ui_components::{
-    Button, Column, DataTable, LineageDagView, LineageFullStub, Panel, TabItem, TableRow, Tabs,
+    Button, Column, DataTable, LineageCanvasView, LineageDagView, Panel, TabItem, TableRow, Tabs,
 };
 use loom_ui_core::{
     Align, ButtonVariant, CatalogSortDir, DatasetDetail, DatasetRow, DatasetSort, LineageDag,
@@ -348,9 +348,9 @@ fn preview_body(preview: Option<&PreviewData>, loading: bool, error: Option<&str
 }
 
 /// The Lineage tab: the three-column mini-DAG plus an "Open full view ↗" button that
-/// swaps in the deferred full-canvas stub. The upstream/downstream counts (derived
-/// from the DAG's column-0 / column-2 nodes) ride above as a caption. While the
-/// closures are still loading, a "Loading…" line.
+/// swaps in the full-canvas view (`LineageCanvasView`). The upstream/downstream counts
+/// (derived from the DAG's column-0 / column-2 nodes) ride above as a caption. While
+/// the closures are still loading, a "Loading…" line.
 fn lineage_body(dag: Option<&LineageDag>, show_full: bool, on_toggle: &Callback<()>) -> Html {
     let Some(dag) = dag else {
         return html! { <p class="empty">{ "Loading…" }</p> };
@@ -367,7 +367,7 @@ fn lineage_body(dag: Option<&LineageDag>, show_full: bool, on_toggle: &Callback<
                         { "← Back to mini-DAG" }
                     </Button>
                 </div>
-                <LineageFullStub />
+                <LineageCanvasView dag={dag.clone()} />
             </>
         };
     }

@@ -5,8 +5,9 @@
 )]
 
 use loom_ui_components::{
-    Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, LineageDagView, NavItem,
-    Panel, Shell, SqlEditor, StatusDot, StubView, TabItem, TableRow, Tabs, TopNav,
+    Badge, Button, Column, DataTable, GlobalStyles, Input, InputKind, LineageCanvasView,
+    LineageDagView, NavItem, Panel, Shell, SqlEditor, StatusDot, StubView, TabItem, TableRow, Tabs,
+    TopNav,
 };
 use loom_ui_core::{
     Align, BadgeTone, ButtonVariant, CompletionColumn, CompletionSchema, CompletionTable, Status,
@@ -233,6 +234,16 @@ fn gallery() -> Html {
                                 ("marts".into(), "chargebacks".into()),
                                 ("marts".into(), "ledger".into()),
                             ],
+                        )} />
+                    </Panel>
+                </section>
+                <section>
+                    <h2>{ "Lineage full-canvas" }</h2>
+                    <Panel title="Lineage">
+                        <LineageCanvasView dag={lineage_dag(
+                            ("finance", "transactions"),
+                            &[("raw".into(), "card_events".into()), ("raw".into(), "fx_rates".into())],
+                            &[("marts".into(), "revenue_daily".into()), ("marts".into(), "ledger".into())],
                         )} />
                     </Panel>
                 </section>
