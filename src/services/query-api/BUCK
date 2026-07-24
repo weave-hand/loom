@@ -267,6 +267,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "dataset-preview-governed-e2e",
+    crate = "dataset_preview_governed_e2e",
+    srcs = ["tests/dataset_preview_governed_e2e.rs"],
+    crate_root = "tests/dataset_preview_governed_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "view-read-e2e",
     crate = "view_read_e2e",
     srcs = ["tests/view_read_e2e.rs"],
