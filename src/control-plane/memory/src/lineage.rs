@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use control_plane_core::{
-    DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId, check_depth,
-    decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
+    DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId, RunRole, RunSummary,
+    check_depth, decode_dataset_cursor, decode_event_cursor, decode_run_cursor,
+    encode_dataset_cursor, encode_event_cursor, encode_run_cursor,
 };
 
 use crate::MemoryControlPlane;
@@ -11,6 +12,15 @@ use crate::MemoryControlPlane;
 #[derive(Default)]
 pub(crate) struct LineageState {
     pub(crate) events: Vec<LineageEvent>,
+}
+
+/// Per-run accumulator for `runs_for`: the newest matched event's key/time/type and
+/// whether any matched edge was an output (the role).
+struct RunAcc {
+    max_idx: i64,
+    latest_event_time: time::OffsetDateTime,
+    latest_event_type: control_plane_core::EventType,
+    has_output: bool,
 }
 
 /// Which way to walk the per-event input/output co-membership graph.
@@ -133,5 +143,65 @@ impl Lineage for MemoryControlPlane {
         check_depth(depth)?;
         let set = closure(&self.lineage.lock().events, dataset, depth, Dir::Downstream);
         paginate_datasets(set, &page)
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn runs_for(&self, dataset: &DatasetRef, page: PageReq) -> Result<Page<RunSummary>> {
+        let after = page.after.as_ref().map(decode_run_cursor).transpose()?;
+        let lin = self.lineage.lock();
+        // Per-run collapse over the append-only event vec (index = stable key,
+        // mirrors postgres's monotonic event_id). For each run touching the dataset:
+        // the max index supplies time+type; role is Output if any matched edge across
+        // the run's matched events was an output.
+        let mut per_run: HashMap<RunId, RunAcc> = HashMap::new();
+        for (i, e) in lin.events.iter().enumerate() {
+            let idx = i64::try_from(i).unwrap_or(i64::MAX);
+            let is_input = e.inputs.contains(dataset);
+            let is_output = e.outputs.contains(dataset);
+            if !is_input && !is_output {
+                continue;
+            }
+            let entry = per_run.entry(e.run_id).or_insert(RunAcc {
+                max_idx: idx,
+                latest_event_time: e.event_time,
+                latest_event_type: e.event_type,
+                has_output: false,
+            });
+            if idx >= entry.max_idx {
+                entry.max_idx = idx;
+                entry.latest_event_time = e.event_time;
+                entry.latest_event_type = e.event_type;
+            }
+            entry.has_output |= is_output;
+        }
+        let mut keyed: Vec<(i64, RunSummary)> = per_run
+            .into_iter()
+            .map(|(run_id, a)| {
+                (
+                    a.max_idx,
+                    RunSummary {
+                        run_id,
+                        latest_event_time: a.latest_event_time,
+                        latest_event_type: a.latest_event_type,
+                        role: if a.has_output {
+                            RunRole::Output
+                        } else {
+                            RunRole::Input
+                        },
+                    },
+                )
+            })
+            .collect();
+        // Newest-first by key (index), matching postgres's `order by max_eid desc`.
+        keyed.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx));
+        if let Some(a) = after {
+            keyed.retain(|(idx, _)| *idx < a);
+        }
+        let limited: Vec<(i64, RunSummary)> = keyed.into_iter().take(page.fetch_take()).collect();
+        let paged = Page::from_keyset(limited, page.limit, |(idx, _)| encode_run_cursor(*idx));
+        Ok(Page {
+            items: paged.items.into_iter().map(|(_, s)| s).collect(),
+            next: paged.next,
+        })
     }
 }

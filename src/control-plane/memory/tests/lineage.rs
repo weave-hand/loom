@@ -27,3 +27,15 @@ async fn memory_passes_events_for_hydration_contract() {
     let cp = control_plane_memory::MemoryControlPlane::new(std::time::Duration::from_millis(300));
     control_plane_testkit::events_for_hydration_contract(&cp).await;
 }
+
+#[tokio::test]
+async fn memory_passes_lineage_runs_for_contract() {
+    let cp = control_plane_memory::MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    control_plane_testkit::lineage_runs_for_contract(&cp).await;
+}
+
+#[tokio::test]
+async fn memory_passes_lineage_runs_for_collapse_contract() {
+    let cp = control_plane_memory::MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    control_plane_testkit::lineage_runs_for_collapse_contract(&cp).await;
+}

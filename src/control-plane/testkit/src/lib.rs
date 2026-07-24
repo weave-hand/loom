@@ -22,8 +22,9 @@ use control_plane_core::{
     Effect, EventType, GC_JOB_KIND, GcJob, IndexSpec, JobSchedule, JobTemplate, LINEAGE_MAX_DEPTH,
     Lineage, LineageEvent, LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount,
     NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef,
-    Queue, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, ScalarValue, SnapshotId, SubjectId,
-    TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef, ViewDef,
+    Queue, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, RunRole, RunSummary, ScalarValue,
+    SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef,
+    ViewDef,
 };
 use time::OffsetDateTime;
 
@@ -4371,6 +4372,142 @@ pub async fn lineage_pagination_contract<CP: Lineage>(cp: &CP) {
         "all events returned across pages, none duplicated/dropped"
     );
     assert!(ended_with_null, "final page signals no next");
+}
+
+/// Contract: `runs_for` lists the distinct runs touching a dataset, newest-first,
+/// with the matched role, and paginates. Run against every `Lineage` adapter.
+pub async fn lineage_runs_for_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let at = |secs: i64| OffsetDateTime::from_unix_timestamp(1_700_000_000 + secs).unwrap();
+    let target = ds("warehouse", "main.hist");
+
+    // run A: produces the target (output role)
+    let run_a = RunId(uuid::Uuid::new_v4());
+    cp.emit(LineageEvent {
+        run_id: run_a,
+        event_type: EventType::Complete,
+        event_time: at(0),
+        inputs: vec![ds("warehouse", "main.src")],
+        outputs: vec![target.clone()],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit a");
+
+    // run B: consumes the target (input role), later in time
+    let run_b = RunId(uuid::Uuid::new_v4());
+    cp.emit(LineageEvent {
+        run_id: run_b,
+        event_type: EventType::Complete,
+        event_time: at(10),
+        inputs: vec![target.clone()],
+        outputs: vec![ds("warehouse", "main.derived")],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit b");
+
+    // an unrelated run that never touches the target
+    cp.emit(LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: at(20),
+        inputs: vec![],
+        outputs: vec![ds("warehouse", "main.other")],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit other");
+
+    let all = cp
+        .runs_for(&target, PageReq::unbounded())
+        .await
+        .expect("runs_for");
+    let ids: Vec<RunId> = all.items.iter().map(|s| s.run_id).collect();
+    assert_eq!(ids, vec![run_b, run_a], "newest-first, only touching runs");
+
+    let by_id: std::collections::HashMap<RunId, &RunSummary> =
+        all.items.iter().map(|s| (s.run_id, s)).collect();
+    assert_eq!(by_id[&run_a].role, RunRole::Output, "run A produced target");
+    assert_eq!(by_id[&run_b].role, RunRole::Input, "run B consumed target");
+    assert_eq!(by_id[&run_a].latest_event_type, EventType::Complete);
+
+    // unknown dataset -> empty
+    assert!(
+        cp.runs_for(&ds("warehouse", "main.nope"), PageReq::unbounded())
+            .await
+            .unwrap()
+            .is_empty(),
+        "dataset in no event -> empty"
+    );
+
+    // pagination: page size 1 walks both runs without overlap
+    let p1 = cp.runs_for(&target, PageReq::limit(1)).await.unwrap();
+    assert_eq!(p1.items.len(), 1);
+    assert_eq!(p1.items[0].run_id, run_b, "first page = newest");
+    let cur = p1.next.clone().expect("a second page exists");
+    let p2 = cp.runs_for(&target, PageReq::after(cur)).await.unwrap();
+    assert_eq!(p2.items[0].run_id, run_a, "second page = older run");
+}
+
+/// Contract: `runs_for` collapses a run that touches a dataset via *several* events
+/// to its NEWEST matched event (time + type), and reports role = Output when *any*
+/// matched edge was an output. This is the case that differentiates the two
+/// adapters' collapse (postgres `max(event_id)` over filtered edges vs memory
+/// `max_idx` over matched events) and their role merge (`bool_or` vs `has_output
+/// |=`) — the single-event-per-run seed in `lineage_runs_for_contract` exercises
+/// neither. Run against every `Lineage` adapter.
+pub async fn lineage_runs_for_collapse_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let at = |secs: i64| OffsetDateTime::from_unix_timestamp(1_700_000_000 + secs).unwrap();
+    let target = ds("warehouse", "main.hist2");
+
+    // One run touches the target as an output (older event) then an input (newer
+    // event, a different type).
+    let run = RunId(uuid::Uuid::new_v4());
+    cp.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: at(0),
+        inputs: vec![],
+        outputs: vec![target.clone()],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit output edge");
+    cp.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Running,
+        event_time: at(10),
+        inputs: vec![target.clone()],
+        outputs: vec![],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit input edge");
+
+    let runs = cp
+        .runs_for(&target, PageReq::unbounded())
+        .await
+        .expect("runs_for");
+    assert_eq!(runs.items.len(), 1, "one run touched the target");
+    assert_eq!(runs.items[0].run_id, run);
+    assert_eq!(
+        runs.items[0].latest_event_type,
+        EventType::Running,
+        "collapses to the newer matched event's type"
+    );
+    assert_eq!(
+        runs.items[0].role,
+        RunRole::Output,
+        "role = Output when any matched edge was an output"
+    );
 }
 
 /// Contract: `events_for` hydrates every event's inputs/outputs completely

@@ -22,6 +22,20 @@ async fn postgres_passes_lineage_pagination_contract() {
 }
 
 #[tokio::test]
+async fn postgres_passes_lineage_runs_for_contract() {
+    let fixture = PgFixture::shared();
+    let cp = fixture.fresh_control_plane().await;
+    control_plane_testkit::lineage_runs_for_contract(&cp).await;
+}
+
+#[tokio::test]
+async fn postgres_passes_lineage_runs_for_collapse_contract() {
+    let fixture = PgFixture::shared();
+    let cp = fixture.fresh_control_plane().await;
+    control_plane_testkit::lineage_runs_for_collapse_contract(&cp).await;
+}
+
+#[tokio::test]
 async fn postgres_passes_type_table_binding_contract() {
     let fixture = PgFixture::shared();
     let cp = fixture.fresh_control_plane().await;

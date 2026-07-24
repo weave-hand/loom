@@ -14,10 +14,10 @@ mod surfaces;
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
     AuthError, BadgeTone, ButtonVariant, CatalogSortDir, CompletionSchema, DatasetDetail,
-    DatasetRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef,
-    TransformDefView, TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail,
-    bump_epoch, delete_action_effect, distinct_projects, form_to_body, form_to_def,
-    run_action_effect, schema_from_dataset_details, schema_from_types,
+    DatasetRow, DatasetRunRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow,
+    Surface, TableRef, TransformDefView, TransformForm, TransformIo, TransformKind,
+    TransformSummary, TypeDetail, bump_epoch, delete_action_effect, distinct_projects,
+    form_to_body, form_to_def, run_action_effect, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::cell::RefCell;
@@ -132,6 +132,82 @@ fn catalog_control_callbacks(
 struct WorkspaceProps {
     token: AttrValue,
     on_logout: Callback<()>,
+}
+
+/// Custom hook owning the Catalog History tab's run-history fetch: resets on
+/// dataset change and lazily loads `/lineage/{ns}/{name}/runs` when the History tab
+/// is active, under the shared fetch-generation guard. Extracted from `workspace`
+/// so the tab's state + effects stay out of that (already large) component; returns
+/// `(runs, loading, error)` for the drawer. The pure parse lives in `loom_ui_core`.
+#[hook]
+fn use_dataset_run_history(
+    selected: Option<usize>,
+    tab: AttrValue,
+    datasets: UseStateHandle<Vec<DatasetRow>>,
+    token: String,
+    on_logout: Callback<()>,
+    fetch_gen: Rc<RefCell<FetchGeneration>>,
+) -> (Option<Vec<DatasetRunRow>>, bool, Option<String>) {
+    let history_runs = use_state(|| Option::<Vec<DatasetRunRow>>::None);
+    let history_loading = use_state(|| false);
+    let history_error = use_state(|| Option::<String>::None);
+
+    // Reset on selection change so re-opening History for a new dataset refetches.
+    {
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
+        use_effect_with(selected, move |_| {
+            history_runs.set(None);
+            history_loading.set(false);
+            history_error.set(None);
+        });
+    }
+
+    // Lazy fetch when the History tab is active for the selection and nothing loaded.
+    {
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
+        let already_loaded = history_runs.is_some();
+        use_effect_with((selected, tab), move |(sel, tab)| {
+            if tab.as_str() != "history" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            history_loading.set(true);
+            let my_gen = fetch_gen.borrow().current();
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await
+                {
+                    Ok(runs) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_runs.set(Some(runs));
+                            history_loading.set(false);
+                        }
+                    }
+                    Err(FetchError::Unauthorized) => {
+                        history_loading.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(e) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_error.set(Some(e.to_string()));
+                            history_loading.set(false);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    (
+        (*history_runs).clone(),
+        *history_loading,
+        (*history_error).clone(),
+    )
 }
 
 #[function_component(Workspace)]
@@ -387,6 +463,20 @@ fn workspace(props: &WorkspaceProps) -> Html {
             });
         });
     }
+
+    // Catalog History tab: the run-history fetch (reset on selection + lazy load when
+    // the History tab is active) is encapsulated in a custom hook so the tab's state
+    // and effects don't inflate `workspace`. Called here — after the row-select
+    // effect's generation bump — so its fetch captures the post-bump generation, like
+    // the preview/lineage effects above.
+    let (history_runs, history_loading, history_error) = use_dataset_run_history(
+        *selected_dataset,
+        (*catalog_tab).clone(),
+        datasets.clone(),
+        props.token.to_string(),
+        props.on_logout.clone(),
+        fetch_gen.clone(),
+    );
 
     // On mount: load the ontology's type list, then eagerly load every type's detail
     // (schema) into one map. This is an N+1 over the type list (one /ontology/types +
@@ -679,6 +769,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             lineage={lineage_view}
                             show_full={*show_full_lineage}
                             on_toggle_full={on_toggle_full}
+                            history_runs={history_runs.clone()}
+                            history_loading={history_loading}
+                            history_error={history_error.clone()}
                         />
                     }
                 })

@@ -19,6 +19,7 @@ fn expected() -> BTreeSet<(String, String)> {
         ("post", "/maintenance/gc/{schema}/{table}"),
         ("get", "/lineage/datasets/{namespace}/{name}/upstream"),
         ("get", "/lineage/datasets/{namespace}/{name}/downstream"),
+        ("get", "/lineage/datasets/{namespace}/{name}/runs"),
         ("get", "/lineage/runs/{run_id}/events"),
         ("get", "/ontology/types"),
         ("get", "/ontology/types/{name}"),
