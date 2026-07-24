@@ -574,6 +574,18 @@ is exposed over HTTP (#286): three authenticated `GET` routes in query-api —
 per-dataset `upstream`/`downstream` with `depth`, and per-run events — returning
 paginated JSON, OpenAPI-annotated.
 
+A fourth read, `Lineage::runs_for` (#616), lists the distinct runs that *touched*
+a dataset — one `RunSummary` per run (the latest matched event's time and type,
+plus the input/output `RunRole`), newest-first and keyset-paginated over the same
+`lineage.event ⋈ lineage.event_dataset` join (postgres, keyed on the run's max
+`event_id`) / append-only event-vec scan (memory, keyed on emit index), certified
+identical on both adapters by `lineage_runs_for_contract`. It is exposed as
+`GET /lineage/datasets/{ns}/{name}/runs`, **seed-gated by `DatasetVisibility`**:
+a denied or unknown dataset returns an empty page, never a 404 — the same
+non-oracle convention the closure reads use, and sound because a per-dataset run
+summary discloses nothing about the other datasets a run touched. It powers the
+Catalog drawer's **History** tab (see [ui.md](ui.md)).
+
 Naming and layering were bridged so the graph is navigable and governable. The
 dataset naming bridge (#291) is a postgres-free `lineage-naming` crate providing
 the OpenLineage-conformant mapping from a loom `TableRef`/`TypeName` to

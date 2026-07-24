@@ -161,6 +161,16 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   (styled with `--loom-danger`) that takes precedence over the "Loading…"
   placeholder — an error no longer leaves the tab hung on "Loading…" (Schema) or
   silently empty (Preview); the Lineage tab already degraded gracefully.
+- **Catalog History tab** (#616) — the drawer's History tab is now real: it lists
+  the runs that touched the selected dataset (newest-first, `event_type · time ·
+  role · run-id`) from `GET /lineage/datasets/{ns}/{name}/runs`, replacing the
+  honest "not available on this instance" stub. The pure `parse_dataset_runs` lives
+  in `loom_ui_core` (`rust_test`'d); the fetch (reset-on-selection + lazy load when
+  the tab is active, under the same `FetchGeneration` guard) is encapsulated in a
+  `use_dataset_run_history` custom hook so the tab's state/effects stay out of the
+  `Workspace` component. A denied/unknown dataset yields an empty list (seed-gated
+  server-side); a non-401 error surfaces the same danger-styled line as the other
+  tabs.
 
 ## Known gaps
 
