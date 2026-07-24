@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
-    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, RowFilter,
-    ScalarValue, SubjectId, TableRef, TypeName, ViewDef,
+    Acl, Action, CompareOp, ControlPlane, Effect, ObjectType, Ontology, Policy, PolicyTarget,
+    RoleId, RowFilter, ScalarValue, SubjectId, TableRef, TypeName, ViewDef,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -595,4 +595,131 @@ async fn datasets_no_sort_preserves_schema_name_order() {
         listed_names(&json),
         vec!["main.alpha", "main.gamma", "other.beta"]
     );
+}
+
+/// Records every SQL string `fetch_rows` receives and serves the canned rows —
+/// lets a test assert the exact governed/raw SQL the preview handler compiled.
+#[derive(Default)]
+struct RecordingServing(std::sync::Mutex<Vec<String>>);
+
+#[async_trait]
+impl ServingEngine for RecordingServing {
+    async fn fetch_rows(
+        &self,
+        sql: &str,
+        _params: &[SqlValue],
+        _at: Option<control_plane_core::SnapshotId>,
+    ) -> Result<Rows, ServingError> {
+        self.0.lock().unwrap().push(sql.to_string());
+        Ok(Rows {
+            columns: vec!["id".into(), "note".into()],
+            rows: vec![
+                vec![SqlValue::Int(1), SqlValue::Text("a".into())],
+                vec![SqlValue::Int(2), SqlValue::Null],
+            ],
+        })
+    }
+}
+
+fn app_recording(cp: MemoryControlPlane) -> (axum::Router, Arc<RecordingServing>) {
+    let rec = Arc::new(RecordingServing::default());
+    let app = router(AppState {
+        cp: Arc::new(cp),
+        serving: rec.clone(),
+        action_engine: Arc::new(StubAction),
+        default_limit: 1000,
+        gc_retention: std::time::Duration::from_secs(7 * 24 * 3600),
+        naming: query_api::lineage_filter::local_naming(),
+    });
+    (app, rec)
+}
+
+/// Define type `Event` bound to main.events and give `analyst` a fresh role with a
+/// TYPE Read grant refined by `policy` (None = coarse allow only).
+async fn grant_analyst_type(cp: &MemoryControlPlane, policy: Option<Policy>) {
+    cp.define_type(
+        ObjectType::build("Event", ("main", "events"))
+            .prop_req("id", "Long")
+            .prop("note", "String")
+            .done(),
+    )
+    .await
+    .unwrap();
+    let subj = SubjectId("analyst".into());
+    let role = RoleId("analyst-type-role".into());
+    cp.define_subject(&subj).await.unwrap();
+    cp.define_role(&role).await.unwrap();
+    cp.assign_role(&subj, &role).await.unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Event".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+    if let Some(p) = policy {
+        cp.set_policy(&role, Action::Read, p).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_governed_preview_compiles_masks_and_filters() {
+    let (cp, _) = seeded();
+    grant_analyst_type(
+        &cp,
+        Some(Policy {
+            target: PolicyTarget::Type(TypeName("Event".into())),
+            row_filter: Some(RowFilter::Compare {
+                property: "id".into(),
+                op: CompareOp::Lt,
+                value: ScalarValue::Int(3),
+            }),
+            deny_columns: vec![],
+            mask_columns: vec!["note".into()],
+        }),
+    )
+    .await;
+    let (app, rec) = app_recording(cp);
+    let (status, _) = get(&app, "/datasets/main/events/preview?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    let sqls = rec.0.lock().unwrap();
+    assert_eq!(sqls.len(), 1);
+    let sql = &sqls[0];
+    assert!(sql.contains("'***' AS \"note\""), "mask missing: {sql}");
+    assert!(sql.contains("WHERE"), "row filter missing: {sql}");
+    assert!(!sql.contains("SELECT *"), "raw SELECT * leaked: {sql}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn table_grant_preview_stays_raw() {
+    let (cp, _) = seeded();
+    grant_analyst_table(&cp).await;
+    let (app, rec) = app_recording(cp);
+    let (status, _) = get(&app, "/datasets/main/events/preview?limit=5").await;
+    assert_eq!(status, StatusCode::OK);
+    let sqls = rec.0.lock().unwrap();
+    assert_eq!(
+        sqls.as_slice(),
+        ["SELECT * FROM \"main\".\"events\" LIMIT 5"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_governed_preview_all_denied_is_canonical_404() {
+    let (cp, _) = seeded();
+    grant_analyst_type(
+        &cp,
+        Some(Policy {
+            target: PolicyTarget::Type(TypeName("Event".into())),
+            row_filter: None,
+            deny_columns: vec!["id".into(), "note".into()],
+            mask_columns: vec![],
+        }),
+    )
+    .await;
+    let (app, _rec) = app_recording(cp);
+    let (status, body) = get_raw(&app, "/datasets/main/events/preview").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body, "dataset not found");
 }

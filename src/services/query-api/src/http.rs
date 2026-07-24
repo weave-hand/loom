@@ -15,7 +15,6 @@ use crate::openapi::{
 };
 use crate::path_parse::{parse_direction, parse_path_hops};
 use crate::serving::{ActionEngine, ServingEngine};
-use crate::sql::SqlDialect;
 use axum::Router;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -563,10 +562,12 @@ async fn resolve_dataset_snapshot(
     }
 }
 
-/// Sample rows from a dataset: `SELECT * FROM "schema"."table" LIMIT n` over the engine.
+/// Sample rows from a dataset over the engine.
 ///
-/// Per-dataset ACL-gated (same predicate as `/datasets`). `limit` defaults to 20 and is
-/// capped at 200; a malformed `limit` is a 400.
+/// Two-mode: a direct Table Read grant serves a raw `SELECT * ... LIMIT n` sample; a
+/// Type-only grant instead governs the sample under that type's folded row/column
+/// policy, same as `/objects/{type}`. An unreadable or unknown dataset 404s;
+/// `limit` defaults to 20 and is capped at 200, a malformed `limit` is a 400.
 #[utoipa::path(
     get, path = "/datasets/{schema}/{table}/preview",
     params(
@@ -614,18 +615,55 @@ async fn dataset_preview(
         st.cp.ontology(),
         st.naming.as_ref(),
     );
-    match vis.is_table_readable(&subject.0, &table_ref).await {
-        Ok(true) => {}
-        Ok(false) => return dataset_not_found(),
+    let dialect = st.serving.dialect();
+    let (sql, params) = match vis.table_read_grant(&subject.0, &table_ref).await {
+        Ok(None) => return dataset_not_found(),
         Err(e) => return cp_read_error("dataset preview acl fault", e),
-    }
-    let dialect = crate::sql::DataFusionDialect;
-    let sql = format!(
-        "SELECT * FROM {}.{} LIMIT {limit}",
-        dialect.quote_ident(&schema),
-        dialect.quote_ident(&table),
-    );
-    match st.serving.fetch_rows(&sql, &[], None).await {
+        // Direct Table grant: physical access — raw sample, as before.
+        Ok(Some(crate::dataset_acl::TableReadGrant::Table)) => (
+            format!(
+                "SELECT * FROM {}.{} LIMIT {limit}",
+                dialect.quote_ident(&schema),
+                dialect.quote_ident(&table),
+            ),
+            Vec::new(),
+        ),
+        // Readable only via a backing type: that type's folded policy governs the
+        // sample exactly as it governs `/objects/{type}`.
+        Ok(Some(crate::dataset_acl::TableReadGrant::Type(ty))) => {
+            let g = match crate::governed::resolve_governed(
+                st.cp.ontology(),
+                st.cp.acl(),
+                &subject.0,
+                &ty,
+                crate::governed::OnMissing::Internal,
+            )
+            .await
+            {
+                Ok(g) => g,
+                // Fail-closed AND oracle-free: a governance refusal collapses to the
+                // canonical dataset 404; everything else (incl. `ControlPlane` — with
+                // `OnMissing::Internal` a granted-but-missing type arrives as
+                // `ControlPlane(NotFound)`, an internal inconsistency) is an opaque 500.
+                // Deliberately NOT `cp_read_error` here: its NotFound→404 special case
+                // would leak the backing type's name in the body.
+                Err(crate::handler::QueryError::Forbidden) => return dataset_not_found(),
+                Err(e) => return internal_error("dataset preview governance fault", e),
+            };
+            // Pin request/response consistency: the type was picked from a list_types
+            // snapshot and re-fetched — a concurrent redefinition could rebind it to a
+            // different table. Never serve a table other than the one addressed.
+            if g.otype.table != table_ref {
+                return dataset_not_found();
+            }
+            match crate::dataset_preview::governed_preview_sql(dialect, &g, limit) {
+                Ok(pair) => pair,
+                Err(crate::handler::QueryError::Forbidden) => return dataset_not_found(),
+                Err(e) => return internal_error("dataset preview compile fault", e),
+            }
+        }
+    };
+    match st.serving.fetch_rows(&sql, &params, None).await {
         Ok(rows) => Json(crate::dataset_preview::preview_body(&rows)).into_response(),
         Err(e) => internal_error("dataset preview serving fault", e),
     }
