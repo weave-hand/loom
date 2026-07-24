@@ -1,8 +1,8 @@
 # loom
 
-**An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance: a Rust governance chokepoint over a DataFusion serving layer, with DataFusion for ingestion, all on an Iceberg + Postgres core.**
+**An open-source take on Palantir Foundry — a typed-object data platform with built-in lineage and governance: a Rust governance chokepoint over a DataFusion serving layer, with DataFusion for ingestion and transforms, all on an Iceberg + Postgres core.**
 
-> ⚠️ **Status: pre-alpha.** The **control-plane library is built and hardened** — five concerns (queue, catalog, ontology, ACL, lineage) as ports-and-adapters, each with an in-memory fake and a real Postgres adapter against one backend-agnostic contract (Step 2 hardening complete: worker heartbeat, Tx isolation, MVCC delete contract, compile-time SQL, tracing). The **first services on top now run as networked services:** **ingest** lands data through a **DataFusion compute path** (Arrow → inferred Iceberg schema → multi-file Parquet → snapshot+lineage commit) and exposes a runnable **binary + plain-HTTP landing endpoint**; the governed **read path** resolves an ontology type, applies ACL, serves **typed-object JSON** via the **engine service** (DataFusion against the Iceberg mirror), and **traverses links** (FK- and join-table-backed, governed) behind a runnable **binary + HTTP endpoints**. An **MVP deploy** (apko/Wolfi OCI images + a Helm chart) ships both binaries. **Still missing:** Transform workers, ontology actions, distributed DataFusion, and an external SQL wire for third-party clients. The architecture is still framed as *exploratory*: the shape is sketched, several load-bearing decisions are flagged for hardening. It now *does* run as networked services over HTTP — but it's not a system for general use yet. If you're here to help design or build it, keep reading.
+> ⚠️ **Status: pre-alpha.** All three service pillars are live. The **control plane** (queue, catalog + Iceberg mirror, ontology, ACL, lineage — plus auth) is built and hardened: five concerns as ports-and-adapters, each with an in-memory fake and a real Postgres adapter behind one backend-agnostic contract. **Ingest** lands Arrow over HTTP through a DataFusion compute path (inferred Iceberg schema → multi-file Parquet → atomic snapshot+lineage commit), binds landed datasets to ontology types, and accepts append-only **log tables** and identity-keyed **CDC tables**. **Transform** runs as queue-driven jobs on a zero-pool worker — physical SQL, typed (ontology-vocabulary), and standing micro-batch queries over stream sources — with inputs streamed over Arrow Flight and the result committed atomically through a single engine RPC. The governed **query API** serves typed-object reads (a typed filter language, link/graph traversal, derived properties, cursor pagination, as-of time travel), governed **actions** (insert/update/delete write-backs with constraints and atomic downstream job enqueue), **vector search** over declared indexes, and two opt-in egress wires (a governed Arrow Flight export and an external Flight SQL wire for third-party clients). An exploratory **web UI** (Yew/WASM), a **Python SDK**, and an MVP **deploy** (apko/Wolfi OCI images, a Helm chart, and an all-in-one `loom` binary with embedded Postgres) ride on top. **Still missing:** distributed DataFusion (Ballista), branching, and plenty of polish — the architecture is still framed as *exploratory*, and it's not a system for general use yet. If you're here to help design or build it, keep reading.
 
 ---
 
@@ -18,30 +18,31 @@ The catch: Foundry is closed, expensive, and an all-or-nothing commitment. Loom 
 
 ## What loom is
 
-Loom is a set of Rust services in front of a DataFusion serving layer and a Postgres database. Reads enter through the **HTTP query API** — the governance chokepoint that resolves the typed ontology to physical tables, applies ACL policy, and generates SQL — which it forwards over **internal Flight SQL** (`CommandStatementQuery`) to the **engine service**. The engine runs **[Apache DataFusion](https://datafusion.apache.org/)** against the Iceberg mirror, streaming Arrow IPC batches back; query-api decodes the batches and returns governed JSON. There is no embedded query engine in query-api itself. **[Apache Iceberg](https://iceberg.apache.org/)** (via `iceberg-rust`, catalog mirrored in Postgres) is the sole table format: data files live as Parquet on S3 or MinIO, and the mirror catalog (`iceberg_mirror.*`) is the Postgres-side MVCC projection the engine reads. DataFusion is also the ingestion and transform engine: bulk writes and queue-driven jobs land new Iceberg snapshots. The same Postgres holds the Iceberg mirror, the object/link ontology, ACL policy, the job queue, and lineage events in separate schemas.
+Loom is a set of Rust services in front of a DataFusion serving layer and a Postgres database. Reads enter through the **HTTP query API** — the governance chokepoint that resolves the typed ontology to physical tables, applies ACL policy, and generates SQL — which it forwards over **internal Flight SQL** (`CommandStatementQuery`) to the **engine service**. The engine runs **[Apache DataFusion](https://datafusion.apache.org/)** against the Iceberg mirror, streaming Arrow IPC batches back; query-api decodes the batches and returns governed JSON. There is no embedded query engine in query-api itself. **[Apache Iceberg](https://iceberg.apache.org/)** (via `iceberg-rust`, catalog mirrored in Postgres) is the sole table format: data files live as Parquet on S3 or MinIO, and the mirror catalog (`iceberg_mirror.*`) is the Postgres-side MVCC projection the engine reads. DataFusion is also the ingestion and transform engine: bulk writes and queue-driven transform jobs land new Iceberg snapshots. The same Postgres holds the Iceberg mirror, the object/link ontology, ACL policy, the job queue, and lineage events in separate schemas.
 
-For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+For the full design rationale and open questions, see [`ARCHITECTURE.md`](./ARCHITECTURE.md). For what each subsystem can do *today* — behaviour, guarantees, and the key decisions, with PR references — see [`docs/system-capabilities/`](./docs/system-capabilities/README.md).
 
 ## Foundry capabilities, mapped to loom
 
 | Foundry concept                  | Loom equivalent                                                                                                  | Status         |
 | -------------------------------- | ---------------------------------------------------------------------------------------------------------------- | -------------- |
-| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical Iceberg tables at plan time                          | Library built; **resolved to SQL on the read path** by the query API (objects + properties + links, via governed link traversal) |
-| **Actions** (typed write-backs)  | Named actions defined alongside object types; governed at the HTTP query API and executed through the engine service, with loom owning the catalog commit so snapshot + lineage + enqueue stay atomic | **Built** (IcebergActionWriter, inline write seam, atomic snapshot+lineage commit) |
-| **Pipelines / Code Repositories** | Transform workers pulling jobs from the `queue` schema; DataFusion plans against Iceberg snapshots             | Queue + worker library built; transform service not built |
-| **Data Connection** (sources)    | Ingest service — DataFusion writes Parquet in bulk, commits a new Iceberg snapshot                              | **Built** (snapshot-commit, landing materializer, dataset→model binding, DataFusion multi-file compute path, runnable binary + HTTP landing); Transform workers pending |
-| **Foundry SQL / Contour**        | HTTP query API (governance chokepoint) forwards SQL over internal Flight SQL to the engine service (DataFusion against the Iceberg mirror); returns typed-object JSON | **Read path built** (governed object reads + link traversal, typed-object JSON, Flight SQL wire, runnable binary + HTTP endpoints) |
-| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy compiled into the SQL the query API emits          | Library built; **enforced in generated SQL** (deny-by-default, row filters, column deny/mask) |
-| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | Library built; **emitted on snapshot commit** (materializer, atomic with the catalog write); transitive lineage pending |
-| **Compute backend** (Spark)      | DataFusion (single-node) for serving, ingestion, and transforms; [Ballista](https://datafusion.apache.org/ballista/) optional for distributed transforms | **Engine serving (DataFusion) built**; **DataFusion ingestion compute built**; transform compute (+ optional Ballista) pending |
-| **Foundry Branching**            | Iceberg snapshots provide time-travel; named branches TBD                                                        | Open question  |
+| **Ontology** (objects, links, properties) | `ontology` schema in Postgres; resolved to physical Iceberg tables at plan time                          | **Built** — resolved to SQL on the read path (objects, properties, derived aggregate properties, links; FK- and join-table-backed traversal, inverse and multi-hop chains, recursive graph queries) |
+| **Actions** (typed write-backs)  | Named actions defined alongside object types; governed at the HTTP query API and executed through the engine service, with loom owning the catalog commit so snapshot + lineage + enqueue stay atomic | **Built** — insert/update/delete (single- and multi-step, atomic), model constraints (422s), computed assignments, and `downstream` job templates enqueued atomically with the write |
+| **Pipelines / Code Repositories** | Queue-driven transform jobs on a zero-pool worker: inputs stream over Arrow Flight, DataFusion runs the SQL, one engine RPC commits output + lineage atomically | **Built** — physical SQL transforms, typed (ontology-vocabulary, conformance-gated) transforms, and standing micro-batch queries (materialized views) over stream sources |
+| **Data Connection** (sources)    | Ingest service — DataFusion writes Parquet in bulk, commits a new Iceberg snapshot                              | **Built** — snapshot commit, landing materializer, dataset→model binding, multi-file DataFusion compute path, plus stream **log** and **CDC** table declaration at land time |
+| **Foundry SQL / Contour**        | HTTP query API (governance chokepoint) forwards SQL over internal Flight SQL to the engine service (DataFusion against the Iceberg mirror); returns typed-object JSON | **Built** — governed reads with a typed filter language, object sets, cursor pagination, and as-of time travel; opt-in **external Flight SQL wire** (arbitrary SQL over a governed, closed-world catalog) and **Arrow Flight export** for columnar egress |
+| **Markings + project permissions** | `acl` schema — subjects, roles, row- and column-level policy compiled into the SQL the query API emits          | **Built** — deny-by-default, row filters ANDed at every join position, column deny/mask, enforced on reads, traversal, actions, search, and the external wires |
+| **Data Lineage**                 | `lineage` schema with [OpenLineage](https://openlineage.io/) events; lineage commits atomically with snapshots   | **Built** — emitted atomically on every write path (landing, flush, transforms, actions, index builds); served via governed `/lineage` reads and rendered as a lineage canvas in the UI |
+| **Semantic search / embeddings** | `vector(N)` column type; named per-property indexes (Flat / IVF-Flat / HNSW) built as Puffin sidecars bound to Iceberg snapshots; governed `POST /search` with exact hot-tier merge | **Built** — auto-rebuild on flush keeps indexes fresh; results post-filtered by row policy |
+| **Compute backend** (Spark)      | DataFusion (single-node) for serving, ingestion, and transforms; [Ballista](https://datafusion.apache.org/ballista/) optional for distributed transforms | **Serving, ingestion, and transform compute built** (single-node); distributed/Ballista escalation pending |
+| **Foundry Branching**            | Iceberg snapshots provide time-travel — `?as_of`/`?as_of_snapshot` reads shipped, GC-retention-aware; named branches TBD | Time travel built; branching open question |
 
 ### What's deliberately *not* in scope (for now)
 
 | Foundry capability          | Why loom is skipping it                                                                                          |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Workshop / Slate (app UIs)  | UI builders are a downstream concern. Build whatever UI you like on top of the HTTP query API.                   |
-| Notebooks / Code Workbook   | Use Jupyter/Marimo/Hex against the Query API.                                                                    |
+| Workshop / Slate (app UIs)  | App *builders* are a downstream concern. Loom ships one exploratory web UI (login, object explorer, dataset catalog with lineage canvas, transforms admin with a SQL editor) — a reference consumer of the governed API, not an app platform. |
+| Notebooks / Code Workbook   | Use Jupyter/Marimo/Hex against the Query API — via the Python SDK, the external Flight SQL wire, or plain HTTP.  |
 | AIP (LLM/agent suite)       | Out of scope. Loom is data infrastructure; an LLM layer can sit on top via the Query API and ontology metadata.  |
 | Foundry's internal scheduler| Loom uses a Postgres job queue. If you need cron-style scheduling, run an external orchestrator that enqueues jobs. |
 
@@ -50,7 +51,8 @@ The principle: loom is the **data + governance + compute** core. The application
 ## How it works (60-second tour)
 
 ```
-        Consumers / clients (BI tools, notebooks, app code)
+        Consumers / clients (web UI, Python SDK, BI tools, notebooks,
+                             Flight SQL wire · Arrow Flight export)
                        │
                       HTTP
                        │
@@ -66,56 +68,60 @@ The principle: loom is the **data + governance + compute** core. The application
         Data files: Parquet on S3 / MinIO
                        ▲
               writes (bulk) │ + new snapshots
-        DataFusion — ingestion   ·   Transform workers (queue-driven)
+        DataFusion — ingestion   ·   Transform workers (queue-driven, zero-pool:
+                                     inputs over Arrow Flight, commit via engine RPC)
 ```
 
-- **One governed front door.** Every read enters the HTTP query API, which resolves the ontology, applies ACL, and compiles a request into SQL — so policy is never bypassable.
+- **One governed front door.** Every read enters the HTTP query API, which resolves the ontology, applies ACL, and compiles a request into SQL — so policy is never bypassable. The opt-in external wires (Flight SQL, Flight export) resolve the same ACL per call; the SQL wire runs client SQL over a closed-world governed catalog rather than rewriting query text.
 - **The engine service is the sole serving path.** It runs DataFusion against the Iceberg mirror (`IcebergMirrorTableProvider` for Parquet files, `PgTableProvider` for un-flushed inline rows) and streams Arrow IPC batches back over internal Flight SQL. query-api is a zero-DataFusion wire client — it inlines params, sends SQL, and decodes the result.
 - **Postgres is the only stateful coordinator.** The Iceberg mirror catalog, ontology, ACL, queue, and lineage live there in separate schemas, so a single transaction can mutate a snapshot, record lineage, and enqueue downstream work.
-- **Iceberg is the sole table format.** Snapshots + Parquet, with a MVCC mirror projection in Postgres so it can share transactions with the control plane.
+- **Iceberg is the sole table format.** Snapshots + Parquet, with a MVCC mirror projection in Postgres so it can share transactions with the control plane. Streams ride the same format: log/CDC tables pair a base table with a changelog, with LastRow compaction and CDC-aware serving reads keeping `GET /objects` correct across the write→flush→consolidate lifecycle.
+- **Workers own no state.** Transform workers hold no Postgres pool and no Iceberg catalog — inputs stream over Arrow Flight, compute is DataFusion in the worker, and the commit is a single atomic engine RPC.
 
-For per-component detail, tradeoffs, and the list of decisions still up for debate, read [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+For per-component detail, tradeoffs, and the list of decisions still up for debate, read [`ARCHITECTURE.md`](./ARCHITECTURE.md); for the durable record of what's landed, [`docs/system-capabilities/`](./docs/system-capabilities/README.md).
 
 ## Tech choices at a glance
 
-- **Language:** Rust for the query API, engine, ingest, and transform services
+- **Language:** Rust for the query API, engine, ingest, and worker services
 - **Serving engine:** [Apache DataFusion](https://datafusion.apache.org/) in the engine service — `IcebergMirrorTableProvider` + `PgTableProvider`; internal Flight SQL wire
-- **Ingestion / transform compute:** [Apache DataFusion](https://datafusion.apache.org/) (single-node), [Ballista](https://datafusion.apache.org/ballista/) (optional distributed)
-- **Table format:** [Apache Iceberg](https://iceberg.apache.org/) — via `iceberg-rust` (`iceberg-catalog-sql` backend, Postgres mirror)
-- **Internal query wire:** [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html) (`CommandStatementQuery`) between query-api and the engine service
-- **Control plane:** PostgreSQL (single database, schema-separated: `iceberg_mirror`, `ontology`, `acl`, `queue`, `lineage`)
+- **Ingestion / transform compute:** [Apache DataFusion](https://datafusion.apache.org/) (single-node), [Ballista](https://datafusion.apache.org/ballista/) (optional distributed) pending
+- **Table format:** [Apache Iceberg](https://iceberg.apache.org/) — via `iceberg-rust` (`iceberg-catalog-sql` backend, Postgres mirror); vector indexes as [Puffin](https://iceberg.apache.org/puffin-spec/) sidecars
+- **Query wires:** [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html) internally between query-api and the engine; opt-in external governed Flight SQL + Arrow Flight export
+- **Control plane:** PostgreSQL (single database, schema-separated: `iceberg_mirror`, `ontology`, `acl`, `queue`, `lineage`, `stream`, `transforms`, `auth`, …)
 - **Job queue:** [graphile_worker_rs](https://github.com/leo91000/graphile_worker_rs)–style queue using `SKIP LOCKED` + `LISTEN/NOTIFY`
 - **Lineage:** [OpenLineage](https://openlineage.io/) events
 - **Object storage:** S3-compatible (S3, MinIO, R2, …)
+- **Web UI:** [Yew](https://yew.rs) cross-compiled to WASM (an exploratory surface, built by the same buck2 tree)
+- **Python SDK:** `loom-sdk` — sync/async clients over a sans-IO core, optional pydantic ontology-declaration layer
 - **Build system:** [Buck2](https://buck2.build)
 
 ## Project status & roadmap
 
-Three steps, tracked as labeled GitHub issues — `roadmap` (committed work), `idea` (deferred ideas), and `bug` (known defects), organized on the `loom v1` project board; the original narrative roadmap is in git history (design doc: `2026-06-06-loom-roadmap`). `main` stays green.
+Work is tracked as labeled GitHub issues — `roadmap` (committed work), `idea` (deferred ideas), and `bug` (known defects), organized on the `loom v1` project board; the original narrative roadmap is in git history (design doc: `2026-06-06-loom-roadmap`). `main` stays green.
 
 1. **Control-plane library — ✅ delivered.** Five concerns as ports-and-adapters under `src/control-plane/` (`core` traits + domain types, `memory` fake, `postgres` adapter, `testkit` contracts, `worker`): **queue** (with a worker and `await_jobs`), **catalog** (Iceberg mirror read surface), **ontology**, **acl**, and **lineage**. Each runs against one backend-agnostic contract on both the in-memory fake and real Postgres. A cross-concern `Tx` seam makes `emit` + `enqueue` atomic.
-2. **Harden the control plane.** Correctness and contract gaps catalogued in git history (design doc: `2026-06-06-control-plane-critical-review`) — worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, and deciding the `Tx` seam's future before any service depends on the library. Deferred features are tracked as `idea`-labeled GitHub issues.
-3. **The services on top — 🚧 underway.** Built so far: the **engine service** (DataFusion against the Iceberg mirror, internal Flight SQL wire) and the **governed query read path** (ontology resolve + ACL compiled into generated SQL, returned as typed-object JSON), now including **governed link traversal** (FK- and join-table-backed links); **Ingest's** load-bearing primitives — the transactional **snapshot-commit** (loom is a native single-catalog Iceberg writer), the **landing materializer** (Arrow → inferred schema → Parquet → snapshot+lineage), and **dataset→model binding** (validated promotion of a landed dataset to an ontology type) — plus the **DataFusion ingestion compute path** (per-call `SessionContext` → repartitioned multi-file Snappy Parquet → per-file Iceberg stats); the runnable **binaries + plain-HTTP endpoints** on the shared `service_runtime`; and an **MVP deploy** (apko/Wolfi OCI images + a Helm chart). Still to come: **Transform workers** (queue-driven DataFusion on `control-plane-worker`), an external SQL wire for third-party clients, distributed/Ballista escalation, and branching.
+2. **Control-plane hardening — ✅ delivered.** Worker heartbeat, Tx isolation contract, catalog MVCC delete/evolve coverage, typed cross-concern identity, compile-time SQL with a committed `.sqlx` cache, pagination, proptest coverage, and a `tracing` pass (design doc in git history: `2026-06-06-control-plane-critical-review`).
+3. **The services on top — 🚧 the bulk is built.** The **engine** (DataFusion serving, internal Flight SQL, Iceberg write paths — inline shadow writes, flush, copy-on-write, compaction, GC); the governed **query API** (typed-object reads, filter language, link/graph traversal, derived properties, pagination, time travel, actions, vector search, external egress wires); **ingest** (snapshot commit, landing materializer, dataset→model binding, DataFusion multi-file compute, stream log/CDC declaration); **transform workers** (physical SQL, typed, and standing micro-batch transforms on the zero-pool worker); the **stream engine** (framing/bucketing/offsets, CDC emission, dual base+changelog tables, LastRow compaction, CDC-aware reads); **auth**; the **web UI**; the **Python SDK**; and the **deploy** story (OCI images, Helm chart, all-in-one `loom` binary with embedded Postgres). Still to come: **distributed/Ballista escalation**, **branching**, and the polish tracked issue-by-issue.
 
-The slice-by-slice status of record is the GitHub issue tracker; this section tracks the headline shape.
+The slice-by-slice status of record is the GitHub issue tracker; [`docs/system-capabilities/`](./docs/system-capabilities/README.md) is the durable record of what each subsystem can do today.
 
 ## Building & running
 
 ```sh
-buck2 build //src/...   # build all first-party code — control plane, ingest, query-api (+ hello sample)
+buck2 build //src/...   # build all first-party code — control plane, engine, ingest, query-api, worker, UI, SDK
 buck2 test  //src/...   # run the contract suites (in-memory + hermetic Postgres)
 buck2 run   //:<tgt>    # run a target
 ```
 
-See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude, toolchain notes) and [`DEVELOPING.md`](./DEVELOPING.md) for the contributor workflow — getting a checkout building, the dev shell, and day-to-day commands.
+See [`CLAUDE.md`](./CLAUDE.md) for build-system details (cells, bundled prelude, toolchain notes) and [`DEVELOPING.md`](./DEVELOPING.md) for the contributor workflow — getting a checkout building, the dev shell, and day-to-day commands. Deployment (images, Helm, the single binary) is documented in [`docs/deploy.md`](./docs/deploy.md).
 
 ## Contributing
 
 High-value tracks right now:
 
-- **Build out the services** — the next slices are the networked ingest/query shells (binaries + endpoints) over the in-process pipeline that already lands, binds, and serves data, plus Transform workers on `control-plane-worker`. The GitHub issue tracker calls the current front of work.
+- **Pick up ready work** — issues labeled `ready` carry a spec in the body and are claimable; `gh issue list --label ready --no-assignee` shows the current front of work.
 - **Design pushback** on [`ARCHITECTURE.md`](./ARCHITECTURE.md) — especially the "Open questions" section. Several load-bearing choices haven't been settled; if you see a tradeoff we've gotten wrong, open an issue or a PR against that doc before writing code.
-- **Hardening the control-plane library** — the gaps in git history (design doc: `2026-06-06-control-plane-critical-review`) (Step 2) are concrete, scoped, and worth landing as the services lean harder on the library.
+- **Bugs and hardening** — `bug`-labeled issues are known defects in shipped code; the capability docs' "Known gaps" sections name the sharp edges worth rounding off.
 
 Each change goes through the same spec → plan → implement → PR cycle the control plane was built with.
 
