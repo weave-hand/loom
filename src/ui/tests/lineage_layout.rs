@@ -76,6 +76,35 @@ fn empty_column_consumes_no_slot() {
         .find(|n| n.kind == NodeKind::Current)
         .unwrap();
     assert!(close(cur.y, p.pad + (content_h - p.node_h) / 2.0));
+    // The two upstream nodes stack in slot 0 (left = pad) at y = pad and y = pad + row_h
+    // (col_h == content_h, so the column offset is exactly pad) — exercises j>0 stacking.
+    let by_id = |id: &str| l.nodes.iter().find(|n| n.id == id).unwrap().clone();
+    let (a, b) = (by_id("main.a"), by_id("main.b"));
+    assert!(close(a.x, p.pad) && close(b.x, p.pad));
+    assert!(close(a.y, p.pad));
+    assert!(close(b.y, p.pad + row_h));
+}
+
+// Downstream-only: the LEADING upstream column is empty, so the current node takes
+// slot 0 (left = pad) and downstream takes slot 1 — the one slot-assignment path the
+// upstream-only case doesn't cover (slots = [None, Some(0), Some(1)]).
+#[test]
+fn downstream_only_current_leads_slot_zero() {
+    let down = vec![("main".to_string(), "report".to_string())];
+    let dag = lineage_dag(("main", "src"), &[], &down);
+    let p = LineageLayoutParams::MINI;
+    let l = lineage_layout(&dag, &p);
+    // 2 non-empty columns (current, downstream) => width = col_step + node_w + 2*pad.
+    assert!(close(l.width, p.col_step + p.node_w + 2.0 * p.pad));
+    let by_id = |id: &str| l.nodes.iter().find(|n| n.id == id).unwrap().clone();
+    assert!(close(by_id("main.src").x, p.pad)); // current at slot 0
+    assert!(close(by_id("main.report").x, p.pad + p.col_step)); // downstream at slot 1
+    // The single edge runs current-right -> downstream-left and touches current.
+    assert_eq!(l.edges.len(), 1);
+    let e = l.edges.first().unwrap();
+    assert!(e.touches_current);
+    assert!(close(e.x1, p.pad + p.node_w));
+    assert!(close(e.x2, p.pad + p.col_step));
 }
 
 // CANVAS params scale the geometry up relative to MINI (sanity that params flow through).
