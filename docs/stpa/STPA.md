@@ -1,4 +1,4 @@
-# STPA Control Analysis: weave-hand/loom @ 3a5f915
+# STPA Control Analysis: weave-hand/loom @ d99146b
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
@@ -10,13 +10,13 @@ _Auto-generated STPA safety model: the unsafe states this system can reach and t
 Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
 </details>
 
-**Scope.** The control plane (all five concerns), ingest service, query-api (governed reads + writes + links + lineage ACL filtering + Flight export + external SQL wire + subscribe feed + graph queries + action downstream + catalog views), engine service, transform workers, stream MVs (micro-batch standing queries with delta-join), CDC merge engines, scheduled maintenance, sweep-orphans, and the standalone composite are built; ontology versioning/migration and distributed DataFusion / Ballista are designed-only.
+**Scope.** All three service pillars (Ingest, Transform workers, Query API) are live; the engine service, Postgres control plane, and Iceberg store are built; external SQL wire and distributed DataFusion are deferred.
 
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** control-plane (queue, catalog, ontology, ACL, lineage), postgres adapter, worker loop (flush, GC, compact, transform, typed-transform, build_vector_index, stream_consolidate, stream_mv, sweep_orphans), ingest (landing, materializer, model-binding), query-api (governed object reads, typed insert/update/delete, governed links, lineage ACL-filtered reads, Flight export, external SQL wire slice 2, subscribe/changes feed, graph queries, action downstream with write-then-enqueue, catalog views, per-dataset catalog ACL gating, computed action assignments), engine (DataFusion serving over Flight SQL, vector search, flush, GC, consolidate, merge-on-read, mv_delta, mv_enrich, GovernedTableProvider physical enforcement, EndCapIntent write-path refusals, compaction auto-trigger), service runtime (auth, admin provisioning, service accounts, login lockout, password lifecycle), CDC merge engines (LastRow, FirstRow, Versioned), action downstream (write-then-enqueue), scheduled maintenance (cron GC/compaction), standalone composite, dedicated worker deployment (binary + Helm), UI (Yew WASM), OCI deploy
-- **Designed-only:** ontology versioning/migration, distributed DataFusion / Ballista, aggregate-class merge engines (Aggregation, PartialUpdate)
+- **Built:** queue, catalog, ontology, ACL, lineage, ingest (snapshot-commit, landing materializer, dataset→model binding, multi-file write), query-api (governed object reads, typed-object serialization, link traversal, graph queries, typed-insert/update/delete actions, catalog views, vector search, subscribe feed, lineage filter, Flight SQL export), engine (DataFusion serving, flush, GC, compaction, COW consolidate, stream MV, inline shadow writes), transform (physical SQL, typed), auth (JWT, admin), scheduler, stream/CDC declaration
+- **Designed-only:** external SQL wire (TCP listener + auth), distributed DataFusion / Ballista, ontology migration, multi-writer ingest
 </details>
 
 ## Control structure
@@ -24,129 +24,120 @@ Read top-down: **Losses** are outcomes we must never cause; **Hazards** are syst
 ```mermaid
 flowchart TD
   subgraph enforcement["Enforcement layer"]
-    acl["Acl trait (row/column policy)"]
-    auth["Auth middleware (session + service-token)"]
-    lineage-filter["Lineage ACL filter (cut-not-skip BFS)"]
+    auth["Auth middleware"]
+    lineage-filter["LineageVisibility filter"]
+    query-api["Query API service"]
   end
   subgraph control-plane["Control plane (built)"]
+    acl["Acl trait (Postgres)"]
     catalog["Catalog (Iceberg mirror)"]
-    consolidate-worker["Stream consolidate worker"]
-    flush-worker["Flush / compaction worker"]
+    consolidate-worker["Consolidate worker (COW + CDC fold)"]
+    flush-worker["Flush worker (inline→Parquet)"]
     ingest["Ingest service"]
-    lineage["Lineage store"]
-    ontology["Ontology (typed-object registry)"]
-    query-api["Query API (governed reads + writes + subscribe)"]
-    queue["Job queue"]
-    scheduler["Scheduler (cron GC/compact/transform)"]
-    stream-mv["Stream MV worker (micro-batch standing queries)"]
-    transform["Transform workers (physical + typed)"]
-    worker["Worker loop (dequeue + dispatch)"]
+    lineage["Lineage (Postgres)"]
+    ontology["Ontology (Postgres)"]
+    queue["Job queue (Postgres)"]
+    scheduler["Scheduler loop (engine)"]
+    stream-mv["Stream MV processor"]
+    transform["Transform executor (worker)"]
+    worker["Worker runtime (zero-pool)"]
   end
   subgraph store["Stateful processes"]
-    engine["Engine service (DataFusion + Flight)"]
-    iceberg["Iceberg tables (Parquet on S3)"]
-    postgres["Postgres (unified control plane)"]
+    engine["Engine service (DataFusion)"]
+    iceberg["Iceberg tables (S3/MinIO)"]
+    postgres["Postgres (unified CP store)"]
   end
   query-api -- "acl.check" --> acl
   query-api -- "acl.grant" --> acl
   query-api -- "acl.set-policy" --> acl
-  query-api -- "auth.provision" --> auth
-  query-api -- "auth.resolve" --> auth
-  ingest -- "catalog.register" --> catalog
+  auth -- "auth.protect" --> query-api
+  engine -- "catalog.snapshot-intact" --> catalog
   consolidate-worker -- "consolidate.fold" --> engine
-  query-api -- "engine.query" --> engine
+  query-api -- "engine.execute" --> engine
   query-api -- "engine.sql-wire" --> engine
-  query-api -- "engine.vector-search" --> engine
   query-api -- "engine.write" --> engine
-  flush-worker -- "gc.reclaim" --> iceberg
+  flush-worker -- "flush.land" --> iceberg
+  scheduler -- "gc.reclaim" --> iceberg
   ingest -- "ingest.land" --> iceberg
-  query-api -- "lineage.emit" --> lineage
-  query-api -- "lineage.filter" --> lineage-filter
+  ingest -- "lineage.emit" --> lineage
+  lineage-filter -- "lineage.filter" --> lineage
   stream-mv -- "mv.commit" --> engine
-  stream-mv -- "mv.delta" --> engine
-  stream-mv -- "mv.enrich" --> engine
   query-api -- "ontology.resolve" --> ontology
-  worker -- "queue.complete" --> queue
   worker -- "queue.dequeue" --> queue
-  ingest -- "queue.enqueue" --> queue
+  scheduler -- "queue.enqueue" --> queue
   worker -- "queue.fail" --> queue
-  scheduler -- "scheduler.fire" --> queue
+  scheduler -- "scheduler.tick" --> queue
+  ingest -- "stream.declare" --> catalog
   query-api -- "subscribe.feed" --> engine
-  transform -- "transform.commit" --> engine
+  transform -- "transform.conform" --> ontology
   ingest -- "tx.commit" --> postgres
-  acl -. "Policy rows for subject+target" .-> query-api
-  catalog -. "live_tables() snapshot list" .-> engine
-  engine -. "Arrow IPC result batches" .-> query-api
-  engine -. "Enrich table current-state batches (mv_enrich)" .-> stream-mv
-  engine -. "Framed source delta batches (mv_delta)" .-> stream-mv
-  engine -. "Arrow Flight input batches for transform SQL" .-> transform
-  lineage -. "One-hop closure nodes per BFS frontier" .-> lineage-filter
-  ontology -. "ObjectType + TableRef resolution" .-> query-api
-  ontology -. "Type-to-TableRef resolution for typed transforms" .-> transform
+  acl -. "Policy rows (row filters, column masks, denied set)" .-> query-api
+  catalog -. "live_tables snapshot for query registration" .-> engine
+  catalog -. "Table metadata (flush/GC eligibility)" .-> scheduler
+  engine -. "Arrow IPC result batches over Flight SQL" .-> query-api
+  iceberg -. "Snapshot/manifest metadata" .-> catalog
+  ontology -. "Type→table resolution, property schema" .-> query-api
   postgres -. "NOTIFY wakeup hint" .-> worker
-  queue -. "Watermark CAS conflict on commit" .-> stream-mv
+  queue -. "Job payload (kind, params, retry state)" .-> worker
 ```
 
 ## Losses
 
 | ID | Loss |
 |----|------|
-| `L.integrity-loss` | Data written or returned is silently wrong (schema drift, partial write, stale read) |
-| `L.liveness-loss` | Platform stops making progress (stuck queue, leaked locks, blocked compaction) |
-| `L.provenance-loss` | Lineage record is incomplete, fabricated, or disconnected from the data it describes |
-| `L.silent-incorrectness` | Query returns incorrect rows/columns without any error signal to the caller |
-| `L.unauthorized-access` | A principal reads or mutates data they are not entitled to |
+| `L.integrity-loss` | Silent data corruption or schema drift — a stored table no longer matches its declared ontology type, or a write commits data that violates the schema/conformance contract. |
+| `L.liveness-loss` | A service or job becomes permanently stuck, starved, or unable to make progress, causing data to stop flowing. |
+| `L.provenance-loss` | Lineage records are silently dropped, fabricated, or misattributed — the audit trail no longer reflects what actually happened. |
+| `L.silent-incorrectness` | A governed query returns wrong data — stale snapshots, phantom/missing rows, wrong join results — without any error signal to the caller. |
+| `L.unauthorized-access` | A subject reads or writes data it should not have access to, or a governance bypass leaks rows/columns past ACL policy. |
 
 ## Hazards
 
 | ID | Hazard (unsafe state) | → Losses | Maturity |
 |----|----|----|----|
-| `bypassed-gate` | A write reaches the engine without passing the governance prologue (direct engine access or code path that skips ACL) | L.unauthorized-access | built |
-| `consolidate-lost-write` | A CDC consolidation folds the base while a concurrent mutation commits between the fold read and the overwrite, silently dropping the mutation | L.integrity-loss | built |
-| `cow-partial` | A copy-on-write UPDATE/DELETE crashes mid-overwrite, leaving the table with a partial snapshot | L.integrity-loss | built |
-| `dangling-lineage` | A lineage event references a snapshot that was never committed or has been GC'd | L.provenance-loss | built |
-| `gc-live-delete` | GC deletes a data file still referenced by a live snapshot | L.integrity-loss, L.liveness-loss | built |
-| `ingest-schema-race` | Pre-transaction ingest probes race concurrent declarations, producing tables with wrong framing schema or unframed rows in stream tables | L.integrity-loss | built |
-| `lineage-gap` | A data-mutating operation completes without emitting a lineage event | L.provenance-loss | built |
-| `lineage-over-disclosure` | Lineage traversal reveals nodes or payloads the caller has no Read grant for | L.unauthorized-access | built |
-| `mv-silent-drop` | A micro-batch MV's standing query silently drops rows due to a LookupOn mismatch or filter, and the watermark advances past them permanently | L.integrity-loss, L.silent-incorrectness | built |
-| `phantom-rows` | Query returns rows the caller's policy should have filtered out | L.unauthorized-access, L.silent-incorrectness | built |
-| `stale-policy` | ACL policy used for a request reflects a revoked or outdated grant | L.unauthorized-access | built |
-| `stale-type` | Ontology resolution returns a TableRef pointing at a dropped or replaced backing table | L.silent-incorrectness, L.integrity-loss | built |
-| `stuck-queue` | Jobs accumulate without being dequeued or retried, halting pipeline progress | L.liveness-loss | built |
-| `transform-shadow` | Transform reads shadowed inputs (DataFusion silently uses the last-registered table when duplicate names collide) | L.silent-incorrectness, L.integrity-loss | built |
+| `acl-bypass-column` | A query returns column data the subject's column-mask policy should have hidden. | L.unauthorized-access | built |
+| `acl-bypass-row` | A query returns rows the subject's row-filter policy should have excluded. | L.unauthorized-access | built |
+| `consolidate-lost-write` | A consolidation fold overwrites inline rows that a concurrent write appended after the fold's read, silently dropping the concurrent write. | L.integrity-loss, L.silent-incorrectness | built |
+| `dangling-lineage` | A lineage event references a dataset that was never committed or has been dropped, creating an unresolvable provenance edge. | L.provenance-loss | built |
+| `gc-reclaim-live` | GC deletes a Parquet file that an in-flight query or snapshot still references, causing a read error or silent data loss. | L.silent-incorrectness, L.liveness-loss | built |
+| `job-poison` | A failing job is retried indefinitely, consuming the single-threaded worker and starving all other job kinds. | L.liveness-loss | built |
+| `lineage-filter-leak` | The lineage BFS filter expands through a denied node, revealing transitive provenance the subject should not see. | L.unauthorized-access | built |
+| `mv-ghost-rows` | A materialized view serves rows derived from source data the subject cannot read, bypassing ACL on the source. | L.unauthorized-access, L.silent-incorrectness | built |
+| `mv-watermark-stale` | The MV watermark advances past events that were never processed, silently dropping source rows from the materialized view. | L.silent-incorrectness, L.integrity-loss | built |
+| `orphan-parquet` | Parquet files written by a crashed/abandoned commit are never cleaned up, leaking storage indefinitely. | L.liveness-loss | built |
+| `partial-atomic-unit` | A multi-file landing commits only a subset of its files, leaving the table in a state that violates the all-or-nothing contract. | L.integrity-loss | built |
+| `schema-drift` | A landed dataset's inferred schema silently diverges from its ontology type's declared properties, causing downstream query failures or wrong casts. | L.integrity-loss, L.silent-incorrectness | built |
+| `stale-policy` | ACL policy is cached or captured at a point in time; a subsequent policy change is not reflected until re-read, creating a window where the old policy governs queries. | L.unauthorized-access | built |
+| `subscribe-policy-drift` | The subscribe change feed captures governance at connect time; policy changes mid-stream are not applied until the client reconnects. | L.unauthorized-access | built |
 
 ## Control actions
 
 | ID | Control action | Controller → Process | Maturity | Evidence |
 |----|----|----|----|----|
-| `acl.check` | Check read/write permission for subject+target | `query-api` → `acl` | built | governed.rs:67 |
-| `acl.grant` | Grant a role-scoped permission | `query-api` → `acl` | built | postgres/src/acl.rs:197 |
-| `acl.set-policy` | Attach row/column filter policy to a role | `query-api` → `acl` | built | postgres/src/acl.rs:318 |
-| `auth.provision` | Create user / service-account (admin-gated) | `query-api` → `auth` | built | runtime/src/admin.rs:95 |
-| `auth.resolve` | Resolve bearer token to verified subject | `query-api` → `auth` | built | runtime/src/auth.rs:87 |
-| `catalog.register` | Register or update an Iceberg table snapshot | `ingest` → `catalog` | built | postgres/src/iceberg_catalog.rs |
-| `consolidate.fold` | Fold CDC base by identity (LastRow/FirstRow/Versioned) | `consolidate-worker` → `engine` | built | engine-serving/src/consolidate.rs:373 |
-| `engine.query` | Execute governed SQL via internal Flight SQL | `query-api` → `engine` | built | engine_client.rs:45 |
-| `engine.sql-wire` | Forward external caller's arbitrary SQL under server-resolved governed catalog | `query-api` → `engine` | built | flight_sql.rs:164 |
-| `engine.vector-search` | kNN vector search on an indexed column | `query-api` → `engine` | built | engine-serving/src/vector_search.rs:57 |
-| `engine.write` | Land governed write (insert/overwrite) via engine control | `query-api` → `engine` | built | engine-serving/src/action_writer.rs:74 |
-| `gc.reclaim` | Delete orphaned snapshots and data files | `flush-worker` → `iceberg` | built | postgres/src/iceberg_gc.rs:103 |
-| `ingest.land` | Materialise raw data into an Iceberg snapshot | `ingest` → `iceberg` | built | ingest/src/landing.rs |
-| `lineage.emit` | Record a lineage event for a snapshot transition | `query-api` → `lineage` | built | postgres/src/lineage.rs:62 |
-| `lineage.filter` | ACL-filtered lineage closure (cut-not-skip BFS) | `query-api` → `lineage-filter` | built | lineage_filter.rs:105 |
-| `mv.commit` | Commit micro-batch MV output + watermark advance atomically | `stream-mv` → `engine` | built | engine/src/service.rs:590 |
-| `mv.delta` | Read framed source delta for a standing query | `stream-mv` → `engine` | built | engine-serving/src/mv_delta.rs:53 |
-| `mv.enrich` | Read enrich table current state (optionally key-filtered) | `stream-mv` → `engine` | built | engine-serving/src/mv_enrich.rs:44 |
-| `ontology.resolve` | Resolve a type name to its backing table | `query-api` → `ontology` | built | postgres/src/ontology.rs:315 |
-| `queue.complete` | Mark a dequeued job as completed | `worker` → `queue` | built | postgres/src/queue.rs:107 |
-| `queue.dequeue` | Claim the next available job (SELECT FOR UPDATE SKIP LOCKED) | `worker` → `queue` | built | postgres/src/queue.rs:78 |
-| `queue.enqueue` | Submit a new job (flush, compaction, transform, downstream) | `ingest` → `queue` | built | postgres/src/queue.rs:73 |
-| `queue.fail` | Return a failed job for retry or dead-letter | `worker` → `queue` | built | postgres/src/queue.rs:116 |
-| `scheduler.fire` | Fire due cron schedules for transforms and maintenance jobs | `scheduler` → `queue` | built | engine/src/scheduler.rs:61 |
-| `subscribe.feed` | Stream governed changelog events as NDJSON | `query-api` → `engine` | built | subscribe.rs:99 |
-| `transform.commit` | Commit transform output (files + lineage) atomically | `transform` → `engine` | built | worker/src/transform.rs:345 |
-| `tx.commit` | Commit a multi-table transaction atomically | `ingest` → `postgres` | built | postgres/src/transaction.rs:24 |
+| `acl.check` | Check subject access (row/column ACL) | `query-api` → `acl` | built | postgres/src/acl.rs:436 |
+| `acl.grant` | Grant role/permission | `query-api` → `acl` | built | postgres/src/acl.rs:197 |
+| `acl.set-policy` | Set row/column policy | `query-api` → `acl` | built | postgres/src/acl.rs:318 |
+| `auth.protect` | JWT auth gate on every request | `auth` → `query-api` | built | runtime/src/auth.rs:135 |
+| `catalog.snapshot-intact` | Guard GC-vs-read overlap | `engine` → `catalog` | built | postgres/src/iceberg_catalog.rs:484 |
+| `consolidate.fold` | Fold inline rows into Parquet base snapshot | `consolidate-worker` → `engine` | built | engine-serving/src/consolidate.rs:454 |
+| `engine.execute` | Execute governed SQL query | `query-api` → `engine` | built | engine-serving/src/serving.rs:1038 |
+| `engine.sql-wire` | Flight SQL do_get with governed catalog | `query-api` → `engine` | built | query-api/src/flight_sql.rs:175 |
+| `engine.write` | Write governed object (insert/update/delete) | `query-api` → `engine` | built | engine-serving/src/action_writer.rs:74 |
+| `flush.land` | Flush inline rows to Parquet files | `flush-worker` → `iceberg` | built | postgres/src/iceberg_landing.rs:109 |
+| `gc.reclaim` | Reclaim expired Parquet files | `scheduler` → `iceberg` | built | postgres/src/iceberg_gc.rs:103 |
+| `ingest.land` | Land Arrow data as Iceberg snapshot | `ingest` → `iceberg` | built | postgres/src/iceberg_landing.rs:109 |
+| `lineage.emit` | Emit lineage event | `ingest` → `lineage` | built | postgres/src/lineage.rs:62 |
+| `lineage.filter` | ACL-gate lineage closure BFS | `lineage-filter` → `lineage` | built | query-api/src/lineage_filter.rs:105 |
+| `mv.commit` | Commit MV micro-batch result | `stream-mv` → `engine` | built | engine/src/service.rs:591 |
+| `ontology.resolve` | Resolve type name to table | `query-api` → `ontology` | built | postgres/src/ontology.rs:315 |
+| `queue.dequeue` | Dequeue next job | `worker` → `queue` | built | postgres/src/queue.rs:78 |
+| `queue.enqueue` | Enqueue a job | `scheduler` → `queue` | built | postgres/src/queue.rs:73 |
+| `queue.fail` | Fail/retry a job | `worker` → `queue` | built | postgres/src/queue.rs:116 |
+| `scheduler.tick` | Periodic maintenance + enqueue | `scheduler` → `queue` | built | engine/src/scheduler.rs:17 |
+| `stream.declare` | Declare stream/CDC table | `ingest` → `catalog` | built | postgres/src/stream.rs:498 |
+| `subscribe.feed` | SSE change feed to client | `query-api` → `engine` | built | query-api/src/http.rs:746 |
+| `transform.conform` | Conformance-gate typed output | `transform` → `ontology` | built | worker/src/transform.rs:305 |
+| `tx.commit` | Commit transactional snapshot | `ingest` → `postgres` | built | postgres/src/transaction.rs:24 |
 
 ## Unsafe control actions
 
@@ -154,24 +145,25 @@ flowchart TD
 
 | ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
-| `acl.check.not-providing` | `acl.check` | not-providing | A code path reaches the engine without calling acl.check (e.g. the engine's UDS has no application-level auth; any process on the host can connect) | high | bypassed-gate, phantom-rows | engine/src/main.rs:15 |
-| `acl.check.providing` | `acl.check` | providing | acl.check returns Allow but the loaded policy rows are stale (fetched before a concurrent revoke committed), so the SQL embeds a filter the caller no longer satisfies | high | stale-policy, phantom-rows | governed.rs:67 |
-| `auth.resolve.not-providing` | `auth.resolve` | not-providing | A route is mounted outside the protect() middleware (misconfiguration), so requests reach handlers without a verified Subject | high | bypassed-gate | runtime/src/auth.rs:116 |
-| `consolidate.fold.wrong-timing` | `consolidate.fold` | wrong-timing | consolidate_stream folds the base and commits via overwrite_parquet_snapshot while a concurrent mutation commits between the fold read and the overwrite, silently dropping the mutation (known issue #iss-consolidate-stream-lost-write) | high | consolidate-lost-write | engine-serving/src/consolidate.rs:454 |
-| `engine.sql-wire.providing` | `engine.sql-wire` | providing | If do_get ever decoded a loom-native GovernedStatementQuery ticket instead of only TicketStatementQuery, an external caller could supply its own governed catalog, bypassing server-side governance entirely | high | bypassed-gate, phantom-rows | flight_sql.rs:175 |
-| `engine.write.providing` | `engine.write` | providing | engine.write is invoked after ACL allowed the write, but a concurrent policy revoke means the row should no longer be writable — the write lands anyway | medium | stale-policy | engine-serving/src/action_writer.rs:74 |
-| `gc.reclaim.wrong-timing` | `gc.reclaim` | wrong-timing | GC deletes data files between a reader's catalog snapshot and its actual file read, causing a dangling-file query error | medium | gc-live-delete | postgres/src/iceberg_gc.rs:103 |
-| `ingest.land.wrong-timing` | `ingest.land` | wrong-timing | ensure_iceberg_table and land_parquet routing probes run before and outside the landing transaction; concurrent first-declare or batch/stream races produce framing-schema mismatches or inject unframed rows (#iss-iceberg-create-outside-tx-framing, #iss-batch-land-routes-blind-to-concurrent-declare) | medium | ingest-schema-race | ingest/src/landing.rs |
-| `lineage.emit.not-providing` | `lineage.emit` | not-providing | An error after the data write but before lineage.emit means the snapshot exists with no provenance record | medium | lineage-gap | postgres/src/lineage.rs:62 |
-| `lineage.filter.not-providing` | `lineage.filter` | not-providing | Lineage endpoint returns nodes or event payloads the caller lacks Read permission for (filter bypass or incomplete redaction) | high | lineage-over-disclosure | lineage_filter.rs:105 |
-| `mv.commit.wrong-timing` | `mv.commit` | wrong-timing | A filtering micro-batch produces no output rows but advances the watermark past consumed offsets; if the filter incorrectly dropped rows (e.g. LookupOn mismatch), those rows are permanently lost | medium | mv-silent-drop | engine/src/service.rs:639 |
-| `ontology.resolve.wrong-timing` | `ontology.resolve` | wrong-timing | Ontology resolution returns a TableRef that was valid at resolve time but the backing table is dropped or replaced before the query executes | low | stale-type | postgres/src/ontology.rs:315 |
-| `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | Lock-timeout reclaim dequeues a job whose original worker is still running (slow but alive), causing duplicate execution of a side-effecting job | medium | stuck-queue | postgres/src/queue.rs:78 |
-| `queue.fail.not-providing` | `queue.fail` | not-providing | Worker panics or is killed between dequeue and fail/complete — the job stays running with no heartbeat until lock timeout, delaying retry | medium | stuck-queue | postgres/src/queue.rs:116 |
-| `scheduler.fire.not-providing` | `scheduler.fire` | not-providing | A crash between claiming a due schedule (which advances next_run_at) and submitting the job skips that occurrence entirely — at-most-once semantics mean the scheduled GC/compaction is silently lost | low | stuck-queue | engine/src/scheduler.rs:17 |
-| `subscribe.feed.providing` | `subscribe.feed` | providing | Subscribe feed captures governance policy at connect time; a concurrent ACL revoke mid-stream is not reflected until the next connect, so events streamed after the revoke carry the pre-revoke policy | medium | stale-policy, phantom-rows | http.rs:685 |
-| `transform.commit.wrong-timing` | `transform.commit` | wrong-timing | Transform reads input tables at snapshot T, but a concurrent ingest commits new data at T+1 before the transform commits — the output reflects stale inputs while lineage records the current snapshot, creating a provenance/data mismatch | medium | dangling-lineage, lineage-gap | worker/src/transform.rs:345 |
-| `tx.commit.wrong-timing` | `tx.commit` | wrong-timing | Transaction commits the catalog entry and enqueues a flush job, but crashes before the COMMIT — Postgres rolls back both atomically, so no data is lost, but the inverse (commit succeeds, subsequent non-transactional step fails) can leave a committed snapshot with no flush job | medium | dangling-lineage, lineage-gap | postgres/src/transaction.rs:24 |
+| `acl.check.not-providing` | `acl.check` | not-providing | ACL check is skipped or bypassed for a code path, allowing ungoverned data access. | high | acl-bypass-row, acl-bypass-column | query-api/src/governed.rs:103 |
+| `acl.check.wrong-timing` | `acl.check` | wrong-timing | ACL is evaluated before the catalog resolves the final table set, so a late-bound table (join, link) escapes the check. | high | acl-bypass-row, acl-bypass-column | engine-serving/src/governed.rs:176 |
+| `auth.protect.not-providing` | `auth.protect` | not-providing | A route is added outside the auth middleware layer, serving data without any authentication. | high | acl-bypass-row, acl-bypass-column | runtime/src/auth.rs:135 |
+| `consolidate.fold.wrong-timing` | `consolidate.fold` | wrong-timing | The fold reads inline rows and commits a new base snapshot; a concurrent flush appends new inline rows between the fold's read and its commit, and the fold's InlineEndCap retires only the rows it actually read — but a crash between the fold's read and commit could leave stale fold-flag state requiring self-healing on next tick. | medium | consolidate-lost-write | engine-serving/src/consolidate.rs:454 |
+| `engine.execute.wrong-timing` | `engine.execute` | wrong-timing | Engine registers live_tables snapshot, then GC reclaims a file referenced by that snapshot before the query completes. | high | gc-reclaim-live | engine-serving/src/serving.rs:1045 |
+| `engine.sql-wire.providing` | `engine.sql-wire` | providing | Flight SQL do_get resolves a governed catalog for the subject but a bug in catalog construction includes tables/columns the subject should not see. | high | acl-bypass-row, acl-bypass-column | query-api/src/flight_sql.rs:192 |
+| `engine.write.providing` | `engine.write` | providing | A governed write (insert/update/delete) bypasses the fine-grained ACL check on the affected rows, allowing mutation of data the subject cannot read. | high | acl-bypass-row | engine-serving/src/action_writer.rs:74 |
+| `flush.land.wrong-timing` | `flush.land` | wrong-timing | Flush writes Parquet files to object store but crashes before committing the snapshot pointer, orphaning the files. | low | orphan-parquet | postgres/src/iceberg_landing.rs:109 |
+| `gc.reclaim.wrong-timing` | `gc.reclaim` | wrong-timing | GC reclaims a file whose age exceeds the retention window but is still referenced by an in-progress query's snapshot. | high | gc-reclaim-live | postgres/src/iceberg_gc.rs:103 |
+| `ingest.land.wrong-timing` | `ingest.land` | wrong-timing | A multi-file landing writes N files but crashes after file K < N, leaving an incomplete snapshot with a partial file set. | medium | partial-atomic-unit | postgres/src/iceberg_landing.rs:109 |
+| `lineage.emit.not-providing` | `lineage.emit` | not-providing | A code path that transforms or moves data fails to emit a lineage event, creating an invisible provenance gap. | medium | dangling-lineage | postgres/src/lineage.rs:62 |
+| `lineage.filter.not-providing` | `lineage.filter` | not-providing | The lineage BFS skips the ACL gate on a frontier node, expanding through it and exposing transitive ancestors/descendants. | high | lineage-filter-leak | query-api/src/lineage_filter.rs:141 |
+| `mv.commit.wrong-timing` | `mv.commit` | wrong-timing | The MV micro-batch commits a watermark advance without having fully processed all events up to that offset, silently dropping rows. | high | mv-watermark-stale | engine/src/service.rs:591 |
+| `ontology.resolve.wrong-timing` | `ontology.resolve` | wrong-timing | Ontology type is resolved to a table, then the type definition is updated (properties added/removed) before the query executes, causing a schema mismatch. | medium | schema-drift | postgres/src/ontology.rs:315 |
+| `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | Worker dequeues a job whose preconditions (e.g. source table existence, snapshot validity) are no longer met by the time it executes. | medium | job-poison | postgres/src/queue.rs:78 |
+| `queue.fail.not-providing` | `queue.fail` | not-providing | A job handler panics or the worker crashes without calling fail(), leaving the job invisibly locked until its lease expires. | medium | job-poison | postgres/src/queue.rs:116 |
+| `subscribe.feed.providing` | `subscribe.feed` | providing | The change feed captures ACL policy at connect time and never re-evaluates; a policy tightening mid-stream continues serving rows the subject should no longer see. | high | subscribe-policy-drift | query-api/src/http.rs:839 |
+| `transform.conform.not-providing` | `transform.conform` | not-providing | A physical (non-typed) SQL transform bypasses the conformance gate entirely, writing output whose schema drifts from the target type. | medium | schema-drift | worker/src/transform.rs:305 |
+| `tx.commit.not-providing` | `tx.commit` | not-providing | A code path writes data outside the transactional snapshot-commit boundary, making the write invisible to the catalog but present on object store. | medium | partial-atomic-unit, orphan-parquet | postgres/src/transaction.rs:24 |
 
 ## Unsafe feedback
 
@@ -179,73 +171,69 @@ flowchart TD
 
 | ID | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
-| `catalog-snapshot.stale` | `catalog` → `engine`: live_tables() snapshot list | stale | Engine registers table snapshots at query-plan time; a concurrent ingest commit updates the catalog after registration, so the query reads a stale snapshot — not wrong, but the staleness window is unbounded (no invalidation signal) | low | stale-type | engine-serving/src/serving.rs:1045 |
-| `enrich-state.stale` | `engine` → `stream-mv`: Enrich table current-state batches (mv_enrich) | stale | mv_enrich_scan reads the enrich table's current state at scan time with no consistency bound against the delta's timeframe; the delta may reference entities created/modified after the enrich scan began, producing incomplete joins | low | mv-silent-drop | engine-serving/src/mv_enrich.rs:44 |
-| `lineage-closure.stale` | `lineage` → `lineage-filter`: One-hop closure nodes per BFS frontier | stale | LineageVisibility BFS checks Acl::check at traversal time but a concurrent grant/revoke between hops means the visible set is inconsistent — some nodes are gated with pre-revoke policy, others with post-revoke | low | lineage-over-disclosure | lineage_filter.rs:48 |
-| `policy-fetch.stale` | `acl` → `query-api`: policy rows for subject+target | stale | load_policy fetches policy rows in a separate query after the acl.check gate; a concurrent revoke between the two calls means the query runs with a policy the subject no longer holds | high | stale-policy, phantom-rows | governed.rs:103 |
+| `catalog-snapshot.stale` | `catalog` → `engine`: live_tables snapshot used for query registration | stale | Engine registers tables from a catalog snapshot; concurrent landing adds a new snapshot after registration but before query execution, so the query reads stale data (bounded by query lifetime). | medium | stale-policy | engine-serving/src/serving.rs:1045 |
+| `mv-source.corrupted` | `engine` → `stream-mv`: Source CDC events consumed by MV micro-batch | corrupted | If the source CDC stream contains duplicate or out-of-order events (e.g. from a replayed ingest), the MV processor may produce duplicate or misordered output rows in the materialized view. | medium | mv-watermark-stale, mv-ghost-rows | engine/src/service.rs:591 |
+| `policy-fetch.stale` | `acl` → `query-api`: Policy rows for subject+target | stale | Query-api loads ACL policy once per request; a policy change committed between load and query execution is invisible, governing the query under the old policy. | medium | stale-policy | query-api/src/governed.rs:103 |
+| `subscribe-policy.stale` | `acl` → `query-api`: ChangeFeedPolicy captured at SSE connect | stale | The subscribe change feed captures row filters, denied columns, and masked columns at connect time (http.rs:839); policy changes are not applied until the client disconnects and reconnects. | high | subscribe-policy-drift, stale-policy | query-api/src/http.rs:839 |
 
 <details>
-<summary><b>Not UCAs</b>: 45 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 46 examined and rejected</summary>
 
-- **EndCapIntent write-path refusals**: stream-table overwrite, typed UPDATE/DELETE on log tables, and MV-over-CDC are refused at the control-plane type level via EndCapIntent (Reframing/Removing/Destroying), preventing unsafe write combinations
-- **Flight export governed SQL**: FlightExportService runs the governed SQL path (GovernedStatementQuery) through the same ACL prologue as object reads; the Arrow stream carries the same row/column governance as the JSON path
-- **Flight export with revoked token mid-stream**: the auth gate runs once at request start; a token revoked during streaming does not interrupt the in-flight response — bounded by the query's execution time, not a persistent access leak
-- **GovernedTableProvider physical enforcement**: external SQL wire's governed catalog is enforced physically in the engine via GovernedTableProvider (engine-serving/src/governed.rs:176) — row filters, column denial, and column masking are pushed into DataFusion predicates, not just omitted from SQL generation
-- **MV enrich full-scan fallback**: when distinct lookup keys exceed MAX_LOOKUP_KEYS (10,000), the worker falls back to a full enrich table scan — always correct, only more expensive
-- **MV registration bootstrap at surviving offsets**: define_transform takes the source table's lock_key advisory lock and bootstraps watermarks to the source's earliest surviving offsets; a concurrent GC cannot reclaim below the new floor (postgres/src/mv_bootstrap.rs)
-- **MV watermark-aware GC floor holds**: GC's reclaim of MV sources is bounded by per-bucket mv_floor (postgres/src/iceberg_gc.rs:138); holds are counted, logged, and escapable via delete_transform
-- **Maintenance firing dedup suppression**: if an available job of the same (kind, payload) exists, the schedule clock advances but no duplicate job is enqueued — the existing job covers the work
-- **Per-dataset catalog ACL gating**: GET /datasets, GET /datasets/{s}/{t}, and preview reads are per-dataset ACL-gated under DatasetVisibility (dataset_acl.rs), closing the prior catalog/lineage governance asymmetry
-- **SQL wire row-cap at u32::MAX**: stream-side counting still enforces the cap; the missing +1 sentinel only means the cap message fires AT the limit rather than one row before — no silent truncation
-- **SQL wire ticket replay**: do_get re-governs every call server-side (flight_sql.rs:192); a replayed or forged TicketStatementQuery still runs under the bearer's current governed catalog, not the original caller's
-- **Scheduler claim-then-crash**: at-most-once semantics are deliberate (engine/src/scheduler.rs:5); the next schedule tick fires the missed occurrence within one interval
-- **Subscribe cursor tampering**: the cursor is unsigned by design (subscribe.rs:1-4); a tampered cursor corrupts only the consumer's own resume position, not authority — every connect re-runs resolve_governed
-- **acl.check false-deny on concurrent grant**: false-deny (returns Deny when a concurrent grant would Allow) is a liveness nuisance, not an integrity violation; the caller retries and gets the updated policy
-- **acl.grant replay**: grant is idempotent (INSERT ON CONFLICT DO NOTHING); a replayed grant does not widen access
-- **acl.set-policy with wrong column names**: set_policy validates column names against the ontology type at write time; a malformed policy is rejected, not silently applied
-- **admin provision without audit**: create-user / create-service-account log via tracing but do not emit a lineage event — admin actions are control-plane metadata, not data mutations; an audit trail is a future enhancement, not a safety gap
-- **auth.resolve with expired token**: resolve_session/resolve_service_token check expiry at evaluation time; an expired token is rejected, not silently accepted
-- **await_jobs missed NOTIFY**: bounded by 5s poll fallback (loom-config/src/worker.rs:26 via WorkerTuning poll_interval_ms default)
-- **catalog view base-drop protection**: views refuse drop of their backing base table (base-drop-blocked guard); a view cannot be orphaned by dropping its base
-- **catalog.register with duplicate snapshot id**: Postgres UNIQUE constraint on snapshot id rejects the duplicate; the caller gets a Conflict error
-- **computed assignments injection-free grammar**: action computed expressions use a closed, total, injection-free grammar (literals, param/property refs, arithmetic, string concat, comparisons, if/then/else, whitelisted functions) type-checked at define time — no SQL injection surface
-- **cow-overwrite crash recovery**: Iceberg's atomic manifest swap means a crash during overwrite_table leaves the prior snapshot valid; the partial new snapshot is never visible
-- **engine UDS file permissions**: the engine binds a Unix domain socket; access control is filesystem-level (container boundary) — standard for sidecar-pattern internal services
-- **engine.query plan error on bad SQL**: DataFusion returns a plan error surfaced as ServingError::Plan (400); no silent wrong result
-- **engine.query with no registered tables**: execute_query registers all live_tables before planning; an empty catalog yields an empty result, not an error — correct for a fresh system
-- **external SQL wire governed**: external SQL wire slice 2 uses resolve_governed_catalog with the same ACL enforcement as the internal path; the catalog is ALWAYS resolved server-side from the bearer-authenticated subject
-- **gc.reclaim on already-deleted file**: S3 DELETE is idempotent; deleting an already-removed file is a no-op
-- **heartbeat storm under high concurrency**: heartbeat is a single UPDATE by job id; concurrent heartbeats serialize on the row lock and the last-write-wins timestamp is monotonic
-- **ingest.land with schema mismatch**: landing validates the Arrow schema against the target table; a mismatch is rejected before any data is written
-- **lineage read with no ACL per node (legacy)**: lineage endpoints now enforce per-node ACL via LineageVisibility (lineage_filter.rs); the prior deferred gap is closed
-- **lineage.emit with duplicate event**: lineage events are append-only with a server-generated id; a duplicate emit creates two records but does not corrupt the graph
-- **ontology.resolve for unknown type**: resolve returns NotFound (404); the handler surfaces this to the caller — no silent fallback
-- **queue.complete on already-completed job**: complete transitions state to 'completed' only from 'running'; a second complete is a no-op (UPDATE WHERE id=$1 AND state='running' matches zero rows)
-- **queue.dequeue under zero load**: dequeue returns None; the worker loop sleeps until the next poll or NOTIFY — no resource waste
-- **queue.enqueue with oversized payload**: Postgres TEXT column accepts arbitrary length; an oversized payload is a capacity concern, not a correctness one, and is bounded by the HTTP body limit upstream
-- **queue.fail with exhausted retries**: RetryPolicy caps retries; a job that exceeds the cap transitions to 'dead' — visible in the queue table for manual intervention
-- **service-token mint with max_ttl**: token TTL is capped by LOOM_SERVICE_TOKEN_MAX_TTL (default 90d); a request above the cap is rejected 400 — no immortal tokens
-- **snapshot_intact evidence-then-watermark read ordering**: time-travel retention check reads evidence (surviving rows) before the monotone reclaimed_through watermark on the same connection; concurrent GC between the two reads cannot produce a false intact verdict (iceberg_catalog.rs:506)
-- **stream feed engine fault mid-stream**: subscribe.rs closes the NDJSON stream on engine fault; the client sees a closed stream (HTTP 200 body ends) and resumes from its last cursor — no silent data loss
-- **transform conformance gate**: typed transforms check output conformance BEFORE any rows are written; a non-conforming result writes/commits nothing (worker/src/transform.rs:305)
-- **transform duplicate input name**: run_wire_transform rejects duplicate input registration names up front; DataFusion shadowing is prevented (worker/src/transform.rs:239)
-- **tx.commit read-only transaction**: a transaction with no writes commits as a no-op; Postgres COMMIT on an empty transaction is harmless
-- **vector-search dimension mismatch**: the engine returns DimMismatch error; query-api surfaces it as a 400 — no silent wrong result
-- **write_filter eval on NULL column**: three-valued eval returns None (unknown) on NULL; callers treat None as deny (fail-closed) (write_filter.rs:110)
+- **NOTIFY missed by worker**: Bounded by 5s poll fallback (worker poll interval); the NOTIFY is a hint, not the mechanism.
+- **acl.check.providing (over-deny)**: A false-deny is a liveness nuisance, not a safety violation; the caller gets a clear 403.
+- **acl.check.wrong-duration (held too long)**: Policy is evaluated once per request, not held across requests; duration is bounded.
+- **acl.grant.providing (over-grant)**: Grant is an admin action behind require_admin; an over-grant is an admin misconfiguration, not a control-action failure.
+- **acl.grant.wrong-timing**: Grant is idempotent and serialized by Postgres.
+- **auth.protect.providing (reject valid token)**: A false rejection is a liveness nuisance; the caller gets a 401.
+- **auth.protect.wrong-duration**: Auth middleware runs once per request; no duration concept.
+- **auth.protect.wrong-timing**: Auth is middleware on every request; there is no timing window within a single request.
+- **catalog.snapshot-intact.not-providing**: Returns false → GC skips the file; fail-safe direction (over-retain, not over-reclaim).
+- **catalog.snapshot-intact.providing (false positive)**: False positive means GC reclaims — but this IS the gc.reclaim.wrong-timing UCA, already captured.
+- **consolidate.fold.not-providing**: Fold not running means inline rows accumulate (read amplification), not data loss; bounded by the next scheduler tick.
+- **consolidate.fold.wrong-duration (held too long)**: The fold holds the per-table consolidation lock; other folds queue behind it. Bounded by the fold's own runtime, not unbounded.
+- **engine.execute.not-providing**: Query not executing returns a clear error to the caller.
+- **engine.sql-wire.not-providing (refuse valid query)**: A refused query returns a Flight error; the caller retries or reports the error.
+- **engine.write.not-providing**: A refused write returns a clear error; data is unchanged.
+- **flush.land.not-providing**: Flush not running means inline rows accumulate; bounded by scheduler re-enqueue.
+- **flush.land.providing (corrupt Parquet)**: Arrow→Parquet serialization is deterministic; a corrupt file fails the Iceberg snapshot checksum and is rejected at read.
+- **gc.reclaim.not-providing**: GC not running means old files accumulate (storage cost), not a safety violation.
+- **gc.reclaim.wrong-duration**: GC holds no cross-request lock; each file deletion is independent and idempotent.
+- **ingest.land.not-providing**: A refused landing returns a clear error; data is unchanged.
+- **ingest.land.providing (land wrong data)**: The ingest path writes the exact bytes the caller sent; schema inference validates column types against any bound ontology type.
+- **ingest.land.wrong-duration**: A long-running landing holds its tx; bounded by Postgres statement_timeout if configured. Not a safety violation — just latency.
+- **lineage.emit.providing (extra event)**: A spurious lineage event is a provenance nuisance, not a safety violation — queries do not depend on lineage for correctness.
+- **lineage.emit.wrong-timing**: Lineage emit is in the same tx as the data commit; it cannot fire before or after the data is visible.
+- **lineage.filter.providing (over-filter)**: Over-filtering hides provenance the subject could read — a liveness nuisance, not a leak.
+- **lineage.filter.wrong-timing**: The BFS reads lineage and ACL in the same request; there is no inter-request window.
+- **mv.commit.not-providing**: MV not committing means the view is stale, not wrong; the next tick retries.
+- **mv.commit.providing (commit wrong result)**: The MV query is DataFusion SQL; its result is deterministic from the input batch. A wrong query is a config error, not a control-action failure.
+- **ontology.resolve.not-providing**: Resolution failure returns 404; the caller gets a clear error.
+- **ontology.resolve.providing (resolve to wrong table)**: Resolution is a deterministic lookup by type name; a wrong result requires a corrupted ontology table.
+- **queue.dequeue.not-providing**: No dequeue means jobs accumulate; bounded by poll interval and lease expiry.
+- **queue.dequeue.wrong-duration (held too long)**: Job lease has a fixed expiry; an overrun job is reclaimed by the queue after lease timeout.
+- **queue.enqueue.not-providing**: Enqueue failure is retried by the scheduler on the next tick.
+- **queue.fail.providing (spurious fail)**: A spuriously failed job is retried per its retry policy; bounded by max_retries.
+- **queue.fail.wrong-timing (too late)**: Lease expiry is the backstop; a late fail() after lease expiry is a no-op (Postgres row lock).
+- **scheduler.tick.not-providing**: A missed tick delays enqueue; bounded by the next tick interval.
+- **scheduler.tick.wrong-timing (too early/late)**: Scheduler is idempotent; early/late ticks are harmless — they just check and enqueue if needed.
+- **stream.declare over existing data**: Blocked by pg_refuse_declare_over_data (stream.rs:458); returns a validation error.
+- **stream.declare.not-providing**: Declaration failure returns a clear error to the caller.
+- **stream.declare.wrong-timing (concurrent with MV register)**: Serialized via pg_advisory_xact_lock on the same per-table key as define_transform (stream.rs:302).
+- **subscribe.feed.not-providing**: Feed not sending means client sees no updates; bounded by client-side reconnect.
+- **subscribe.feed.wrong-duration**: The feed is a long-lived SSE stream; duration is client-controlled (disconnect to stop).
+- **subscribe.feed.wrong-timing (events out of order)**: Events are read by cursor order (offset-keyed); the cursor is monotonic and the read is serialized.
+- **transform.conform.providing (over-reject)**: An over-rejection fails the transform job with a clear error; data is unchanged.
+- **tx.commit.providing (commit wrong data)**: The commit boundary is Postgres serializable isolation; committed data matches what was written in the tx.
+- **tx.commit.wrong-timing (concurrent commits)**: Snapshot-isolation CAS (iceberg_landing overwrite) retries on conflict; no silent overwrite.
 </details>
 
 ## Open questions
 
-- Ballista escalation: when DataFusion is distributed, how does row-level ACL pushdown interact with shuffle partitions?
-- Consolidate-stream lost-write fix: the overwrite_parquet_snapshot_consuming primitive (retire-only-what-you-read) is designed but not yet built (#iss-consolidate-stream-lost-write)
-- GC hold-off protocol: should readers acquire a short-lived lease to prevent gc.reclaim from deleting files they are about to read?
-- MV CDC declare-register race: concurrent CDC declaration and MV registration can interleave into a wedged state — both guards hold no shared lock (#iss-mv-cdc-declare-register-race)
-- MV LookupOn verification: v1 does not parse the standing query's SQL to verify that the declared join columns match the actual equijoin — a mismatch silently drops join partners (stream_mv_job.rs:34)
-- MV floor holds pre-declaration files: pre-declaration data files (no loom_offset stat) are held forever by the MV floor fail-safe (#iss-mv-floor-holds-pre-declaration-files)
-- MV watermark ghost rows: an in-flight micro-batch run can re-create watermark rows for a deleted def — the CAS advance neither takes the define lock nor re-checks registration (#iss-mv-watermark-ghost-rows)
-- Multi-writer ingest: concurrent ingest to the same table can produce conflicting snapshots; is last-writer-wins acceptable or does the catalog need compare-and-swap?
-- Ontology migration: how are in-flight queries handled when a type's backing table is replaced (schema evolution)?
-- Queue poison pill: a repeatedly-failing job that exhausts retries becomes 'dead' but is never cleaned up — should there be an alert or reaper?
-- Subscribe feed torn read: changelog+base snapshot reads are two independent catalog reads (no shared transaction); under a narrow window events can be silently dropped (#iss-stream-feed-torn-read)
-- Tenancy isolation: if loom supports multiple tenants, does the current single-Postgres model provide sufficient isolation?
-- Transform snapshot isolation: transform reads inputs at an un-pinned snapshot; concurrent ingest can update inputs between the read and the commit, so the output may reflect a mix of snapshot versions
+- ACL pushdown completeness: the GovernedTableProvider wraps individual table scans, but a query that references a table via a subquery or CTE may bypass the governed provider registration — systematic audit of the DataFusion plan visitor would confirm coverage.
+- External SQL wire (deferred): when the internal Flight SQL surface gains a TCP listener and external auth, the governed catalog construction must be audited for the new trust boundary (currently only query-api is a caller).
+- GC retention vs. long queries: snapshot_intact guards against reclaiming files referenced by a known snapshot, but a very long-running query that outlives the retention window may see its files reclaimed if the query's snapshot is not registered with the GC — the current guard is age-based, not query-registration-based.
+- MV watermark CAS: the watermark advance is now CAS-guarded on the def still naming the key (engine/src/service.rs:640), closing the ghost-row path for renamed/dropped MVs; a crash between watermark advance and run-mark could still leave a gap if the next run does not re-scan from the prior committed watermark.
+- Multi-writer ingest: concurrent landings to the same table are serialized by Iceberg snapshot CAS, but the retry loop is in the landing code — a high-contention hot table could see repeated retries and elevated latency; no silent data loss, but liveness under contention is uncharacterized.
+- Ontology migration: changing a type's properties after data has been landed is not yet supported; the conformance gate and query path assume the type definition is stable.
+- Stream/CDC declare-register race (one direction closed): first-declare is serialized against concurrent MV registration via pg_advisory_xact_lock (stream.rs:302), but the reverse direction (MV registration racing a concurrent first-declare that adds a second source) relies on the same lock — verify the lock is symmetric.
+- Typed-transform identity vs. non-identity: typed transforms conformance-gate the output, but the identity-column requirement for update/delete actions is enforced only at the query-api layer, not in the transform commit path — a transform that writes to an identity-bearing type without preserving the identity column would silently succeed.
