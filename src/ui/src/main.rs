@@ -134,6 +134,82 @@ struct WorkspaceProps {
     on_logout: Callback<()>,
 }
 
+/// Custom hook owning the Catalog History tab's run-history fetch: resets on
+/// dataset change and lazily loads `/lineage/{ns}/{name}/runs` when the History tab
+/// is active, under the shared fetch-generation guard. Extracted from `workspace`
+/// so the tab's state + effects stay out of that (already large) component; returns
+/// `(runs, loading, error)` for the drawer. The pure parse lives in `loom_ui_core`.
+#[hook]
+fn use_dataset_run_history(
+    selected: Option<usize>,
+    tab: AttrValue,
+    datasets: UseStateHandle<Vec<DatasetRow>>,
+    token: String,
+    on_logout: Callback<()>,
+    fetch_gen: Rc<RefCell<FetchGeneration>>,
+) -> (Option<Vec<DatasetRunRow>>, bool, Option<String>) {
+    let history_runs = use_state(|| Option::<Vec<DatasetRunRow>>::None);
+    let history_loading = use_state(|| false);
+    let history_error = use_state(|| Option::<String>::None);
+
+    // Reset on selection change so re-opening History for a new dataset refetches.
+    {
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
+        use_effect_with(selected, move |_| {
+            history_runs.set(None);
+            history_loading.set(false);
+            history_error.set(None);
+        });
+    }
+
+    // Lazy fetch when the History tab is active for the selection and nothing loaded.
+    {
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
+        let already_loaded = history_runs.is_some();
+        use_effect_with((selected, tab), move |(sel, tab)| {
+            if tab.as_str() != "history" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            history_loading.set(true);
+            let my_gen = fetch_gen.borrow().current();
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await
+                {
+                    Ok(runs) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_runs.set(Some(runs));
+                            history_loading.set(false);
+                        }
+                    }
+                    Err(FetchError::Unauthorized) => {
+                        history_loading.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(e) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_error.set(Some(e.to_string()));
+                            history_loading.set(false);
+                        }
+                    }
+                }
+            });
+        });
+    }
+
+    (
+        (*history_runs).clone(),
+        *history_loading,
+        (*history_error).clone(),
+    )
+}
+
 #[function_component(Workspace)]
 fn workspace(props: &WorkspaceProps) -> Html {
     let surface = use_state(|| Surface::Catalog);
@@ -174,9 +250,6 @@ fn workspace(props: &WorkspaceProps) -> Html {
     )]
     let lineage = use_state(|| Option::<(Vec<(String, String)>, Vec<(String, String)>)>::None);
     let show_full_lineage = use_state(|| false);
-    let history_runs = use_state(|| Option::<Vec<DatasetRunRow>>::None);
-    let history_loading = use_state(|| false);
-    let history_error = use_state(|| Option::<String>::None);
     // Generation guard for selection-scoped drawer fetches: bumped on dataset
     // selection change so a slow in-flight fetch from a prior selection cannot
     // overwrite the current selection's drawer tab body (see FetchGeneration).
@@ -266,9 +339,6 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let catalog_tab = catalog_tab.clone();
         let lineage = lineage.clone();
         let show_full_lineage = show_full_lineage.clone();
-        let history_runs = history_runs.clone();
-        let history_loading = history_loading.clone();
-        let history_error = history_error.clone();
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
@@ -285,9 +355,6 @@ fn workspace(props: &WorkspaceProps) -> Html {
             preview_error.set(None);
             lineage.set(None);
             show_full_lineage.set(false);
-            history_runs.set(None);
-            history_loading.set(false);
-            history_error.set(None);
             catalog_tab.set(AttrValue::from("schema"));
             // Any in-flight fetch from the previous selection is now stale.
             let my_gen = fetch_gen.borrow_mut().bump();
@@ -397,52 +464,19 @@ fn workspace(props: &WorkspaceProps) -> Html {
         });
     }
 
-    // Lazy history: only fetch the dataset's run history when the History tab is
-    // active for the selected dataset and nothing is loaded yet. Keyed on
-    // (selection, active tab); the row-select effect resets `history_runs` to None,
-    // so switching datasets and re-opening History refetches.
-    {
-        let history_runs = history_runs.clone();
-        let history_loading = history_loading.clone();
-        let history_error = history_error.clone();
-        let datasets = datasets.clone();
-        let token = props.token.to_string();
-        let on_logout = props.on_logout.clone();
-        let fetch_gen = fetch_gen.clone();
-        let already_loaded = history_runs.is_some();
-        let dep = (*selected_dataset, (*catalog_tab).clone());
-        use_effect_with(dep, move |(sel, tab)| {
-            if tab.as_str() != "history" || already_loaded {
-                return;
-            }
-            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
-                return;
-            };
-            history_loading.set(true);
-            let my_gen = fetch_gen.borrow().current();
-            wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await
-                {
-                    Ok(runs) => {
-                        if fetch_gen.borrow().is_current(my_gen) {
-                            history_runs.set(Some(runs));
-                            history_loading.set(false);
-                        }
-                    }
-                    Err(FetchError::Unauthorized) => {
-                        history_loading.set(false);
-                        on_logout.emit(());
-                    }
-                    Err(e) => {
-                        if fetch_gen.borrow().is_current(my_gen) {
-                            history_error.set(Some(e.to_string()));
-                            history_loading.set(false);
-                        }
-                    }
-                }
-            });
-        });
-    }
+    // Catalog History tab: the run-history fetch (reset on selection + lazy load when
+    // the History tab is active) is encapsulated in a custom hook so the tab's state
+    // and effects don't inflate `workspace`. Called here — after the row-select
+    // effect's generation bump — so its fetch captures the post-bump generation, like
+    // the preview/lineage effects above.
+    let (history_runs, history_loading, history_error) = use_dataset_run_history(
+        *selected_dataset,
+        (*catalog_tab).clone(),
+        datasets.clone(),
+        props.token.to_string(),
+        props.on_logout.clone(),
+        fetch_gen.clone(),
+    );
 
     // On mount: load the ontology's type list, then eagerly load every type's detail
     // (schema) into one map. This is an N+1 over the type list (one /ontology/types +
@@ -735,9 +769,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             lineage={lineage_view}
                             show_full={*show_full_lineage}
                             on_toggle_full={on_toggle_full}
-                            history_runs={(*history_runs).clone()}
-                            history_loading={*history_loading}
-                            history_error={(*history_error).clone()}
+                            history_runs={history_runs.clone()}
+                            history_loading={history_loading}
+                            history_error={history_error.clone()}
                         />
                     }
                 })
