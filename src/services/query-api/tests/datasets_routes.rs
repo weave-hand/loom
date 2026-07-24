@@ -504,3 +504,95 @@ async fn type_grant_lists_backing_table() {
     assert_eq!(json["datasets"].as_array().unwrap().len(), 1);
     assert_eq!(json["datasets"][0]["name"], "events");
 }
+
+/// Seed several tables across two schemas with distinct row counts, and grant
+/// `analyst` Read on each so the list is fully visible. Row counts: main.alpha=3,
+/// main.gamma=10, other.beta=1.
+async fn seeded_multi() -> MemoryControlPlane {
+    let cp = MemoryControlPlane::new(Duration::from_millis(300));
+    let cols = vec![("id".to_string(), "Long".to_string(), false)];
+    for (schema, name, batch) in [
+        ("main", "alpha", 3usize),
+        ("main", "gamma", 10),
+        ("other", "beta", 1),
+    ] {
+        let table = TableRef {
+            schema: schema.into(),
+            name: name.into(),
+        };
+        cp.seed_catalog(&table, &cols, &[batch]);
+        grant_table(&cp, "analyst", table).await;
+    }
+    cp
+}
+
+fn listed_names(json: &serde_json::Value) -> Vec<String> {
+    json["datasets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| {
+            format!(
+                "{}.{}",
+                d["schema"].as_str().unwrap(),
+                d["name"].as_str().unwrap()
+            )
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_sort_name_desc() {
+    let app = app(seeded_multi().await);
+    let (status, json) = get(&app, "/datasets?sort=name&dir=desc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        listed_names(&json),
+        vec!["main.gamma", "other.beta", "main.alpha"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_sort_rows_desc() {
+    let app = app(seeded_multi().await);
+    let (status, json) = get(&app, "/datasets?sort=rows&dir=desc").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        listed_names(&json),
+        vec!["main.gamma", "main.alpha", "other.beta"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_filter_by_project() {
+    let app = app(seeded_multi().await);
+    let (status, json) = get(&app, "/datasets?project=main&sort=name").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed_names(&json), vec!["main.alpha", "main.gamma"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_rejects_unknown_sort() {
+    let app = app(seeded_multi().await);
+    let (status, _) = get(&app, "/datasets?sort=bogus").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_rejects_unknown_dir() {
+    let app = app(seeded_multi().await);
+    let (status, _) = get(&app, "/datasets?dir=sideways").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn datasets_no_sort_preserves_schema_name_order() {
+    let app = app(seeded_multi().await);
+    let (status, json) = get(&app, "/datasets").await;
+    assert_eq!(status, StatusCode::OK);
+    // list_tables is (schema,name)-ordered: main.alpha, main.gamma, other.beta.
+    assert_eq!(
+        listed_names(&json),
+        vec!["main.alpha", "main.gamma", "other.beta"]
+    );
+}

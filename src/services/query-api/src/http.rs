@@ -296,14 +296,28 @@ async fn get_ontology_type(
 /// enforces (`DatasetVisibility::is_table_readable`).
 #[utoipa::path(
     get, path = "/datasets",
+    params(
+        ("sort" = Option<String>, Query, description = "Sort key: name | project | updated | rows. Absent preserves (schema,name) order."),
+        ("dir" = Option<String>, Query, description = "Sort direction: asc (default) | desc. Only meaningful with sort."),
+        ("project" = Option<String>, Query, description = "Filter to datasets whose project (schema) exactly matches."),
+    ),
     responses(
         (status = 200, description = "Live mirror tables", body = DatasetsResponse),
+        (status = 400, description = "Malformed sort/dir selector"),
         (status = 500, description = "Internal error"),
     ),
     security(("bearer_auth" = [])),
     tag = "datasets",
 )]
-async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::response::Response {
+async fn list_datasets(
+    State(st): State<AppState>,
+    Query(params): Query<Vec<(String, String)>>,
+    subject: Subject,
+) -> axum::response::Response {
+    let list_params = match crate::dataset_list::DatasetListParams::from_params(&params) {
+        Ok(p) => p,
+        Err(m) => return (StatusCode::BAD_REQUEST, m).into_response(),
+    };
     let catalog = st.cp.catalog();
     let page = match catalog.list_tables(PageReq::unbounded()).await {
         Ok(p) => p,
@@ -314,7 +328,8 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
         st.cp.ontology(),
         st.naming.as_ref(),
     );
-    let mut datasets: Vec<serde_json::Value> = Vec::with_capacity(page.items.len());
+    let mut datasets: Vec<crate::dataset_list::DatasetSummary> =
+        Vec::with_capacity(page.items.len());
     for t in &page.items {
         match vis.is_table_readable(&subject.0, t).await {
             Ok(true) => {}
@@ -334,14 +349,15 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
             }
             Err(_) => (String::new(), None),
         };
-        datasets.push(serde_json::json!({
-            "schema": t.schema,
-            "name": t.name,
-            "project": t.schema,
-            "updated": updated,
-            "rows": rows,
-            "kind": "table",
-        }));
+        datasets.push(crate::dataset_list::DatasetSummary {
+            schema: t.schema.clone(),
+            name: t.name.clone(),
+            project: t.schema.clone(),
+            updated,
+            rows,
+            kind: "table",
+            base: None,
+        });
     }
     // Views share the (schema, name) namespace and gate identically to a physical
     // table (`is_table_readable` already resolves a view ref: Table grant on the view
@@ -364,17 +380,19 @@ async fn list_datasets(State(st): State<AppState>, subject: Subject) -> axum::re
                 .unwrap_or_default(),
             Err(_) => String::new(),
         };
-        datasets.push(serde_json::json!({
-            "schema": v.view.schema,
-            "name": v.view.name,
-            "project": v.view.schema,
-            "updated": updated,
-            "rows": serde_json::Value::Null,
-            "kind": "view",
-            "base": { "schema": v.base.schema, "name": v.base.name },
-        }));
+        datasets.push(crate::dataset_list::DatasetSummary {
+            schema: v.view.schema.clone(),
+            name: v.view.name.clone(),
+            project: v.view.schema.clone(),
+            updated,
+            rows: None,
+            kind: "view",
+            base: Some((v.base.schema.clone(), v.base.name.clone())),
+        });
     }
-    Json(serde_json::json!({ "datasets": datasets })).into_response()
+    let ordered = crate::dataset_list::apply(datasets, &list_params);
+    let out: Vec<serde_json::Value> = ordered.iter().map(|d| d.to_json()).collect();
+    Json(serde_json::json!({ "datasets": out })).into_response()
 }
 
 /// Dataset detail: the table's snapshot (current, or the `?as_of`/`?as_of_snapshot`
