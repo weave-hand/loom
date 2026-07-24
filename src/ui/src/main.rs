@@ -13,18 +13,18 @@ mod surfaces;
 
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
-    AuthError, BadgeTone, ButtonVariant, CompletionSchema, DatasetDetail, DatasetRow,
-    FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef, TransformDefView,
-    TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail, bump_epoch,
-    delete_action_effect, form_to_body, form_to_def, run_action_effect,
-    schema_from_dataset_details, schema_from_types,
+    AuthError, BadgeTone, ButtonVariant, CatalogSortDir, CompletionSchema, DatasetDetail,
+    DatasetRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef,
+    TransformDefView, TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail,
+    bump_epoch, delete_action_effect, distinct_projects, form_to_body, form_to_def,
+    run_action_effect, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::collections::HashMap;
 use stylist::yew::styled_component;
 use surfaces::{
-    CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow,
-    TransformDrawer, TransformEditor, TransformsList,
+    CatalogControls, CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList,
+    OntologyTypeRow, TransformDrawer, TransformEditor, TransformsList,
 };
 use yew::prelude::*;
 
@@ -81,6 +81,15 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let detail_error = use_state(|| Option::<String>::None);
     let preview_error = use_state(|| Option::<String>::None);
     let catalog_tab = use_state(|| AttrValue::from("schema"));
+    // Server-side sort/filter controls: the active sort key + direction, the active
+    // project filter (None = "All"), the distinct project chip options (refreshed on
+    // unfiltered loads only, so the chip set stays stable while filtered), and a
+    // generation guard against out-of-order responses when controls change quickly.
+    let catalog_sort = use_state(|| DatasetSort::Name);
+    let catalog_dir = use_state(|| CatalogSortDir::Asc);
+    let catalog_project = use_state(|| Option::<String>::None);
+    let catalog_all_projects = use_state(Vec::<String>::new);
+    let catalog_gen = use_mut_ref(FetchGeneration::default);
     // Lazily-loaded lineage closures (upstream, downstream) for the selected dataset,
     // plus whether the Lineage tab is showing the full-canvas stub.
     #[allow(
@@ -135,23 +144,43 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let tf_runs_epoch = use_state(|| 0u64);
     let tf_runs_epoch_ref = use_mut_ref(|| 0u64);
 
-    // On mount: load the dataset list. Catalog is the default surface, so a
-    // mount-keyed effect loads it exactly once (mirrors the ontology type list).
+    // Load the dataset list, re-fetching whenever the sort/filter controls change.
+    // Keyed on (sort, dir, project); guarded by `catalog_gen` against out-of-order
+    // responses (a slow earlier fetch must not overwrite a newer control's result).
+    // The project chip options are refreshed from the response only on an unfiltered
+    // (project = None) load, so the chip set stays stable while filtered.
     {
         let datasets = datasets.clone();
         let catalog_status = catalog_status.clone();
+        let catalog_all_projects = catalog_all_projects.clone();
+        let catalog_gen = catalog_gen.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
-        use_effect_with((), move |()| {
+        let sort = *catalog_sort;
+        let dir = *catalog_dir;
+        let project = (*catalog_project).clone();
+        use_effect_with((sort, dir, project.clone()), move |(sort, dir, project)| {
             catalog_status.set(LoadStatus::Loading);
+            let query = loom_ui_core::dataset_list_query(*sort, *dir, project.as_deref());
+            let project_is_all = project.is_none();
+            let my_gen = catalog_gen.borrow_mut().bump();
             wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_datasets(&net::api_base(), &token).await {
+                match net::fetch_datasets(&net::api_base(), &token, &query).await {
                     Ok(d) => {
-                        datasets.set(d);
-                        catalog_status.set(LoadStatus::Idle);
+                        if catalog_gen.borrow().is_current(my_gen) {
+                            if project_is_all {
+                                catalog_all_projects.set(distinct_projects(&d));
+                            }
+                            datasets.set(d);
+                            catalog_status.set(LoadStatus::Idle);
+                        }
                     }
                     Err(FetchError::Unauthorized) => on_logout.emit(()),
-                    Err(e) => catalog_status.set(LoadStatus::Error(e.to_string())),
+                    Err(e) => {
+                        if catalog_gen.borrow().is_current(my_gen) {
+                            catalog_status.set(LoadStatus::Error(e.to_string()));
+                        }
+                    }
                 }
             });
             || ()
@@ -374,7 +403,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let base = net::api_base();
         use_effect_with((), move |()| {
             wasm_bindgen_futures::spawn_local(async move {
-                if let Ok(datasets) = net::fetch_datasets(&base, &token).await {
+                if let Ok(datasets) = net::fetch_datasets(&base, &token, "").await {
                     let opts: Vec<String> = datasets
                         .iter()
                         .map(|d| format!("{}.{}", d.schema, d.name))
@@ -536,13 +565,51 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 let show_full_lineage = show_full_lineage.clone();
                 Callback::from(move |()| show_full_lineage.set(!*show_full_lineage))
             };
+            // Control-change callbacks also reset `selected_dataset`: reordering or
+            // filtering the list shifts row indices, so a stale selection index could
+            // point at the wrong dataset (or none) after the next fetch lands.
+            let on_sort = {
+                let catalog_sort = catalog_sort.clone();
+                let selected_dataset = selected_dataset.clone();
+                Callback::from(move |s: DatasetSort| {
+                    catalog_sort.set(s);
+                    selected_dataset.set(None);
+                })
+            };
+            let on_dir = {
+                let catalog_dir = catalog_dir.clone();
+                let selected_dataset = selected_dataset.clone();
+                Callback::from(move |d: CatalogSortDir| {
+                    catalog_dir.set(d);
+                    selected_dataset.set(None);
+                })
+            };
+            let on_project = {
+                let catalog_project = catalog_project.clone();
+                let selected_dataset = selected_dataset.clone();
+                Callback::from(move |p: Option<String>| {
+                    catalog_project.set(p);
+                    selected_dataset.set(None);
+                })
+            };
             let list = html! {
-                <CatalogList
-                    datasets={(*datasets).clone()}
-                    status={(*catalog_status).clone()}
-                    selected={*selected_dataset}
-                    on_row={on_row}
-                />
+                <>
+                    <CatalogControls
+                        projects={(*catalog_all_projects).clone()}
+                        active_project={(*catalog_project).clone()}
+                        sort={*catalog_sort}
+                        dir={*catalog_dir}
+                        on_project={on_project}
+                        on_sort={on_sort}
+                        on_dir={on_dir}
+                    />
+                    <CatalogList
+                        datasets={(*datasets).clone()}
+                        status={(*catalog_status).clone()}
+                        selected={*selected_dataset}
+                        on_row={on_row}
+                    />
+                </>
             };
             // Drawer contract: only a real drawer when a row is selected; otherwise
             // Html::default() so the Shell hides the drawer region.

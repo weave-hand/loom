@@ -10,7 +10,8 @@ use loom_ui_components::{
     Button, Column, DataTable, LineageDagView, LineageFullStub, Panel, TabItem, TableRow, Tabs,
 };
 use loom_ui_core::{
-    Align, ButtonVariant, DatasetDetail, DatasetRow, LineageDag, PreviewData, format_count,
+    Align, ButtonVariant, CatalogSortDir, DatasetDetail, DatasetRow, DatasetSort, LineageDag,
+    PreviewData, format_count,
 };
 use stylist::yew::styled_component;
 use yew::prelude::*;
@@ -98,6 +99,94 @@ pub fn catalog_list(props: &CatalogListProps) -> Html {
         }
     };
     html! { <Panel title="Datasets">{ body }</Panel> }
+}
+
+#[derive(Properties, PartialEq)]
+pub struct CatalogControlsProps {
+    /// All project names (chip options); the "All" chip is prepended.
+    pub projects: Vec<String>,
+    /// The active project filter, or `None` for "All".
+    pub active_project: Option<String>,
+    pub sort: DatasetSort,
+    pub dir: CatalogSortDir,
+    pub on_project: Callback<Option<String>>,
+    pub on_sort: Callback<DatasetSort>,
+    pub on_dir: Callback<CatalogSortDir>,
+}
+
+/// The Catalog list controls bar: a "Sort" `<select>` + direction toggle, and a row
+/// of project filter chips (All + one per project). Purely presentational — all state
+/// lives in `Workspace`.
+#[styled_component(CatalogControls)]
+pub fn catalog_controls(props: &CatalogControlsProps) -> Html {
+    let cls = css!(
+        r#"
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+        margin-bottom: 10px;
+        .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+        .chip { padding: 3px 10px; border-radius: 999px; font-size: 12px;
+                border: 1px solid var(--loom-border); background: transparent;
+                color: var(--loom-text-mut); cursor: pointer; }
+        .chip.active { border-color: var(--loom-accent); color: var(--loom-accent); }
+        .sort { margin-left: auto; display: flex; gap: 4px; align-items: center; }
+        .sort .lbl { color: var(--loom-text-mut); font-size: 12px; margin-right: 2px; }
+        .skey { border: 1px solid var(--loom-border); background: transparent;
+                color: var(--loom-text-mut); border-radius: 6px; padding: 3px 8px;
+                font-size: 12px; cursor: pointer; }
+        .skey.active { border-color: var(--loom-accent); color: var(--loom-accent); }
+        .dir { border: 1px solid var(--loom-border); background: transparent;
+               color: var(--loom-text); border-radius: 6px; padding: 3px 8px;
+               cursor: pointer; }
+    "#
+    );
+
+    let on_all = {
+        let on_project = props.on_project.clone();
+        Callback::from(move |_: MouseEvent| on_project.emit(None))
+    };
+
+    let dir_toggle = {
+        let on_dir = props.on_dir.clone();
+        let dir = props.dir;
+        Callback::from(move |_: MouseEvent| on_dir.emit(dir.toggled()))
+    };
+
+    html! {
+        <div class={cls}>
+            <div class="chips">
+                <button class={classes!("chip", props.active_project.is_none().then_some("active"))}
+                        onclick={on_all}>{ "All" }</button>
+                { for props.projects.iter().cloned().map(|p| {
+                    let active = props.active_project.as_deref() == Some(p.as_str());
+                    let on_project = props.on_project.clone();
+                    let pc = p.clone();
+                    let onclick = Callback::from(move |_: MouseEvent| on_project.emit(Some(pc.clone())));
+                    html! {
+                        <button class={classes!("chip", active.then_some("active"))} onclick={onclick}>
+                            { p }
+                        </button>
+                    }
+                }) }
+            </div>
+            <div class="sort">
+                <span class="lbl">{ "Sort" }</span>
+                // Sort keys are rendered as buttons (NOT a <select>): reading a
+                // <select> value needs web_sys::HtmlSelectElement, which is NOT an
+                // enabled web-sys feature in this crate — buttons avoid that entirely.
+                { for DatasetSort::all().into_iter().map(|s| {
+                    let active = s == props.sort;
+                    let on_sort = props.on_sort.clone();
+                    let onclick = Callback::from(move |_: MouseEvent| on_sort.emit(s));
+                    html! {
+                        <button class={classes!("skey", active.then_some("active"))} onclick={onclick}>
+                            { s.label() }
+                        </button>
+                    }
+                }) }
+                <button class="dir" onclick={dir_toggle}>{ props.dir.label() }</button>
+            </div>
+        </div>
+    }
 }
 
 #[derive(Properties, PartialEq)]
