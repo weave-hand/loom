@@ -60,8 +60,9 @@ pub use identity::{
 };
 pub use job_schedule::{JobSchedule, SCHEDULABLE_JOB_KINDS, validate_job_schedule};
 pub use lineage::{
-    DatasetRef, EventType, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, RunId, check_depth,
-    decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
+    DatasetRef, EventType, LINEAGE_MAX_DEPTH, Lineage, LineageEvent, RunId, RunRole, RunSummary,
+    check_depth, decode_dataset_cursor, decode_event_cursor, decode_run_cursor,
+    encode_dataset_cursor, encode_event_cursor, encode_run_cursor,
 };
 pub use logical_type::{
     BaseType, JsonRepr, UnknownLogicalType, json_repr_of, resolve_logical, satisfies,

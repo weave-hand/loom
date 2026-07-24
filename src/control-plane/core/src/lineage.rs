@@ -86,6 +86,20 @@ pub fn decode_event_cursor(c: &Cursor) -> Result<i64> {
         .map_err(|e| ControlPlaneError::Validation(format!("malformed lineage cursor: {e}")))
 }
 
+/// Encode a `runs_for` keyset position (the max event sequence of the run's newest
+/// event) as an opaque cursor. A separate name from the event cursor keeps the two
+/// read paths' cursors self-documenting even though the encoding is the same i64.
+#[must_use]
+pub fn encode_run_cursor(seq: i64) -> Cursor {
+    Cursor(seq.to_string())
+}
+
+/// Decode a cursor produced by [`encode_run_cursor`].
+pub fn decode_run_cursor(c: &Cursor) -> Result<i64> {
+    c.0.parse::<i64>()
+        .map_err(|e| ControlPlaneError::Validation(format!("malformed lineage cursor: {e}")))
+}
+
 /// OpenLineage run-lifecycle event type. Stored; opaque to loom's own logic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventType {
@@ -124,6 +138,40 @@ impl std::str::FromStr for EventType {
             "fail" => Ok(EventType::Fail),
             other => Err(ControlPlaneError::Validation(format!(
                 "unknown event type '{other}'"
+            ))),
+        }
+    }
+}
+
+/// Which side of a run's dataset edges a `runs_for` summary was matched on. A run
+/// that both consumes and produces the queried dataset reports `Output` (the
+/// producing side is the more useful "this run wrote here" signal).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunRole {
+    Input,
+    Output,
+}
+
+impl RunRole {
+    /// The persisted/wire token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunRole::Input => "input",
+            RunRole::Output => "output",
+        }
+    }
+}
+
+impl std::str::FromStr for RunRole {
+    type Err = ControlPlaneError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "input" => Ok(RunRole::Input),
+            "output" => Ok(RunRole::Output),
+            other => Err(ControlPlaneError::Validation(format!(
+                "unknown run role '{other}'"
             ))),
         }
     }
@@ -171,6 +219,20 @@ impl LineageEvent {
     }
 }
 
+/// A run that touched a queried dataset, collapsed to one row: the run id, the
+/// time and type of that run's *latest* matched event, and which side
+/// (input/output) the dataset sat on. Ordered newest-first by the run's max event
+/// sequence (postgres `event_id` / memory emit index — monotonic with time); that
+/// key is the keyset-pagination cursor. `latest_event_time` is the time of that
+/// newest matched event. Powers the Catalog History tab.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunSummary {
+    pub run_id: RunId,
+    pub latest_event_time: OffsetDateTime,
+    pub latest_event_type: EventType,
+    pub role: RunRole,
+}
+
 #[async_trait]
 pub trait Lineage {
     /// Record an event (append-only). Its own transaction.
@@ -198,4 +260,9 @@ pub trait Lineage {
         depth: u32,
         page: PageReq,
     ) -> Result<Page<DatasetRef>>;
+    /// The distinct runs whose events reference `dataset` (as input or output),
+    /// newest-first by the run's max event sequence. Each run is collapsed to one
+    /// [`RunSummary`] carrying its latest matched event's time/type and the matched
+    /// role. Cursor-paginated via `page`. Empty if the dataset appears in no event.
+    async fn runs_for(&self, dataset: &DatasetRef, page: PageReq) -> Result<Page<RunSummary>>;
 }
