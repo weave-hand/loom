@@ -29,14 +29,16 @@
 //     which the genrule's `out=dist` already captures. No CDN, no extra copy.
 
 use loom_ui_core::{
-    CompletionSchema, LOOM_BG, LOOM_TEXT, SuggestionKind, cursor_context, sql_completions,
+    CompletionSchema, Diagnostic, DiagnosticSeverity, LOOM_BG, LOOM_TEXT, SuggestionKind,
+    cursor_context, sql_completions, sql_diagnostics,
 };
 use monaco::api::{CodeEditor, CodeEditorOptions, DisposableClosure, TextModel};
 use monaco::sys::editor::{
-    BuiltinTheme, IEditorOptions, IModelContentChangedEvent, IStandaloneThemeData, ITextModel,
+    BuiltinTheme, IEditorOptions, IMarkerData, IModelContentChangedEvent, IStandaloneThemeData,
+    ITextModel, set_model_markers,
 };
 use monaco::sys::languages::CompletionItemProvider;
-use monaco::sys::{IDisposable, Position};
+use monaco::sys::{IDisposable, MarkerSeverity, Position};
 use stylist::yew::styled_component;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
@@ -57,6 +59,29 @@ pub struct SqlEditorProps {
     /// CSS height, e.g. "320px". Defaults to 320px.
     #[prop_or_default]
     pub height: Option<AttrValue>,
+}
+
+/// Recompute client-side SQL diagnostics for the model's current text and publish
+/// them as Monaco markers under the `loom` owner (replacing any prior `loom`
+/// markers on the model). Called on mount and on every content change; an empty
+/// result clears the squiggles. The pure engine lives in `loom_ui_core`.
+fn refresh_diagnostics(model: &TextModel, schema: &CompletionSchema) {
+    let diags: Vec<Diagnostic> = sql_diagnostics(schema, &model.get_value());
+    let markers = js_sys::Array::new();
+    for d in diags {
+        let m: IMarkerData = js_sys::Object::new().unchecked_into();
+        m.set_message(&d.message);
+        m.set_severity(match d.severity {
+            DiagnosticSeverity::Warning => MarkerSeverity::Warning,
+            DiagnosticSeverity::Error => MarkerSeverity::Error,
+        });
+        m.set_start_line_number(f64::from(d.line));
+        m.set_start_column(f64::from(d.start_col));
+        m.set_end_line_number(f64::from(d.line));
+        m.set_end_column(f64::from(d.end_col));
+        markers.push(&m);
+    }
+    set_model_markers(model.as_ref(), "loom", &markers);
 }
 
 /// Reusable Monaco-backed SQL editor. Controlled: the caller owns the text via
@@ -136,12 +161,18 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
                 ed.as_ref().update_options_editor(&ro_opts);
             }
 
-            // Emit on_change with the model's current text on every edit.
+            // Emit on_change with the model's current text on every edit, and
+            // refresh client-side diagnostics (squiggles) from the same text.
             let cb_model = model.clone();
+            let diag_schema = schema.clone();
             let disposable = ed.on_did_change_model_content(move |_ev| {
                 on_change.emit(cb_model.get_value());
+                refresh_diagnostics(&cb_model, &diag_schema);
             });
             *subscription.borrow_mut() = Some(disposable);
+            // Seed diagnostics for the initial value (before `schema` moves into
+            // the completion provider below).
+            refresh_diagnostics(&model, &schema);
             *editor.borrow_mut() = Some(ed);
             *model_ref.borrow_mut() = Some(model);
 
