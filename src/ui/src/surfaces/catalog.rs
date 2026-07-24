@@ -10,8 +10,8 @@ use loom_ui_components::{
     Button, Column, DataTable, LineageCanvasView, LineageDagView, Panel, TabItem, TableRow, Tabs,
 };
 use loom_ui_core::{
-    Align, ButtonVariant, CatalogSortDir, DatasetDetail, DatasetRow, DatasetSort, LineageDag,
-    PreviewData, format_count,
+    Align, ButtonVariant, CatalogSortDir, DatasetDetail, DatasetRow, DatasetRunRow, DatasetSort,
+    LineageDag, PreviewData, format_count,
 };
 use stylist::yew::styled_component;
 use yew::prelude::*;
@@ -208,6 +208,13 @@ pub struct CatalogDrawerProps {
     pub show_full: bool,
     /// Toggles `show_full` (the "Open full view ↗" / "← Back" button).
     pub on_toggle_full: Callback<()>,
+    /// The selected dataset's run history (newest-first) for the History tab. `None`
+    /// while the fetch is in flight (the tab shows "Loading…").
+    pub history_runs: Option<Vec<DatasetRunRow>>,
+    /// True while the History fetch is in flight.
+    pub history_loading: bool,
+    /// A non-401 fetch error for the History tab, surfaced in place of "Loading…".
+    pub history_error: Option<String>,
 }
 
 /// The detail drawer for the selected dataset: `Tabs` (Schema · Preview · Lineage ·
@@ -268,9 +275,11 @@ pub fn catalog_drawer(props: &CatalogDrawerProps) -> Html {
             props.show_full,
             &props.on_toggle_full,
         ),
-        "history" => html! {
-            <p class="empty">{ "Per-dataset run history isn't available on this instance yet." }</p>
-        },
+        "history" => history_body(
+            props.history_runs.as_ref(),
+            props.history_loading,
+            props.history_error.as_deref(),
+        ),
         _ => schema_body(props.detail.as_ref(), props.detail_error.as_deref()),
     };
 
@@ -382,6 +391,41 @@ fn lineage_body(dag: Option<&LineageDag>, show_full: bool, on_toggle: &Callback<
                 </Button>
             </div>
             <LineageDagView dag={dag.clone()} />
+        </>
+    }
+}
+
+/// The History tab: the runs that touched this dataset, newest-first, each as
+/// `event_type  time  role · run-id`. While the fetch is in flight, a "Loading…"
+/// line; an empty list shows an honest "no runs" message. Reuses the drawer's
+/// `.col`/`.cname`/`.cty`/`.null`/`.caption` classes (no new CSS).
+fn history_body(runs: Option<&Vec<DatasetRunRow>>, loading: bool, error: Option<&str>) -> Html {
+    if let Some(e) = error {
+        return html! { <p class="error">{ e.to_owned() }</p> };
+    }
+    if loading {
+        return html! { <p class="empty">{ "Loading…" }</p> };
+    }
+    let Some(runs) = runs else {
+        return html! { <p class="empty">{ "Loading…" }</p> };
+    };
+    if runs.is_empty() {
+        return html! { <p class="empty">{ "No runs recorded for this dataset." }</p> };
+    }
+    let plural = if runs.len() == 1 { "" } else { "s" };
+    html! {
+        <>
+            <div class="caption">{ format!("{} run{plural}", runs.len()) }</div>
+            { for runs.iter().map(|r| {
+                let short: String = r.run_id.chars().take(8).collect();
+                html! {
+                    <div class="col">
+                        <span class="cname">{ r.event_type.clone() }</span>
+                        <span class="cty">{ r.time.clone() }</span>
+                        <span class="null">{ format!("{} · {short}", r.role) }</span>
+                    </div>
+                }
+            }) }
         </>
     }
 }

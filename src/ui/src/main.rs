@@ -14,10 +14,10 @@ mod surfaces;
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
     AuthError, BadgeTone, ButtonVariant, CatalogSortDir, CompletionSchema, DatasetDetail,
-    DatasetRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow, Surface, TableRef,
-    TransformDefView, TransformForm, TransformIo, TransformKind, TransformSummary, TypeDetail,
-    bump_epoch, delete_action_effect, distinct_projects, form_to_body, form_to_def,
-    run_action_effect, schema_from_dataset_details, schema_from_types,
+    DatasetRow, DatasetRunRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow,
+    Surface, TableRef, TransformDefView, TransformForm, TransformIo, TransformKind,
+    TransformSummary, TypeDetail, bump_epoch, delete_action_effect, distinct_projects,
+    form_to_body, form_to_def, run_action_effect, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
 use std::cell::RefCell;
@@ -174,6 +174,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
     )]
     let lineage = use_state(|| Option::<(Vec<(String, String)>, Vec<(String, String)>)>::None);
     let show_full_lineage = use_state(|| false);
+    let history_runs = use_state(|| Option::<Vec<DatasetRunRow>>::None);
+    let history_loading = use_state(|| false);
+    let history_error = use_state(|| Option::<String>::None);
     // Generation guard for selection-scoped drawer fetches: bumped on dataset
     // selection change so a slow in-flight fetch from a prior selection cannot
     // overwrite the current selection's drawer tab body (see FetchGeneration).
@@ -263,6 +266,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let catalog_tab = catalog_tab.clone();
         let lineage = lineage.clone();
         let show_full_lineage = show_full_lineage.clone();
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
         let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
@@ -279,6 +285,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
             preview_error.set(None);
             lineage.set(None);
             show_full_lineage.set(false);
+            history_runs.set(None);
+            history_loading.set(false);
+            history_error.set(None);
             catalog_tab.set(AttrValue::from("schema"));
             // Any in-flight fetch from the previous selection is now stale.
             let my_gen = fetch_gen.borrow_mut().bump();
@@ -383,6 +392,52 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 }
                 if fetch_gen.borrow().is_current(my_gen) {
                     lineage.set(Some((up.unwrap_or_default(), down.unwrap_or_default())));
+                }
+            });
+        });
+    }
+
+    // Lazy history: only fetch the dataset's run history when the History tab is
+    // active for the selected dataset and nothing is loaded yet. Keyed on
+    // (selection, active tab); the row-select effect resets `history_runs` to None,
+    // so switching datasets and re-opening History refetches.
+    {
+        let history_runs = history_runs.clone();
+        let history_loading = history_loading.clone();
+        let history_error = history_error.clone();
+        let datasets = datasets.clone();
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        let fetch_gen = fetch_gen.clone();
+        let already_loaded = history_runs.is_some();
+        let dep = (*selected_dataset, (*catalog_tab).clone());
+        use_effect_with(dep, move |(sel, tab)| {
+            if tab.as_str() != "history" || already_loaded {
+                return;
+            }
+            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+                return;
+            };
+            history_loading.set(true);
+            let my_gen = fetch_gen.borrow().current();
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await {
+                    Ok(runs) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_runs.set(Some(runs));
+                            history_loading.set(false);
+                        }
+                    }
+                    Err(FetchError::Unauthorized) => {
+                        history_loading.set(false);
+                        on_logout.emit(());
+                    }
+                    Err(e) => {
+                        if fetch_gen.borrow().is_current(my_gen) {
+                            history_error.set(Some(e.to_string()));
+                            history_loading.set(false);
+                        }
+                    }
                 }
             });
         });
@@ -679,6 +734,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
                             lineage={lineage_view}
                             show_full={*show_full_lineage}
                             on_toggle_full={on_toggle_full}
+                            history_runs={(*history_runs).clone()}
+                            history_loading={*history_loading}
+                            history_error={(*history_error).clone()}
                         />
                     }
                 })

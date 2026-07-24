@@ -241,6 +241,36 @@ pub fn parse_runs(body: &Value) -> Vec<RunRow> {
         .unwrap_or_default()
 }
 
+/// One row of a dataset's lineage run history (the Catalog History tab). Parsed
+/// from `GET /lineage/datasets/{ns}/{name}/runs`. Fail-soft: a missing/misshaped
+/// `runs` array yields no rows (matching the other UI parsers).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DatasetRunRow {
+    pub run_id: String,
+    pub time: String,
+    pub event_type: String,
+    pub role: String,
+}
+
+/// Parse the `{ "runs": [...] }` body into rows, preserving server order
+/// (newest-first). A missing/misshaped `runs` array → empty vec.
+#[must_use]
+pub fn parse_dataset_runs(body: &Value) -> Vec<DatasetRunRow> {
+    body.get("runs")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .map(|r| DatasetRunRow {
+                    run_id: str_field(r, "run_id"),
+                    time: str_field(r, "latest_event_time"),
+                    event_type: str_field(r, "latest_event_type"),
+                    role: str_field(r, "role"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 use serde_json::json;
 
 /// The editor-form value. `inputs`/`output` are `"schema.name"` for physical

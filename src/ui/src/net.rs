@@ -2,9 +2,10 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, DatasetDetail, DatasetRow, PreviewData, RunRow, TransformDefView, TransformSummary,
-    TypeDetail, lineage_closure_path, parse_dataset_detail, parse_datasets, parse_preview,
-    parse_runs, parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, DatasetRunRow, PreviewData, RunRow, TransformDefView,
+    TransformSummary, TypeDetail, lineage_closure_path, parse_dataset_detail, parse_dataset_runs,
+    parse_datasets, parse_preview, parse_runs, parse_transform_def, parse_transform_list,
+    parse_type_detail, status_to_error, url,
 };
 use serde_json::Value;
 use wasm_bindgen::JsValue;
@@ -248,6 +249,28 @@ pub async fn fetch_preview(
     }
     let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
     Ok(parse_preview(&body))
+}
+
+/// GET /lineage/datasets/{ns}/{schema}.{table}/runs with the bearer token — the
+/// dataset's run history for the Catalog History tab. Same namespace convention as
+/// `fetch_lineage`; a denied/unknown dataset returns an empty list (seed-gated).
+pub async fn fetch_dataset_runs(
+    base: &str,
+    token: &str,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<DatasetRunRow>, FetchError> {
+    let path = lineage_closure_path(schema, table, "runs");
+    let resp = Request::get(&url(base, &path))
+        .header("Authorization", &format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: serde_json::Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_dataset_runs(&body))
 }
 
 /// GET /admin/transforms with the bearer token.
