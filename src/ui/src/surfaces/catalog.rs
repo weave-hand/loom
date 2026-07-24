@@ -114,9 +114,9 @@ pub struct CatalogControlsProps {
     pub on_dir: Callback<CatalogSortDir>,
 }
 
-/// The Catalog list controls bar: a "Sort" `<select>` + direction toggle, and a row
-/// of project filter chips (All + one per project). Purely presentational — all state
-/// lives in `Workspace`.
+/// The Catalog list controls bar: a row of "Sort" key buttons + a direction-toggle
+/// button, and a row of project filter chips (All + one per project). Purely
+/// presentational — all state lives in `Workspace`.
 #[styled_component(CatalogControls)]
 pub fn catalog_controls(props: &CatalogControlsProps) -> Html {
     let cls = css!(

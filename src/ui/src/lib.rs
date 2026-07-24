@@ -485,7 +485,7 @@ impl DatasetSort {
         ]
     }
 
-    /// Parse a `?sort=` token back to a key (for the `<select>` change handler).
+    /// Parse a `?sort=` wire token back to a key (the inverse of [`Self::as_param`]).
     #[must_use]
     pub fn from_param(s: &str) -> Option<DatasetSort> {
         match s {
