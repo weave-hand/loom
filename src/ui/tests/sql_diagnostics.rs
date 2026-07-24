@@ -9,12 +9,18 @@ fn schema() -> CompletionSchema {
             CompletionTable {
                 schema: None,
                 name: "customers".to_owned(),
-                columns: vec![CompletionColumn { name: "id".to_owned(), ty: "int64".to_owned() }],
+                columns: vec![CompletionColumn {
+                    name: "id".to_owned(),
+                    ty: "int64".to_owned(),
+                }],
             },
             CompletionTable {
                 schema: Some("public".to_owned()),
                 name: "orders".to_owned(),
-                columns: vec![CompletionColumn { name: "id".to_owned(), ty: "int64".to_owned() }],
+                columns: vec![CompletionColumn {
+                    name: "id".to_owned(),
+                    ty: "int64".to_owned(),
+                }],
             },
         ],
     }
@@ -47,15 +53,27 @@ fn unknown_table_is_flagged_with_position() {
 #[test]
 fn unknown_table_case_insensitive_match_not_flagged() {
     let d = sql_diagnostics(&schema(), "select id from CUSTOMERS");
-    assert!(d.is_empty(), "case-insensitive table match should pass: {d:?}");
+    assert!(
+        d.is_empty(),
+        "case-insensitive table match should pass: {d:?}"
+    );
 }
 
 #[test]
 fn join_table_unknown_is_flagged() {
-    let d = sql_diagnostics(&schema(), "SELECT * FROM customers JOIN nope ON customers.id = nope.id");
+    let d = sql_diagnostics(
+        &schema(),
+        "SELECT * FROM customers JOIN nope ON customers.id = nope.id",
+    );
     let m = messages(&d);
-    assert!(m.iter().any(|s| s.contains("nope")), "join table should be checked: {m:?}");
-    assert!(!m.iter().any(|s| s.contains("customers")), "known table not flagged: {m:?}");
+    assert!(
+        m.iter().any(|s| s.contains("nope")),
+        "join table should be checked: {m:?}"
+    );
+    assert!(
+        !m.iter().any(|s| s.contains("customers")),
+        "known table not flagged: {m:?}"
+    );
 }
 
 #[test]
@@ -95,7 +113,10 @@ fn quoted_identifier_is_skipped() {
 #[test]
 fn subquery_after_from_is_skipped() {
     let d = sql_diagnostics(&schema(), "SELECT * FROM (SELECT id FROM customers) t");
-    assert!(d.is_empty(), "subquery + its alias must not be flagged: {d:?}");
+    assert!(
+        d.is_empty(),
+        "subquery + its alias must not be flagged: {d:?}"
+    );
 }
 
 #[test]
@@ -109,14 +130,20 @@ fn cte_name_is_known() {
 fn empty_schema_flags_nothing() {
     let empty = CompletionSchema { tables: vec![] };
     let d = sql_diagnostics(&empty, "SELECT * FROM anything JOIN nope ON a = b");
-    assert!(d.is_empty(), "no table checks when schema is unloaded: {d:?}");
+    assert!(
+        d.is_empty(),
+        "no table checks when schema is unloaded: {d:?}"
+    );
 }
 
 #[test]
 fn table_name_in_string_literal_is_ignored() {
     // 'nope' appears only inside a string literal, never in table position.
     let d = sql_diagnostics(&schema(), "SELECT 'FROM nope' FROM customers");
-    assert!(d.is_empty(), "string-literal contents must be ignored: {d:?}");
+    assert!(
+        d.is_empty(),
+        "string-literal contents must be ignored: {d:?}"
+    );
 }
 
 #[test]
@@ -128,8 +155,15 @@ fn table_name_in_comment_is_ignored() {
 #[test]
 fn unclosed_paren_is_error() {
     let d = sql_diagnostics(&schema(), "SELECT count(id FROM customers");
-    let err = d.iter().find(|x| x.severity == DiagnosticSeverity::Error).expect("a bracket error");
-    assert!(err.message.contains('('), "message names the unclosed paren: {}", err.message);
+    let err = d
+        .iter()
+        .find(|x| x.severity == DiagnosticSeverity::Error)
+        .expect("a bracket error");
+    assert!(
+        err.message.contains('('),
+        "message names the unclosed paren: {}",
+        err.message
+    );
     // The '(' is at column 13 (1-based) in "SELECT count(...".
     assert_eq!(err.line, 1);
     assert_eq!(err.start_col, 13);
@@ -139,8 +173,15 @@ fn unclosed_paren_is_error() {
 #[test]
 fn unexpected_close_paren_is_error() {
     let d = sql_diagnostics(&schema(), "SELECT id) FROM customers");
-    let err = d.iter().find(|x| x.severity == DiagnosticSeverity::Error).expect("a bracket error");
-    assert!(err.message.contains(')'), "message names the unexpected paren: {}", err.message);
+    let err = d
+        .iter()
+        .find(|x| x.severity == DiagnosticSeverity::Error)
+        .expect("a bracket error");
+    assert!(
+        err.message.contains(')'),
+        "message names the unexpected paren: {}",
+        err.message
+    );
     assert_eq!(err.start_col, 10); // ')' after "SELECT id" (col 10)
 }
 
@@ -176,8 +217,14 @@ fn reserved_word_after_from_is_not_flagged_as_table() {
 fn extract_from_column_is_not_flagged() {
     // `FROM` inside EXTRACT(... FROM col) is an argument separator, not a clause
     // keyword; `created` is a column expression and must not be flagged as a table.
-    let d = sql_diagnostics(&schema(), "SELECT EXTRACT(YEAR FROM created) FROM customers");
-    assert!(d.is_empty(), "EXTRACT(... FROM col) must not flag the column: {d:?}");
+    let d = sql_diagnostics(
+        &schema(),
+        "SELECT EXTRACT(YEAR FROM created) FROM customers",
+    );
+    assert!(
+        d.is_empty(),
+        "EXTRACT(... FROM col) must not flag the column: {d:?}"
+    );
 }
 
 #[test]
@@ -187,7 +234,10 @@ fn extract_from_still_flags_outer_unknown_table() {
     let m = messages(&d);
     assert_eq!(m.len(), 1, "exactly the outer table is flagged: {m:?}");
     assert!(m.first().expect("one").contains("nope"));
-    assert!(!m.iter().any(|s| s.contains("created")), "column must not be flagged: {m:?}");
+    assert!(
+        !m.iter().any(|s| s.contains("created")),
+        "column must not be flagged: {m:?}"
+    );
 }
 
 #[test]
@@ -195,5 +245,8 @@ fn table_valued_function_is_not_flagged() {
     // An identifier in FROM position immediately followed by `(` is a function
     // call (a table-valued function), not a table.
     let d = sql_diagnostics(&schema(), "SELECT * FROM generate_series(1, 10)");
-    assert!(d.is_empty(), "table-valued function must not be flagged: {d:?}");
+    assert!(
+        d.is_empty(),
+        "table-valued function must not be flagged: {d:?}"
+    );
 }
