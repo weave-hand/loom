@@ -78,7 +78,10 @@ pub fn lineage_dag_view(props: &LineageDagViewProps) -> Html {
         .nodes
         .iter()
         .map(|n| {
-            let style = format!("left:{}px; top:{}px; width:{}px; height:{}px;", n.x, n.y, n.w, n.h);
+            let style = format!(
+                "left:{}px; top:{}px; width:{}px; height:{}px;",
+                n.x, n.y, n.w, n.h
+            );
             let class = if n.kind == NodeKind::Current {
                 "node current"
             } else {

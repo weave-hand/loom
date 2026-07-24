@@ -93,9 +93,8 @@ pub struct LineageLayout {
 pub fn lineage_layout(dag: &LineageDag, p: &LineageLayoutParams) -> LineageLayout {
     // Column node lists (0 upstream / 1 current / 2 downstream), order preserved.
     // A fixed 3-element array literal (not runtime indexing) keeps this index-free.
-    let column = |c: usize| -> Vec<&DagNode> {
-        dag.nodes.iter().filter(|n| n.column.min(2) == c).collect()
-    };
+    let column =
+        |c: usize| -> Vec<&DagNode> { dag.nodes.iter().filter(|n| n.column.min(2) == c).collect() };
     let cols = [column(0), column(1), column(2)];
     let max_count = cols.iter().map(Vec::len).max().unwrap_or(0);
 

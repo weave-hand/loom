@@ -57,7 +57,11 @@ pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
         .edges
         .iter()
         .map(|e| {
-            let stroke = if e.touches_current { "var(--loom-accent)" } else { "#2d3640" };
+            let stroke = if e.touches_current {
+                "var(--loom-accent)"
+            } else {
+                "#2d3640"
+            };
             html! {
                 <line x1={e.x1.to_string()} y1={e.y1.to_string()}
                       x2={e.x2.to_string()} y2={e.y2.to_string()}
@@ -70,8 +74,15 @@ pub fn lineage_canvas_view(props: &LineageCanvasViewProps) -> Html {
         .nodes
         .iter()
         .map(|n| {
-            let style = format!("left:{}px; top:{}px; width:{}px; height:{}px;", n.x, n.y, n.w, n.h);
-            let class = if n.kind == NodeKind::Current { "node current" } else { "node" };
+            let style = format!(
+                "left:{}px; top:{}px; width:{}px; height:{}px;",
+                n.x, n.y, n.w, n.h
+            );
+            let class = if n.kind == NodeKind::Current {
+                "node current"
+            } else {
+                "node"
+            };
             html! {
                 <div class={class} style={style} title={n.id.clone()}>
                     <span class="lbl">{ n.label.clone() }</span>

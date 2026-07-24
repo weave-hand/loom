@@ -66,7 +66,11 @@ fn empty_column_consumes_no_slot() {
     let content_h = 2.0 * row_h - p.v_gap;
     assert_eq!(l.height, content_h + 2.0 * p.pad);
     // The single current node is vertically centred against the 2-tall upstream column.
-    let cur = l.nodes.iter().find(|n| n.kind == NodeKind::Current).unwrap();
+    let cur = l
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Current)
+        .unwrap();
     assert_eq!(cur.y, p.pad + (content_h - p.node_h) / 2.0);
 }
 
