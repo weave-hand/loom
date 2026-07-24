@@ -64,6 +64,11 @@ fn gallery() -> Html {
         let sql = sql.clone();
         Callback::from(move |v: String| sql.set(AttrValue::from(v)))
     };
+    let sql_diag = use_state(|| AttrValue::from("SELECT count(id\nFROM custommers"));
+    let on_sql_diag = {
+        let sql_diag = sql_diag.clone();
+        Callback::from(move |v: String| sql_diag.set(AttrValue::from(v)))
+    };
     // Sample schema feeding the SqlEditor's completion provider.
     let sample_schema = CompletionSchema {
         tables: vec![
@@ -211,7 +216,10 @@ fn gallery() -> Html {
                 <section>
                     <h2>{ "SQL editor" }</h2>
                     <Panel title="SqlEditor">
-                        <SqlEditor value={(*sql).clone()} on_change={on_sql} schema={sample_schema} />
+                        <SqlEditor value={(*sql).clone()} on_change={on_sql} schema={sample_schema.clone()} />
+                    </Panel>
+                    <Panel title="SqlEditor — diagnostics (unknown table + unclosed paren)">
+                        <SqlEditor value={(*sql_diag).clone()} on_change={on_sql_diag} schema={sample_schema} />
                     </Panel>
                 </section>
                 <section>
