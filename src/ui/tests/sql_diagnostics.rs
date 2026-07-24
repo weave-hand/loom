@@ -171,3 +171,29 @@ fn reserved_word_after_from_is_not_flagged_as_table() {
         "reserved word in table position must not be flagged: {d:?}"
     );
 }
+
+#[test]
+fn extract_from_column_is_not_flagged() {
+    // `FROM` inside EXTRACT(... FROM col) is an argument separator, not a clause
+    // keyword; `created` is a column expression and must not be flagged as a table.
+    let d = sql_diagnostics(&schema(), "SELECT EXTRACT(YEAR FROM created) FROM customers");
+    assert!(d.is_empty(), "EXTRACT(... FROM col) must not flag the column: {d:?}");
+}
+
+#[test]
+fn extract_from_still_flags_outer_unknown_table() {
+    // The depth-0 FROM is still checked; only the inner EXTRACT `FROM` is exempt.
+    let d = sql_diagnostics(&schema(), "SELECT EXTRACT(YEAR FROM created) FROM nope");
+    let m = messages(&d);
+    assert_eq!(m.len(), 1, "exactly the outer table is flagged: {m:?}");
+    assert!(m.first().expect("one").contains("nope"));
+    assert!(!m.iter().any(|s| s.contains("created")), "column must not be flagged: {m:?}");
+}
+
+#[test]
+fn table_valued_function_is_not_flagged() {
+    // An identifier in FROM position immediately followed by `(` is a function
+    // call (a table-valued function), not a table.
+    let d = sql_diagnostics(&schema(), "SELECT * FROM generate_series(1, 10)");
+    assert!(d.is_empty(), "table-valued function must not be flagged: {d:?}");
+}

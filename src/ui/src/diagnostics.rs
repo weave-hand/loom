@@ -265,8 +265,12 @@ fn handle_expect_table(
     match t.kind {
         TokKind::LParen | TokKind::QuotedIdent => TableState::Normal,
         TokKind::Ident => {
-            if tokens.get(idx + 1).map(|nx| nx.kind) == Some(TokKind::Dot) {
+            let next_kind = tokens.get(idx + 1).map(|nx| nx.kind);
+            if next_kind == Some(TokKind::Dot) {
                 return TableState::Normal; // qualified name — skip
+            }
+            if next_kind == Some(TokKind::LParen) {
+                return TableState::Normal; // table-valued function call — skip
             }
             if is_reserved(&t.text) {
                 return TableState::Normal; // a keyword, not a table
@@ -292,16 +296,26 @@ fn handle_expect_table(
 }
 
 /// Flag unknown table names in `FROM`/`JOIN` position. No-op on an empty schema.
+/// `FROM`/`JOIN` only arm table detection at paren depth 0, so an inner `FROM`
+/// inside a function call (`EXTRACT(f FROM col)`) or a subquery is not mistaken
+/// for a clause keyword.
 fn check_tables(schema: &CompletionSchema, tokens: &[Token], diags: &mut Vec<Diagnostic>) {
     if schema.tables.is_empty() {
         return;
     }
     let ctes = collect_cte_names(tokens);
     let mut state = TableState::Normal;
+    let mut depth: u32 = 0;
     let mut idx = 0usize;
     while idx < tokens.len() {
         let Some(t) = tokens.get(idx) else { break };
-        if t.kind == TokKind::Ident
+        match t.kind {
+            TokKind::LParen => depth = depth.saturating_add(1),
+            TokKind::RParen => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if depth == 0
+            && t.kind == TokKind::Ident
             && (t.text.eq_ignore_ascii_case("FROM") || t.text.eq_ignore_ascii_case("JOIN"))
         {
             state = TableState::ExpectTable;
