@@ -7,7 +7,7 @@
 
 use super::ontology::LoadStatus;
 use loom_ui_components::{
-    Button, Column, DataTable, LineageDagView, LineageFullStub, Panel, TabItem, TableRow, Tabs,
+    Button, Column, DataTable, LineageCanvasView, LineageDagView, Panel, TabItem, TableRow, Tabs,
 };
 use loom_ui_core::{
     Align, ButtonVariant, DatasetDetail, DatasetRow, LineageDag, PreviewData, format_count,
@@ -278,7 +278,7 @@ fn lineage_body(dag: Option<&LineageDag>, show_full: bool, on_toggle: &Callback<
                         { "← Back to mini-DAG" }
                     </Button>
                 </div>
-                <LineageFullStub />
+                <LineageCanvasView dag={dag.clone()} />
             </>
         };
     }
