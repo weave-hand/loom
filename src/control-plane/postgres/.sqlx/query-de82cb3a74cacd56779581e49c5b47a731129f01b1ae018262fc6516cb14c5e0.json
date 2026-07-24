@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "select r.run_id as \"run_id!\", r.max_eid as \"max_eid!\", e.event_type as \"event_type!\", e.event_time as \"event_time!\", r.has_output as \"has_output!\" from ( select ev.run_id, max(ed.event_id) as max_eid, bool_or(ed.direction = 'output') as has_output from lineage.event_dataset ed join lineage.event ev on ev.event_id = ed.event_id where ed.namespace = $1 and ed.name = $2 group by ev.run_id) r join lineage.event e on e.event_id = r.max_eid where ($3::bigint is null or r.max_eid < $3) order by r.max_eid desc limit $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "run_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "lineage.event",
+            "name": "run_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "max_eid!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "event_type!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "lineage.event",
+            "name": "event_type"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "event_time!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "lineage.event",
+            "name": "event_time"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "has_output!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "de82cb3a74cacd56779581e49c5b47a731129f01b1ae018262fc6516cb14c5e0"
+}

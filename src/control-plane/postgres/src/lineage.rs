@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use control_plane_core::{
-    DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId, check_depth,
-    decode_dataset_cursor, decode_event_cursor, encode_dataset_cursor, encode_event_cursor,
+    DatasetRef, Lineage, LineageEvent, Page, PageReq, Result, RunId, RunRole, RunSummary,
+    check_depth, decode_dataset_cursor, decode_event_cursor, decode_run_cursor,
+    encode_dataset_cursor, encode_event_cursor, encode_run_cursor,
 };
 
 use crate::{PgControlPlane, backend};
@@ -155,6 +156,64 @@ impl Lineage for PgControlPlane {
         // downstream = walk input→output edges (descendancy).
         self.graph_closure(dataset, "input", "output", depth, page)
             .await
+    }
+
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn runs_for(&self, dataset: &DatasetRef, page: PageReq) -> Result<Page<RunSummary>> {
+        let after = page.after.as_ref().map(decode_run_cursor).transpose()?;
+        let fetch = page.fetch_limit_i64();
+        // Per-run collapse: for each run that touches (ns,name), the run's newest
+        // event (max event_id) supplies time+type; `bool_or(direction='output')`
+        // gives the role (output wins). Keyset by that max event_id, newest-first
+        // (bigserial is monotonic with emit order, so `max_eid < cursor` walks back).
+        let rows = sqlx::query!(
+            "select r.run_id as \"run_id!\", \
+                    r.max_eid as \"max_eid!\", \
+                    e.event_type as \"event_type!\", \
+                    e.event_time as \"event_time!\", \
+                    r.has_output as \"has_output!\" \
+             from ( \
+                 select ev.run_id, \
+                        max(ed.event_id) as max_eid, \
+                        bool_or(ed.direction = 'output') as has_output \
+                 from lineage.event_dataset ed \
+                 join lineage.event ev on ev.event_id = ed.event_id \
+                 where ed.namespace = $1 and ed.name = $2 \
+                 group by ev.run_id) r \
+             join lineage.event e on e.event_id = r.max_eid \
+             where ($3::bigint is null or r.max_eid < $3) \
+             order by r.max_eid desc \
+             limit $4",
+            &dataset.namespace,
+            &dataset.name,
+            after,
+            fetch,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(backend)?;
+        let mut keyed: Vec<(i64, RunSummary)> = Vec::with_capacity(rows.len());
+        for r in rows {
+            let role = if r.has_output {
+                RunRole::Output
+            } else {
+                RunRole::Input
+            };
+            keyed.push((
+                r.max_eid,
+                RunSummary {
+                    run_id: RunId(r.run_id),
+                    latest_event_time: r.event_time,
+                    latest_event_type: r.event_type.parse()?,
+                    role,
+                },
+            ));
+        }
+        let paged = Page::from_keyset(keyed, page.limit, |(id, _)| encode_run_cursor(*id));
+        Ok(Page {
+            items: paged.items.into_iter().map(|(_, s)| s).collect(),
+            next: paged.next,
+        })
     }
 }
 
