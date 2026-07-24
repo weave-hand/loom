@@ -429,7 +429,11 @@ async fn reconcile_mv_watermarks(tx: &mut sqlx::PgConnection, def: &TransformDef
             ) => {
                 let old_mv = mv_key(&output);
                 if new_mv.as_ref() != Some(&old_mv) {
-                    // (existing) the OUTPUT moved: the old key's rows are orphaned.
+                    // (existing) the OUTPUT moved: the old key's rows are orphaned. Deleting by
+                    // `old_mv` alone (no def qualifier) is safe for the same reason as
+                    // `delete_transform`: `refuse_shared_mv_output` (#644) makes this def the
+                    // ONLY claimant of the output it is leaving, so no surviving def's cursor
+                    // hides behind `old_mv`.
                     sqlx::query!("delete from stream.mv_watermark where mv = $1", old_mv)
                         .execute(&mut *tx)
                         .await
@@ -469,6 +473,55 @@ async fn reconcile_mv_watermarks(tx: &mut sqlx::PgConnection, def: &TransformDef
                 error = %e,
                 "define_transform: undecodable prior body; redefining without watermark cleanup"
             ),
+        }
+    }
+    Ok(())
+}
+
+/// One output ↔ one micro-batch def (#644). Refuse a define whose micro-batch OUTPUT
+/// (`mv_key`) is already claimed by a DIFFERENTLY-NAMED live micro-batch def. Same-name
+/// redefinition (the upsert/resume path) passes untouched; a non-MV body has no output to
+/// contest.
+///
+/// This invariant is the whole reason the *unqualified* `mv_key(output)` watermark deletes in
+/// [`Self::delete_transform`](PgControlPlane::delete_transform) and [`reconcile_mv_watermarks`]
+/// are correct: with at most one def per output, deleting or redefining one def can never wipe a
+/// surviving def's cursor. Without it, two defs sharing an output would let `delete_transform(A)`
+/// drop B's watermark rows, silently re-materializing B from offset 0.
+///
+/// Runs under `TRANSFORM_DEFINE_LOCK` (defines are serialized), so this read-then-insert is
+/// race-free. It reuses the already-cached `select name, body …` scan (the
+/// [`pg_micro_batch_readers`] precedent) rather than a new compile-time `query!`: decoding here
+/// also yields the conflicting def's NAME for the error message, which a bare SQL `exists` probe
+/// could not. A plain SELECT takes no row locks, so it does not perturb the commit path's lock
+/// order.
+async fn refuse_shared_mv_output(tx: &mut sqlx::PgConnection, def: &TransformDef) -> Result<()> {
+    let Some(out) = mv_output(&def.body) else {
+        return Ok(());
+    };
+    let want = mv_key(out);
+    let rows = sqlx::query!("select name, body from transforms.transform order by name")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(backend)?;
+    for r in rows {
+        if r.name == def.name.0 {
+            continue; // same-name redefine is an upsert, not a contest
+        }
+        let body = match de_body(r.body) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(transform = %r.name, error = %e,
+                    "one-output guard: undecodable body skipped");
+                continue;
+            }
+        };
+        if mv_output(&body).is_some_and(|o| mv_key(o) == want) {
+            return Err(ControlPlaneError::Validation(format!(
+                "micro-batch output {want} is already claimed by def '{}'; an output table is \
+                 materialized by at most one micro-batch def (def '{}' refused)",
+                r.name, def.name.0
+            )));
         }
     }
     Ok(())
@@ -567,6 +620,12 @@ impl Transforms for PgControlPlane {
         if let Some(src) = mv_source(&def.body) {
             crate::stream::pg_refuse_mv_over_cdc_source(&mut tx, src).await?;
         }
+        // One output ↔ one micro-batch def (#644): refuse an output already claimed by a
+        // differently-named micro-batch def, BEFORE any watermark work. Same-name redefinition
+        // (resume) passes. This define-time invariant is what makes the unqualified
+        // `mv_key(output)` watermark deletes in `delete_transform` / `reconcile_mv_watermarks`
+        // correct — no surviving def can share the output whose cursor those deletes drop.
+        refuse_shared_mv_output(&mut tx, &def).await?;
         // Seed the new MV's start position and release any watermark rows a redefinition
         // orphaned, in THIS transaction — see `reconcile_mv_watermarks`. Runs here, after the
         // source table lock (top) and `pg_refuse_mv_over_cdc_source`, so its `for update` on
@@ -641,7 +700,11 @@ impl Transforms for PgControlPlane {
         // (`crate::mv_floor`), so the rows must go with it — atomically, or the
         // floor would outlive the registration that justified it. The delete is
         // keyed by `mv_key(output)` alone (not by source), which drops every cursor
-        // this MV holds — correct, because the MV itself is going away.
+        // this MV holds — correct, because the MV itself is going away. Keying by
+        // output alone (no def qualifier) is safe precisely because `define_transform`
+        // enforces one-output ↔ one-def (`refuse_shared_mv_output`, #644): no OTHER
+        // live def can hold a watermark under this output, so nothing survives that
+        // this delete would wrongly wipe.
         let mut tx = self.pool().begin().await.map_err(backend)?;
         let existing = sqlx::query!(
             "select body from transforms.transform where name = $1",
