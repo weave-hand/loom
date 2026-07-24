@@ -9,7 +9,7 @@ load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "ui-core",
     crate = "loom_ui_core",
-    srcs = ["src/lib.rs", "src/completion.rs", "src/transforms.rs", "src/lineage_layout.rs"],
+    srcs = ["src/lib.rs", "src/completion.rs", "src/diagnostics.rs", "src/transforms.rs", "src/lineage_layout.rs"],
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
@@ -113,6 +113,15 @@ rust_test(
     crate = "cursor_context",
     srcs = ["tests/cursor_context.rs"],
     crate_root = "tests/cursor_context.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "sql-diagnostics",
+    crate = "sql_diagnostics",
+    srcs = ["tests/sql_diagnostics.rs"],
+    crate_root = "tests/sql_diagnostics.rs",
     edition = "2024",
     deps = [":ui-core"],
 )

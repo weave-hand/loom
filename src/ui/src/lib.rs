@@ -9,6 +9,9 @@ pub use completion::{
     cursor_context, sql_completions,
 };
 
+mod diagnostics;
+pub use diagnostics::{Diagnostic, DiagnosticSeverity, sql_diagnostics};
+
 mod transforms;
 pub use transforms::{
     DatasetRunRow, DrawerActionEffect, FieldError, OutputMode, RunRow, TableRef, TransformBody,
