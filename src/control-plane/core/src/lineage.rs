@@ -145,36 +145,13 @@ impl std::str::FromStr for EventType {
 
 /// Which side of a run's dataset edges a `runs_for` summary was matched on. A run
 /// that both consumes and produces the queried dataset reports `Output` (the
-/// producing side is the more useful "this run wrote here" signal).
+/// producing side is the more useful "this run wrote here" signal). The role is
+/// derived from `lineage.event_dataset.direction` at read time and never persisted
+/// or parsed as a string — the wire token lives in query-api's `run_role_str`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunRole {
     Input,
     Output,
-}
-
-impl RunRole {
-    /// The persisted/wire token.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            RunRole::Input => "input",
-            RunRole::Output => "output",
-        }
-    }
-}
-
-impl std::str::FromStr for RunRole {
-    type Err = ControlPlaneError;
-
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "input" => Ok(RunRole::Input),
-            "output" => Ok(RunRole::Output),
-            other => Err(ControlPlaneError::Validation(format!(
-                "unknown run role '{other}'"
-            ))),
-        }
-    }
 }
 
 /// A lineage event: a typed envelope (the fields loom indexes/queries) plus the

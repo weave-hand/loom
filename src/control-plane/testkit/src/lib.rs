@@ -4453,6 +4453,63 @@ pub async fn lineage_runs_for_contract<CP: Lineage>(cp: &CP) {
     assert_eq!(p2.items[0].run_id, run_a, "second page = older run");
 }
 
+/// Contract: `runs_for` collapses a run that touches a dataset via *several* events
+/// to its NEWEST matched event (time + type), and reports role = Output when *any*
+/// matched edge was an output. This is the case that differentiates the two
+/// adapters' collapse (postgres `max(event_id)` over filtered edges vs memory
+/// `max_idx` over matched events) and their role merge (`bool_or` vs `has_output
+/// |=`) — the single-event-per-run seed in `lineage_runs_for_contract` exercises
+/// neither. Run against every `Lineage` adapter.
+pub async fn lineage_runs_for_collapse_contract<CP: Lineage>(cp: &CP) {
+    let ds = |ns: &str, n: &str| DatasetRef {
+        namespace: ns.to_string(),
+        name: n.to_string(),
+    };
+    let at = |secs: i64| OffsetDateTime::from_unix_timestamp(1_700_000_000 + secs).unwrap();
+    let target = ds("warehouse", "main.hist2");
+
+    // One run touches the target as an output (older event) then an input (newer
+    // event, a different type).
+    let run = RunId(uuid::Uuid::new_v4());
+    cp.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Complete,
+        event_time: at(0),
+        inputs: vec![],
+        outputs: vec![target.clone()],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit output edge");
+    cp.emit(LineageEvent {
+        run_id: run,
+        event_type: EventType::Running,
+        event_time: at(10),
+        inputs: vec![target.clone()],
+        outputs: vec![],
+        payload: serde_json::json!({}),
+    })
+    .await
+    .expect("emit input edge");
+
+    let runs = cp
+        .runs_for(&target, PageReq::unbounded())
+        .await
+        .expect("runs_for");
+    assert_eq!(runs.items.len(), 1, "one run touched the target");
+    assert_eq!(runs.items[0].run_id, run);
+    assert_eq!(
+        runs.items[0].latest_event_type,
+        EventType::Running,
+        "collapses to the newer matched event's type"
+    );
+    assert_eq!(
+        runs.items[0].role,
+        RunRole::Output,
+        "role = Output when any matched edge was an output"
+    );
+}
+
 /// Contract: `events_for` hydrates every event's inputs/outputs completely
 /// and in ordinal order, however the adapter batches the reads (pins the
 /// per-event-N+1 → `event_id = any($1)` collapse). `cp` must be freshly empty.
