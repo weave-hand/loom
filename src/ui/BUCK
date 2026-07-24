@@ -73,6 +73,15 @@ rust_test(
 )
 
 rust_test(
+    name = "catalog-controls",
+    edition = "2024",
+    srcs = ["tests/catalog_controls.rs"],
+    crate = "catalog_controls",
+    crate_root = "tests/catalog_controls.rs",
+    deps = [":ui-core"],
+)
+
+rust_test(
     name = "lineage-dag",
     crate = "lineage_dag",
     srcs = ["tests/lineage_dag.rs"],
