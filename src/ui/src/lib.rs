@@ -18,6 +18,11 @@ pub use transforms::{
     schema_from_dataset_details, schema_from_types, trigger_label,
 };
 
+mod lineage_layout;
+pub use lineage_layout::{
+    LaidOutEdge, LaidOutNode, LineageLayout, LineageLayoutParams, lineage_layout,
+};
+
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
 /// can't be read as `var(--loom-*)`. The `:root` custom properties in
 /// `components/global.rs` and the Monaco editor theme in `components/sql_editor.rs`
