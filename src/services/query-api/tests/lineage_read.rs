@@ -5,8 +5,8 @@ use control_plane_core::{
     Cursor, DatasetRef, EventType, LineageEvent, Page, PageReq, RunId, RunRole, RunSummary,
 };
 use query_api::lineage_read::{
-    dataset_closure_body, dataset_runs_body, event_type_str, lineage_event_view, parse_lineage_page,
-    run_events_body, run_role_str,
+    dataset_closure_body, dataset_runs_body, event_type_str, lineage_event_view,
+    parse_lineage_page, run_events_body, run_role_str,
 };
 
 fn ds(ns: &str, name: &str) -> DatasetRef {
@@ -132,13 +132,15 @@ fn dataset_runs_body_shapes_run_time_type_role_and_cursor() {
         items: vec![
             RunSummary {
                 run_id: RunId(uuid::Uuid::nil()),
-                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_010).unwrap(),
+                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_010)
+                    .unwrap(),
                 latest_event_type: EventType::Complete,
                 role: RunRole::Input,
             },
             RunSummary {
                 run_id: RunId(uuid::Uuid::nil()),
-                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+                latest_event_time: time::OffsetDateTime::from_unix_timestamp(1_700_000_000)
+                    .unwrap(),
                 latest_event_type: EventType::Fail,
                 role: RunRole::Output,
             },
@@ -146,11 +148,17 @@ fn dataset_runs_body_shapes_run_time_type_role_and_cursor() {
         next: Some(Cursor("nc".to_string())),
     };
     let json = serde_json::to_value(dataset_runs_body(page)).unwrap();
-    assert_eq!(json["runs"][0]["run_id"], "00000000-0000-0000-0000-000000000000");
+    assert_eq!(
+        json["runs"][0]["run_id"],
+        "00000000-0000-0000-0000-000000000000"
+    );
     assert_eq!(json["runs"][0]["role"], "input");
     assert_eq!(json["runs"][0]["latest_event_type"], "complete");
     assert!(
-        json["runs"][0]["latest_event_time"].as_str().unwrap().contains('T'),
+        json["runs"][0]["latest_event_time"]
+            .as_str()
+            .unwrap()
+            .contains('T'),
         "rfc3339 time"
     );
     assert_eq!(json["runs"][1]["role"], "output");

@@ -421,7 +421,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
             history_loading.set(true);
             let my_gen = fetch_gen.borrow().current();
             wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await {
+                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await
+                {
                     Ok(runs) => {
                         if fetch_gen.borrow().is_current(my_gen) {
                             history_runs.set(Some(runs));

@@ -193,7 +193,7 @@ impl Lineage for MemoryControlPlane {
             })
             .collect();
         // Newest-first by key (index), matching postgres's `order by max_eid desc`.
-        keyed.sort_by(|a, b| b.0.cmp(&a.0));
+        keyed.sort_by_key(|(idx, _)| std::cmp::Reverse(*idx));
         if let Some(a) = after {
             keyed.retain(|(idx, _)| *idx < a);
         }
