@@ -11,6 +11,17 @@ use control_plane_core::{
 };
 use lineage_naming::{LineageNaming, ResolvedDataset};
 
+/// How a subject's read of a physical table is authorized. `Table` is a direct
+/// `PolicyTarget::Table` Allow — physical access, no per-row/column policy applies.
+/// `Type` is the fallback: readable only through the named backing ontology type,
+/// whose folded Read policy (row filters, denied/masked columns) must govern any
+/// row-level disclosure (e.g. the dataset preview).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableReadGrant {
+    Table,
+    Type(TypeName),
+}
+
 /// Borrows the ACL, the ontology, and the deployment naming bridge; owns a
 /// per-request lazy `(schema, table) → backing types` map for the Table→Type
 /// fallback. Construct one per request (the lazy map is not shared across requests).
@@ -65,27 +76,40 @@ impl<'a> DatasetVisibility<'a> {
     /// discloses the backing table's rows through the governed object read — seeing the
     /// table's catalog metadata / lineage node discloses strictly less. Allow-oriented:
     /// an explicit Table Deny does not veto a type Allow (consistent with the object
-    /// read, which consults only the Type target).
+    /// read, which consults only the Type target). Folds [`Self::table_read_grant`].
     pub async fn is_table_readable(
         &self,
         subject: &SubjectId,
         table: &TableRef,
     ) -> Result<bool, ControlPlaneError> {
+        Ok(self.table_read_grant(subject, table).await?.is_some())
+    }
+
+    /// Resolve HOW `subject` may read `table`: a direct Table-target Allow wins
+    /// (physical access — the caller may serve raw rows); otherwise the first backing
+    /// type (in `list_types` order) with a Read Allow governs (the caller must apply
+    /// that type's folded policy before disclosing rows — first-wins, mirroring
+    /// `resolve_governed_catalog`); `None` when no path allows.
+    pub async fn table_read_grant(
+        &self,
+        subject: &SubjectId,
+        table: &TableRef,
+    ) -> Result<Option<TableReadGrant>, ControlPlaneError> {
         if self
             .allows_read(subject, &PolicyTarget::Table(table.clone()))
             .await?
         {
-            return Ok(true);
+            return Ok(Some(TableReadGrant::Table));
         }
         for ty in self.types_backed_by(table).await? {
             if self
                 .allows_read(subject, &PolicyTarget::Type(ty.clone()))
                 .await?
             {
-                return Ok(true);
+                return Ok(Some(TableReadGrant::Type(ty.clone())));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// One `Acl::check(Read)` folded to a bool. Errors propagate (never disclosed as

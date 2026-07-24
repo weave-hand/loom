@@ -4,11 +4,11 @@
 //! file-backed naming bridge; no Postgres, RE-eligible.
 
 use control_plane_core::{
-    Acl, Action, ControlPlane, Effect, ObjectType, PolicyTarget, RoleId, SubjectId, TableRef,
-    TypeName,
+    Acl, Action, ControlPlane, Effect, ObjectType, Ontology, PolicyTarget, RoleId, SubjectId,
+    TableRef, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
-use query_api::dataset_acl::DatasetVisibility;
+use query_api::dataset_acl::{DatasetVisibility, TableReadGrant};
 use query_api::lineage_filter::local_naming;
 
 fn tref(schema: &str, name: &str) -> TableRef {
@@ -97,5 +97,140 @@ async fn no_grant_is_not_readable() {
         !vis.is_table_readable(&subj, &tref("main", "events"))
             .await
             .unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn table_grant_resolves_to_raw_mode() {
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    let (subj, role) = subject_in_role(&cp, "reader").await;
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Table(tref("main", "events")),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let bridge = local_naming();
+    let vis = DatasetVisibility::new(cp.acl(), cp.ontology(), bridge.as_ref());
+    assert_eq!(
+        vis.table_read_grant(&subj, &tref("main", "events"))
+            .await
+            .unwrap(),
+        Some(TableReadGrant::Table)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn type_only_grant_resolves_to_governed_mode() {
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    let (subj, role) = subject_in_role(&cp, "reader").await;
+    // Type "Event" backed by main.events; grant Read on the TYPE only.
+    cp.define_type(
+        ObjectType::build("Event", ("main", "events"))
+            .prop_req("id", "Long")
+            .prop("note", "String")
+            .done(),
+    )
+    .await
+    .unwrap();
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(TypeName("Event".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let bridge = local_naming();
+    let vis = DatasetVisibility::new(cp.acl(), cp.ontology(), bridge.as_ref());
+    assert_eq!(
+        vis.table_read_grant(&subj, &tref("main", "events"))
+            .await
+            .unwrap(),
+        Some(TableReadGrant::Type(TypeName("Event".into())))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn table_grant_wins_over_type_grant() {
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    let (subj, role) = subject_in_role(&cp, "reader").await;
+    cp.define_type(
+        ObjectType::build("Event", ("main", "events"))
+            .prop_req("id", "Long")
+            .done(),
+    )
+    .await
+    .unwrap();
+    for target in [
+        PolicyTarget::Table(tref("main", "events")),
+        PolicyTarget::Type(TypeName("Event".into())),
+    ] {
+        cp.grant(&role, Action::Read, target, Effect::Allow)
+            .await
+            .unwrap();
+    }
+
+    let bridge = local_naming();
+    let vis = DatasetVisibility::new(cp.acl(), cp.ontology(), bridge.as_ref());
+    assert_eq!(
+        vis.table_read_grant(&subj, &tref("main", "events"))
+            .await
+            .unwrap(),
+        Some(TableReadGrant::Table)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_grant_resolves_to_none() {
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    let (subj, _role) = subject_in_role(&cp, "reader").await;
+
+    let bridge = local_naming();
+    let vis = DatasetVisibility::new(cp.acl(), cp.ontology(), bridge.as_ref());
+    assert_eq!(
+        vis.table_read_grant(&subj, &tref("main", "events"))
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn governed_mode_picks_first_readable_backing_type() {
+    // Two types back the same table; the subject may read only the second —
+    // that one governs. (When both are readable the first in list order wins,
+    // mirroring resolve_governed_catalog's first-wins precedent.)
+    let cp = MemoryControlPlane::new(std::time::Duration::from_millis(300));
+    let (subj, role) = subject_in_role(&cp, "reader").await;
+    for name in ["EventA", "EventB"] {
+        cp.define_type(
+            ObjectType::build(name, ("main", "events"))
+                .prop_req("id", "Long")
+                .done(),
+        )
+        .await
+        .unwrap();
+    }
+    cp.grant(
+        &role,
+        Action::Read,
+        PolicyTarget::Type(TypeName("EventB".into())),
+        Effect::Allow,
+    )
+    .await
+    .unwrap();
+
+    let bridge = local_naming();
+    let vis = DatasetVisibility::new(cp.acl(), cp.ontology(), bridge.as_ref());
+    assert_eq!(
+        vis.table_read_grant(&subj, &tref("main", "events"))
+            .await
+            .unwrap(),
+        Some(TableReadGrant::Type(TypeName("EventB".into())))
     );
 }
