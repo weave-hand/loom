@@ -93,3 +93,114 @@ fn empty_schema_unqualified_still_returns_keywords() {
     let out = sql_completions(&empty, "", None);
     assert!(labels(&out).contains(&"SELECT".to_owned()));
 }
+
+#[test]
+fn unqualified_dedups_column_shared_across_tables() {
+    // `id` exists in both `customers` and `orders`; it must appear once, not once
+    // per table (the duplicate `Field` rows #622 reports).
+    let out = sql_completions(&sample(), "id", None);
+    let id_cols: Vec<_> = out
+        .iter()
+        .filter(|s| s.kind == SuggestionKind::Column && s.label == "id")
+        .collect();
+    assert_eq!(
+        id_cols.len(),
+        1,
+        "shared column `id` must be deduped, got {id_cols:?}"
+    );
+}
+
+#[test]
+fn unqualified_dedup_keeps_distinct_columns() {
+    // Every distinct column is still offered; only duplicates collapse.
+    let out = sql_completions(&sample(), "", None);
+    let cols: Vec<String> = out
+        .iter()
+        .filter(|s| s.kind == SuggestionKind::Column)
+        .map(|s| s.label.clone())
+        .collect();
+    let mut deduped = cols.clone();
+    deduped.sort();
+    deduped.dedup();
+    assert_eq!(
+        deduped.len(),
+        cols.len(),
+        "no duplicate column labels expected: {cols:?}"
+    );
+    assert!(cols.contains(&"id".to_owned()));
+    assert!(cols.contains(&"name".to_owned()));
+    assert!(cols.contains(&"total".to_owned()));
+}
+
+#[test]
+fn unqualified_dedup_is_case_insensitive() {
+    // Two tables whose shared column differs only in case collapse to one row.
+    let schema = CompletionSchema {
+        tables: vec![
+            CompletionTable {
+                schema: None,
+                name: "a".to_owned(),
+                columns: vec![CompletionColumn {
+                    name: "Id".to_owned(),
+                    ty: "int".to_owned(),
+                }],
+            },
+            CompletionTable {
+                schema: None,
+                name: "b".to_owned(),
+                columns: vec![CompletionColumn {
+                    name: "id".to_owned(),
+                    ty: "int".to_owned(),
+                }],
+            },
+        ],
+    };
+    let out = sql_completions(&schema, "", None);
+    let id_cols: Vec<_> = out
+        .iter()
+        .filter(|s| s.kind == SuggestionKind::Column)
+        .collect();
+    assert_eq!(id_cols.len(), 1, "case-insensitive dedup: {id_cols:?}");
+}
+
+#[test]
+fn unqualified_dedup_keeps_first_tables_label_and_type() {
+    // First-wins on a type conflict: two tables share a column name (differing in
+    // case) with DIFFERENT types; the surviving suggestion carries the first
+    // table's original label and its type.
+    let schema = CompletionSchema {
+        tables: vec![
+            CompletionTable {
+                schema: None,
+                name: "a".to_owned(),
+                columns: vec![CompletionColumn {
+                    name: "Amount".to_owned(),
+                    ty: "int64".to_owned(),
+                }],
+            },
+            CompletionTable {
+                schema: None,
+                name: "b".to_owned(),
+                columns: vec![CompletionColumn {
+                    name: "amount".to_owned(),
+                    ty: "float64".to_owned(),
+                }],
+            },
+        ],
+    };
+    let cols: Vec<_> = sql_completions(&schema, "", None)
+        .into_iter()
+        .filter(|s| s.kind == SuggestionKind::Column)
+        .collect();
+    assert_eq!(
+        cols.len(),
+        1,
+        "same-named columns collapse to one: {cols:?}"
+    );
+    assert_eq!(cols[0].label, "Amount", "first table's label survives");
+    assert_eq!(
+        cols[0].detail.as_deref(),
+        Some("int64"),
+        "first table's type survives"
+    );
+}

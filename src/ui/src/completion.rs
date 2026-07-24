@@ -69,11 +69,88 @@ fn starts_with_ci(haystack: &str, prefix: &str) -> bool {
         .starts_with(&prefix.to_ascii_lowercase())
 }
 
+/// A `Column` suggestion for `c`, carrying its logical type as `detail`.
+fn column_suggestion(c: &CompletionColumn) -> Suggestion {
+    Suggestion {
+        label: c.name.clone(),
+        kind: SuggestionKind::Column,
+        detail: Some(c.ty.clone()),
+        insert_text: c.name.clone(),
+    }
+}
+
+/// Columns of a single resolved table, filtered by `prefix` (qualified completion).
+fn table_column_suggestions(table: &CompletionTable, prefix: &str) -> Vec<Suggestion> {
+    table
+        .columns
+        .iter()
+        .filter(|c| starts_with_ci(&c.name, prefix))
+        .map(column_suggestion)
+        .collect()
+}
+
+/// Table-name suggestions across the schema, filtered by `prefix`.
+fn table_suggestions(schema: &CompletionSchema, prefix: &str) -> Vec<Suggestion> {
+    schema
+        .tables
+        .iter()
+        .filter(|t| starts_with_ci(&t.name, prefix))
+        .map(|t| Suggestion {
+            label: t.name.clone(),
+            kind: SuggestionKind::Table,
+            detail: t.schema.clone(),
+            insert_text: t.name.clone(),
+        })
+        .collect()
+}
+
+/// Column-name suggestions across all tables, filtered by `prefix` and
+/// de-duplicated by lowercased name (first-wins). A column shared across tables
+/// (e.g. `id` in two inputs) is offered once; the first table's `detail`
+/// (logical type) is kept and the column's table origin is deliberately dropped
+/// — inherent to a union suggestion list, and the chosen design (#622). A type
+/// conflict between same-named columns resolves to the first table's type for
+/// the same reason.
+fn deduped_column_suggestions(schema: &CompletionSchema, prefix: &str) -> Vec<Suggestion> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for t in &schema.tables {
+        for c in &t.columns {
+            if !starts_with_ci(&c.name, prefix) {
+                continue;
+            }
+            let key = c.name.to_ascii_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            out.push(column_suggestion(c));
+        }
+    }
+    out
+}
+
+/// SQL-keyword suggestions, filtered by `prefix`.
+fn keyword_suggestions(prefix: &str) -> Vec<Suggestion> {
+    SQL_KEYWORDS
+        .iter()
+        .filter(|kw| starts_with_ci(kw, prefix))
+        .map(|kw| Suggestion {
+            label: (*kw).to_owned(),
+            kind: SuggestionKind::Keyword,
+            detail: None,
+            insert_text: (*kw).to_owned(),
+        })
+        .collect()
+}
+
 /// Suggestions for the given cursor context.
 /// - `qualifier = Some(t)` → columns of the table named `t` (case-insensitive),
 ///   filtered by `prefix`; empty if no such table.
-/// - `qualifier = None` → table names + all column names + SQL keywords,
-///   each filtered by `prefix`. Order: tables, columns, keywords.
+/// - `qualifier = None` → table names + de-duplicated column names (a column
+///   shared across tables is offered once; the first table's type wins and the
+///   table origin is dropped) + SQL keywords, each filtered by `prefix`.
+///   Order: tables, columns, keywords.
 #[must_use]
 pub fn sql_completions(
     schema: &CompletionSchema,
@@ -88,52 +165,12 @@ pub fn sql_completions(
         else {
             return Vec::new();
         };
-        return table
-            .columns
-            .iter()
-            .filter(|c| starts_with_ci(&c.name, prefix))
-            .map(|c| Suggestion {
-                label: c.name.clone(),
-                kind: SuggestionKind::Column,
-                detail: Some(c.ty.clone()),
-                insert_text: c.name.clone(),
-            })
-            .collect();
+        return table_column_suggestions(table, prefix);
     }
 
-    let mut out = Vec::new();
-    for t in &schema.tables {
-        if starts_with_ci(&t.name, prefix) {
-            out.push(Suggestion {
-                label: t.name.clone(),
-                kind: SuggestionKind::Table,
-                detail: t.schema.clone(),
-                insert_text: t.name.clone(),
-            });
-        }
-    }
-    for t in &schema.tables {
-        for c in &t.columns {
-            if starts_with_ci(&c.name, prefix) {
-                out.push(Suggestion {
-                    label: c.name.clone(),
-                    kind: SuggestionKind::Column,
-                    detail: Some(c.ty.clone()),
-                    insert_text: c.name.clone(),
-                });
-            }
-        }
-    }
-    for kw in SQL_KEYWORDS {
-        if starts_with_ci(kw, prefix) {
-            out.push(Suggestion {
-                label: (*kw).to_owned(),
-                kind: SuggestionKind::Keyword,
-                detail: None,
-                insert_text: (*kw).to_owned(),
-            });
-        }
-    }
+    let mut out = table_suggestions(schema, prefix);
+    out.extend(deduped_column_suggestions(schema, prefix));
+    out.extend(keyword_suggestions(prefix));
     out
 }
 

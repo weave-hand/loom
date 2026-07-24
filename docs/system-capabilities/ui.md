@@ -140,6 +140,11 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   (link traversal, per-type property definitions).
 - `#fut-object-explorer-filtering` — filtering and search over the object table.
 - `#fut-object-explorer-routing` — URL routing and deep-linking (`yew-router`).
-- `#fut-ui-sql-completion-polish` — the Transforms editor works *around* Monaco's
-  mount-time prop capture with a schema-content remount key; the underlying
-  multi-editor / dedup / live-prop-swap polish is still open.
+- `#fut-ui-sql-completion-polish` — unqualified SQL completion now **dedups**
+  column names shared across input tables (a column present in two inputs is
+  offered once; the first table's type wins and the table origin is dropped),
+  so the Transforms editor no longer shows duplicate `Field` rows (#622). The
+  Transforms editor still works *around* Monaco's mount-time prop capture with a
+  schema-content remount key; the remaining multi-editor-provider and
+  live-prop-swap polish is carved to a follow-up (both need the deferred
+  component DOM-test harness to verify).
