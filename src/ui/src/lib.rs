@@ -442,6 +442,121 @@ pub fn parse_datasets(body: &Value) -> Vec<DatasetRow> {
         .unwrap_or_default()
 }
 
+/// Catalog list sort key. Tokens mirror the query-api `?sort=` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatasetSort {
+    Name,
+    Project,
+    Updated,
+    Rows,
+}
+
+impl DatasetSort {
+    /// The `?sort=` wire token.
+    #[must_use]
+    pub fn as_param(self) -> &'static str {
+        match self {
+            DatasetSort::Name => "name",
+            DatasetSort::Project => "project",
+            DatasetSort::Updated => "updated",
+            DatasetSort::Rows => "rows",
+        }
+    }
+
+    /// The human label for the sort control.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            DatasetSort::Name => "Name",
+            DatasetSort::Project => "Project",
+            DatasetSort::Updated => "Updated",
+            DatasetSort::Rows => "Rows",
+        }
+    }
+
+    /// Every sort key, in menu order.
+    #[must_use]
+    pub fn all() -> [DatasetSort; 4] {
+        [
+            DatasetSort::Name,
+            DatasetSort::Project,
+            DatasetSort::Updated,
+            DatasetSort::Rows,
+        ]
+    }
+
+    /// Parse a `?sort=` wire token back to a key (the inverse of [`Self::as_param`]).
+    #[must_use]
+    pub fn from_param(s: &str) -> Option<DatasetSort> {
+        match s {
+            "name" => Some(DatasetSort::Name),
+            "project" => Some(DatasetSort::Project),
+            "updated" => Some(DatasetSort::Updated),
+            "rows" => Some(DatasetSort::Rows),
+            _ => None,
+        }
+    }
+}
+
+/// Sort direction for the Catalog list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogSortDir {
+    Asc,
+    Desc,
+}
+
+impl CatalogSortDir {
+    /// The `?dir=` wire token.
+    #[must_use]
+    pub fn as_param(self) -> &'static str {
+        match self {
+            CatalogSortDir::Asc => "asc",
+            CatalogSortDir::Desc => "desc",
+        }
+    }
+
+    /// The opposite direction (the direction-toggle button).
+    #[must_use]
+    pub fn toggled(self) -> CatalogSortDir {
+        match self {
+            CatalogSortDir::Asc => CatalogSortDir::Desc,
+            CatalogSortDir::Desc => CatalogSortDir::Asc,
+        }
+    }
+
+    /// A compact glyph label for the toggle (ascending ▲ / descending ▼).
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            CatalogSortDir::Asc => "▲",
+            CatalogSortDir::Desc => "▼",
+        }
+    }
+}
+
+/// Build the `GET /datasets` query string from the active controls. `project = None`
+/// (or empty) is the "All" filter and is omitted. E.g. `"?sort=updated&dir=desc"`.
+#[must_use]
+pub fn dataset_list_query(sort: DatasetSort, dir: CatalogSortDir, project: Option<&str>) -> String {
+    let mut q = format!("?sort={}&dir={}", sort.as_param(), dir.as_param());
+    if let Some(p) = project.filter(|p| !p.is_empty()) {
+        q.push_str("&project=");
+        q.push_str(p);
+    }
+    q
+}
+
+/// The distinct project names present in `rows`, sorted ascending — the filter-chip
+/// options. (Project names are schema identifiers, so no URL-encoding is required
+/// where these are used as `?project=` values.)
+#[must_use]
+pub fn distinct_projects(rows: &[DatasetRow]) -> Vec<String> {
+    let mut ps: Vec<String> = rows.iter().map(|r| r.project.clone()).collect();
+    ps.sort();
+    ps.dedup();
+    ps
+}
+
 /// A schema column in the Catalog › Schema tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchemaCol {

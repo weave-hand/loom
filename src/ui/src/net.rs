@@ -149,9 +149,15 @@ pub async fn fetch_type_detail(
     Ok(parse_type_detail(&body))
 }
 
-/// GET /datasets with the bearer token.
-pub async fn fetch_datasets(base: &str, token: &str) -> Result<Vec<DatasetRow>, FetchError> {
-    let resp = Request::get(&url(base, "/datasets"))
+/// GET /datasets{query} with the bearer token. `query` is a prebuilt query string
+/// (e.g. from [`loom_ui_core::dataset_list_query`]), including the leading `?` when
+/// non-empty, or `""` for the full unsorted list.
+pub async fn fetch_datasets(
+    base: &str,
+    token: &str,
+    query: &str,
+) -> Result<Vec<DatasetRow>, FetchError> {
+    let resp = Request::get(&url(base, &format!("/datasets{query}")))
         .header("Authorization", &format!("Bearer {token}"))
         .send()
         .await

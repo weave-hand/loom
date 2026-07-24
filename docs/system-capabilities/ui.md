@@ -37,6 +37,22 @@ dev-only gallery bundle (`buck2 build //src/ui:gallery-bundle`, `src/gallery.rs`
 `gallery.html`) renders every primitive and its variants; it has no backend and
 never ships in the login bundle.
 
+The **Catalog surface** (`src/ui/src/surfaces/catalog.rs`) lists the mirror datasets
+with a **controls bar** (#619): project **filter chips** (All + one per distinct
+project) and a row of **Sort** key buttons (Name / Project / Updated / Rows) with a
+direction toggle. These drive **server-side** sort/filter via
+`GET /datasets?sort=&dir=&project=` (see [query-api.md](query-api.md)) rather than
+reshaping the list client-side. The query string is built by a pure
+`dataset_list_query` helper in `loom_ui_core` (`rust_test`'d alongside a
+`distinct_projects` chip-option derivation); the load effect re-fetches whenever a
+control changes, guarded by its own `FetchGeneration` counter so an out-of-order
+arrival can't stale the list. The chip options are refreshed only from an
+**unfiltered** load, so selecting a project never collapses them to the filtered
+subset, and changing any control clears the drawer selection (row indices shift when
+the list reorders). The sort control is rendered as buttons, not a `<select>` —
+reading a `<select>` value would need `web_sys::HtmlSelectElement`, which this crate
+does not enable.
+
 The **Transforms admin surface** (`src/ui/src/surfaces/transforms.rs`) is the first
 product consumer of the `SqlEditor` (#394): a list+drawer
 surface over the `/admin/transforms` control-plane routes that lets an admin browse,
