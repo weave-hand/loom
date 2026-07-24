@@ -186,3 +186,15 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
   schema-content remount key; the remaining multi-editor-provider and
   live-prop-swap polish is carved to a follow-up (both need the deferred
   component DOM-test harness to verify).
+
+## SqlEditor diagnostics (#620)
+
+The `SqlEditor` now squiggles two classes of problem client-side, with no backend
+round trip: unknown tables in `FROM`/`JOIN` position (CTE-aware — a query's own
+`WITH` names are never flagged — and conservative, skipping qualified/quoted/
+aliased identifiers and plain column references, and emitting nothing when the
+passed-in `CompletionSchema` is empty) and unbalanced parentheses. Both are pure
+functions in `loom_ui_core::sql_diagnostics` (`rust_test`'d), published to Monaco
+as `IMarkerData` under the `loom` marker owner on every model change. Deferred to
+a follow-up: client-side *column* diagnostics (need alias/scope resolution) and
+the server-side EXPLAIN validate endpoint, which #620 names as the north star.
