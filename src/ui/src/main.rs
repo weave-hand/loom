@@ -26,7 +26,7 @@ use std::rc::Rc;
 use stylist::yew::styled_component;
 use surfaces::{
     CatalogControls, CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList,
-    OntologyTypeRow, TransformDrawer, TransformEditor, TransformsList,
+    OntologyTypeRow, QueryView, TransformDrawer, TransformEditor, TransformsList,
 };
 use yew::prelude::*;
 
@@ -1099,6 +1099,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
             };
             (list, drawer)
         }
+        Surface::Query => (
+            html! { <QueryView token={props.token.clone()} on_logout={props.on_logout.clone()} /> },
+            Html::default(),
+        ),
         other => (html! { <StubView surface={other} /> }, Html::default()),
     };
 

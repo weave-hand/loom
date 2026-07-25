@@ -2,10 +2,10 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, DatasetDetail, DatasetRow, DatasetRunRow, PreviewData, RunRow, TransformDefView,
-    TransformSummary, TypeDetail, lineage_closure_path, parse_dataset_detail, parse_dataset_runs,
-    parse_datasets, parse_preview, parse_runs, parse_transform_def, parse_transform_list,
-    parse_type_detail, status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, DatasetRunRow, PreviewData, QueryResult, RunRow,
+    TransformDefView, TransformSummary, TypeDetail, lineage_closure_path, parse_dataset_detail,
+    parse_dataset_runs, parse_datasets, parse_preview, parse_query_result, parse_runs,
+    parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
 };
 use serde_json::Value;
 use wasm_bindgen::JsValue;
@@ -365,6 +365,31 @@ pub async fn run_transform(base: &str, token: &str, name: &str) -> Result<String
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string())
+}
+
+/// POST /sql — run the subject's read-only SQL under governance (expects 200
+/// `{columns, rows, truncated}`). A 400 surfaces the engine's own plan message
+/// (bad SQL, or a table the subject cannot see) via `write_status_err`'s
+/// `Rejected(body)`; a 401 fails closed to `Unauthorized` for the caller to log out.
+pub async fn run_sql(
+    base: &str,
+    token: &str,
+    sql: &str,
+    limit: u32,
+) -> Result<QueryResult, FetchError> {
+    let body = serde_json::json!({ "sql": sql, "limit": limit });
+    let resp = Request::post(&url(base, "/sql"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .json(&body)
+        .map_err(|_| FetchError::Network)?
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(write_status_err(resp).await);
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_query_result(&body))
 }
 
 /// POST /admin/transforms/run — run an ad-hoc body (expects 202 {run_id}).
