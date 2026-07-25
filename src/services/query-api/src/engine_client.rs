@@ -68,6 +68,39 @@ impl crate::serving::ServingEngine for EngineServingClient {
         Ok(batches_to_rows(batches))
     }
 
+    async fn execute_governed(
+        &self,
+        sql: String,
+        catalog: control_plane_core::GovernedCatalog,
+        max_rows: usize,
+    ) -> Result<crate::serving::GovernedRows, ServingError> {
+        use futures::StreamExt as _;
+        let map_err = |e| match e {
+            control_plane_core::ControlPlaneError::Validation(m) => ServingError::Plan(m),
+            other => ServingError::Engine(other.to_string()),
+        };
+        let mut stream = self
+            .sql
+            .execute_governed_stream(sql, catalog)
+            .await
+            .map_err(map_err)?;
+        // Collect batches until the cumulative row count exceeds the cap (then take one
+        // more, so `truncate_rows` can detect and report truncation), bounding the
+        // buffered result to ~max_rows + one batch rather than the whole stream.
+        let mut batches = Vec::new();
+        let mut seen = 0usize;
+        while let Some(item) = stream.next().await {
+            let batch = item.map_err(map_err)?;
+            seen = seen.saturating_add(batch.num_rows());
+            batches.push(batch);
+            if seen > max_rows {
+                break;
+            }
+        }
+        let rows = crate::serving_datafusion::batches_to_rows(batches);
+        Ok(crate::sql_console::truncate_rows(rows, max_rows))
+    }
+
     async fn vector_search(
         &self,
         table: &control_plane_core::TableRef,

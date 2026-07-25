@@ -170,6 +170,18 @@ rust_test(
 )
 
 rust_test(
+    name = "sql-console-unit",
+    crate = "sql_console_unit",
+    srcs = ["tests/sql_console.rs"],
+    crate_root = "tests/sql_console.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "web-static",
     crate = "web_static",
     srcs = ["tests/web_static.rs"],

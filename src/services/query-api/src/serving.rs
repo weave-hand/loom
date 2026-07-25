@@ -48,6 +48,14 @@ pub struct Rows {
     pub rows: Vec<Vec<SqlValue>>,
 }
 
+/// The decoded result of a governed ad-hoc SQL execution: the rows plus whether the
+/// engine result exceeded the caller's row cap and was truncated to it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GovernedRows {
+    pub rows: Rows,
+    pub truncated: bool,
+}
+
 /// Where one step of a multi-target atomic write lands relative to the target
 /// table's existing live contents. `Append` adds the step's rows; `Overwrite`
 /// replaces the table's entire live set (superseding both the file and inline
@@ -347,6 +355,23 @@ pub trait ServingEngine: Send + Sync {
         let _ = (table, index_name, query, k, nprobe, ef_search);
         Err(ServingError::Engine(
             "vector search not supported by this engine".to_string(),
+        ))
+    }
+
+    /// Execute arbitrary read-only client `sql` under `catalog` (the caller's
+    /// server-resolved governed catalog), decoding up to `max_rows` result rows and
+    /// flagging truncation. Governance and read-only-ness are enforced in the engine
+    /// by construction; the default errors — only the real engine client
+    /// (`EngineServingClient`) serves it.
+    async fn execute_governed(
+        &self,
+        sql: String,
+        catalog: control_plane_core::GovernedCatalog,
+        max_rows: usize,
+    ) -> Result<GovernedRows, ServingError> {
+        let _ = (sql, catalog, max_rows);
+        Err(ServingError::Unsupported(
+            "governed sql execution".to_string(),
         ))
     }
 
