@@ -50,8 +50,7 @@ pub struct SqlQueryRequest {
     request_body = SqlQueryRequest,
     responses(
         (status = 200, description = "Governed result rows", body = SqlQueryResponse),
-        (status = 400, description = "Empty/malformed SQL or a table not visible to the subject"),
-        (status = 403, description = "Subject denied"),
+        (status = 400, description = "Empty/malformed SQL, a rejected write (DDL/DML/COPY), or a table not visible to the subject"),
         (status = 500, description = "Serving error"),
     ),
     security(("bearer_auth" = [])),

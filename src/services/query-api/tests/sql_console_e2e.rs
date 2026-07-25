@@ -331,6 +331,26 @@ async fn malformed_sql_is_bad_request() {
     assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
 }
 
+/// A `COPY … TO` write (which bypasses the governed table providers) is rejected at
+/// planning — the console is read-only by construction, not merely by provider shape.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn copy_to_write_is_rejected() {
+    let fx = PgFixture::shared();
+    let h = setup(fx).await;
+
+    let (status, _body) = run(
+        &h,
+        "COPY (SELECT 1 AS x) TO 'file:///tmp/loom-sql-console-should-not-exist.csv' STORED AS CSV",
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::BAD_REQUEST,
+        "COPY ... TO must be rejected as a write, never executed"
+    );
+}
+
 /// An empty SQL body is a 400.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn empty_sql_is_bad_request() {
