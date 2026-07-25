@@ -277,12 +277,14 @@ pub fn cell_to_string(v: &Value) -> String {
     }
 }
 
-/// One of the app's five top-level surfaces (nav order). Backend-live surfaces are
-/// Catalog and Ontology; the others render an honest "not available" stub.
+/// One of the app's six top-level surfaces (nav order). Backend-live surfaces are
+/// Catalog, Transforms, Query, and Ontology; the others render an honest "not
+/// available" stub.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
     Catalog,
     Transforms,
+    Query,
     Ontology,
     Workbooks,
     Dashboards,
@@ -291,10 +293,11 @@ pub enum Surface {
 impl Surface {
     /// Nav order, left to right.
     #[must_use]
-    pub fn all() -> [Surface; 5] {
+    pub fn all() -> [Surface; 6] {
         [
             Surface::Catalog,
             Surface::Transforms,
+            Surface::Query,
             Surface::Ontology,
             Surface::Workbooks,
             Surface::Dashboards,
@@ -307,6 +310,7 @@ impl Surface {
         match self {
             Surface::Catalog => "Catalog",
             Surface::Transforms => "Transforms",
+            Surface::Query => "Query",
             Surface::Ontology => "Ontology",
             Surface::Workbooks => "Workbooks",
             Surface::Dashboards => "Dashboards",
@@ -319,6 +323,7 @@ impl Surface {
         match self {
             Surface::Catalog => "#3b82f6",
             Surface::Transforms => "#2bb0a0",
+            Surface::Query => "#e06c75",
             Surface::Ontology => "#8b5cf6",
             Surface::Workbooks => "#2da44e",
             Surface::Dashboards => "#d29922",
@@ -330,7 +335,7 @@ impl Surface {
     pub fn is_live(self) -> bool {
         matches!(
             self,
-            Surface::Catalog | Surface::Ontology | Surface::Transforms
+            Surface::Catalog | Surface::Ontology | Surface::Transforms | Surface::Query
         )
     }
 }
@@ -610,8 +615,12 @@ pub struct PreviewData {
     pub sampled: bool,
 }
 
+/// Decode a `{columns:[str], rows:[[cell]]}` tabular body into `(columns, string
+/// rows)`. Shared by the dataset preview and the SQL console — both render an
+/// arbitrary result grid as columns plus display-string cells (each cell via
+/// [`cell_to_string`], so a non-string cell stringifies rather than dropping).
 #[must_use]
-pub fn parse_preview(body: &Value) -> PreviewData {
+pub fn parse_columns_rows(body: &Value) -> (Vec<String>, Vec<Vec<String>>) {
     let columns = body
         .get("columns")
         .and_then(Value::as_array)
@@ -634,11 +643,38 @@ pub fn parse_preview(body: &Value) -> PreviewData {
                 .collect()
         })
         .unwrap_or_default();
+    (columns, rows)
+}
+
+#[must_use]
+pub fn parse_preview(body: &Value) -> PreviewData {
+    let (columns, rows) = parse_columns_rows(body);
     PreviewData {
         columns,
         rows,
         sampled: body
             .get("sampled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// Decode `POST /sql` — an arbitrary governed result grid plus the truncation flag.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub truncated: bool,
+}
+
+#[must_use]
+pub fn parse_query_result(body: &Value) -> QueryResult {
+    let (columns, rows) = parse_columns_rows(body);
+    QueryResult {
+        columns,
+        rows,
+        truncated: body
+            .get("truncated")
             .and_then(Value::as_bool)
             .unwrap_or(false),
     }
