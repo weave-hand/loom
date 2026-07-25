@@ -73,6 +73,15 @@ rust_test(
 )
 
 rust_test(
+    name = "query-result",
+    crate = "query_result",
+    srcs = ["tests/query_result.rs"],
+    crate_root = "tests/query_result.rs",
+    edition = "2024",
+    deps = ["//third-party:serde_json", ":ui-core"],
+)
+
+rust_test(
     name = "catalog-controls",
     edition = "2024",
     srcs = ["tests/catalog_controls.rs"],
@@ -183,7 +192,7 @@ rust_test(
 rust_binary(
     name = "app",
     crate = "app",
-    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/catalog.rs", "src/surfaces/ontology.rs", "src/surfaces/transforms.rs", "src/net.rs", "src/session.rs"],
+    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/catalog.rs", "src/surfaces/ontology.rs", "src/surfaces/query.rs", "src/surfaces/transforms.rs", "src/net.rs", "src/session.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",

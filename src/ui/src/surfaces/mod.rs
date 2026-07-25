@@ -4,8 +4,10 @@
 
 mod catalog;
 mod ontology;
+mod query;
 mod transforms;
 
 pub use catalog::{CatalogControls, CatalogDrawer, CatalogList};
 pub use ontology::{LoadStatus, OntologyDrawer, OntologyList, OntologyTypeRow};
+pub use query::QueryView;
 pub use transforms::{TransformDrawer, TransformEditor, TransformsList};

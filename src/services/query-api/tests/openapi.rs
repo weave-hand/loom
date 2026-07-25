@@ -26,6 +26,7 @@ fn expected() -> BTreeSet<(String, String)> {
         ("get", "/datasets"),
         ("get", "/datasets/{schema}/{table}"),
         ("get", "/datasets/{schema}/{table}/preview"),
+        ("post", "/sql"),
         // Runtime-mounted routes (serve.rs merges the auth, service-account, and
         // admin routers) — documented by the service_runtime OpenAPI fragments.
         ("post", "/auth/login"),

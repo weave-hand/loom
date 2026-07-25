@@ -256,6 +256,16 @@ pub struct DatasetPreviewResponse {
     pub sampled: bool,
 }
 
+/// Documentation shape for the `POST /sql` governed-console response.
+#[derive(ToSchema)]
+pub struct SqlQueryResponse {
+    pub columns: Vec<String>,
+    /// Every governed cell rendered to a display string (`""` for `NULL`).
+    pub rows: Vec<Vec<String>>,
+    /// `true` when the result exceeded the row cap and was truncated to it.
+    pub truncated: bool,
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -281,6 +291,7 @@ pub struct DatasetPreviewResponse {
         crate::http::list_datasets,
         crate::http::get_dataset,
         crate::http::dataset_preview,
+        crate::sql_console::run_sql,
     ),
     components(schemas(
         ObjectsResponse,
@@ -305,6 +316,8 @@ pub struct DatasetPreviewResponse {
         DatasetColumnView,
         DatasetDetailResponse,
         DatasetPreviewResponse,
+        SqlQueryResponse,
+        crate::sql_console::SqlQueryRequest,
         crate::http::VectorSearchRequest,
         crate::lineage_read::DatasetNode,
         crate::lineage_read::DatasetClosureResponse,

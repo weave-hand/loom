@@ -171,6 +171,18 @@ rust_test(
 )
 
 rust_test(
+    name = "sql-console-unit",
+    crate = "sql_console_unit",
+    srcs = ["tests/sql_console.rs"],
+    crate_root = "tests/sql_console.rs",
+    edition = "2024",
+    deps = [
+        ":query-api",
+        "//third-party:serde_json",
+    ],
+)
+
+rust_test(
     name = "web-static",
     crate = "web_static",
     srcs = ["tests/web_static.rs"],
@@ -749,6 +761,32 @@ loom_fixture_test(
         "//third-party:tokio",
         "//third-party:tokio-stream",
         "//third-party:tonic",
+        "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "sql-console-e2e",
+    crate = "sql_console_e2e",
+    srcs = ["tests/sql_console_e2e.rs"],
+    crate_root = "tests/sql_console_e2e.rs",
+    deps = [
+        "//src/testing:seed",
+        "//src/testing:flight",
+        ":query-api",
+        ":e2e-support",
+        "//src/services/engine:engine",
+        "//src/services/engine-wire:engine-wire",
+        "//src/services/runtime:runtime",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:axum",
+        "//third-party:serde_json",
+        "//third-party:tempfile",
+        "//third-party:time",
+        "//third-party:tokio",
         "//third-party:uuid",
     ],
 )

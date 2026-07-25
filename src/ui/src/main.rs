@@ -26,7 +26,7 @@ use std::rc::Rc;
 use stylist::yew::styled_component;
 use surfaces::{
     CatalogControls, CatalogDrawer, CatalogList, LoadStatus, OntologyDrawer, OntologyList,
-    OntologyTypeRow, TransformDrawer, TransformEditor, TransformsList,
+    OntologyTypeRow, QueryView, TransformDrawer, TransformEditor, TransformsList,
 };
 use yew::prelude::*;
 
@@ -208,6 +208,15 @@ fn use_dataset_run_history(
         *history_loading,
         (*history_error).clone(),
     )
+}
+
+/// The app-bar "Log out" button. Extracted from `workspace` so its click closure
+/// lives here rather than adding to that hotspot function's complexity.
+fn logout_button(on_logout: Callback<()>) -> Html {
+    html! {
+        <Button variant={ButtonVariant::Ghost}
+            onclick={Callback::from(move |_: MouseEvent| on_logout.emit(()))}>{ "Log out" }</Button>
+    }
 }
 
 #[function_component(Workspace)]
@@ -700,11 +709,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let surface = surface.clone();
         Callback::from(move |s: Surface| surface.set(s))
     };
-    let on_logout = props.on_logout.clone();
-    let logout_btn = html! {
-        <Button variant={ButtonVariant::Ghost}
-            onclick={Callback::from(move |_: MouseEvent| on_logout.emit(()))}>{ "Log out" }</Button>
-    };
+    let logout_btn = logout_button(props.on_logout.clone());
 
     let (list, drawer) = match *surface {
         Surface::Catalog => {
@@ -1099,6 +1104,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
             };
             (list, drawer)
         }
+        Surface::Query => (
+            html! { <QueryView token={props.token.clone()} on_logout={props.on_logout.clone()} /> },
+            Html::default(),
+        ),
         other => (html! { <StubView surface={other} /> }, Html::default()),
     };
 

@@ -15,7 +15,7 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::DFSchema;
 use datafusion::error::{DataFusionError, Result as DfResult};
-use datafusion::execution::context::{ExecutionProps, SessionContext};
+use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionContext};
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType, not};
 use datafusion::physical_expr::{
     PhysicalExpr, create_physical_expr,
@@ -348,6 +348,20 @@ pub async fn execute_governed_sql_stream(
             Arc::new(GovernedTableProvider::new(provider, policy)?);
         register_qualified(&ctx, &v.view.schema, &v.view.name, governed_provider)?;
     }
-    let df = ctx.sql(sql).await.map_err(EngineServingError::Plan)?;
+    // Read-only guard (load-bearing): this path plans ARBITRARY client SQL, so it must
+    // reject DDL, DML, and statements — `COPY … TO`, `INSERT`/`UPDATE`/`DELETE`,
+    // `CREATE`, `SET`, … — none of which route through the governed `TableProvider`s and
+    // would otherwise let any caller holding a Read grant write to the object store /
+    // server filesystem (a bypass of the read-only, governed contract). `SELECT`/`WITH`
+    // are `Query` nodes, ungated by these flags, so read queries are unaffected; a
+    // rejected statement is an `EngineServingError::Plan` → the caller's own 400.
+    let opts = SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false);
+    let df = ctx
+        .sql_with_options(sql, opts)
+        .await
+        .map_err(EngineServingError::Plan)?;
     df.execute_stream().await.map_err(to_serving)
 }
