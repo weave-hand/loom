@@ -6,7 +6,79 @@
 //! persist path); this module resolves the catalog server-side (never from the
 //! wire), caps the result, and shapes the JSON body.
 
+use axum::extract::{Json, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use serde::Deserialize;
+use service_runtime::Subject;
+
+use crate::governed::resolve_governed_catalog;
+use crate::handler::QueryError;
+use crate::http::{AppState, query_error_response};
+use crate::openapi::SqlQueryResponse;
 use crate::serving::{GovernedRows, Rows};
+
+/// Default row cap when the caller supplies no `limit` — bounds a naive `SELECT *`
+/// with no `LIMIT`.
+const DEFAULT_SQL_ROWS: usize = 1_000;
+/// Hard cap on the caller-supplied `limit` — bounds buffered result size.
+const MAX_SQL_ROWS: usize = 10_000;
+
+/// The `POST /sql` request body: arbitrary read-only SQL plus an optional row cap.
+/// `deny_unknown_fields` so a typo'd/extraneous field is a 400, not silently ignored.
+/// The governed catalog is NEVER accepted from the wire — it is resolved server-side
+/// from the authenticated subject (see [`run_sql`]).
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SqlQueryRequest {
+    pub sql: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// `POST /sql` — run the authenticated subject's arbitrary read-only SQL under their
+/// governed catalog, returning `{columns, rows, truncated}`. Governance and
+/// read-only-ness are enforced in the engine by construction; this handler resolves
+/// the per-subject `GovernedCatalog` server-side (never from the body), caps the
+/// result, and shapes the JSON. A plan/validation fault (bad syntax, or a table the
+/// subject cannot see — the engine's closed-world catalog makes an ungranted table
+/// indistinguishable from a nonexistent one) is a legitimate client `400` carrying the
+/// engine's plan message, which is safe to echo (it is the caller's own SQL vocabulary);
+/// a backend fault is an opaque `500` with the detail logged server-side.
+#[utoipa::path(
+    post, path = "/sql",
+    request_body = SqlQueryRequest,
+    responses(
+        (status = 200, description = "Governed result rows", body = SqlQueryResponse),
+        (status = 400, description = "Empty/malformed SQL or a table not visible to the subject"),
+        (status = 403, description = "Subject denied"),
+        (status = 500, description = "Serving error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "sql",
+)]
+pub async fn run_sql(
+    State(st): State<AppState>,
+    subject: Subject,
+    Json(req): Json<SqlQueryRequest>,
+) -> axum::response::Response {
+    let sql = req.sql.trim().to_string();
+    if sql.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty sql").into_response();
+    }
+    let max_rows = req
+        .limit
+        .map_or(DEFAULT_SQL_ROWS, |n| (n as usize).clamp(1, MAX_SQL_ROWS));
+
+    let catalog = match resolve_governed_catalog(st.cp.ontology(), st.cp.acl(), &subject.0).await {
+        Ok(c) => c,
+        Err(e) => return query_error_response(e, "sql console catalog"),
+    };
+    match st.serving.execute_governed(sql, catalog, max_rows).await {
+        Ok(gr) => Json(result_body(&gr)).into_response(),
+        Err(e) => query_error_response(QueryError::Serving(e), "sql console execute"),
+    }
+}
 
 /// Truncate `rows` to `max_rows`, reporting whether truncation occurred. Pure.
 #[must_use]

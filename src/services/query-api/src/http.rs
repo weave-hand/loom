@@ -130,6 +130,7 @@ pub fn router(state: AppState) -> Router {
         .route("/datasets", get(list_datasets))
         .route("/datasets/:schema/:table", get(get_dataset))
         .route("/datasets/:schema/:table/preview", get(dataset_preview))
+        .route("/sql", post(crate::sql_console::run_sql))
         .with_state(state)
 }
 
