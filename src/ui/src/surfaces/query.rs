@@ -40,6 +40,40 @@ fn result_columns(cols: &[String]) -> Vec<Column> {
         .collect()
 }
 
+/// The status line under the editor: nothing before the first run, the error
+/// message on failure, or the row count (+ truncation note) on success.
+fn render_status(result: &Option<Result<QueryResult, String>>) -> Html {
+    match result {
+        None => html! {},
+        Some(Err(msg)) => html! { <p class="error">{ msg.clone() }</p> },
+        Some(Ok(qr)) => {
+            let n = qr.rows.len();
+            let note = if qr.truncated {
+                format!("{n} rows (truncated at the row cap)")
+            } else {
+                format!("{n} rows")
+            };
+            html! { <p>{ note }</p> }
+        }
+    }
+}
+
+/// The governed result grid, or nothing when there is no successful, non-empty
+/// result to render.
+fn render_grid(result: &Option<Result<QueryResult, String>>) -> Html {
+    match result {
+        Some(Ok(qr)) if !qr.columns.is_empty() => html! {
+            <div data-testid="sql-result">
+                <DataTable<StringRow>
+                    columns={result_columns(&qr.columns)}
+                    rows={qr.rows.iter().map(|r| StringRow { cells: r.clone() }).collect::<Vec<_>>()}
+                />
+            </div>
+        },
+        _ => html! {},
+    }
+}
+
 #[derive(Properties, PartialEq)]
 pub struct QueryViewProps {
     pub token: AttrValue,
@@ -82,42 +116,17 @@ pub fn query_view(props: &QueryViewProps) -> Html {
         })
     };
 
-    let status = match &*result {
-        None => html! {},
-        Some(Err(msg)) => html! { <p class="error">{ msg.clone() }</p> },
-        Some(Ok(qr)) => {
-            let n = qr.rows.len();
-            let note = if qr.truncated {
-                format!("{n} rows (truncated at the row cap)")
-            } else {
-                format!("{n} rows")
-            };
-            html! { <p>{ note }</p> }
-        }
-    };
-
-    let grid = match &*result {
-        Some(Ok(qr)) if !qr.columns.is_empty() => html! {
-            <div data-testid="sql-result">
-                <DataTable<StringRow>
-                    columns={result_columns(&qr.columns)}
-                    rows={qr.rows.iter().map(|r| StringRow { cells: r.clone() }).collect::<Vec<_>>()}
-                />
-            </div>
-        },
-        _ => html! {},
-    };
-
+    let run_label = if *running { "Running…" } else { "Run" };
     html! {
         <Panel>
             <SqlEditor value={(*sql).clone()} on_change={on_change} read_only={false} />
             <div>
                 <Button variant={ButtonVariant::Primary} disabled={*running} onclick={on_run}>
-                    { if *running { "Running…" } else { "Run" } }
+                    { run_label }
                 </Button>
             </div>
-            { status }
-            { grid }
+            { render_status(&result) }
+            { render_grid(&result) }
         </Panel>
     }
 }
