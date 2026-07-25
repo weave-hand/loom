@@ -198,3 +198,22 @@ functions in `loom_ui_core::sql_diagnostics` (`rust_test`'d), published to Monac
 as `IMarkerData` under the `loom` marker owner on every model change. Deferred to
 a follow-up: client-side *column* diagnostics (need alias/scope resolution) and
 the server-side EXPLAIN validate endpoint, which #620 names as the north star.
+
+## SQL query console (#621)
+
+A sixth live surface, **Query** (accent `#e06c75`), is the second `SqlEditor`
+consumer: a read-only "run this SQL, get rows back" console. Unlike the other
+surfaces (whose state lives in `Workspace`), `QueryView` is self-contained — it
+owns the SQL text, the last result, and the in-flight flag, so `Workspace` gains
+only a one-line dispatch arm. A **Run** button POSTs the editor's SQL to the new
+governed `POST /sql` endpoint via `net::run_sql` and renders the returned
+`{columns, rows, truncated}` through the shared `DataTable` primitive (a
+runtime-columned `StringRow`, so arbitrary result shapes render without a
+per-query row type); a `401` fails closed to logout and a `400` surfaces the
+engine's own plan message. Governance is entirely server-side (see the
+`POST /sql` record in [query-api.md](query-api.md)) — the console sends SQL and
+renders whatever the governed engine returns. The response parser
+(`parse_query_result`, sharing `parse_columns_rows` with the dataset preview) is
+pure and `rust_test`'d; the component itself is verified in the gallery/e2e like
+every other surface. Deferred: feeding the live `/datasets` schema into the
+editor's completion provider (today the console's editor takes an empty schema).

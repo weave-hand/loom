@@ -97,7 +97,11 @@ async fn setup(fx: &PgFixture) -> Harness {
         &pool,
         &catalog,
         &tref("wh", "orders"),
-        &[col("id", "long"), col("customer_id", "long"), col("email", "string")],
+        &[
+            col("id", "long"),
+            col("customer_id", "long"),
+            col("email", "string"),
+        ],
         orders_schema,
         vec![orders],
         limits,
@@ -126,7 +130,11 @@ async fn setup(fx: &PgFixture) -> Harness {
         &pool,
         &catalog,
         &tref("wh", "customers"),
-        &[col("id", "long"), col("name", "string"), col("ssn", "string")],
+        &[
+            col("id", "long"),
+            col("name", "string"),
+            col("ssn", "string"),
+        ],
         cust_schema,
         vec![customers],
         limits,
@@ -217,8 +225,11 @@ async fn setup(fx: &PgFixture) -> Harness {
 
     // Boot the engine over a UDS and connect a real EngineServingClient (control+flight).
     let (sock, eng) = e2e_support::spawn_engine_full(fx, &db, wh.path(), 0, i64::MAX).await;
-    let serving: Arc<dyn ServingEngine> =
-        Arc::new(EngineServingClient::connect(sock).await.expect("engine connect"));
+    let serving: Arc<dyn ServingEngine> = Arc::new(
+        EngineServingClient::connect(sock)
+            .await
+            .expect("engine connect"),
+    );
     let cp = Arc::new(cp);
 
     Harness {
@@ -230,7 +241,11 @@ async fn setup(fx: &PgFixture) -> Harness {
 }
 
 /// Drive `POST /sql` as `reader` with the given SQL (+ optional limit).
-async fn run(h: &Harness, sql: &str, limit: Option<u32>) -> (axum::http::StatusCode, serde_json::Value) {
+async fn run(
+    h: &Harness,
+    sql: &str,
+    limit: Option<u32>,
+) -> (axum::http::StatusCode, serde_json::Value) {
     let mut body = serde_json::json!({ "sql": sql });
     if let Some(n) = limit {
         body["limit"] = serde_json::json!(n);
@@ -333,7 +348,12 @@ async fn limit_below_result_truncates_with_flag() {
     let h = setup(fx).await;
 
     // The row filter yields 3 rows; a cap of 2 truncates.
-    let (status, body) = run(&h, r#"SELECT "id" FROM "wh"."orders" ORDER BY "id""#, Some(2)).await;
+    let (status, body) = run(
+        &h,
+        r#"SELECT "id" FROM "wh"."orders" ORDER BY "id""#,
+        Some(2),
+    )
+    .await;
     assert_eq!(status, axum::http::StatusCode::OK, "body: {body}");
     assert_eq!(body["rows"].as_array().expect("rows").len(), 2);
     assert_eq!(body["truncated"], serde_json::json!(true));
