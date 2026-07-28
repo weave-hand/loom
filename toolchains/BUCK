@@ -131,15 +131,60 @@ http_archive(
     visibility = ["PUBLIC"],
 )
 
+# The subset of the LLVM dist the cxx toolchains actually reference. Referencing a
+# path inside a directory artifact makes the WHOLE directory an action input, so
+# pointing `cxx_tools`/`wasm_cxx_toolchain` at the full 12 GiB release dist shipped
+# ~12 GiB of input tree to every rustc link and cc compile on RE — the dominant
+# term of the org's CAS->executor "internal download" volume (#667). This genrule
+# repackages the dist down to the referenced tools (~0.75 GiB, ~16x smaller):
+# clang + lld + the binutils-equivalents, each with its dist symlink aliases
+# (clang++/clang-cpp -> clang, ld.lld/wasm-ld -> lld, llvm-ranlib -> llvm-ar,
+# llvm-strip -> llvm-objcopy), plus clang's resource dir (builtin headers +
+# clang_rt runtime objects, required at both compile and link). `cp -a` preserves
+# those relative symlinks. The FULL dist targets above stay for the non-action
+# consumers (`tools/coverage/cov.bxl` reads llvm-profdata/llvm-cov out of
+# `:llvm-x86_64-linux` for local coverage runs); nothing on the RE action path
+# should reference them.
+LLVM_LINKER_TOOLS = [
+    "clang-{}".format(LLVM_VERSION.split(".")[0]),
+    "clang",
+    "clang++",
+    "clang-cpp",
+    "lld",
+    "ld.lld",
+    "wasm-ld",
+    "llvm-ar",
+    "llvm-ranlib",
+    "llvm-nm",
+    "llvm-objcopy",
+    "llvm-objdump",
+    "llvm-strip",
+    "llvm-link",
+]
+
+[
+    genrule(
+        name = "llvm-linker-tools-{}-linux".format(arch),
+        out = "llvm-linker-tools",
+        cmd = "mkdir -p $OUT/bin $OUT/lib && cp -a " + " ".join([
+            "$(location :llvm-{}-linux)/bin/{}".format(arch, tool)
+            for tool in LLVM_LINKER_TOOLS
+        ]) + " $OUT/bin/ && cp -a $(location :llvm-{}-linux)/lib/clang $OUT/lib/".format(arch),
+        visibility = ["PUBLIC"],
+    )
+    for arch in ["x86_64", "aarch64"]
+]
+
 hermetic_cxx_tools(
     name = "cxx-tools",
     # Match the LLVM arch to the build's arch: arm64 targets (which run their
     # compile/link on an arm64 executor) get the aarch64 clang++; everything else
     # the x86_64 one. In the native model target == exec, so this target-config
-    # select lands the right clang on the right worker.
+    # select lands the right clang on the right worker. Points at the trimmed
+    # linker-tools repackage, NOT the full dist — see LLVM_LINKER_TOOLS above.
     llvm_dist = select({
-        "prelude//cpu/constraints:arm64": ":llvm-aarch64-linux",
-        "DEFAULT": ":llvm-x86_64-linux",
+        "prelude//cpu/constraints:arm64": ":llvm-linker-tools-aarch64-linux",
+        "DEFAULT": ":llvm-linker-tools-x86_64-linux",
     }),
     visibility = ["PUBLIC"],
 )
@@ -159,7 +204,11 @@ system_cxx_toolchain(
 
 wasm_cxx_toolchain(
     name = "cxx-wasm",
-    llvm_dist = ":llvm-x86_64-linux",
+    # Trimmed repackage, not the full dist — every tool wasm_cxx_toolchain
+    # references (clang/clang++, llvm-ar/nm/objcopy/objdump/ranlib/strip,
+    # llvm-link) is in LLVM_LINKER_TOOLS; the wasm linker itself is the rustc
+    # dist's rust-lld, not this dist's lld.
+    llvm_dist = ":llvm-linker-tools-x86_64-linux",
     rustc_dist = ":rustc-x86_64-linux",
     visibility = ["PUBLIC"],
 )
