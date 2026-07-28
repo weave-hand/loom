@@ -80,6 +80,20 @@ actions:
             | awk 'NF >= 2 { print substr($1, 1, 1) " " $2 }' > changes.txt
           echo "=== changed files ==="; cat changes.txt
 
+          # btd's graph is the ROOT CELL only (supertd targets root//...), so a change
+          # under toolchains// or platforms//, a prelude submodule bump, a .buckconfig
+          # edit, or a CI-setup change moves every action's inputs while mapping to ZERO
+          # root//... targets — btd reports "nothing impacted" and the PR merges
+          # unvalidated (observed on #667: a cxx-toolchain change came back green in
+          # 18s having built nothing). Fall back to the full build-test sweep whenever
+          # the diff escapes the root target graph.
+          if grep -Eq '^[MAD] (toolchains/|platforms/|prelude$|\.buckconfig|tools/ci/)' changes.txt; then
+            echo "=== graph-external change (toolchains/platforms/prelude/buckconfig/ci) — full sweep ==="
+            buck2 build -M none //src/... //third-party/python/...
+            buck2 test //src/... --unstable-allow-all-tests-on-re
+            exit 0
+          fi
+
           # supertd is a standalone target-graph tool: it reads BUCK files directly to
           # emit the target graph. It still spins up (or reconnects to) a buck2 daemon,
           # which validates the working directory and requires its buck-out/v2 to exist.
