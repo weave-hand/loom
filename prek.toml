@@ -82,10 +82,15 @@ language = "system"
 stages = ["commit-msg"]
 
 # Heavier checks run only on push, not every commit.
+# -M none: the hook only needs to know the tree BUILDS — without it every push
+# materializes every final artifact from the RE CAS onto the dev machine
+# (~29 GiB fully materialized; see docs/build-execution.md). Validation is
+# identical; the outputs just stay in the CAS. (buck2-test below can't take it:
+# locally-run test binaries must materialize to execute.)
 [[repos.hooks]]
 id = "buck2-build"
 name = "buck2 build"
-entry = "buck2 build root//src/..."
+entry = "buck2 build -M none root//src/..."
 language = "system"
 pass_filenames = false
 stages = ["pre-push"]
