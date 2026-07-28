@@ -88,8 +88,8 @@ same set CI runs. `prek.toml` sets `default_install_hook_types`, so this one
 ## Everyday commands
 
 ```sh
-buck2 build //...              # build everything
-buck2 build //src/...          # build first-party code + its deps
+buck2 build -M none //...      # build everything (see -M note below)
+buck2 build -M none //src/...  # build first-party code + its deps
 buck2 run //src/hello:hello -- --name you
 buck2 test //src/...           # run tests
 
@@ -97,6 +97,16 @@ buck2 test //src/...           # run tests
 buck2 run //tools:rustfmt -- --check src/hello/src/main.rs
 ./tools/clippy-all.sh          # clippy over every first-party target
 ```
+
+**`-M none` (`--materializations=none`) on builds you only want validated:**
+builds run on the remote executor, and without `-M none` buck2 downloads every
+final artifact to your machine — a whole-tree `//src/...` build materializes
+~29 GiB of debug binaries from the CAS (and re-downloads whatever relinked on
+every iteration). With it, a fully-cached validation build transfers single-digit
+MiB. Drop the flag only when you actually need an output on disk (`buck2 run`
+does its own materialization; locally-run tests materialize their binaries
+regardless). The pre-push `buck2-build` hook already passes it. See
+`docs/build-execution.md` for the full cost model.
 
 ## Dev shell (toolchain on your PATH)
 
