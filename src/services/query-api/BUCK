@@ -965,49 +965,30 @@ rust_test(
 )
 
 loom_fixture_test(
-    name = "iceberg-action-e2e",
-    crate = "iceberg_action_e2e",
-    srcs = ["tests/iceberg_action_e2e.rs"],
-    crate_root = "tests/iceberg_action_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
+    # Consolidation suite for the action/write e2e family (#668 phase 1):
+    # folds 10 formerly-separate single-file targets (action-e2e,
+    # action-mapping-e2e, action-computed-e2e, action-multi-object-e2e,
+    # iceberg-action-e2e, action-response-http, action-downstream-atomicity,
+    # write-steps-e2e, multi-step-stream-refuse-http, action-client-wire)
+    # into one link action + one hermetic-Postgres boot; member files are
+    # unchanged.
+    name = "action-write-suite",
+    crate = "action_write_suite",
+    srcs = [
+        "tests/action_write_suite.rs",
+        "tests/action_client_wire.rs",
+        "tests/action_computed_e2e.rs",
+        "tests/action_downstream_atomicity.rs",
+        "tests/action_e2e.rs",
+        "tests/action_mapping_e2e.rs",
+        "tests/action_multi_object_e2e.rs",
+        "tests/action_response_http.rs",
+        "tests/iceberg_action_e2e.rs",
+        "tests/multi_step_stream_refuse_http.rs",
+        "tests/write_steps_e2e.rs",
     ],
-)
-
-loom_fixture_test(
-    name = "action-multi-object-e2e",
-    crate = "action_multi_object_e2e",
-    srcs = ["tests/action_multi_object_e2e.rs"],
-    crate_root = "tests/action_multi_object_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "multi-step-stream-refuse-http",
-    crate = "multi_step_stream_refuse_http",
-    srcs = ["tests/multi_step_stream_refuse_http.rs"],
-    crate_root = "tests/multi_step_stream_refuse_http.rs",
+    crate_root = "tests/action_write_suite.rs",
+    edition = "2024",
     deps = [
         ":query-api",
         ":e2e-support",
@@ -1021,64 +1002,6 @@ loom_fixture_test(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "action-response-http",
-    crate = "action_response_http",
-    srcs = ["tests/action_response_http.rs"],
-    crate_root = "tests/action_response_http.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:axum",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "write-steps-e2e",
-    crate = "write_steps_e2e",
-    srcs = ["tests/write_steps_e2e.rs"],
-    crate_root = "tests/write_steps_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "action-downstream-atomicity",
-    crate = "action_downstream_atomicity",
-    srcs = ["tests/action_downstream_atomicity.rs"],
-    crate_root = "tests/action_downstream_atomicity.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
     ],
 )
 
@@ -1386,62 +1309,6 @@ rust_test(
         "//third-party:tower",
         "//third-party:tracing",
         "//third-party:tracing-test",
-    ],
-)
-
-loom_fixture_test(
-    name = "action-e2e",
-    crate = "action_e2e",
-    srcs = ["tests/action_e2e.rs"],
-    crate_root = "tests/action_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "action-mapping-e2e",
-    crate = "action_mapping_e2e",
-    srcs = ["tests/action_mapping_e2e.rs"],
-    crate_root = "tests/action_mapping_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "action-computed-e2e",
-    crate = "action_computed_e2e",
-    srcs = ["tests/action_computed_e2e.rs"],
-    crate_root = "tests/action_computed_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:iceberg",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
     ],
 )
 
@@ -2071,24 +1938,6 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
-    name = "action-client-wire",
-    crate = "action_client_wire",
-    srcs = ["tests/action_client_wire.rs"],
-    crate_root = "tests/action_client_wire.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:time",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
     name = "wire-governance-e2e",
     crate = "wire_governance_e2e",
     srcs = ["tests/wire_governance_e2e.rs"],
@@ -2251,48 +2100,36 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
-    name = "stream-cdc-e2e",
-    crate = "stream_cdc_e2e",
-    srcs = ["tests/stream_cdc_e2e.rs"],
-    crate_root = "tests/stream_cdc_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
+    # Consolidation suite for the stream/CDC/subscribe e2e family (#668 phase
+    # 1): folds 15 formerly-separate single-file targets (stream-cdc-e2e,
+    # stream-cdc-read-mid-window, stream-subscribe-scan,
+    # stream-log-subscribe-scan, stream-subscribe-e2e,
+    # stream-subscribe-gov-e2e, stream-log-subscribe-e2e,
+    # stream-subscribe-wire-e2e, stream-log-subscribe-wire-e2e,
+    # stream-feed-torn-read, stream-cdc-consolidate, stream-merge-firstrow,
+    # stream-merge-versioned, stream-cdc-declare, changelog-rpc-wire) into one
+    # link action + one hermetic-Postgres boot; member files are unchanged.
+    name = "stream-subscribe-cdc-suite",
+    crate = "stream_subscribe_cdc_suite",
+    srcs = [
+        "tests/stream_subscribe_cdc_suite.rs",
+        "tests/changelog_rpc_wire.rs",
+        "tests/stream_cdc_consolidate.rs",
+        "tests/stream_cdc_declare.rs",
+        "tests/stream_cdc_e2e.rs",
+        "tests/stream_cdc_read_mid_window.rs",
+        "tests/stream_feed_torn_read.rs",
+        "tests/stream_log_subscribe_e2e.rs",
+        "tests/stream_log_subscribe_scan.rs",
+        "tests/stream_log_subscribe_wire_e2e.rs",
+        "tests/stream_merge_firstrow.rs",
+        "tests/stream_merge_versioned.rs",
+        "tests/stream_subscribe_e2e.rs",
+        "tests/stream_subscribe_gov_e2e.rs",
+        "tests/stream_subscribe_scan.rs",
+        "tests/stream_subscribe_wire_e2e.rs",
     ],
-)
-
-loom_fixture_test(
-    name = "stream-cdc-read-mid-window",
-    crate = "stream_cdc_read_mid_window",
-    srcs = ["tests/stream_cdc_read_mid_window.rs"],
-    crate_root = "tests/stream_cdc_read_mid_window.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-wire:engine-wire",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-subscribe-scan",
-    crate = "stream_subscribe_scan",
-    srcs = ["tests/stream_subscribe_scan.rs"],
-    crate_root = "tests/stream_subscribe_scan.rs",
+    crate_root = "tests/stream_subscribe_cdc_suite.rs",
     edition = "2024",
     deps = [
         ":query-api",
@@ -2301,225 +2138,7 @@ loom_fixture_test(
         "//src/control-plane/postgres:postgres",
         "//src/services/engine-serving:engine-serving",
         "//src/services/engine-wire:engine-wire",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-log-subscribe-scan",
-    crate = "stream_log_subscribe_scan",
-    srcs = ["tests/stream_log_subscribe_scan.rs"],
-    crate_root = "tests/stream_log_subscribe_scan.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-serving:engine-serving",
-        "//src/testing:seed",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-subscribe-e2e",
-    crate = "stream_subscribe_e2e",
-    srcs = ["tests/stream_subscribe_e2e.rs"],
-    crate_root = "tests/stream_subscribe_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-subscribe-gov-e2e",
-    crate = "stream_subscribe_gov_e2e",
-    srcs = ["tests/stream_subscribe_gov_e2e.rs"],
-    crate_root = "tests/stream_subscribe_gov_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-log-subscribe-e2e",
-    crate = "stream_log_subscribe_e2e",
-    srcs = ["tests/stream_log_subscribe_e2e.rs"],
-    crate_root = "tests/stream_log_subscribe_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/testing:seed",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-subscribe-wire-e2e",
-    crate = "stream_subscribe_wire_e2e",
-    srcs = ["tests/stream_subscribe_wire_e2e.rs"],
-    crate_root = "tests/stream_subscribe_wire_e2e.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
         "//src/testing:flight",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-log-subscribe-wire-e2e",
-    crate = "stream_log_subscribe_wire_e2e",
-    srcs = ["tests/stream_log_subscribe_wire_e2e.rs"],
-    crate_root = "tests/stream_log_subscribe_wire_e2e.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/testing:flight",
-        "//src/testing:seed",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-        "//third-party:uuid",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-feed-torn-read",
-    crate = "stream_feed_torn_read",
-    srcs = ["tests/stream_feed_torn_read.rs"],
-    crate_root = "tests/stream_feed_torn_read.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-serving:engine-serving",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-cdc-consolidate",
-    crate = "stream_cdc_consolidate",
-    srcs = ["tests/stream_cdc_consolidate.rs"],
-    crate_root = "tests/stream_cdc_consolidate.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-wire:engine-wire",
-        "//src/testing:seed",
-        "//third-party:arrow-array",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-merge-firstrow",
-    crate = "stream_merge_firstrow",
-    srcs = ["tests/stream_merge_firstrow.rs"],
-    crate_root = "tests/stream_merge_firstrow.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-wire:engine-wire",
-        "//src/testing:seed",
-        "//third-party:arrow-array",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-merge-versioned",
-    crate = "stream_merge_versioned",
-    srcs = ["tests/stream_merge_versioned.rs"],
-    crate_root = "tests/stream_merge_versioned.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-wire:engine-wire",
-        "//src/testing:seed",
-        "//third-party:arrow-array",
-        "//third-party:axum",
-        "//third-party:serde_json",
-        "//third-party:sqlx",
-        "//third-party:tempfile",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "stream-cdc-declare",
-    crate = "stream_cdc_declare",
-    srcs = ["tests/stream_cdc_declare.rs"],
-    crate_root = "tests/stream_cdc_declare.rs",
-    edition = "2024",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
         "//src/testing:seed",
         "//third-party:arrow-array",
         "//third-party:arrow-schema",
@@ -2563,24 +2182,6 @@ rust_test(
         ":query-api",
         "//src/control-plane/core:core",
         "//src/control-plane/memory:memory",
-        "//third-party:tokio",
-    ],
-)
-
-loom_fixture_test(
-    name = "changelog-rpc-wire",
-    crate = "changelog_rpc_wire",
-    srcs = ["tests/changelog_rpc_wire.rs"],
-    crate_root = "tests/changelog_rpc_wire.rs",
-    deps = [
-        ":query-api",
-        ":e2e-support",
-        "//src/control-plane/core:core",
-        "//src/control-plane/postgres:postgres",
-        "//src/services/engine-wire:engine-wire",
-        "//src/testing:flight",
-        "//third-party:serde_json",
-        "//third-party:tempfile",
         "//third-party:tokio",
     ],
 )
