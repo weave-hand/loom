@@ -174,6 +174,7 @@ rust_test(
     crate_root = "tests/engine_tuning.rs",
     deps = [
         ":engine",
+        "//src/services/engine-serving:engine-serving",
         "//src/services/runtime:runtime",
     ],
 )
