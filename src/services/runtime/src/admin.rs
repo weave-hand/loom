@@ -1551,16 +1551,17 @@ async fn define_transform_route(
                 .into_response();
         }
     };
-    // Capture the physical output table (if any) before the def is moved into define.
-    let grant_table = def.body.physical_output_grant_table().cloned();
+    // Capture the untyped output table (if any) before the def is moved into define.
+    let grant_table = def.body.output_grant_table().cloned();
     if let Err(e) = st.cp.transforms().define_transform(def).await {
         return error_response(&e);
     }
-    // A physical output is a fresh untyped table with no grant; grant the reserved
-    // admin role Read so its catalog metadata + lineage node are visible regardless
-    // of the defining client. Idempotent (no-op upsert on redefine). A grant failure
-    // surfaces (the define is committed and idempotent, so a re-POST recovers — the
-    // known cross-concern-atomicity gap, fut-auth-acl-provisioning-tx).
+    // An untyped output — a `physical` table or either micro-batch variant's log-stream
+    // output — is a fresh table with no grant; grant the reserved admin role Read so its
+    // catalog metadata + lineage node are visible regardless of the defining client.
+    // Idempotent (no-op upsert on redefine). A grant failure surfaces (the define is
+    // committed and idempotent, so a re-POST recovers — the known cross-concern-atomicity
+    // gap, #544).
     if let Some(output) = grant_table
         && let Err(e) = st
             .cp
