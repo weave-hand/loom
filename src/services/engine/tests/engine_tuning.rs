@@ -137,13 +137,15 @@ fn zero_is_the_documented_unbounded_escape_hatch() {
         ("LOOM_SQL_TIMEOUT_SECS", "0"),
     ]))
     .unwrap();
-    assert_eq!(t.governed_sql_limits(), engine_serving::GovernedSqlLimits::unbounded());
+    assert_eq!(
+        t.governed_sql_limits(),
+        engine_serving::GovernedSqlLimits::unbounded()
+    );
 }
 
 #[test]
 fn malformed_sql_memory_limit_is_startup_error_naming_key() {
-    let err =
-        EngineTuning::from_map(&map(&[("LOOM_SQL_MEMORY_LIMIT_BYTES", "lots")])).unwrap_err();
+    let err = EngineTuning::from_map(&map(&[("LOOM_SQL_MEMORY_LIMIT_BYTES", "lots")])).unwrap_err();
     assert!(
         matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
         if var == "LOOM_SQL_MEMORY_LIMIT_BYTES")
