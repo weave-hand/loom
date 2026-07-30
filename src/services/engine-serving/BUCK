@@ -395,6 +395,21 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "governed-sql-limits",
+    crate = "governed_sql_limits",
+    srcs = ["tests/governed_sql_limits.rs"],
+    crate_root = "tests/governed_sql_limits.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "serving-empty-table",
     crate = "serving_empty_table",
     srcs = ["tests/serving_empty_table.rs"],

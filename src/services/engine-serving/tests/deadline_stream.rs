@@ -83,6 +83,25 @@ async fn the_timer_preempts_an_inner_stream_that_never_resolves() {
     );
 }
 
+/// End-to-end: the error `DeadlineStream` actually produces must classify as a
+/// DEADLINE breach, not get re-prefixed as a memory breach. Hand-built strings in
+/// the other tests cannot catch a drift between the producer and the classifier.
+#[tokio::test]
+async fn a_real_deadline_error_classifies_as_a_deadline_breach() {
+    let inner = two_batches();
+    let ds = DeadlineStream::until(inner, Instant::now() - Duration::from_secs(1));
+    let got: Vec<_> = ds.collect().await;
+    let err = got.into_iter().next().unwrap().unwrap_err();
+    let EngineServingError::ResourceExhausted(m) = governed_stream_error(&err) else {
+        panic!("expected ResourceExhausted");
+    };
+    assert!(m.contains("LOOM_SQL_TIMEOUT_SECS"), "got: {m}");
+    assert!(
+        !m.contains("LOOM_SQL_MEMORY_LIMIT_BYTES"),
+        "must not be relabelled: {m}"
+    );
+}
+
 #[test]
 fn classifier_lifts_resources_exhausted_and_nothing_else() {
     let re = DataFusionError::ResourcesExhausted("budget".into());

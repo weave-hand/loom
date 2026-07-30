@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -15,7 +16,10 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::DFSchema;
 use datafusion::error::{DataFusionError, Result as DfResult};
-use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionContext};
+use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionConfig, SessionContext};
+use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+use datafusion::execution::memory_pool::GreedyMemoryPool;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType, not};
 use datafusion::physical_expr::{
     PhysicalExpr, create_physical_expr,
@@ -34,6 +38,7 @@ use store_config::ServingStore;
 use crate::serving::{
     EngineServingError, build_serving_provider, fold_view, register_qualified, to_serving,
 };
+use crate::sql_limits::{DeadlineStream, GovernedSqlLimits, governed_stream_error};
 
 /// The redaction marker a masked column's every value is replaced with. Kept local
 /// to engine-serving (query-api owns its own private copy) so the enforcing path has
@@ -289,13 +294,52 @@ impl TableProvider for GovernedTableProvider {
 /// schema-qualified, then run the SQL. Governance is enforced by the providers, so the
 /// client SQL is arbitrary — it can never observe a denied column, an unmasked value,
 /// or a filter-excluded row.
+///
+/// THE single choke point for arbitrary client SQL: both surfaces (`POST /sql` and the
+/// external Flight SQL wire) reach it through `do_get_governed_sql`, so bounding here
+/// means neither can be forgotten and a future third caller inherits the bound by
+/// construction. `limits` applies a per-statement memory pool and a wall-clock deadline
+/// covering the whole query lifetime — registration, planning, and every batch. See #664.
 pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     governed: &GovernedCatalog,
     serving_store: Option<&ServingStore>,
+    limits: &GovernedSqlLimits,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
-    let ctx = SessionContext::new();
+    let deadline = limits.deadline.map(|d| Instant::now() + d);
+    let planned = plan_governed_sql(catalog, sql, governed, serving_store, limits.memory_bytes);
+    let stream = match deadline {
+        None => planned.await?,
+        Some(t) => tokio::time::timeout_at(t.into(), planned)
+            .await
+            .map_err(|_elapsed| {
+                EngineServingError::ResourceExhausted(
+                    "statement exceeded its wall-clock budget (LOOM_SQL_TIMEOUT_SECS) \
+                     while planning"
+                        .to_string(),
+                )
+            })??,
+    };
+    // The SAME absolute deadline bounds the stream the caller will drive: a wrapping
+    // future could not bound work performed after this function returns.
+    Ok(match deadline {
+        None => stream,
+        Some(t) => Box::pin(DeadlineStream::until(stream, t)),
+    })
+}
+
+/// The registration + planning + execute half of [`execute_governed_sql_stream`],
+/// split out so the wrapper above can wrap the WHOLE of it in one wall-clock budget.
+/// `memory_bytes` bounds the statement's DataFusion memory pool.
+async fn plan_governed_sql(
+    catalog: &IcebergCatalog,
+    sql: &str,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+    memory_bytes: Option<usize>,
+) -> Result<SendableRecordBatchStream, EngineServingError> {
+    let ctx = build_session(memory_bytes)?;
     for table in catalog.live_tables().await.map_err(to_serving)? {
         // Closed-world: a live table with NO GovernedTable entry is not
         // registered at all — it does not exist for this session. Deny-by-
@@ -363,5 +407,36 @@ pub async fn execute_governed_sql_stream(
         .sql_with_options(sql, opts)
         .await
         .map_err(EngineServingError::Plan)?;
-    df.execute_stream().await.map_err(to_serving)
+    // CLASSIFICATION IS LOAD-BEARING: `to_serving` is class-erasing and would bury a
+    // pool breach raised here as `Engine`/500. Route through the shared classifier.
+    df.execute_stream()
+        .await
+        .map_err(|e| governed_stream_error(&e))
+}
+
+/// A fresh `SessionContext` for one governed statement, optionally over a runtime
+/// whose memory pool is capped at `memory_bytes`.
+///
+/// TWO settings, both required — neither implies the other:
+///
+/// 1. `GreedyMemoryPool`, NOT `FairSpillPool`. Memory-tracked operators (sort, hash
+///    aggregate, hash join, sort-merge join) reserve from the pool and fail with
+///    `DataFusionError::ResourcesExhausted` once it is exhausted.
+/// 2. `DiskManagerMode::Disabled`. The pool choice does NOT disable spilling — the
+///    disk manager does, and `RuntimeEnvBuilder` defaults it to the OS temp dir. Left
+///    at the default, `SortExec` spills instead of failing and an oversized query
+///    succeeds while writing unbounded files into `/tmp`: a disk DoS traded for the
+///    memory DoS. Disabled, an attempted spill errors and the budget actually binds.
+fn build_session(memory_bytes: Option<usize>) -> Result<SessionContext, EngineServingError> {
+    let Some(bytes) = memory_bytes else {
+        return Ok(SessionContext::new());
+    };
+    let rt = RuntimeEnvBuilder::new()
+        .with_memory_pool(Arc::new(GreedyMemoryPool::new(bytes)))
+        .with_disk_manager_builder(
+            DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
+        )
+        .build_arc()
+        .map_err(to_serving)?;
+    Ok(SessionContext::new_with_config_rt(SessionConfig::new(), rt))
 }
