@@ -17,7 +17,11 @@ use parquet_stats::column_stats;
 
 /// Write each batch as its own row group (`flush` closes the open group) and return
 /// the finished Parquet buffer.
-fn write_groups(schema: &Arc<Schema>, batches: &[RecordBatch], props: Option<WriterProperties>) -> Bytes {
+fn write_groups(
+    schema: &Arc<Schema>,
+    batches: &[RecordBatch],
+    props: Option<WriterProperties>,
+) -> Bytes {
     let mut buf = Vec::new();
     {
         let mut w = ArrowWriter::try_new(&mut buf, Arc::clone(schema), props).unwrap();
@@ -184,8 +188,8 @@ fn unsupported_statistics_variant_yields_no_bounds() {
         Field::new("fb", DataType::FixedSizeBinary(2), false),
         Field::new("bin", DataType::Binary, false),
     ]));
-    let fb = FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2], vec![3u8, 4]].into_iter())
-        .unwrap();
+    let fb =
+        FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2], vec![3u8, 4]].into_iter()).unwrap();
     let bin = BinaryArray::from(vec![&[0xffu8, 0xfe][..], &[0xfdu8, 0xfc][..]]);
     let bytes = write_groups(
         &schema,

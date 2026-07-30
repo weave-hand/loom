@@ -66,6 +66,27 @@ pub fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<Ordering> {
     }
 }
 
+/// Fold a candidate bound into the running one. `replace_when` is the ordering of
+/// `current` relative to `candidate` that means the candidate wins: `Ordering::Greater`
+/// for a minimum fold (the running min is above the candidate), `Ordering::Less` for a
+/// maximum fold. Incomparable pairs — mismatched variants, or a float NaN — compare as
+/// `None` and therefore keep `current`, which is what the two hand-copied merges this
+/// crate replaced did.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "kept Option<StatValue> to match the min/max accumulator type at both call sites"
+)]
+fn fold_bound(
+    current: Option<StatValue>,
+    candidate: StatValue,
+    replace_when: Ordering,
+) -> Option<StatValue> {
+    match current {
+        Some(cur) if stat_partial_cmp(&cur, &candidate) != Some(replace_when) => Some(cur),
+        _ => Some(candidate),
+    }
+}
+
 /// Merge typed min/max + null/size counts across ALL row groups for each column
 /// index. `column_names[i]` is the name recorded for row-group column `i`, so the
 /// slice both selects the columns (by position) and labels them.
@@ -88,18 +109,10 @@ pub fn column_stats(meta: &ParquetMetaData, column_names: &[String]) -> Vec<Colu
             if let Some(stats) = col.statistics() {
                 null_count += stats.null_count_opt().unwrap_or(0) as i64;
                 if let Some(b) = min_stat(stats) {
-                    min = match min {
-                        Some(cur) if stat_partial_cmp(&cur, &b) != Some(Ordering::Greater) => {
-                            Some(cur)
-                        }
-                        _ => Some(b),
-                    };
+                    min = fold_bound(min, b, Ordering::Greater);
                 }
                 if let Some(b) = max_stat(stats) {
-                    max = match max {
-                        Some(cur) if stat_partial_cmp(&cur, &b) != Some(Ordering::Less) => Some(cur),
-                        _ => Some(b),
-                    };
+                    max = fold_bound(max, b, Ordering::Less);
                 }
             }
         }
