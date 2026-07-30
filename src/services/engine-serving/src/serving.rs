@@ -64,6 +64,17 @@ pub enum EngineServingError {
     /// (internal/500) so the class survives.
     #[error("{0}")]
     Validation(String),
+    /// The statement exceeded its per-statement resource budget — either the
+    /// memory pool (`LOOM_SQL_MEMORY_LIMIT_BYTES`) or the wall-clock deadline
+    /// (`LOOM_SQL_TIMEOUT_SECS`). Constructed ONLY on the arbitrary-SQL governed
+    /// path (`execute_governed_sql_stream`), never on server-built plans. Wire
+    /// callers map this to `resource_exhausted`; query-api renders it as 429.
+    /// Distinct from `Plan` (400 — your SQL is malformed) and `Engine` (500 — our
+    /// fault): the statement is valid but too expensive, so narrow it and retry.
+    /// The message names the budget that was exceeded, NEVER data, so it is safe
+    /// to echo to the caller (same reasoning as the `Plan` echo).
+    #[error("{0}")]
+    ResourceExhausted(String),
 }
 
 /// Any error (mirror/Postgres, DataFusion, object_store, URL) -> opaque engine-serving error.
