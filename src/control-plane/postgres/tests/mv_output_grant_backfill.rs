@@ -138,7 +138,9 @@ async fn backfills_both_micro_batch_variants_and_is_idempotent() {
         ]
     );
 
-    // Re-running is a clean no-op (PK is the full grant tuple + `on conflict do nothing`).
+    // Re-running is a clean no-op: the PK is the grant tuple MINUS `effect`
+    // (role_id, action, target_kind, target_a, target_b), so `on conflict do nothing`
+    // also means an operator's existing `deny` on the output survives the backfill.
     sqlx::raw_sql(backfill_sql())
         .execute(&pool)
         .await

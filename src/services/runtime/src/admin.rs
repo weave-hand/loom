@@ -1522,10 +1522,13 @@ async fn submit_new_run(
     post, path = "/admin/transforms",
     request_body(
         content = serde_json::Value,
-        description = "A `TransformDef` in its serde shape: `{\"name\", \"body\": \
-            {\"kind\": \"physical\"|\"typed\", \"inputs\", \"output\", \"sql\", \"output_mode\"?}, \
-            \"schedule\"?, \"on_input_commit\"?}`. `schedule`, if present, is a live 5-field \
-            UTC cron expression (e.g. `\"0 3 * * *\"`) validated at define time.",
+        description = "A `TransformDef` in its serde shape: `{\"name\", \"body\", \
+            \"schedule\"?, \"on_input_commit\"?}`. `body` is tagged by `kind`: \
+            `physical`/`typed` carry `{\"inputs\", \"output\", \"sql\", \"output_mode\"?}`; \
+            `microbatch` carries `{\"source\", \"output\", \"buckets\", \"sql\"}` and \
+            `microbatch_join` additionally `{\"enrich\", \"on\"?}`. `schedule`, if present, \
+            is a live 5-field UTC cron expression (e.g. `\"0 3 * * *\"`) validated at \
+            define time.",
     ),
     responses(
         (status = 201, description = "Transform defined"),
@@ -1559,9 +1562,12 @@ async fn define_transform_route(
     // An untyped output — a `physical` table or either micro-batch variant's log-stream
     // output — is a fresh table with no grant; grant the reserved admin role Read so its
     // catalog metadata + lineage node are visible regardless of the defining client.
-    // Idempotent (no-op upsert on redefine). A grant failure surfaces (the define is
-    // committed and idempotent, so a re-POST recovers — the known cross-concern-atomicity
-    // gap, #544).
+    // Repeatable, not inert: `Acl::grant` upserts `effect = excluded.effect`, so a redefine
+    // is a no-op on an already-allowed output but RE-ASSERTS `allow` over an operator's
+    // explicit `deny` on that table. (Migration 0049's backfill deliberately differs — it
+    // is `on conflict do nothing`, so it never disturbs a deny.) A grant failure surfaces
+    // (the define is committed and repeatable, so a re-POST recovers — the known
+    // cross-concern-atomicity gap, #544).
     if let Some(output) = grant_table
         && let Err(e) = st
             .cp
