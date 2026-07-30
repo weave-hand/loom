@@ -22,7 +22,7 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use control_plane_core::{Auth, ControlPlane, ControlPlaneError};
+use control_plane_core::{Auth, ControlPlane};
 use engine_wire::flight::FlightSqlClient;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -99,15 +99,21 @@ fn map_query_err(e: QueryError) -> Status {
 
 /// Map the engine's governed-SQL plane error to a gRPC status. Unlike the export
 /// (whose SQL loom compiled itself, so any failure there is an internal bug),
-/// this wire forwards the CLIENT'S OWN SQL, so a `Validation` fault (bad syntax,
+/// this wire forwards the CLIENT'S OWN SQL, so a `Plan` fault (bad syntax,
 /// unknown/unlisted table — the engine's closed-world catalog makes an
 /// ungoverned table indistinguishable from a nonexistent one) is a legitimate
 /// client error: `InvalidArgument` carrying the engine's plan message, which is
-/// safe to echo because it is entirely in the client's own SQL vocabulary.
+/// safe to echo because it is entirely in the client's own SQL vocabulary. A
+/// `ResourceExhausted` fault (valid SQL, over its memory/wall-clock budget) is
+/// also safe to surface directly — the caller should narrow it and retry.
 /// Everything else (a real backend/execution fault) stays an opaque `Internal`.
-fn map_engine_err(e: ControlPlaneError) -> Status {
+fn map_engine_err(e: engine_wire::client::GovernedSqlError) -> Status {
+    use engine_wire::client::GovernedSqlError as E;
     match e {
-        ControlPlaneError::Validation(msg) => Status::invalid_argument(msg),
+        E::Plan(msg) => Status::invalid_argument(msg),
+        // Valid SQL, over budget — surface the gRPC status directly so the external
+        // client can tell "narrow it and retry" from "the server is broken".
+        E::ResourceExhausted(msg) => Status::resource_exhausted(msg),
         other => internal("sql wire engine stream open", other),
     }
 }
@@ -224,6 +230,12 @@ impl FlightService for FlightSqlWireService {
                     Ok(batch)
                 }
             }
+            Err(engine_wire::client::GovernedSqlError::ResourceExhausted(m)) => {
+                // Safe to surface: the message names the budget that was exceeded,
+                // never data. Carried as a `Tonic` item so the encoder's tail keeps
+                // the `resource_exhausted` code instead of collapsing it.
+                Err(FlightError::Tonic(Box::new(Status::resource_exhausted(m))))
+            }
             Err(e) => {
                 tracing::error!(error = %e, "sql wire engine stream fault");
                 Err(FlightError::from_external_error(Box::new(
@@ -233,7 +245,12 @@ impl FlightService for FlightSqlWireService {
         });
         let out = FlightDataEncoderBuilder::new()
             .build(capped)
-            .map_err(|e| internal("sql wire encode", e));
+            .map_err(|e| match e {
+                // A status this handler formed itself (the budget breach) keeps its
+                // code; everything else stays an opaque, logged `internal`.
+                FlightError::Tonic(s) => *s,
+                other => internal("sql wire encode", other),
+            });
         Ok(Response::new(Box::pin(out)))
     }
 

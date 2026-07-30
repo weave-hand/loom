@@ -111,3 +111,15 @@ fn plan_class_is_400_with_message_body() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[test]
+fn resource_exhausted_is_too_many_requests_not_internal() {
+    // The whole point of the class: a valid-but-too-expensive statement must be a
+    // retryable 429, never an opaque 500 that reads as "our fault".
+    assert_eq!(
+        status(QueryError::Serving(ServingError::ResourceExhausted(
+            "statement exceeded its wall-clock budget (LOOM_SQL_TIMEOUT_SECS)".into()
+        ))),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}

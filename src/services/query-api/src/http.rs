@@ -1174,7 +1174,8 @@ fn bad_filter_value_response(e: &crate::filter::FilterError) -> axum::response::
 /// (logged server-side, opaque body). `Serving` splits: `NoIndex` is the /search
 /// 404, `DimMismatch` its 400 — both constructed only on the vector-search path —
 /// and everything else is an opaque 500. `Plan` is the planning-fault 400 —
-/// constructed only off the engine wire/in-process planner.
+/// constructed only off the engine wire/in-process planner. `ResourceExhausted`
+/// is the arbitrary-SQL budget breach — 429, retryable after narrowing.
 pub fn query_error_response(e: QueryError, context: &'static str) -> axum::response::Response {
     match e {
         QueryError::UnknownType(t) => (StatusCode::NOT_FOUND, t).into_response(),
@@ -1198,6 +1199,9 @@ pub fn query_error_response(e: QueryError, context: &'static str) -> axum::respo
         }
         QueryError::Serving(crate::serving::ServingError::Plan(m)) => {
             (StatusCode::BAD_REQUEST, m).into_response()
+        }
+        QueryError::Serving(crate::serving::ServingError::ResourceExhausted(m)) => {
+            (StatusCode::TOO_MANY_REQUESTS, m).into_response()
         }
         e @ (QueryError::ControlPlane(_)
         | QueryError::Serving(_)
