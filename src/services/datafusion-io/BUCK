@@ -8,6 +8,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/loom-config:loom-config",
+        "//src/parquet-stats:parquet-stats",
         "//third-party:arrow",
         "//third-party:bytes",
         "//third-party:datafusion",
