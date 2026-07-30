@@ -17,9 +17,9 @@ use control_plane_core::{
     ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, COMPACT_JOB_KIND, ControlPlane,
     ControlPlaneError, DerivedPropertyDef, Effect, GC_JOB_KIND, IndexSpec, JobSchedule,
     JobScheduleStatus, LengthConstraint, LinkDef, Metric, NewUser, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
-    RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
-    TypeName, UserSummary, VectorIndexDef, ViewDef,
+    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, Redacted, RoleId, RowFilter,
+    RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName,
+    TransformRun, TypeName, UserSummary, VectorIndexDef, ViewDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -102,7 +102,7 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
         .create_user(&NewUser {
             subject_id: subject.clone(),
             username: req.username.clone(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await
     {

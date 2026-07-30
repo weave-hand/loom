@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 use crate::acl::SubjectId;
 use crate::error::Result;
 use crate::page::{Page, PageReq};
+use crate::secret::Redacted;
 
 /// A user to be created: an ACL subject, a unique username, and the Argon2 PHC
 /// verifier (computed service-side — the trait never sees the plaintext).
@@ -18,8 +19,9 @@ use crate::page::{Page, PageReq};
 pub struct NewUser {
     pub subject_id: SubjectId,
     pub username: String,
-    /// Argon2 PHC string, computed service-side.
-    pub password_phc: String,
+    /// Argon2 PHC string, computed service-side. `Redacted` so a `{:?}` of this
+    /// struct can never print the verifier.
+    pub password_phc: Redacted<String>,
 }
 
 /// Failed-login lockout parameters (service-layer config, passed to the store so
@@ -46,7 +48,7 @@ impl Default for LockoutPolicy {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PasswordCredential {
     pub subject_id: SubjectId,
-    pub password_phc: String,
+    pub password_phc: Redacted<String>,
     /// When the account is locked (failed-login threshold reached), the instant the
     /// lock expires; `None` if not locked. The login path rejects while
     /// `locked_until > now`.
@@ -157,8 +159,13 @@ pub trait Auth {
 
     /// The stored PHC for `subject`, or `None` if the subject has no credential. Lets
     /// the self-service change verify the current password when the caller is
-    /// identified by their session subject rather than a username.
-    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>>;
+    /// identified by their session subject rather than a username. `Redacted` for the
+    /// same reason the struct fields are: a trait method that hands back a naked
+    /// verifier is the same hazard one indirection away.
+    async fn password_phc_for_subject(
+        &self,
+        subject: &SubjectId,
+    ) -> Result<Option<Redacted<String>>>;
 
     /// Revoke `subject`'s sessions. `keep = Some(hash)` preserves that one session
     /// (self-service change keeps the caller logged in); `None` revokes all (admin

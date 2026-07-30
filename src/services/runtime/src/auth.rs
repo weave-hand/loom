@@ -184,7 +184,7 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
         return unauthorized();
     }
 
-    if crate::verify_password(&req.password, &cred.password_phc) {
+    if crate::verify_password(&req.password, cred.password_phc.expose()) {
         if let Err(e) = st.auth.reset_failed_logins(&req.username).await {
             return status_for(&e).into_response();
         }
@@ -269,7 +269,7 @@ async fn change_password(
         Ok(None) => return unauthorized(),
         Err(e) => return status_for(&e).into_response(),
     };
-    if !crate::verify_password(&req.current, &phc) {
+    if !crate::verify_password(&req.current, phc.expose()) {
         return (StatusCode::FORBIDDEN, "current password is incorrect").into_response();
     }
     let Ok(new_phc) = crate::hash_password(&req.new) else {

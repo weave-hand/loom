@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Auth, ControlPlane, NewUser, SubjectId};
+use control_plane_core::{Auth, ControlPlane, NewUser, Redacted, SubjectId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use http_body_util::BodyExt;
@@ -110,7 +110,7 @@ async fn bad_password_login_401() {
     cp.create_user(&NewUser {
         subject_id: SubjectId("bob".into()),
         username: "bob".into(),
-        password_phc: phc,
+        password_phc: Redacted::new(phc),
     })
     .await
     .unwrap();
@@ -154,7 +154,7 @@ async fn revoked_session_401() {
         .create_user(&NewUser {
             subject_id: SubjectId("carol".into()),
             username: "carol".into(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await;
     cp.create_session(&SubjectId("carol".into()), &hash, expires)
@@ -216,7 +216,7 @@ async fn self_service_change_over_postgres() {
     cp.create_user(&NewUser {
         subject_id: SubjectId("al".into()),
         username: "al".into(),
-        password_phc: hash_password("orig").expect("hash"),
+        password_phc: Redacted::new(hash_password("orig").expect("hash")),
     })
     .await
     .unwrap();
