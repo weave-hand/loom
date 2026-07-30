@@ -386,6 +386,21 @@ loom_fixture_test(
     ],
 )
 
+# The 0049 MV-output admin-grant backfill. Boots a hermetic Postgres via the
+# fixture, so it must route local (loom_fixture_test).
+loom_fixture_test(
+    name = "mv-output-grant-backfill",
+    crate = "mv_output_grant_backfill",
+    srcs = ["tests/mv_output_grant_backfill.rs"],
+    crate_root = "tests/mv_output_grant_backfill.rs",
+    deps = [
+        ":postgres",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "data-triggers",
     crate = "data_triggers",
