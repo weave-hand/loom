@@ -72,18 +72,14 @@ pub fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<Ordering> {
 /// maximum fold. Incomparable pairs — mismatched variants, or a float NaN — compare as
 /// `None` and therefore keep `current`, which is what the two hand-copied merges this
 /// crate replaced did.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "kept Option<StatValue> to match the min/max accumulator type at both call sites"
-)]
 fn fold_bound(
     current: Option<StatValue>,
     candidate: StatValue,
     replace_when: Ordering,
-) -> Option<StatValue> {
+) -> StatValue {
     match current {
-        Some(cur) if stat_partial_cmp(&cur, &candidate) != Some(replace_when) => Some(cur),
-        _ => Some(candidate),
+        Some(cur) if stat_partial_cmp(&cur, &candidate) != Some(replace_when) => cur,
+        _ => candidate,
     }
 }
 
@@ -93,7 +89,7 @@ fn fold_bound(
 ///
 /// # Panics
 ///
-/// Panics when `column_names` is longer than the file's column count — index `i`
+/// Panics when a row group has fewer columns than `column_names` — index `i`
 /// must address a real row-group column.
 #[must_use]
 pub fn column_stats(meta: &ParquetMetaData, column_names: &[String]) -> Vec<ColumnStat> {
@@ -109,10 +105,10 @@ pub fn column_stats(meta: &ParquetMetaData, column_names: &[String]) -> Vec<Colu
             if let Some(stats) = col.statistics() {
                 null_count += stats.null_count_opt().unwrap_or(0) as i64;
                 if let Some(b) = min_stat(stats) {
-                    min = fold_bound(min, b, Ordering::Greater);
+                    min = Some(fold_bound(min, b, Ordering::Greater));
                 }
                 if let Some(b) = max_stat(stats) {
-                    max = fold_bound(max, b, Ordering::Less);
+                    max = Some(fold_bound(max, b, Ordering::Less));
                 }
             }
         }

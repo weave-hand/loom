@@ -1,7 +1,11 @@
 //! Cross-crate: the Iceberg mirror reader and the DataFusion write-path reader now
 //! share one implementation, so they must agree on every `ColumnStat` field for the
-//! same Parquet buffer. This is the test that would have caught the two hand-copied
-//! merges drifting apart.
+//! same Parquet buffer. This locks the two call sites onto identical inputs and
+//! identical output; the merge logic itself is single-sourced in
+//! `parquet_stats::column_stats` and covered by `//src/parquet-stats:merge`, so this
+//! test can no longer catch merge-logic drift — only call-site drift, such as a
+//! caller passing a different column-name list or post-processing the result
+//! differently.
 
 use std::sync::Arc;
 
