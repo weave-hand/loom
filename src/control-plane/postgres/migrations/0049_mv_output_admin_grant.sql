@@ -13,6 +13,15 @@
 --
 -- 'microbatch' / 'microbatch_join' are the serde tags of TransformBody's MV
 -- variants, not the Rust variant names.
+--
+-- Fail-loud on a malformed body, by design: if an MV row's `body -> 'output'` were
+-- absent or not an object, `->> 'schema'`/`->> 'name'` yield NULL and the NOT NULL on
+-- target_a/target_b aborts this migration — and with it startup. That cannot happen
+-- today (`output: TableRef` is required on both MV variants), and it is deliberately
+-- stricter than the runtime, which tolerates an undecodable body with a
+-- `tracing::warn!` + skip (src/transforms.rs). The asymmetry is intentional: a skipped
+-- row here would leave a permanently invisible table with no operator signal, whereas
+-- an aborted migration is loud, immediate, and recoverable by fixing the row.
 insert into acl.role_grant (role_id, action, target_kind, target_a, target_b)
 select r.id,
        'read',

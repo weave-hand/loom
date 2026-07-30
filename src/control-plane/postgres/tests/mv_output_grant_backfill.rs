@@ -40,23 +40,48 @@ async fn seed_def(pool: &PgPool, name: &str, body: serde_json::Value) {
         .expect("seed transform def");
 }
 
-async fn define_admin_role(pool: &PgPool) {
-    sqlx::query("insert into acl.role (id) values ('admin')")
+async fn define_role(pool: &PgPool, id: &str) {
+    sqlx::query("insert into acl.role (id) values ($1)")
+        .bind(id)
         .execute(pool)
         .await
-        .expect("define admin role");
+        .expect("define role");
 }
 
-/// Every (target_a, target_b) the admin role has a 'read'/'table' grant on, sorted.
-async fn admin_table_reads(pool: &PgPool) -> Vec<(String, String)> {
-    sqlx::query_as::<_, (String, String)>(
-        "select target_a, target_b from acl.role_grant \
-         where role_id = 'admin' and action = 'read' and target_kind = 'table' \
-         order by target_a, target_b",
+/// A whole `acl.role_grant` row: (role_id, action, target_kind, effect, target_a, target_b).
+type Grant = (String, String, String, String, String, String);
+
+/// EVERY grant row in the database, sorted — deliberately unfiltered.
+///
+/// Filtering by `role_id = 'admin'` would hide a fan-out regression: if the migration's
+/// `join acl.role r on r.id = 'admin'` degraded to `on true`, every role in the
+/// deployment would receive the grant and a role-scoped assertion would still pass.
+/// `effect` is included for the same reason — a grant inserted as `'deny'` is strictly
+/// worse than no grant at all, because `check()` short-circuits
+/// `bool_or(g.effect = 'deny')` straight to `Decision::Deny` (`src/acl.rs`), so the
+/// column that decides allow-vs-deny is the last one a statement-pinning test should omit.
+async fn all_grants(pool: &PgPool) -> Vec<Grant> {
+    sqlx::query_as::<_, Grant>(
+        "select role_id, action, target_kind, effect, target_a, target_b \
+         from acl.role_grant \
+         order by role_id, action, target_kind, effect, target_a, target_b",
     )
     .fetch_all(pool)
     .await
-    .expect("read admin table grants")
+    .expect("read grants")
+}
+
+/// The exact row the runtime writes at define time: the reserved admin role holding a
+/// coarse *allow* Read on a bare output table.
+fn admin_read_allow(schema: &str, table: &str) -> Grant {
+    (
+        "admin".to_string(),
+        "read".to_string(),
+        "table".to_string(),
+        "allow".to_string(),
+        schema.to_string(),
+        table.to_string(),
+    )
 }
 
 fn microbatch(output_schema: &str, output_name: &str) -> serde_json::Value {
@@ -85,21 +110,26 @@ async fn backfills_both_micro_batch_variants_and_is_idempotent() {
     let fixture = PgFixture::shared();
     let (_cp, db) = fixture.fresh_db().await;
     let pool = fixture.pool_for(&db).await;
-    define_admin_role(&pool).await;
+    define_role(&pool, "admin").await;
+    // Fan-out canary: a second, ordinary role. The backfill must not grant it anything —
+    // asserting on the unfiltered grant table is what makes a widened join visible.
+    define_role(&pool, "analyst").await;
 
+    // Distinct output schemas ('main' vs 'warehouse') so a statement that emitted a
+    // literal schema instead of reading `body -> 'output' ->> 'schema'` would be caught.
     seed_def(&pool, "rollup_mv", microbatch("main", "rollup")).await;
-    seed_def(&pool, "enriched_mv", microbatch_join("main", "enriched")).await;
-    assert_eq!(admin_table_reads(&pool).await, vec![]);
+    seed_def(&pool, "enriched_mv", microbatch_join("warehouse", "enriched")).await;
+    assert_eq!(all_grants(&pool).await, vec![]);
 
     sqlx::raw_sql(backfill_sql())
         .execute(&pool)
         .await
         .expect("run backfill");
     assert_eq!(
-        admin_table_reads(&pool).await,
+        all_grants(&pool).await,
         vec![
-            ("main".to_string(), "enriched".to_string()),
-            ("main".to_string(), "rollup".to_string()),
+            admin_read_allow("main", "rollup"),
+            admin_read_allow("warehouse", "enriched"),
         ]
     );
 
@@ -109,10 +139,10 @@ async fn backfills_both_micro_batch_variants_and_is_idempotent() {
         .await
         .expect("re-run backfill");
     assert_eq!(
-        admin_table_reads(&pool).await,
+        all_grants(&pool).await,
         vec![
-            ("main".to_string(), "enriched".to_string()),
-            ("main".to_string(), "rollup".to_string()),
+            admin_read_allow("main", "rollup"),
+            admin_read_allow("warehouse", "enriched"),
         ]
     );
 }
@@ -122,7 +152,7 @@ async fn leaves_physical_and_typed_outputs_alone() {
     let fixture = PgFixture::shared();
     let (_cp, db) = fixture.fresh_db().await;
     let pool = fixture.pool_for(&db).await;
-    define_admin_role(&pool).await;
+    define_role(&pool, "admin").await;
 
     seed_def(
         &pool,
@@ -153,7 +183,7 @@ async fn leaves_physical_and_typed_outputs_alone() {
         .expect("run backfill");
     // `physical` is granted at define time and needs no backfill; `typed` rides its
     // bound type's grants and must never get a table grant. Neither is touched here.
-    assert_eq!(admin_table_reads(&pool).await, vec![]);
+    assert_eq!(all_grants(&pool).await, vec![]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -161,12 +191,12 @@ async fn is_a_clean_no_op_when_no_admin_role_has_been_bootstrapped() {
     let fixture = PgFixture::shared();
     let (_cp, db) = fixture.fresh_db().await;
     let pool = fixture.pool_for(&db).await;
-    // Deliberately NO define_admin_role: `loom create-admin` has not run.
+    // Deliberately no 'admin' role: `loom create-admin` has not run.
     seed_def(&pool, "rollup_mv", microbatch("main", "rollup")).await;
 
     sqlx::raw_sql(backfill_sql())
         .execute(&pool)
         .await
         .expect("backfill must succeed, not violate the role FK, with no admin role");
-    assert_eq!(admin_table_reads(&pool).await, vec![]);
+    assert_eq!(all_grants(&pool).await, vec![]);
 }
