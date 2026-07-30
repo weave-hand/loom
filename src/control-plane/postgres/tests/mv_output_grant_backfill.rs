@@ -118,7 +118,12 @@ async fn backfills_both_micro_batch_variants_and_is_idempotent() {
     // Distinct output schemas ('main' vs 'warehouse') so a statement that emitted a
     // literal schema instead of reading `body -> 'output' ->> 'schema'` would be caught.
     seed_def(&pool, "rollup_mv", microbatch("main", "rollup")).await;
-    seed_def(&pool, "enriched_mv", microbatch_join("warehouse", "enriched")).await;
+    seed_def(
+        &pool,
+        "enriched_mv",
+        microbatch_join("warehouse", "enriched"),
+    )
+    .await;
     assert_eq!(all_grants(&pool).await, vec![]);
 
     sqlx::raw_sql(backfill_sql())
