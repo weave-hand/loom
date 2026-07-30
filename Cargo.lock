@@ -963,6 +963,7 @@ dependencies = [
  "libc",
  "object_store",
  "parquet",
+ "parquet-stats",
  "proptest",
  "reqwest",
  "serde",
