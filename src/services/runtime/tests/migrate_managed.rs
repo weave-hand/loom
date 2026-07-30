@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use managed_postgres::{EmbeddedPg, EmbeddedPgConfig};
-use service_runtime::{Config, DbConfig};
+use service_runtime::{Config, DbConfig, Redacted};
 use sqlx::postgres::PgPoolOptions;
 use store_config::ObjectStoreConfig;
 
@@ -33,7 +33,7 @@ fn external_db(pg: &EmbeddedPg) -> DbConfig {
         host: pg.socket_dir().to_string_lossy().into_owned(),
         port: 5432,
         user: "postgres".to_string(),
-        password: String::new(),
+        password: Redacted::new(String::new()),
         dbname: "loom".to_string(),
         max_connections: Some(4),
     }

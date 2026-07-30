@@ -148,7 +148,10 @@ pub async fn run(
     let sched_cp: Arc<dyn ControlPlane> = Arc::new(cp.clone());
 
     let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
+    props.insert(
+        SQL_CATALOG_PROP_URI.to_string(),
+        cfg.db.pg_url().into_inner(),
+    );
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
         cfg.object_store.warehouse_uri.clone(),
