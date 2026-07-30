@@ -1,0 +1,115 @@
+//! Per-column Parquet-footer statistics, merged across row groups and emitted as the
+//! version-neutral `control_plane_core::snapshot::{ColumnStat, StatValue}`.
+//!
+//! This is the single place in the tree that matches on `parquet`'s `Statistics`
+//! enum, so a future parquet major bump has exactly one file to touch. Both readers
+//! that need it — the Iceberg mirror's landing/commit path
+//! (`control_plane_postgres::iceberg_stats`) and the DataFusion write path
+//! (`datafusion_io::write::file_stats_from_bytes`) — call in here.
+//!
+//! The entry point takes already-parsed `ParquetMetaData` rather than bytes: the two
+//! callers have incompatible error types and would otherwise need a third, and the
+//! datafusion-io caller needs the same metadata for its own row count, so a
+//! bytes-taking helper would parse the footer twice.
+
+use std::cmp::Ordering;
+
+use control_plane_core::snapshot::{ColumnStat, StatValue};
+use parquet::file::metadata::ParquetMetaData;
+use parquet::file::statistics::Statistics;
+
+/// Typed lower bound of a row-group column's `Statistics`, as a neutral `StatValue`.
+/// Only the primitive types loom prunes on carry a bound; others -> `None`.
+fn min_stat(stats: &Statistics) -> Option<StatValue> {
+    match stats {
+        Statistics::Boolean(s) => s.min_opt().map(|v| StatValue::Bool(*v)),
+        Statistics::Int32(s) => s.min_opt().map(|v| StatValue::I32(*v)),
+        Statistics::Int64(s) => s.min_opt().map(|v| StatValue::I64(*v)),
+        Statistics::Float(s) => s.min_opt().map(|v| StatValue::F32(*v)),
+        Statistics::Double(s) => s.min_opt().map(|v| StatValue::F64(*v)),
+        Statistics::ByteArray(s) => s
+            .min_opt()
+            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
+        _ => None,
+    }
+}
+
+/// Typed upper bound of a row-group column's `Statistics`, as a neutral `StatValue`.
+fn max_stat(stats: &Statistics) -> Option<StatValue> {
+    match stats {
+        Statistics::Boolean(s) => s.max_opt().map(|v| StatValue::Bool(*v)),
+        Statistics::Int32(s) => s.max_opt().map(|v| StatValue::I32(*v)),
+        Statistics::Int64(s) => s.max_opt().map(|v| StatValue::I64(*v)),
+        Statistics::Float(s) => s.max_opt().map(|v| StatValue::F32(*v)),
+        Statistics::Double(s) => s.max_opt().map(|v| StatValue::F64(*v)),
+        Statistics::ByteArray(s) => s
+            .max_opt()
+            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
+        _ => None,
+    }
+}
+
+/// Partial order over same-typed `StatValue`s; used to fold per-row-group bounds
+/// into a file-wide min/max. `None` for mismatched variants and float NaN, in which
+/// case the fold keeps the bound it already has.
+#[must_use]
+pub fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<Ordering> {
+    use StatValue::{Bool, F32, F64, I32, I64, Str};
+    match (a, b) {
+        (Bool(x), Bool(y)) => x.partial_cmp(y),
+        (I32(x), I32(y)) => x.partial_cmp(y),
+        (I64(x), I64(y)) => x.partial_cmp(y),
+        (F32(x), F32(y)) => x.partial_cmp(y),
+        (F64(x), F64(y)) => x.partial_cmp(y),
+        (Str(x), Str(y)) => x.partial_cmp(y),
+        _ => None,
+    }
+}
+
+/// Merge typed min/max + null/size counts across ALL row groups for each column
+/// index. `column_names[i]` is the name recorded for row-group column `i`, so the
+/// slice both selects the columns (by position) and labels them.
+///
+/// # Panics
+///
+/// Panics when `column_names` is longer than the file's column count — index `i`
+/// must address a real row-group column.
+#[must_use]
+pub fn column_stats(meta: &ParquetMetaData, column_names: &[String]) -> Vec<ColumnStat> {
+    let mut out = Vec::with_capacity(column_names.len());
+    for (i, name) in column_names.iter().enumerate() {
+        let mut null_count = 0i64;
+        let mut column_size_bytes = 0i64;
+        let mut min: Option<StatValue> = None;
+        let mut max: Option<StatValue> = None;
+        for rg in meta.row_groups() {
+            let col = rg.column(i);
+            column_size_bytes += col.compressed_size();
+            if let Some(stats) = col.statistics() {
+                null_count += stats.null_count_opt().unwrap_or(0) as i64;
+                if let Some(b) = min_stat(stats) {
+                    min = match min {
+                        Some(cur) if stat_partial_cmp(&cur, &b) != Some(Ordering::Greater) => {
+                            Some(cur)
+                        }
+                        _ => Some(b),
+                    };
+                }
+                if let Some(b) = max_stat(stats) {
+                    max = match max {
+                        Some(cur) if stat_partial_cmp(&cur, &b) != Some(Ordering::Less) => Some(cur),
+                        _ => Some(b),
+                    };
+                }
+            }
+        }
+        out.push(ColumnStat {
+            column_name: name.clone(),
+            null_count,
+            column_size_bytes,
+            min,
+            max,
+        });
+    }
+    out
+}

@@ -4156,6 +4156,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "parquet-stats"
+version = "0.1.0"
+dependencies = [
+ "control-plane-core",
+ "parquet",
+]
+
+[[package]]
 name = "password-hash"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
