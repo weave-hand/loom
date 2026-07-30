@@ -10,7 +10,7 @@ Postgres, so services program against `core` and tests get a faithful fake. This
 document describes what those concerns can do today, the guarantees they carry,
 and the design decisions behind them.
 
-_As of 168e27c9._
+_As of 49167301._
 
 ## The concern library, transactions, and hardening
 
@@ -490,6 +490,35 @@ identically: `define_vector_index` probes `object_type_exists` first and
 returns `NotFound` (→ the documented 404) rather than the postgres adapter's
 old misleading `Validation`/400 "type has no property" message (#387).
 
+Secrets held in memory are redacted at the type level (#549). A
+`control_plane_core::Redacted<T>` newtype renders `<redacted>` for `Debug` —
+never a type name, length, or hash prefix, since a length is itself a hint — and
+yields its inner value only through an explicit `.expose()`, which is the
+grep-able audit point for where a secret escapes. It carries no `Display`, no
+`Deref`, and no serde impls, so there is no implicit path back to the plaintext.
+Three fields are wrapped: both Argon2 PHC verifiers (`NewUser::password_phc`,
+`PasswordCredential::password_phc`) and — the more severe case, since it is the
+credential itself rather than a hash — `service_runtime::DbConfig::password`, the
+plaintext Postgres password read from `LOOM_DB_PASSWORD` and reachable through
+the `Debug` on the enclosing `Config`. The two accessors that hand the same
+secrets back are wrapped for the same reason, since a naked return is the same
+hazard one indirection away: `Auth::password_phc_for_subject` yields a
+`Redacted<String>`, and so does `DbConfig::pg_url`, whose `postgres://` DSN
+interpolates the password in clear and is the string an operator is most likely
+to log when a connection fails. The guarantee is asserted on the containing
+structs, not only on the wrapper, so a future `#[derive(Debug)]` field cannot
+silently regress it.
+
+Those exposures were latent — nothing formatted the structs. One live leak was
+found and closed alongside them: both `Auth::update_password` implementations
+were annotated `#[tracing::instrument(skip(self))]` while taking the raw Argon2
+verifier as an argument, so `tracing` recorded the verifier as a span field on
+every password change at `debug` level. `new_phc` is now skipped in both
+adapters, matching the treatment every other secret-carrying parameter in those
+files already had, and a regression test asserts on span *creation* (`FmtSpan::NEW`)
+rather than on events — an event-only capture passes vacuously here, because the
+method emits no event of its own.
+
 ## Transforms
 
 The transforms concern gives loom's existing queue-driven transform jobs a
@@ -655,7 +684,6 @@ lives entirely in the service layer.
 - `#fut-auth-login-rate-limit` — per-IP login rate-limiting
 - `#fut-auth-password-policy` — forced rotation + strength policy
 - `#fut-auth-session-refresh` — session refresh / sliding expiry
-- `#fut-auth-credential-debug-redact` — redact password verifier from credential `Debug`
 - `#fut-multi-tenancy` — tenant_id partitioning
 - `#fut-wider-tx-composition` — wider `Tx` composition
 - `#fut-metrics-crate` — metrics counters and histograms
