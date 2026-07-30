@@ -124,3 +124,17 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "stats-equivalence",
+    crate = "stats_equivalence",
+    srcs = ["tests/stats_equivalence.rs"],
+    crate_root = "tests/stats_equivalence.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:parquet",
+    ],
+)
