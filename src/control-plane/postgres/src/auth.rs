@@ -229,7 +229,8 @@ impl Auth for PgControlPlane {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self), level = "debug")]
+    // `new_phc` is the raw Argon2 verifier — never record it as a span field.
+    #[tracing::instrument(skip(self, new_phc), level = "debug")]
     async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
         let res = sqlx::query!(
             "update auth.password_credential set password_phc = $2, updated_at = now() \
