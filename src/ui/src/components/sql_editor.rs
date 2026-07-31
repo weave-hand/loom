@@ -334,12 +334,7 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
     // Hold the completion provider's closure AND its registration for the
     // editor's life: dropping the `Closure` invalidates the JS callback, and
     // dropping/disposing the `IDisposable` unregisters the provider.
-    let completion = use_mut_ref(|| {
-        None::<(
-            Closure<dyn FnMut(ITextModel, Position) -> JsValue>,
-            IDisposable,
-        )>
-    });
+    let completion = use_mut_ref(|| None::<CompletionRegistration>);
 
     // Mount: create the editor, seed the model from the initial `value`, and
     // subscribe to content changes. Schema/read_only/validate are captured by value

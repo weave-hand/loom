@@ -164,17 +164,21 @@ const EXPLAIN_COLS: u32 = EXPLAIN_PREFIX.len() as u32;
 /// are governed and read-only, and the engine's own budgets still apply); this is about
 /// cost, and about the endpoint keeping the promise it makes.
 ///
-/// Positions are left `null` on purpose: the message names `EXPLAIN ANALYZE` in
-/// backticks, so the client's `anchor_diagnostic` resolves it against the live editor
-/// text and squiggles the caller's own keywords, wherever on the buffer they sit.
+/// Positions are left `null` on purpose: the message names the offending keywords in
+/// **double quotes**, which is what `loom_ui_core::anchor_diagnostic` scans for, so the
+/// client resolves them against the live editor text and squiggles the caller's own
+/// `EXPLAIN ANALYZE` wherever on the buffer it sits — including the comment-separated
+/// spelling, where the two-word span fails and the bare `ANALYZE` candidate still lands.
+/// (Double quotes, not backticks: the client scans only `"` spans, because DataFusion
+/// quotes identifiers with `"` and never emits backticks.)
 #[must_use]
 pub fn analyze_refusal(sql: &str) -> Option<SqlDiagnostic> {
     let (first, second) = leading_keywords(sql);
     let (first, second) = (first?, second?);
     if first.eq_ignore_ascii_case("EXPLAIN") && second.eq_ignore_ascii_case("ANALYZE") {
         return Some(SqlDiagnostic {
-            message: "`EXPLAIN ANALYZE` runs the statement to measure it; validation only \
-                      plans. Drop `ANALYZE` to validate this query."
+            message: "\"EXPLAIN ANALYZE\" runs the statement to measure it; validation only \
+                      plans. Drop \"ANALYZE\" to validate this query."
                 .to_owned(),
             severity: DiagnosticSeverity::Error,
             line: None,
@@ -248,8 +252,8 @@ pub fn plan_diagnostic(message: String, col_offset: u32) -> SqlDiagnostic {
 /// non-zero cap is right: it bounds the buffer without changing what is reported.
 /// Row cap handed to `execute_governed`. It collects batches until the cumulative count
 /// *exceeds* the cap, so any value below the first batch's size stops the stream after
-/// **one batch** — which is the real bound here, not one row. The rows are discarded
-/// either way; this exists so a pathological plan string cannot be buffered indefinitely.
+/// **one batch** — that, not one row, is the real bound. The rows are discarded either
+/// way; this exists so a pathological plan cannot be buffered past its first batch.
 const VALIDATE_MAX_ROWS: usize = 1;
 
 /// Shape a diagnostic list into the `POST /sql/validate` body. An empty list is the

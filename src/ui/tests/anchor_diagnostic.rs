@@ -167,3 +167,25 @@ fn anchors_multibyte_identifiers_by_character_not_byte() {
     let got = anchor_diagnostic(sql, "No field named 日本語.");
     assert_eq!(got, Some((1, 8, 11)));
 }
+
+#[test]
+fn anchors_the_servers_explain_analyze_refusal_to_the_callers_keywords() {
+    // The server leaves this diagnostic's positions null and quotes the offending
+    // keywords, relying on THIS function to place it. That contract is only true while
+    // the quoting style and the scanned delimiters agree — a claim that has already
+    // drifted once, when the backtick arm was removed.
+    let message = "\"EXPLAIN ANALYZE\" runs the statement to measure it; validation only \
+                   plans. Drop \"ANALYZE\" to validate this query.";
+    assert_eq!(
+        anchor_diagnostic("EXPLAIN ANALYZE SELECT 1", message),
+        Some((1, 1, 16)),
+        "squiggles the caller's own EXPLAIN ANALYZE"
+    );
+    // Comment-separated: the two-word span cannot match, so the bare `ANALYZE`
+    // candidate is what lands.
+    assert_eq!(
+        anchor_diagnostic("EXPLAIN /*x*/ ANALYZE SELECT 1", message),
+        Some((1, 15, 22)),
+        "falls through to the bare ANALYZE keyword"
+    );
+}

@@ -195,9 +195,11 @@ round trip: unknown tables in `FROM`/`JOIN` position (CTE-aware — a query's ow
 aliased identifiers and plain column references, and emitting nothing when the
 passed-in `CompletionSchema` is empty) and unbalanced parentheses. Both are pure
 functions in `loom_ui_core::sql_diagnostics` (`rust_test`'d), published to Monaco
-as `IMarkerData` under the `loom` marker owner on every model change. Deferred to
-a follow-up: client-side *column* diagnostics (need alias/scope resolution) and
-the server-side EXPLAIN validate endpoint, which #620 names as the north star.
+as `IMarkerData` under the `loom` marker owner on every model change. The north
+star #620 named — the server-side EXPLAIN validate endpoint — has since landed
+(#657, below), and it is what closed out client-side *column* diagnostics: those
+were **dropped**, not deferred, because the engine now checks columns correctly
+and a client-side alias/scope heuristic would only re-add false-positive risk.
 
 ## SQL query console (#621)
 

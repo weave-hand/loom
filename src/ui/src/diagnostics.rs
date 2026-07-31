@@ -6,8 +6,9 @@
 //! (1) an unknown *table* name in `FROM`/`JOIN` position — a simple, unquoted
 //! identifier that matches neither a schema table nor a `WITH` CTE name — and
 //! (2) unbalanced parentheses. It never flags qualified (`a.b`), double-quoted, or
-//! aliased identifiers, never flags columns (alias/scope resolution is the deferred
-//! server-side EXPLAIN work), and emits nothing when the schema is empty (not yet
+//! aliased identifiers, never flags columns — correct column checking needs full
+//! alias/scope resolution, which is the *server's* job via `POST /sql/validate` (see
+//! `anchor_diagnostic` below) — and emits nothing when the schema is empty (not yet
 //! loaded). Columns are 1-based char offsets within a line (Monaco's convention),
 //! exact for ASCII — the SQL-identifier case.
 //!
@@ -551,7 +552,11 @@ fn server_diagnostic(item: &serde_json::Value, sql: &str) -> Option<Diagnostic> 
         start_col,
         end_col,
         message,
-        // The endpoint's vocabulary is closed: the engine only reports planning errors.
+        // The wire `severity` is deliberately NOT read: the endpoint's vocabulary is
+        // closed today (the server enum has one variant, and the engine only reports
+        // planning errors). ASYMMETRY TO WATCH: the server documents that enum as
+        // additive, so if a `warning` class ever lands it will render here as an error
+        // and no test will fail — parse it at that point, not before.
         severity: DiagnosticSeverity::Error,
     })
 }
