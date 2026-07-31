@@ -116,8 +116,8 @@ pub struct Route {
     /// Active drawer tab id — always one of `surface.tabs()` after parsing, or
     /// `None` for a surface with no drawer tabs.
     pub tab: Option<String>,
-    /// Catalog list controls. Serialised only on the Catalog surface, but carried in
-    /// memory across a surface switch so returning to Catalog restores them.
+    /// Catalog list controls. Serialised (and meaningful) only on the Catalog
+    /// surface; a surface switch resets them.
     pub catalog: CatalogQuery,
 }
 
@@ -212,16 +212,18 @@ impl Route {
         out
     }
 
-    /// Switch surfaces: nothing selected, the target's default tab. The Catalog list
-    /// controls ride along, because they are view configuration rather than a
-    /// location — returning to Catalog restores the same list.
+    /// Switch surfaces: nothing selected, the target's default tab, and the Catalog
+    /// list controls reset. They deliberately do NOT ride along: `to_hash` cannot
+    /// encode them off the Catalog surface, so a carried value would be silently
+    /// re-parsed away on the next `hashchange`. The URL is the location — nothing
+    /// travels that the URL cannot express.
     #[must_use]
     pub fn with_surface(&self, surface: Surface) -> Route {
         Route {
             surface,
             selection: None,
             tab: surface.default_tab().map(str::to_owned),
-            catalog: self.catalog.clone(),
+            catalog: CatalogQuery::default(),
         }
     }
 
@@ -257,10 +259,16 @@ impl Route {
         }
     }
 
-    /// Close the drawer without leaving the surface (list controls preserved).
+    /// Close the drawer without leaving the surface. Unlike [`Self::with_surface`]
+    /// this preserves the Catalog list controls: you are still looking at the same
+    /// (filtered, sorted) list, just with nothing selected.
     #[must_use]
     pub fn cleared(&self) -> Route {
-        self.with_surface(self.surface)
+        Route {
+            selection: None,
+            tab: self.surface.default_tab().map(str::to_owned),
+            ..self.clone()
+        }
     }
 
     /// The selection id, but only when the route is pointing at `surface`. Each

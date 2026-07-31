@@ -209,8 +209,9 @@ fn switching_surface_clears_the_selection_and_resets_the_tab() {
     );
     assert_eq!(to.tab.as_deref(), Some("properties"));
     assert_eq!(
-        to.catalog, from.catalog,
-        "list controls are view configuration, carried so returning to Catalog restores them"
+        to.catalog,
+        CatalogQuery::default(),
+        "list controls do not ride along — the hash cannot encode them off Catalog"
     );
 }
 
@@ -267,6 +268,18 @@ fn cleared_closes_the_drawer_without_leaving_the_surface() {
     assert_eq!(r.surface, Surface::Transforms);
     assert_eq!(r.selection, None);
     assert_eq!(r.tab.as_deref(), Some("definition"));
+
+    // Closing the drawer keeps the list you are looking at.
+    let filtered = Route::default().with_catalog(CatalogQuery {
+        sort: DatasetSort::Updated,
+        dir: CatalogSortDir::Desc,
+        project: Some("main".to_string()),
+    });
+    let closed = filtered.with_selection("main.txns").cleared();
+    assert_eq!(
+        closed.catalog, filtered.catalog,
+        "cleared preserves the list controls"
+    );
 }
 
 #[test]

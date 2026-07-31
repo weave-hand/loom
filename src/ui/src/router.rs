@@ -115,14 +115,17 @@ pub fn use_route() -> (Route, Navigator) {
         let route = route.clone();
         Callback::from(move |next: Route| {
             let hash = next.to_hash();
-            if current_hash() == hash {
-                return;
-            }
-            if let Some(history) = web_sys::window().and_then(|w| w.history().ok()) {
+            if current_hash() != hash
+                && let Some(history) = web_sys::window().and_then(|w| w.history().ok())
+            {
                 let _ = history.replace_state_with_url(&JsValue::NULL, "", Some(&hash));
             }
-            // replaceState fires no `hashchange`, so the state write is mandatory.
-            route.set(next);
+            // replaceState fires no `hashchange`, so the state write is ours. Compare
+            // the whole Route, not the hash: `set` re-renders unconditionally, so this
+            // is also what keeps a redundant navigation from costing a render.
+            if *route != next {
+                route.set(next);
+            }
         })
     };
 
