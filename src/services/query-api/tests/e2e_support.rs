@@ -21,6 +21,10 @@
 //! `subject_with_role` / `grant_read` (ACL setup), `get` (drive the axum
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
+//!
+//! `governed_sql_harness` / `GovernedSqlHarness` is the largest fixture here: three
+//! landed, governed tables served by a REAL engine over a UDS, shared by the
+//! `sql_console_e2e` and `sql_validate_e2e` suites.
 
 use loom_test_seed::{id_val_batch, id_val_columns, local_sql_catalog, vec4_batches, vec4_columns};
 use std::sync::Arc;
@@ -1608,13 +1612,18 @@ fn sql_lineage(schema: &str, name: &str) -> LineageEvent {
         event_time: time::OffsetDateTime::now_utc(),
         inputs: vec![],
         outputs: vec![DatasetId::from(&tref(schema, name)).dataset_ref()],
-        payload: serde_json::json!({ "source": "sql-console-e2e" }),
+        payload: serde_json::json!({ "source": "governed-sql-harness" }),
     }
 }
 
 /// Everything a governed-SQL test needs kept alive: the control plane (for the driver),
 /// the real engine serving client (the `eng` the router uses), and the guards that must
 /// not drop.
+#[expect(
+    clippy::partial_pub_fields,
+    reason = "the guard fields MUST stay private: a caller able to move out `_wh`/`_eng` \
+              could drop the warehouse or the engine out from under `serving`"
+)]
 pub struct GovernedSqlHarness {
     pub cp: Arc<PgControlPlane>,
     pub serving: Arc<dyn ServingEngine>,
@@ -1624,10 +1633,19 @@ pub struct GovernedSqlHarness {
 
 /// Seed the shared governed-SQL fixture and boot a REAL engine over a UDS.
 ///
-/// Lands three Iceberg tables through the real landing path — `wh.orders(id,
-/// customer_id, email)` with 4 rows, `wh.customers(id, name, ssn)` with 2, and
-/// `wh.secrets(id, value)` with 1 — binds an ontology type to each (`Order`,
-/// `Customer`, `Secret`), then grants role `reader`:
+/// Lands three Iceberg tables through the real landing path, every column non-nullable
+/// and every ontology property required, with `InlineLimits { inline_byte_limit: 0 }` so
+/// everything is flushed to Parquet and no rows stay inline:
+///
+/// * `wh.orders(id, customer_id, email)` — 4 rows: `id` 1-4, `customer_id` `[1,1,2,2]`,
+///   `email` `a1@x.com`..`a4@x.com`;
+/// * `wh.customers(id, name, ssn)` — 2 rows: `id` 1-2, `name` `Alice`/`Bob`,
+///   `ssn` `111-11-1111`/`222-22-2222`;
+/// * `wh.secrets(id, value)` — 1 row: `id` 1, `value` `top-secret`.
+///
+/// Each is bound to an ontology type identified by `id` (`Order`, `Customer`, `Secret`).
+/// Grants go to **subject `reader`** (via role `reader-role` — pass `"reader"` as the
+/// subject to `post_search`/`get`):
 ///
 /// * `Order` — Read, row-filtered to `id >= 2` (3 of 4 rows) with `email` masked;
 /// * `Customer` — Read with `ssn` denied;
