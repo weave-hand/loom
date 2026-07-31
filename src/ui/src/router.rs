@@ -28,10 +28,6 @@ fn current_hash() -> String {
 /// navigations stale by the time the server replies, and re-emitting it would yank
 /// the user back to where they were.
 #[must_use]
-#[expect(
-    dead_code,
-    reason = "half of the router's navigation surface; the async callbacks that read it land with the per-surface selection/tab wiring in this routing slice"
-)]
 pub fn current_route() -> Route {
     Route::parse(&current_hash())
 }

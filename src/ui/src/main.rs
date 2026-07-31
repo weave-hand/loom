@@ -257,16 +257,33 @@ fn workspace(props: &WorkspaceProps) -> Html {
     );
     let catalog_query = route.catalog.clone();
 
-    // Ontology surface state: the list of type names, each type's loaded `TypeDetail`
-    // (schema) keyed by name, the selected type index, and the drawer's active tab.
+    // Ontology location, read out of the URL — same surface-scoping as the Catalog.
+    let onto_sel: Option<String> = route.selection_on(Surface::Ontology).map(str::to_owned);
+    let onto_tab: AttrValue = AttrValue::from(
+        route
+            .tab_on(Surface::Ontology)
+            .unwrap_or("properties")
+            .to_owned(),
+    );
+
+    // Transforms location, read out of the URL.
+    let tf_sel: Option<String> = route.selection_on(Surface::Transforms).map(str::to_owned);
+    let tf_tab: AttrValue = AttrValue::from(
+        route
+            .tab_on(Surface::Transforms)
+            .unwrap_or("definition")
+            .to_owned(),
+    );
+
+    // Ontology surface state: the list of type names and each type's loaded
+    // `TypeDetail` (schema) keyed by name. The selection and drawer tab live on the
+    // route (`onto_sel`/`onto_tab`, above).
     let types = use_state(Vec::<String>::new);
     let onto_status = use_state(|| LoadStatus::Idle);
     let type_details = use_state(HashMap::<String, TypeDetail>::new);
-    let onto_selected = use_state(|| Option::<usize>::None);
-    let onto_tab = use_state(|| AttrValue::from("properties"));
 
-    // Catalog surface state: the dataset list plus the selected dataset's detail,
-    // lazily-loaded preview, and active drawer tab.
+    // Catalog surface state: the dataset list plus the selected dataset's detail
+    // and lazily-loaded preview.
     let datasets = use_state(Vec::<DatasetRow>::new);
     let catalog_status = use_state(|| LoadStatus::Idle);
     let detail = use_state(|| Option::<DatasetDetail>::None);
@@ -297,9 +314,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let transforms = use_state(Vec::<TransformSummary>::new);
     let tf_status = use_state(|| LoadStatus::Idle);
     let tf_forbidden = use_state(|| false);
-    let tf_selected = use_state(|| Option::<usize>::None);
     let tf_def = use_state(|| Option::<TransformDefView>::None);
-    let tf_drawer_tab = use_state(|| AttrValue::from("definition"));
     let tf_runs = use_state(Vec::<RunRow>::new);
     let tf_runs_status = use_state(|| LoadStatus::Idle);
     // Editor form: Some(form) when the editor is open (New or Edit), None when viewing.
@@ -611,52 +626,52 @@ fn workspace(props: &WorkspaceProps) -> Html {
         });
     }
 
-    // On transform row-select: reset the drawer + clear the previous def/runs/editor,
-    // then load the selected transform's definition. Guarded by `tf_def_gen` so a
+    // On transform row-select: clear the previous def/runs/editor, then load the
+    // selected transform's definition. Resetting the drawer tab is
+    // `Route::with_selection`'s job, not this effect's. Guarded by `tf_def_gen` so a
     // stale in-flight fetch never overwrites a newer selection's def.
     {
         let tf_def = tf_def.clone();
-        let tf_drawer_tab = tf_drawer_tab.clone();
         let tf_editing = tf_editing.clone();
         let tf_edit_name = tf_edit_name.clone();
         let tf_server_error = tf_server_error.clone();
         let tf_runs = tf_runs.clone();
-        let transforms = transforms.clone();
         let tf_def_gen = tf_def_gen.clone();
         let token = props.token.to_string();
         let base = net::api_base();
         let on_logout = props.on_logout.clone();
-        let selected = *tf_selected;
+        let selected = tf_sel.clone();
         use_effect_with(selected, move |selected| {
             *tf_def_gen.borrow_mut() += 1;
             let my_gen = *tf_def_gen.borrow();
             tf_def.set(None);
-            tf_editing.set(None);
             tf_edit_name.set(None);
             tf_server_error.set(None); // a stale action error never leaks onto a new selection
             tf_runs.set(Vec::new()); // force the runs tab to refetch for the new selection
-            tf_drawer_tab.set(AttrValue::from("definition"));
-            if let Some(idx) = *selected
-                && let Some(row) = transforms.get(idx)
-            {
-                let name = row.name.clone();
-                wasm_bindgen_futures::spawn_local(async move {
-                    match net::get_transform(&base, &token, &name).await {
-                        Ok(def) => {
-                            if *tf_def_gen.borrow() == my_gen {
-                                tf_def.set(Some(def));
-                            }
-                        }
-                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                        Err(_) => {
-                            if *tf_def_gen.borrow() == my_gen {
-                                tf_def.set(None);
-                            }
+            // Guard AFTER the display-state clears, and spare only `tf_editing`:
+            // clearing the selection must still drop the stale definition (or Cancel
+            // would resurrect the previous transform's drawer with no row highlighted),
+            // but must NOT slam the editor shut — `on_new` clears the selection and
+            // opens the editor in the same batch.
+            let Some(name) = selected.clone() else {
+                return;
+            };
+            tf_editing.set(None);
+            wasm_bindgen_futures::spawn_local(async move {
+                match net::get_transform(&base, &token, &name).await {
+                    Ok(def) => {
+                        if *tf_def_gen.borrow() == my_gen {
+                            tf_def.set(Some(def));
                         }
                     }
-                });
-            }
-            || ()
+                    Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(_) => {
+                        if *tf_def_gen.borrow() == my_gen {
+                            tf_def.set(None);
+                        }
+                    }
+                }
+            });
         });
     }
 
@@ -666,18 +681,26 @@ fn workspace(props: &WorkspaceProps) -> Html {
     {
         let tf_runs = tf_runs.clone();
         let tf_runs_status = tf_runs_status.clone();
-        let transforms = transforms.clone();
         let tf_runs_gen = tf_runs_gen.clone();
         let token = props.token.to_string();
         let base = net::api_base();
         let on_logout = props.on_logout.clone();
         let already_loaded = !tf_runs.is_empty();
-        let dep = (*tf_selected, (*tf_drawer_tab).clone(), *tf_runs_epoch);
-        use_effect_with(dep, move |(sel, tab, _epoch)| {
+        // `already_loaded` rides in the deps for the same reason as the Catalog drawer
+        // effects: the def effect clears `tf_runs` in the same commit, so a Back/Forward
+        // that changes the selection while the Runs tab is active would otherwise bail
+        // on a stale `true` and never refetch.
+        let dep = (
+            tf_sel.clone(),
+            tf_tab.clone(),
+            *tf_runs_epoch,
+            already_loaded,
+        );
+        use_effect_with(dep, move |(sel, tab, _epoch, _loaded)| {
             if tab.as_str() != "runs" || already_loaded {
                 return;
             }
-            let Some(name) = sel.and_then(|i| transforms.get(i).map(|r| r.name.clone())) else {
+            let Some(name) = sel.clone() else {
                 return;
             };
             *tf_runs_gen.borrow_mut() += 1;
@@ -819,17 +842,25 @@ fn workspace(props: &WorkspaceProps) -> Html {
             (list, drawer)
         }
         Surface::Ontology => {
+            // The list highlight is derived: the route holds the type name, the table
+            // wants the row's position in the currently loaded list.
+            let selected_idx = onto_sel
+                .as_deref()
+                .and_then(|name| types.iter().position(|t| t == name));
             let on_row = {
-                let onto_selected = onto_selected.clone();
-                let onto_tab = onto_tab.clone();
+                let (route, navigate, types) = (route.clone(), navigate.clone(), types.clone());
+                // Opening a row IS a navigation → push, so Back closes the drawer.
+                // `Route::with_selection` resets the drawer to the surface default,
+                // which is why there is no explicit tab reset here.
                 Callback::from(move |i: usize| {
-                    onto_selected.set(Some(i));
-                    onto_tab.set(AttrValue::from("properties"));
+                    if let Some(name) = types.get(i) {
+                        navigate.push(route.with_selection(name.clone()));
+                    }
                 })
             };
             let on_tab = {
-                let onto_tab = onto_tab.clone();
-                Callback::from(move |t: AttrValue| onto_tab.set(t))
+                let (route, navigate) = (route.clone(), navigate.clone());
+                Callback::from(move |t: AttrValue| navigate.replace(route.with_tab(t.as_str())))
             };
 
             // Build one row per type by zipping the names with their loaded detail. A
@@ -854,13 +885,17 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 <OntologyList
                     rows={rows}
                     status={(*onto_status).clone()}
-                    selected={*onto_selected}
+                    selected={selected_idx}
                     on_row={on_row}
                 />
             };
             // Drawer contract: only pass a real drawer when a type is selected;
             // otherwise Html::default() so the Shell hides the drawer region.
-            let drawer = (*onto_selected)
+            // Gate on the type being in the loaded list (unlike Catalog, whose drawer
+            // needs only the id): ontology details are eagerly loaded with the list, so
+            // a deep link resolves as soon as it arrives, and an unknown type name shows
+            // no drawer rather than a permanent "Loading…".
+            let drawer = selected_idx
                 .and_then(|i| types.get(i).cloned())
                 .map(|name| {
                     let detail = type_details.get(&name).cloned();
@@ -868,7 +903,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         <OntologyDrawer
                             name={AttrValue::from(name)}
                             detail={detail}
-                            active_tab={(*onto_tab).clone()}
+                            active_tab={onto_tab.clone()}
                             on_tab={on_tab}
                         />
                     }
@@ -877,18 +912,31 @@ fn workspace(props: &WorkspaceProps) -> Html {
             (list, drawer)
         }
         Surface::Transforms => {
+            // The list highlight is derived: the route holds the transform name, the
+            // table wants the row's position in the currently loaded list.
+            let selected_idx = tf_sel
+                .as_deref()
+                .and_then(|name| transforms.iter().position(|r| r.name == name));
             let on_row = {
-                let s = tf_selected.clone();
-                Callback::from(move |i| s.set(Some(i)))
+                let (route, navigate, transforms) =
+                    (route.clone(), navigate.clone(), transforms.clone());
+                // Opening a row IS a navigation → push, so Back closes the drawer.
+                Callback::from(move |i: usize| {
+                    if let Some(row) = transforms.get(i) {
+                        navigate.push(route.with_selection(row.name.clone()));
+                    }
+                })
             };
             let on_new = {
                 let editing = tf_editing.clone();
                 let edit_name = tf_edit_name.clone();
-                let selected = tf_selected.clone();
+                let (route, navigate) = (route.clone(), navigate.clone());
                 let errors = tf_errors.clone();
                 let server_error = tf_server_error.clone();
                 Callback::from(move |()| {
-                    selected.set(None);
+                    // replace, not push: opening the editor is an action, and Back
+                    // should not re-open the transform you were just looking at.
+                    navigate.replace(route.cleared());
                     edit_name.set(None); // New, not Edit
                     errors.set(Vec::new());
                     server_error.set(None);
@@ -897,7 +945,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
             };
             let list = html! {
                 <TransformsList rows={(*transforms).clone()} status={(*tf_status).clone()}
-                    selected={*tf_selected} on_row={on_row} on_new={on_new} forbidden={*tf_forbidden} />
+                    selected={selected_idx} on_row={on_row} on_new={on_new} forbidden={*tf_forbidden} />
             };
             // Reusable "refetch the list into state" async closure builder.
             let reload_list = {
@@ -1027,8 +1075,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 }
             } else if let Some(def) = (*tf_def).clone() {
                 let on_tab = {
-                    let t = tf_drawer_tab.clone();
-                    Callback::from(move |id| t.set(id))
+                    let (route, navigate) = (route.clone(), navigate.clone());
+                    Callback::from(move |id: AttrValue| {
+                        navigate.replace(route.with_tab(id.as_str()));
+                    })
                 };
                 // Edit: seed the form from the def, record the edit target name.
                 let on_edit = {
@@ -1052,18 +1102,18 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     let tf_runs = tf_runs.clone();
                     let tf_runs_epoch = tf_runs_epoch.clone();
                     let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
-                    let tf_drawer_tab = tf_drawer_tab.clone();
+                    let navigate = navigate.clone();
                     let server_error = tf_server_error.clone();
                     let on_logout = props.on_logout.clone();
                     let token = props.token.to_string();
                     let base = net::api_base();
                     Callback::from(move |()| {
                         server_error.set(None);
-                        let (name, tf_runs, tf_runs_epoch, tf_drawer_tab) = (
+                        let (name, tf_runs, tf_runs_epoch, navigate) = (
                             name.clone(),
                             tf_runs.clone(),
                             tf_runs_epoch.clone(),
-                            tf_drawer_tab.clone(),
+                            navigate.clone(),
                         );
                         let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
                         let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
@@ -1085,7 +1135,15 @@ fn workspace(props: &WorkspaceProps) -> Html {
                                         tf_runs_epoch.set(next);
                                     }
                                     if eff.open_runs_tab {
-                                        tf_drawer_tab.set(AttrValue::from("runs"));
+                                        // Read the LIVE route: the user may have
+                                        // navigated away while the run was in flight,
+                                        // and yanking them back would be wrong.
+                                        let live = router::current_route();
+                                        if live.selection_on(Surface::Transforms)
+                                            == Some(name.as_str())
+                                        {
+                                            navigate.replace(live.with_tab("runs"));
+                                        }
                                     }
                                 }
                             }
@@ -1096,8 +1154,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 // surface the message beside the buttons (row + drawer stay put).
                 let on_delete = {
                     let name = def.name.clone();
-                    let tf_selected = tf_selected.clone();
                     let tf_def = tf_def.clone();
+                    let navigate = navigate.clone();
                     let server_error = tf_server_error.clone();
                     let on_logout = props.on_logout.clone();
                     let token = props.token.to_string();
@@ -1105,8 +1163,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     let reload_list = reload_list.clone();
                     Callback::from(move |()| {
                         server_error.set(None);
-                        let (name, tf_selected, tf_def) =
-                            (name.clone(), tf_selected.clone(), tf_def.clone());
+                        let (name, tf_def, navigate) =
+                            (name.clone(), tf_def.clone(), navigate.clone());
                         let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
                         let reload_list = reload_list.clone();
@@ -1118,7 +1176,14 @@ fn workspace(props: &WorkspaceProps) -> Html {
                                         delete_action_effect(other.map_err(|e| e.to_string()));
                                     server_error.set(eff.error.map(AttrValue::from));
                                     if eff.clear_selection {
-                                        tf_selected.set(None);
+                                        // Read the LIVE route, like on_run: only clear
+                                        // the selection if it is still this transform.
+                                        let live = router::current_route();
+                                        if live.selection_on(Surface::Transforms)
+                                            == Some(name.as_str())
+                                        {
+                                            navigate.replace(live.cleared());
+                                        }
                                         tf_def.set(None);
                                         reload_list();
                                     }
@@ -1128,7 +1193,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     })
                 };
                 html! {
-                    <TransformDrawer def={def} active_tab={(*tf_drawer_tab).clone()}
+                    <TransformDrawer def={def} active_tab={tf_tab.clone()}
                         on_tab={on_tab}
                         runs={(*tf_runs).clone()} runs_status={(*tf_runs_status).clone()}
                         action_error={(*tf_server_error).clone()}
