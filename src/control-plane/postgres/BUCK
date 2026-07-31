@@ -1927,20 +1927,52 @@ loom_fixture_test(
     ],
 )
 
+# Shared arrangement for the two direct-write stream/batch race tests below: the
+# deterministic lost-create-race driver plus the column/batch/lineage builders both
+# need. A rust_library (not a loom_fixture_test), like :gc-test-support.
+rust_library(
+    name = "stream-race-support",
+    crate = "stream_race_support",
+    srcs = ["tests/stream_race_support.rs"],
+    crate_root = "tests/stream_race_support.rs",
+    edition = "2024",
+    deps = [
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//src/testing:seed",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
 loom_fixture_test(
     name = "stream-declare-vs-concurrent-create",
     crate = "stream_declare_vs_concurrent_create",
     srcs = ["tests/stream_declare_vs_concurrent_create.rs"],
     crate_root = "tests/stream_declare_vs_concurrent_create.rs",
     deps = [
-        "//src/testing:seed",
+        ":stream-race-support",
         ":postgres",
         "//src/control-plane/core:core",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
-        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
+    name = "stream-create-race-schema",
+    crate = "stream_create_race_schema",
+    srcs = ["tests/stream_create_race_schema.rs"],
+    crate_root = "tests/stream_create_race_schema.rs",
+    deps = [
+        ":stream-race-support",
+        ":postgres",
+        "//src/control-plane/core:core",
         "//third-party:sqlx",
-        "//third-party:tempfile",
         "//third-party:tokio",
     ],
 )
