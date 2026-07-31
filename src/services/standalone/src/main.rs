@@ -51,7 +51,14 @@ async fn main() -> Result<(), BoxErr> {
     let addrs = resolve_addrs(&env)?;
     let tuning = standalone::StandaloneTuning::from_map(&env)?;
 
-    standalone::run(cfg, addrs, tuning, shutdown_signal(), ready_noop()).await
+    standalone::run(
+        cfg,
+        addrs,
+        tuning,
+        service_runtime::shutdown_signal(),
+        ready_noop(),
+    )
+    .await
 }
 
 async fn create_admin_cli() -> Result<(), BoxErr> {
@@ -112,17 +119,4 @@ fn resolve_addrs(env: &HashMap<String, String>) -> Result<StandaloneAddrs, BoxEr
 fn ready_noop() -> tokio::sync::oneshot::Sender<()> {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     tx
-}
-
-/// Resolve on SIGINT or SIGTERM (container runtimes send SIGTERM).
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-    }
 }

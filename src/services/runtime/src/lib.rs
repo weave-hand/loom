@@ -46,6 +46,11 @@ pub use loom_config::{
     req_var,
 };
 
+// Process lifecycle lives in the tiny, Postgres-free `loom_lifecycle` crate so
+// `worker-bin` can share these without pulling the control plane into its closure.
+// Re-exported here so binaries that already depend on service_runtime keep one import.
+pub use loom_lifecycle::{init_tracing, shutdown_signal};
+
 /// Default application database name in embedded mode (used by both
 /// `DbConfig::from_map` and `EmbeddedSettings::from_map` so `cfg.db` and the
 /// embedded cluster's database agree by construction).
@@ -545,13 +550,4 @@ pub async fn serve_with_shutdown(
         .with_graceful_shutdown(shutdown)
         .await
         .map_err(RuntimeError::Serve)
-}
-
-/// Install a `tracing-subscriber` for the process. Uses `RUST_LOG` env (default
-/// `info`). Idempotent — a second call from a test harness or re-entrant path does
-/// not panic.
-pub fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    drop(fmt().with_env_filter(filter).try_init());
 }

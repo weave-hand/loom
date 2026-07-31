@@ -1,0 +1,43 @@
+load("//src:loom_test.bzl", "rust_test")
+
+# Process lifecycle shared by every loom binary: tracing init, the SIGINT/SIGTERM
+# signal source, and the bounded drain. Deliberately tiny and Postgres-free —
+# `worker-bin` must be able to depend on it without pulling the control plane into
+# its closure (see the zero-pool guard comment in //src/services/worker/BUCK).
+rust_library(
+    name = "lifecycle",
+    crate = "loom_lifecycle",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Raises real signals at the test process, so it gets its own test binary:
+# process-wide signal state must not leak into sibling tests.
+rust_test(
+    name = "sigterm",
+    crate = "sigterm",
+    srcs = ["tests/sigterm.rs"],
+    crate_root = "tests/sigterm.rs",
+    edition = "2024",
+    deps = [
+        ":lifecycle",
+        "//third-party:libc",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "init-tracing",
+    crate = "init_tracing",
+    srcs = ["tests/init_tracing.rs"],
+    crate_root = "tests/init_tracing.rs",
+    edition = "2024",
+    deps = [":lifecycle"],
+)
