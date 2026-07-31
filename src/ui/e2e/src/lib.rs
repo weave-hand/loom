@@ -9,12 +9,14 @@
 
 use std::collections::HashMap;
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::time::Duration;
 
 use control_plane_postgres::fixture::PgFixture;
 use fantoccini::{Client, ClientBuilder};
 use serde_json::{Map, Value, json};
+use tower_http::services::{ServeDir, ServeFile};
 
 /// Credentials the harness seeds and the test signs in with.
 pub const ADMIN_USER: &str = "admin";
@@ -193,4 +195,118 @@ pub async fn start_browser() -> Result<Browser, String> {
         client,
         _driver: DriverGuard(child),
     })
+}
+
+// ------------------------------------------------------- component harness
+
+/// A static file server over one directory, on an ephemeral port. The wasm
+/// bundle cannot boot from `file://` (browsers refuse to load ES modules from
+/// it), and `:gallery-serve`'s `python3 -m http.server` is a dev script a test
+/// cannot depend on — hence an in-process server for the life of the test.
+pub struct StaticServer {
+    /// e.g. `http://127.0.0.1:41234` — no trailing slash.
+    pub base_url: String,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for StaticServer {
+    fn drop(&mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+    }
+}
+
+/// Serve `dir` over HTTP on an ephemeral port, falling back to its `index.html`
+/// so any path boots the bundle.
+pub async fn start_static_server(dir: impl Into<PathBuf>) -> StaticServer {
+    let dir = dir.into();
+    let index = dir.join("index.html");
+    let app = axum::Router::new()
+        .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind static server");
+    let port = listener
+        .local_addr()
+        .expect("static server local_addr")
+        .port();
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await;
+    });
+    StaticServer {
+        base_url: format!("http://127.0.0.1:{port}"),
+        shutdown: Some(tx),
+        _task: task,
+    }
+}
+
+/// Percent-encode `s` for use as a URL query-string value: everything outside
+/// the RFC 3986 unreserved set becomes `%XX`. Space becomes `%20` (NOT `+`), so
+/// the harness can decode with `decodeURIComponent`.
+#[must_use]
+pub fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(char::from(*b));
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
+/// A mounted component: the browser and the server that feeds it. Both are
+/// killed/shut down when this is dropped, so the test must hold it for as long
+/// as it drives the client (this is why `mount` returns the guard rather than a
+/// bare `Client`).
+pub struct Harness {
+    browser: Browser,
+    server: StaticServer,
+}
+
+impl Harness {
+    /// The driven WebDriver client.
+    #[must_use]
+    pub fn client(&self) -> &Client {
+        &self.browser.client
+    }
+
+    /// Navigate to `component` with `props`, and wait until it has mounted.
+    pub async fn show(&self, component: &str, props: &Value) {
+        let url = format!(
+            "{}/?component={}&props={}",
+            self.server.base_url,
+            percent_encode(component),
+            percent_encode(&props.to_string()),
+        );
+        self.browser.client.goto(&url).await.expect("goto harness");
+        self.browser
+            .client
+            .wait()
+            .for_element(fantoccini::Locator::Css("#mount"))
+            .await
+            .expect("harness mount point");
+    }
+}
+
+/// Serve the harness bundle (`LOOM_UI_DIR`), start the vendored headless
+/// browser, and mount `component` with `props`.
+pub async fn mount(component: &str, props: &Value) -> Harness {
+    let dir = std::env::var("LOOM_UI_DIR").expect("LOOM_UI_DIR (the harness bundle) must be set");
+    let server = start_static_server(dir).await;
+    let browser = start_browser()
+        .await
+        .expect("vendored browser must start (RE image / dev-box host libs)");
+    let harness = Harness { browser, server };
+    harness.show(component, props).await;
+    harness
 }

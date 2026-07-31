@@ -3739,10 +3739,12 @@ dependencies = [
 name = "loom-ui-e2e"
 version = "0.0.0"
 dependencies = [
+ "axum 0.7.9",
  "fantoccini",
  "serde_json",
  "tempfile",
  "tokio",
+ "tower-http",
 ]
 
 [[package]]

@@ -28,15 +28,26 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
+        "//third-party:axum",
         "//third-party:fantoccini",
         "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:tokio",
+        "//third-party:tower-http",
         "//src/control-plane/postgres:postgres",
         "//src/services/runtime:runtime",
         "//src/services/standalone:standalone",
     ],
     visibility = ["PUBLIC"],
+)
+
+# Same cross-configuration pin as :bundle-wasm above — the native test reaches
+# the wasm bundle through $(location …), and default_target_platform does not
+# apply across a dependency edge.
+configured_alias(
+    name = "harness-bundle-wasm",
+    actual = "//src/ui:harness-bundle",
+    platform = "//platforms:wasm",
 )
 
 loom_fixture_test(
