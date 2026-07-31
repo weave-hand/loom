@@ -603,19 +603,22 @@ impl CatalogSortDir {
 
 /// Build the `GET /datasets` query string from the active controls. `project = None`
 /// (or empty) is the "All" filter and is omitted. E.g. `"?sort=updated&dir=desc"`.
+/// The project value is percent-encoded: it originates in the URL fragment, so an
+/// unencoded `&`/`=` would inject extra parameters into loom's own request.
 #[must_use]
 pub fn dataset_list_query(sort: DatasetSort, dir: CatalogSortDir, project: Option<&str>) -> String {
     let mut q = format!("?sort={}&dir={}", sort.as_param(), dir.as_param());
     if let Some(p) = project.filter(|p| !p.is_empty()) {
         q.push_str("&project=");
-        q.push_str(p);
+        q.push_str(&crate::route::pct_encode(p));
     }
     q
 }
 
 /// The distinct project names present in `rows`, sorted ascending — the filter-chip
-/// options. (Project names are schema identifiers, so no URL-encoding is required
-/// where these are used as `?project=` values.)
+/// options. (The active project filter is no longer only ever one of these: since
+/// #617 it can also arrive from the URL fragment, so `dataset_list_query`
+/// percent-encodes it on the way back out into the `?project=` value.)
 #[must_use]
 pub fn distinct_projects(rows: &[DatasetRow]) -> Vec<String> {
     let mut ps: Vec<String> = rows.iter().map(|r| r.project.clone()).collect();

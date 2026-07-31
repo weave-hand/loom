@@ -35,7 +35,11 @@ fn hex_digit(nibble: u8) -> char {
 /// selection id and the project filter, which are user data and must not be able to
 /// introduce a `/`, `?`, `&` or `=` into the route grammar. Encoding is per-byte, so
 /// non-ASCII names round-trip through [`pct_decode`].
-fn pct_encode(s: &str) -> String {
+///
+/// Also used by [`crate::dataset_list_query`] on the way back *out*: the project
+/// filter now originates in the URL, so it is attacker-supplyable and must not be
+/// able to inject parameters into loom's own `GET /datasets` query string.
+pub(crate) fn pct_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
@@ -160,6 +164,9 @@ impl Route {
                 // An unknown tab id (or one belonging to a different surface) leaves
                 // the default in place rather than blanking the drawer.
                 "tab" if surface.tabs().contains(&value.as_str()) => route.tab = Some(value),
+                // The Catalog controls are serialised only on the Catalog surface, so
+                // accepting them elsewhere would let route state diverge from the URL.
+                "sort" | "dir" | "project" if surface != Surface::Catalog => {}
                 "sort" => {
                     if let Some(sort) = DatasetSort::from_param(&value) {
                         route.catalog.sort = sort;

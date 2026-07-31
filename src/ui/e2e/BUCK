@@ -47,7 +47,6 @@ loom_fixture_test(
     deps = [
         ":e2e-support",
         "//third-party:fantoccini",
-        "//third-party:serde_json",
         "//third-party:tokio",
         "//src/control-plane/postgres:postgres",
     ],
@@ -66,7 +65,6 @@ loom_fixture_test(
     deps = [
         ":e2e-support",
         "//third-party:fantoccini",
-        "//third-party:serde_json",
         "//third-party:tokio",
         "//src/control-plane/postgres:postgres",
     ],

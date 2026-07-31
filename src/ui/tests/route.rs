@@ -302,3 +302,30 @@ fn scoped_accessors_return_none_when_nothing_is_selected() {
     assert_eq!(r.tab_on(Surface::Catalog), Some("schema"));
     assert_eq!(r.tab_on(Surface::Query), None);
 }
+
+#[test]
+fn catalog_controls_are_ignored_off_the_catalog_surface() {
+    // `to_hash` does not serialise them there, so accepting them on parse would let
+    // the route diverge from the address bar.
+    let r = Route::parse("#/ontology?sort=rows&dir=desc&project=main");
+    assert_eq!(r.surface, Surface::Ontology);
+    assert_eq!(r.catalog, CatalogQuery::default());
+}
+
+#[test]
+fn parse_and_to_hash_are_now_mutually_total() {
+    // Every route reachable from parse must survive a to_hash/parse round trip.
+    for hash in [
+        "#/catalog",
+        "#/ontology",
+        "#/query",
+        "#/catalog/main.txns?tab=preview",
+        "#/catalog?sort=updated&dir=desc&project=main",
+        "#/ontology/Customer?tab=links",
+        "#/transforms/daily_rollup?tab=runs",
+        "#/ontology?sort=rows",
+    ] {
+        let once = Route::parse(hash);
+        assert_eq!(Route::parse(&once.to_hash()), once, "not total for {hash}");
+    }
+}

@@ -249,10 +249,13 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // to this surface, so an Ontology type name can never be read as a dataset id by
     // the Catalog effects (which stay mounted on every surface).
     let catalog_sel: Option<String> = route.selection_on(Surface::Catalog).map(str::to_owned);
+    // The tab vocabulary (and which of them is the default) belongs to
+    // `Surface::tabs()`; derive the fallback from it rather than restating a literal.
     let catalog_tab: AttrValue = AttrValue::from(
         route
             .tab_on(Surface::Catalog)
-            .unwrap_or("schema")
+            .or_else(|| Surface::Catalog.default_tab())
+            .unwrap_or_default()
             .to_owned(),
     );
     let catalog_query = route.catalog.clone();
@@ -262,7 +265,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let onto_tab: AttrValue = AttrValue::from(
         route
             .tab_on(Surface::Ontology)
-            .unwrap_or("properties")
+            .or_else(|| Surface::Ontology.default_tab())
+            .unwrap_or_default()
             .to_owned(),
     );
 
@@ -271,7 +275,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
     let tf_tab: AttrValue = AttrValue::from(
         route
             .tab_on(Surface::Transforms)
-            .unwrap_or("definition")
+            .or_else(|| Surface::Transforms.default_tab())
+            .unwrap_or_default()
             .to_owned(),
     );
 

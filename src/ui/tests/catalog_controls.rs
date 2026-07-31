@@ -37,6 +37,18 @@ fn empty_project_is_omitted() {
 }
 
 #[test]
+fn project_filter_cannot_inject_query_parameters() {
+    // The project value now comes out of the URL fragment, so it must be encoded
+    // on the way back into loom's own `GET /datasets` query string.
+    let q = dataset_list_query(DatasetSort::Name, CatalogSortDir::Asc, Some("a&sort=rows"));
+    assert_eq!(q, "?sort=name&dir=asc&project=a%26sort%3Drows");
+    assert!(
+        !q.contains("&sort=rows"),
+        "raw `&` must not reach the query string"
+    );
+}
+
+#[test]
 fn sort_tokens_and_roundtrip() {
     for s in DatasetSort::all() {
         assert_eq!(DatasetSort::from_param(s.as_param()), Some(s));
