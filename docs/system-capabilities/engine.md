@@ -698,8 +698,6 @@ and maintenance schedules.
   time-travel reads.
 - `#fut-iceberg-schema-cache` — schema cache for the serving engine's
   per-query table registration.
-- `#fut-iceberg-stats-dedup` — unify the iceberg/datafusion parquet-footer
-  stats readers.
 - `#fut-iceberg-retry-cap-tunable` — env-tunable CAS-commit retry cap.
 - `#fut-iceberg-s3-multipart` — S3 multipart upload for large data files.
 - `#fut-iceberg-s3-serving-e2e` — end-to-end serving read against S3.

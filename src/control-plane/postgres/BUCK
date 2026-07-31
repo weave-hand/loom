@@ -138,6 +138,7 @@ rust_library(
     },
     deps = [
         "//src/control-plane/core:core",
+        "//src/parquet-stats:parquet-stats",
         "//third-party:arrow-array",
         "//third-party:arrow-ipc",
         "//third-party:arrow-schema",
