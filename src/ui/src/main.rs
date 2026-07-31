@@ -841,76 +841,15 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 .unwrap_or_default();
             (list, drawer)
         }
-        Surface::Ontology => {
-            // The list highlight is derived: the route holds the type name, the table
-            // wants the row's position in the currently loaded list.
-            let selected_idx = onto_sel
-                .as_deref()
-                .and_then(|name| types.iter().position(|t| t == name));
-            let on_row = {
-                let (route, navigate, types) = (route.clone(), navigate.clone(), types.clone());
-                // Opening a row IS a navigation → push, so Back closes the drawer.
-                // `Route::with_selection` resets the drawer to the surface default,
-                // which is why there is no explicit tab reset here.
-                Callback::from(move |i: usize| {
-                    if let Some(name) = types.get(i) {
-                        navigate.push(route.with_selection(name.clone()));
-                    }
-                })
-            };
-            let on_tab = {
-                let (route, navigate) = (route.clone(), navigate.clone());
-                Callback::from(move |t: AttrValue| navigate.replace(route.with_tab(t.as_str())))
-            };
-
-            // Build one row per type by zipping the names with their loaded detail. A
-            // type whose detail hasn't arrived yet shows an empty backing and "…" props.
-            let rows: Vec<OntologyTypeRow> = types
-                .iter()
-                .map(|name| match type_details.get(name) {
-                    Some(d) => OntologyTypeRow {
-                        name: name.clone(),
-                        backing: format!("{}.{}", d.table_schema, d.table_name),
-                        props: d.properties.len().to_string(),
-                    },
-                    None => OntologyTypeRow {
-                        name: name.clone(),
-                        backing: String::new(),
-                        props: "…".to_string(),
-                    },
-                })
-                .collect();
-
-            let list = html! {
-                <OntologyList
-                    rows={rows}
-                    status={(*onto_status).clone()}
-                    selected={selected_idx}
-                    on_row={on_row}
-                />
-            };
-            // Drawer contract: only pass a real drawer when a type is selected;
-            // otherwise Html::default() so the Shell hides the drawer region.
-            // Gate on the type being in the loaded list (unlike Catalog, whose drawer
-            // needs only the id): ontology details are eagerly loaded with the list, so
-            // a deep link resolves as soon as it arrives, and an unknown type name shows
-            // no drawer rather than a permanent "Loading…".
-            let drawer = selected_idx
-                .and_then(|i| types.get(i).cloned())
-                .map(|name| {
-                    let detail = type_details.get(&name).cloned();
-                    html! {
-                        <OntologyDrawer
-                            name={AttrValue::from(name)}
-                            detail={detail}
-                            active_tab={onto_tab.clone()}
-                            on_tab={on_tab}
-                        />
-                    }
-                })
-                .unwrap_or_default();
-            (list, drawer)
-        }
+        Surface::Ontology => ontology_panes(
+            &types,
+            &type_details,
+            &onto_status,
+            onto_sel.as_deref(),
+            &onto_tab,
+            &route,
+            &navigate,
+        ),
         Surface::Transforms => {
             // The list highlight is derived: the route holds the transform name, the
             // table wants the row's position in the currently loaded list.
@@ -971,108 +910,19 @@ fn workspace(props: &WorkspaceProps) -> Html {
                 }
             };
             let drawer = if let Some(form) = (*tf_editing).clone() {
-                let on_change = {
-                    let e = tf_editing.clone();
-                    Callback::from(move |f| e.set(Some(f)))
-                };
-                let editing = tf_edit_name.is_some();
-                // Define (or redefine): validate client-side, POST, then close + refetch list.
-                let on_submit = {
-                    let form = form.clone();
-                    let editing_state = tf_editing.clone();
-                    let errors = tf_errors.clone();
-                    let server_error = tf_server_error.clone();
-                    let on_logout = props.on_logout.clone();
-                    let token = props.token.to_string();
-                    let base = net::api_base();
-                    let reload_list = reload_list.clone();
-                    Callback::from(move |()| {
-                        errors.set(Vec::new());
-                        server_error.set(None);
-                        match form_to_def(&form) {
-                            Err(errs) => errors.set(errs),
-                            Ok(def_json) => {
-                                let (editing_state, server_error, on_logout) = (
-                                    editing_state.clone(),
-                                    server_error.clone(),
-                                    on_logout.clone(),
-                                );
-                                let (token, base) = (token.clone(), base.clone());
-                                let reload_list = reload_list.clone();
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    match net::define_transform(&base, &token, &def_json).await {
-                                        Ok(()) => {
-                                            editing_state.set(None);
-                                            reload_list();
-                                        }
-                                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                        Err(e) => {
-                                            server_error.set(Some(AttrValue::from(e.to_string())))
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    })
-                };
-                // Ad-hoc run: validate the body, POST, close the editor (result shows in Runs on reselect).
-                let on_run_adhoc = {
-                    let form = form.clone();
-                    let editing_state = tf_editing.clone();
-                    let errors = tf_errors.clone();
-                    let server_error = tf_server_error.clone();
-                    let on_logout = props.on_logout.clone();
-                    let token = props.token.to_string();
-                    let base = net::api_base();
-                    Callback::from(move |()| {
-                        errors.set(Vec::new());
-                        server_error.set(None);
-                        match form_to_body(&form) {
-                            Err(errs) => errors.set(errs),
-                            Ok(body_json) => {
-                                let (editing_state, server_error, on_logout) = (
-                                    editing_state.clone(),
-                                    server_error.clone(),
-                                    on_logout.clone(),
-                                );
-                                let (token, base) = (token.clone(), base.clone());
-                                wasm_bindgen_futures::spawn_local(async move {
-                                    match net::run_adhoc(&base, &token, &body_json).await {
-                                        Ok(_run_id) => editing_state.set(None),
-                                        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                        Err(e) => {
-                                            server_error.set(Some(AttrValue::from(e.to_string())))
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                    })
-                };
-                // Cancel must clear the editor's validation + server errors, not just close
-                // the editor: `tf_server_error` is SHARED with the drawer's action-error
-                // line, so a failed Save/Run-ad-hoc left in that slot would render beside
-                // the drawer's Run/Delete buttons as though a Run or Delete had failed.
-                // (Mirrors what on_edit/on_new already do on the way in.)
-                let on_cancel = {
-                    let e = tf_editing.clone();
-                    let errors = tf_errors.clone();
-                    let server_error = tf_server_error.clone();
-                    Callback::from(move |()| {
-                        errors.set(Vec::new());
-                        server_error.set(None);
-                        e.set(None);
-                    })
-                };
-                html! {
-                    <TransformEditor form={form} schema={(*tf_schema).clone()}
-                        editing={editing}
-                        dataset_options={(*tf_dataset_options).clone()}
-                        type_options={(*tf_type_options).clone()}
-                        errors={(*tf_errors).clone()} server_error={(*tf_server_error).clone()}
-                        on_change={on_change} on_submit={on_submit}
-                        on_run_adhoc={on_run_adhoc} on_cancel={on_cancel} />
-                }
+                transform_editor_drawer(
+                    form,
+                    tf_edit_name.is_some(),
+                    tf_editing.clone(),
+                    tf_errors.clone(),
+                    tf_server_error.clone(),
+                    tf_schema.clone(),
+                    tf_dataset_options.clone(),
+                    tf_type_options.clone(),
+                    props.token.to_string(),
+                    props.on_logout.clone(),
+                    reload_list.clone(),
+                )
             } else if let Some(def) = (*tf_def).clone() {
                 let on_tab = {
                     let (route, navigate) = (route.clone(), navigate.clone());
@@ -1118,36 +968,17 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         let tf_runs_epoch_ref = tf_runs_epoch_ref.clone();
                         let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match net::run_transform(&base, &token, &name).await {
-                                Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                other => {
-                                    let eff = run_action_effect(
-                                        other.map(|_run_id| ()).map_err(|e| e.to_string()),
-                                    );
-                                    server_error.set(eff.error.map(AttrValue::from));
-                                    if eff.refetch_runs {
-                                        tf_runs.set(Vec::new());
-                                        // Bump the authoritative ref, then mirror it into the
-                                        // dep-tuple state — never `*tf_runs_epoch + 1` (a stale
-                                        // render snapshot; see the declaration above).
-                                        let next = bump_epoch(&mut tf_runs_epoch_ref.borrow_mut());
-                                        tf_runs_epoch.set(next);
-                                    }
-                                    if eff.open_runs_tab {
-                                        // Read the LIVE route: the user may have
-                                        // navigated away while the run was in flight,
-                                        // and yanking them back would be wrong.
-                                        let live = router::current_route();
-                                        if live.selection_on(Surface::Transforms)
-                                            == Some(name.as_str())
-                                        {
-                                            navigate.replace(live.with_tab("runs"));
-                                        }
-                                    }
-                                }
-                            }
-                        });
+                        wasm_bindgen_futures::spawn_local(run_saved_transform(
+                            base,
+                            token,
+                            name,
+                            tf_runs,
+                            tf_runs_epoch,
+                            tf_runs_epoch_ref,
+                            navigate,
+                            server_error,
+                            on_logout,
+                        ));
                     })
                 };
                 // Delete → on success clear selection + refetch list; on a non-401 failure
@@ -1168,28 +999,16 @@ fn workspace(props: &WorkspaceProps) -> Html {
                         let (server_error, on_logout) = (server_error.clone(), on_logout.clone());
                         let (token, base) = (token.clone(), base.clone());
                         let reload_list = reload_list.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match net::delete_transform(&base, &token, &name).await {
-                                Err(net::FetchError::Unauthorized) => on_logout.emit(()),
-                                other => {
-                                    let eff =
-                                        delete_action_effect(other.map_err(|e| e.to_string()));
-                                    server_error.set(eff.error.map(AttrValue::from));
-                                    if eff.clear_selection {
-                                        // Read the LIVE route, like on_run: only clear
-                                        // the selection if it is still this transform.
-                                        let live = router::current_route();
-                                        if live.selection_on(Surface::Transforms)
-                                            == Some(name.as_str())
-                                        {
-                                            navigate.replace(live.cleared());
-                                        }
-                                        tf_def.set(None);
-                                        reload_list();
-                                    }
-                                }
-                            }
-                        });
+                        wasm_bindgen_futures::spawn_local(delete_saved_transform(
+                            base,
+                            token,
+                            name,
+                            tf_def,
+                            navigate,
+                            server_error,
+                            on_logout,
+                            reload_list,
+                        ));
                     })
                 };
                 html! {
@@ -1217,6 +1036,290 @@ fn workspace(props: &WorkspaceProps) -> Html {
             <Shell active={route.surface} on_switch={on_switch} search={logout_btn} avatar="DK"
                    list={list} drawer={drawer} />
         </>
+    }
+}
+
+/// The Ontology surface's `(list, drawer)` pair. Lifted out of `workspace`'s surface
+/// `match` whole: the arm reads only the ontology state plus the route, so it moves
+/// as-is and takes that nesting (and its row/tab closures) off the hotspot function.
+fn ontology_panes(
+    types: &UseStateHandle<Vec<String>>,
+    type_details: &UseStateHandle<HashMap<String, TypeDetail>>,
+    onto_status: &UseStateHandle<LoadStatus>,
+    onto_sel: Option<&str>,
+    onto_tab: &AttrValue,
+    route: &Route,
+    navigate: &Navigator,
+) -> (Html, Html) {
+    // The list highlight is derived: the route holds the type name, the table
+    // wants the row's position in the currently loaded list.
+    let selected_idx = onto_sel.and_then(|name| types.iter().position(|t| t == name));
+    let on_row = {
+        let (route, navigate, types) = (route.clone(), navigate.clone(), types.clone());
+        // Opening a row IS a navigation → push, so Back closes the drawer.
+        // `Route::with_selection` resets the drawer to the surface default,
+        // which is why there is no explicit tab reset here.
+        Callback::from(move |i: usize| {
+            if let Some(name) = types.get(i) {
+                navigate.push(route.with_selection(name.clone()));
+            }
+        })
+    };
+    let on_tab = {
+        let (route, navigate) = (route.clone(), navigate.clone());
+        Callback::from(move |t: AttrValue| navigate.replace(route.with_tab(t.as_str())))
+    };
+
+    // Build one row per type by zipping the names with their loaded detail. A
+    // type whose detail hasn't arrived yet shows an empty backing and "…" props.
+    let rows: Vec<OntologyTypeRow> = types
+        .iter()
+        .map(|name| match type_details.get(name) {
+            Some(d) => OntologyTypeRow {
+                name: name.clone(),
+                backing: format!("{}.{}", d.table_schema, d.table_name),
+                props: d.properties.len().to_string(),
+            },
+            None => OntologyTypeRow {
+                name: name.clone(),
+                backing: String::new(),
+                props: "…".to_string(),
+            },
+        })
+        .collect();
+
+    let list = html! {
+        <OntologyList
+            rows={rows}
+            status={(**onto_status).clone()}
+            selected={selected_idx}
+            on_row={on_row}
+        />
+    };
+    // Drawer contract: only pass a real drawer when a type is selected;
+    // otherwise Html::default() so the Shell hides the drawer region.
+    // Gate on the type being in the loaded list (unlike Catalog, whose drawer
+    // needs only the id): ontology details are eagerly loaded with the list, so
+    // a deep link resolves as soon as it arrives, and an unknown type name shows
+    // no drawer rather than a permanent "Loading…".
+    let drawer = selected_idx
+        .and_then(|i| types.get(i).cloned())
+        .map(|name| {
+            let detail = type_details.get(&name).cloned();
+            html! {
+                <OntologyDrawer
+                    name={AttrValue::from(name)}
+                    detail={detail}
+                    active_tab={onto_tab.clone()}
+                    on_tab={on_tab}
+                />
+            }
+        })
+        .unwrap_or_default();
+    (list, drawer)
+}
+
+/// The Transforms editor drawer (New / Edit). Lifted out of `workspace`'s drawer
+/// `if let` chain whole — the three action callbacks (`on_submit`, `on_run_adhoc`,
+/// `on_cancel`) are the bulk of it and touch only editor state, the token and the
+/// list reloader.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mechanical extraction of the drawer branch's captures; each param is a distinct piece of Yew state the editor needs (#617)"
+)]
+fn transform_editor_drawer(
+    form: TransformForm,
+    editing: bool,
+    tf_editing: UseStateHandle<Option<TransformForm>>,
+    tf_errors: UseStateHandle<Vec<FieldError>>,
+    tf_server_error: UseStateHandle<Option<AttrValue>>,
+    tf_schema: UseStateHandle<CompletionSchema>,
+    tf_dataset_options: UseStateHandle<Vec<String>>,
+    tf_type_options: UseStateHandle<Vec<String>>,
+    token: String,
+    on_logout: Callback<()>,
+    reload_list: impl Fn() + Clone + 'static,
+) -> Html {
+    let on_change = {
+        let e = tf_editing.clone();
+        Callback::from(move |f| e.set(Some(f)))
+    };
+    // Define (or redefine): validate client-side, POST, then close + refetch list.
+    let on_submit = {
+        let form = form.clone();
+        let editing_state = tf_editing.clone();
+        let errors = tf_errors.clone();
+        let server_error = tf_server_error.clone();
+        let on_logout = on_logout.clone();
+        let token = token.clone();
+        let base = net::api_base();
+        let reload_list = reload_list.clone();
+        Callback::from(move |()| {
+            errors.set(Vec::new());
+            server_error.set(None);
+            match form_to_def(&form) {
+                Err(errs) => errors.set(errs),
+                Ok(def_json) => {
+                    let (editing_state, server_error, on_logout) = (
+                        editing_state.clone(),
+                        server_error.clone(),
+                        on_logout.clone(),
+                    );
+                    let (token, base) = (token.clone(), base.clone());
+                    let reload_list = reload_list.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match net::define_transform(&base, &token, &def_json).await {
+                            Ok(()) => {
+                                editing_state.set(None);
+                                reload_list();
+                            }
+                            Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                            Err(e) => server_error.set(Some(AttrValue::from(e.to_string()))),
+                        }
+                    });
+                }
+            }
+        })
+    };
+    // Ad-hoc run: validate the body, POST, close the editor (result shows in Runs on reselect).
+    let on_run_adhoc = {
+        let form = form.clone();
+        let editing_state = tf_editing.clone();
+        let errors = tf_errors.clone();
+        let server_error = tf_server_error.clone();
+        let on_logout = on_logout.clone();
+        let token = token.clone();
+        let base = net::api_base();
+        Callback::from(move |()| {
+            errors.set(Vec::new());
+            server_error.set(None);
+            match form_to_body(&form) {
+                Err(errs) => errors.set(errs),
+                Ok(body_json) => {
+                    let (editing_state, server_error, on_logout) = (
+                        editing_state.clone(),
+                        server_error.clone(),
+                        on_logout.clone(),
+                    );
+                    let (token, base) = (token.clone(), base.clone());
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match net::run_adhoc(&base, &token, &body_json).await {
+                            Ok(_run_id) => editing_state.set(None),
+                            Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+                            Err(e) => server_error.set(Some(AttrValue::from(e.to_string()))),
+                        }
+                    });
+                }
+            }
+        })
+    };
+    // Cancel must clear the editor's validation + server errors, not just close
+    // the editor: `tf_server_error` is SHARED with the drawer's action-error
+    // line, so a failed Save/Run-ad-hoc left in that slot would render beside
+    // the drawer's Run/Delete buttons as though a Run or Delete had failed.
+    // (Mirrors what on_edit/on_new already do on the way in.)
+    let on_cancel = {
+        let e = tf_editing.clone();
+        let errors = tf_errors.clone();
+        let server_error = tf_server_error.clone();
+        Callback::from(move |()| {
+            errors.set(Vec::new());
+            server_error.set(None);
+            e.set(None);
+        })
+    };
+    html! {
+        <TransformEditor form={form} schema={(*tf_schema).clone()}
+            editing={editing}
+            dataset_options={(*tf_dataset_options).clone()}
+            type_options={(*tf_type_options).clone()}
+            errors={(*tf_errors).clone()} server_error={(*tf_server_error).clone()}
+            on_change={on_change} on_submit={on_submit}
+            on_run_adhoc={on_run_adhoc} on_cancel={on_cancel} />
+    }
+}
+
+/// The Run-saved-transform action body, lifted out of the drawer's `on_run` callback
+/// (the callback keeps only the re-clone tuple + `spawn_local`). On success clear
+/// `tf_runs` and bump the runs epoch, then open the Runs tab — but only if the LIVE
+/// route still points at this transform.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mechanical extraction of the on_run callback's captures; each param is a distinct piece of Yew state the action needs (#617)"
+)]
+async fn run_saved_transform(
+    base: String,
+    token: String,
+    name: String,
+    tf_runs: UseStateHandle<Vec<RunRow>>,
+    tf_runs_epoch: UseStateHandle<u64>,
+    tf_runs_epoch_ref: Rc<RefCell<u64>>,
+    navigate: Navigator,
+    server_error: UseStateHandle<Option<AttrValue>>,
+    on_logout: Callback<()>,
+) {
+    match net::run_transform(&base, &token, &name).await {
+        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+        other => {
+            let eff = run_action_effect(other.map(|_run_id| ()).map_err(|e| e.to_string()));
+            server_error.set(eff.error.map(AttrValue::from));
+            if eff.refetch_runs {
+                tf_runs.set(Vec::new());
+                // Bump the authoritative ref, then mirror it into the dep-tuple
+                // state — never `*tf_runs_epoch + 1` (a stale render snapshot; see
+                // the declaration in `workspace`).
+                let next = bump_epoch(&mut tf_runs_epoch_ref.borrow_mut());
+                tf_runs_epoch.set(next);
+            }
+            if eff.open_runs_tab {
+                // Read the LIVE route: the user may have navigated away while the
+                // run was in flight, and yanking them back would be wrong.
+                let live = router::current_route();
+                if live.selection_on(Surface::Transforms) == Some(name.as_str()) {
+                    navigate.replace(live.with_tab("runs"));
+                }
+            }
+        }
+    }
+}
+
+/// The Delete-transform action body, lifted out of the drawer's `on_delete` callback.
+/// Both the route clear and the `tf_def` clear sit behind the LIVE-route check: if the
+/// user selected a different transform while the DELETE was in flight, collapsing the
+/// def would blank *that* transform's drawer with nothing to refetch it. The list
+/// reload is unconditional — the deleted row must leave the list either way.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mechanical extraction of the on_delete callback's captures; each param is a distinct piece of Yew state the action needs (#617)"
+)]
+async fn delete_saved_transform(
+    base: String,
+    token: String,
+    name: String,
+    tf_def: UseStateHandle<Option<TransformDefView>>,
+    navigate: Navigator,
+    server_error: UseStateHandle<Option<AttrValue>>,
+    on_logout: Callback<()>,
+    reload_list: impl Fn() + 'static,
+) {
+    match net::delete_transform(&base, &token, &name).await {
+        Err(net::FetchError::Unauthorized) => on_logout.emit(()),
+        other => {
+            let eff = delete_action_effect(other.map_err(|e| e.to_string()));
+            server_error.set(eff.error.map(AttrValue::from));
+            if eff.clear_selection {
+                // Read the LIVE route, like run_saved_transform: only clear the
+                // selection if it is still this transform.
+                let live = router::current_route();
+                if live.selection_on(Surface::Transforms) == Some(name.as_str()) {
+                    navigate.replace(live.cleared());
+                    // Redundant given the def effect clears it off the route change,
+                    // but harmless — and it must not run for a different selection.
+                    tf_def.set(None);
+                }
+                reload_list();
+            }
+        }
     }
 }
 
