@@ -14,14 +14,15 @@ mod surfaces;
 
 use loom_ui_components::{Badge, Button, GlobalStyles, Shell, StubView};
 use loom_ui_core::{
-    AuthError, BadgeTone, ButtonVariant, CatalogSortDir, CompletionSchema, DatasetDetail,
-    DatasetRow, DatasetRunRow, DatasetSort, FetchGeneration, FieldError, PreviewData, RunRow,
-    Surface, TableRef, TransformDefView, TransformForm, TransformIo, TransformKind,
-    TransformSummary, TypeDetail, bump_epoch, delete_action_effect, distinct_projects,
-    form_to_body, form_to_def, run_action_effect, schema_from_dataset_details, schema_from_types,
+    AuthError, BadgeTone, ButtonVariant, CatalogQuery, CatalogSortDir, CompletionSchema,
+    DatasetDetail, DatasetRow, DatasetRunRow, DatasetSort, FetchGeneration, FieldError,
+    PreviewData, Route, RunRow, Surface, TableRef, TransformDefView, TransformForm, TransformIo,
+    TransformKind, TransformSummary, TypeDetail, bump_epoch, dataset_index, dataset_route_id,
+    delete_action_effect, distinct_projects, form_to_body, form_to_def, project_chip_options,
+    run_action_effect, schema_from_dataset_details, schema_from_types, split_dataset_id,
 };
 use net::FetchError;
-use router::use_route;
+use router::{Navigator, use_route};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -96,37 +97,49 @@ fn spawn_catalog_load(
     });
 }
 
-/// The three Catalog controls-bar callbacks. Each sets its control's state and clears
-/// the drawer selection — reordering/filtering shifts row indices, so a stale index
-/// could point at the wrong dataset once the next fetch lands.
+/// The three Catalog controls-bar callbacks. Each navigates to the same route with
+/// one control replaced; `Route::with_catalog` clears the selection, because
+/// re-sorting or filtering changes which rows the list holds. These **replace** the
+/// history entry rather than pushing: adjusting a filter is a view tweak, and
+/// pushing would make every chip click cost a Back press to escape.
 fn catalog_control_callbacks(
-    catalog_sort: UseStateHandle<DatasetSort>,
-    catalog_dir: UseStateHandle<CatalogSortDir>,
-    catalog_project: UseStateHandle<Option<String>>,
-    selected_dataset: UseStateHandle<Option<usize>>,
+    route: &Route,
+    navigate: &Navigator,
 ) -> (
     Callback<DatasetSort>,
     Callback<CatalogSortDir>,
     Callback<Option<String>>,
 ) {
     let on_sort = {
-        let selected_dataset = selected_dataset.clone();
-        Callback::from(move |s: DatasetSort| {
-            catalog_sort.set(s);
-            selected_dataset.set(None);
+        let (route, navigate) = (route.clone(), navigate.clone());
+        Callback::from(move |sort: DatasetSort| {
+            let next = CatalogQuery {
+                sort,
+                ..route.catalog.clone()
+            };
+            navigate.replace(route.with_catalog(next));
         })
     };
     let on_dir = {
-        let selected_dataset = selected_dataset.clone();
-        Callback::from(move |d: CatalogSortDir| {
-            catalog_dir.set(d);
-            selected_dataset.set(None);
+        let (route, navigate) = (route.clone(), navigate.clone());
+        Callback::from(move |dir: CatalogSortDir| {
+            let next = CatalogQuery {
+                dir,
+                ..route.catalog.clone()
+            };
+            navigate.replace(route.with_catalog(next));
         })
     };
-    let on_project = Callback::from(move |p: Option<String>| {
-        catalog_project.set(p);
-        selected_dataset.set(None);
-    });
+    let on_project = {
+        let (route, navigate) = (route.clone(), navigate.clone());
+        Callback::from(move |project: Option<String>| {
+            let next = CatalogQuery {
+                project,
+                ..route.catalog.clone()
+            };
+            navigate.replace(route.with_catalog(next));
+        })
+    };
     (on_sort, on_dir, on_project)
 }
 
@@ -143,9 +156,8 @@ struct WorkspaceProps {
 /// `(runs, loading, error)` for the drawer. The pure parse lives in `loom_ui_core`.
 #[hook]
 fn use_dataset_run_history(
-    selected: Option<usize>,
+    selected: Option<String>,
     tab: AttrValue,
-    datasets: UseStateHandle<Vec<DatasetRow>>,
     token: String,
     on_logout: Callback<()>,
     fetch_gen: Rc<RefCell<FetchGeneration>>,
@@ -159,7 +171,7 @@ fn use_dataset_run_history(
         let history_runs = history_runs.clone();
         let history_loading = history_loading.clone();
         let history_error = history_error.clone();
-        use_effect_with(selected, move |_| {
+        use_effect_with(selected.clone(), move |_| {
             history_runs.set(None);
             history_loading.set(false);
             history_error.set(None);
@@ -172,37 +184,43 @@ fn use_dataset_run_history(
         let history_loading = history_loading.clone();
         let history_error = history_error.clone();
         let already_loaded = history_runs.is_some();
-        use_effect_with((selected, tab), move |(sel, tab)| {
-            if tab.as_str() != "history" || already_loaded {
-                return;
-            }
-            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
-                return;
-            };
-            history_loading.set(true);
-            let my_gen = fetch_gen.borrow().current();
-            wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_dataset_runs(&net::api_base(), &token, &ds.schema, &ds.name).await
-                {
-                    Ok(runs) => {
-                        if fetch_gen.borrow().is_current(my_gen) {
-                            history_runs.set(Some(runs));
-                            history_loading.set(false);
-                        }
-                    }
-                    Err(FetchError::Unauthorized) => {
-                        history_loading.set(false);
-                        on_logout.emit(());
-                    }
-                    Err(e) => {
-                        if fetch_gen.borrow().is_current(my_gen) {
-                            history_error.set(Some(e.to_string()));
-                            history_loading.set(false);
-                        }
-                    }
+        // `already_loaded` rides in the deps: the reset effect above clears the runs in
+        // the same commit, so without it a Back/Forward that changes the selection while
+        // History is active would bail on a stale `true` and never refetch.
+        use_effect_with(
+            (selected, tab, already_loaded),
+            move |(sel, tab, _loaded)| {
+                if tab.as_str() != "history" || already_loaded {
+                    return;
                 }
-            });
-        });
+                let Some((schema, name)) = sel.as_deref().and_then(split_dataset_id) else {
+                    return;
+                };
+                let (schema, name) = (schema.to_owned(), name.to_owned());
+                history_loading.set(true);
+                let my_gen = fetch_gen.borrow().current();
+                wasm_bindgen_futures::spawn_local(async move {
+                    match net::fetch_dataset_runs(&net::api_base(), &token, &schema, &name).await {
+                        Ok(runs) => {
+                            if fetch_gen.borrow().is_current(my_gen) {
+                                history_runs.set(Some(runs));
+                                history_loading.set(false);
+                            }
+                        }
+                        Err(FetchError::Unauthorized) => {
+                            history_loading.set(false);
+                            on_logout.emit(());
+                        }
+                        Err(e) => {
+                            if fetch_gen.borrow().is_current(my_gen) {
+                                history_error.set(Some(e.to_string()));
+                                history_loading.set(false);
+                            }
+                        }
+                    }
+                });
+            },
+        );
     }
 
     (
@@ -227,6 +245,18 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // the drawer tab; `Workspace` derives them rather than owning them.
     let (route, navigate) = use_route();
 
+    // Catalog location, read out of the URL. `selection_on`/`tab_on` scope the route
+    // to this surface, so an Ontology type name can never be read as a dataset id by
+    // the Catalog effects (which stay mounted on every surface).
+    let catalog_sel: Option<String> = route.selection_on(Surface::Catalog).map(str::to_owned);
+    let catalog_tab: AttrValue = AttrValue::from(
+        route
+            .tab_on(Surface::Catalog)
+            .unwrap_or("schema")
+            .to_owned(),
+    );
+    let catalog_query = route.catalog.clone();
+
     // Ontology surface state: the list of type names, each type's loaded `TypeDetail`
     // (schema) keyed by name, the selected type index, and the drawer's active tab.
     let types = use_state(Vec::<String>::new);
@@ -239,20 +269,15 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // lazily-loaded preview, and active drawer tab.
     let datasets = use_state(Vec::<DatasetRow>::new);
     let catalog_status = use_state(|| LoadStatus::Idle);
-    let selected_dataset = use_state(|| Option::<usize>::None);
     let detail = use_state(|| Option::<DatasetDetail>::None);
     let preview = use_state(|| Option::<PreviewData>::None);
     let preview_loading = use_state(|| false);
     let detail_error = use_state(|| Option::<String>::None);
     let preview_error = use_state(|| Option::<String>::None);
-    let catalog_tab = use_state(|| AttrValue::from("schema"));
-    // Server-side sort/filter controls: the active sort key + direction, the active
-    // project filter (None = "All"), the distinct project chip options (refreshed on
-    // unfiltered loads only, so the chip set stays stable while filtered), and a
-    // generation guard against out-of-order responses when controls change quickly.
-    let catalog_sort = use_state(|| DatasetSort::Name);
-    let catalog_dir = use_state(|| CatalogSortDir::Asc);
-    let catalog_project = use_state(|| Option::<String>::None);
+    // The sort/filter controls themselves live on the route (`catalog_query`, above).
+    // What stays local: the distinct project chip options (refreshed on unfiltered
+    // loads only, so the chip set stays stable while filtered), and a generation
+    // guard against out-of-order responses when the controls change quickly.
     let catalog_all_projects = use_state(Vec::<String>::new);
     let catalog_gen = use_mut_ref(FetchGeneration::default);
     // Lazily-loaded lineage closures (upstream, downstream) for the selected dataset,
@@ -321,9 +346,9 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let catalog_gen = catalog_gen.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
-        let sort = *catalog_sort;
-        let dir = *catalog_dir;
-        let project = (*catalog_project).clone();
+        let sort = catalog_query.sort;
+        let dir = catalog_query.dir;
+        let project = catalog_query.project.clone();
         use_effect_with((sort, dir, project.clone()), move |(sort, dir, project)| {
             catalog_status.set(LoadStatus::Loading);
             let query = loom_ui_core::dataset_list_query(*sort, *dir, project.as_deref());
@@ -341,26 +366,27 @@ fn workspace(props: &WorkspaceProps) -> Html {
         });
     }
 
-    // On dataset row-select: reset the drawer to the Schema tab, clear the previous
-    // detail/preview, and load the selected dataset's schema detail.
+    // On dataset row-select: clear the previous detail/preview and load the selected
+    // dataset's schema detail. Resetting the drawer tab is `Route::with_selection`'s
+    // job, not this effect's. The `(schema, name)` come out of the route id rather
+    // than an index into `datasets`, so a deep link loads before the list arrives.
     {
         let detail = detail.clone();
         let preview = preview.clone();
         let preview_loading = preview_loading.clone();
         let detail_error = detail_error.clone();
         let preview_error = preview_error.clone();
-        let catalog_tab = catalog_tab.clone();
         let lineage = lineage.clone();
         let show_full_lineage = show_full_lineage.clone();
-        let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let fetch_gen = fetch_gen.clone();
-        let selected_dep = *selected_dataset;
+        let selected_dep = catalog_sel.clone();
         use_effect_with(selected_dep, move |sel| {
-            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+            let Some((schema, name)) = sel.as_deref().and_then(split_dataset_id) else {
                 return;
             };
+            let (schema, name) = (schema.to_owned(), name.to_owned());
             detail.set(None);
             preview.set(None);
             preview_loading.set(false);
@@ -368,13 +394,10 @@ fn workspace(props: &WorkspaceProps) -> Html {
             preview_error.set(None);
             lineage.set(None);
             show_full_lineage.set(false);
-            catalog_tab.set(AttrValue::from("schema"));
             // Any in-flight fetch from the previous selection is now stale.
             let my_gen = fetch_gen.borrow_mut().bump();
             wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_dataset_detail(&net::api_base(), &token, &ds.schema, &ds.name)
-                    .await
-                {
+                match net::fetch_dataset_detail(&net::api_base(), &token, &schema, &name).await {
                     Ok(d) => {
                         if fetch_gen.borrow().is_current(my_gen) {
                             detail.set(Some(d));
@@ -399,23 +422,26 @@ fn workspace(props: &WorkspaceProps) -> Html {
         let preview = preview.clone();
         let preview_loading = preview_loading.clone();
         let preview_error = preview_error.clone();
-        let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let fetch_gen = fetch_gen.clone();
         let already_loaded = preview.is_some();
-        let dep = (*selected_dataset, (*catalog_tab).clone());
-        use_effect_with(dep, move |(sel, tab)| {
+        // `already_loaded` rides in the deps: the row-select effect clears `preview`
+        // in the same commit, so without it a Back/Forward that changes the selection
+        // while Preview is active would bail on a stale `true` and never refetch.
+        let dep = (catalog_sel.clone(), catalog_tab.clone(), already_loaded);
+        use_effect_with(dep, move |(sel, tab, _loaded)| {
             if tab.as_str() != "preview" || already_loaded {
                 return;
             }
-            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+            let Some((schema, name)) = sel.as_deref().and_then(split_dataset_id) else {
                 return;
             };
+            let (schema, name) = (schema.to_owned(), name.to_owned());
             preview_loading.set(true);
             let my_gen = fetch_gen.borrow().current();
             wasm_bindgen_futures::spawn_local(async move {
-                match net::fetch_preview(&net::api_base(), &token, &ds.schema, &ds.name, 50).await {
+                match net::fetch_preview(&net::api_base(), &token, &schema, &name, 50).await {
                     Ok(p) => {
                         if fetch_gen.borrow().is_current(my_gen) {
                             preview.set(Some(p));
@@ -443,25 +469,25 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // switching datasets and re-opening Lineage refetches.
     {
         let lineage = lineage.clone();
-        let datasets = datasets.clone();
         let token = props.token.to_string();
         let on_logout = props.on_logout.clone();
         let fetch_gen = fetch_gen.clone();
         let already_loaded = lineage.is_some();
-        let dep = (*selected_dataset, (*catalog_tab).clone());
-        use_effect_with(dep, move |(sel, tab)| {
+        // `already_loaded` in the deps — same staleness fix as the preview effect above.
+        let dep = (catalog_sel.clone(), catalog_tab.clone(), already_loaded);
+        use_effect_with(dep, move |(sel, tab, _loaded)| {
             if tab.as_str() != "lineage" || already_loaded {
                 return;
             }
-            let Some(ds) = sel.and_then(|i| datasets.get(i).cloned()) else {
+            let Some((schema, name)) = sel.as_deref().and_then(split_dataset_id) else {
                 return;
             };
+            let (schema, name) = (schema.to_owned(), name.to_owned());
             let my_gen = fetch_gen.borrow().current();
             wasm_bindgen_futures::spawn_local(async move {
                 let base = net::api_base();
-                let up = net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "upstream").await;
-                let down =
-                    net::fetch_lineage(&base, &token, &ds.schema, &ds.name, "downstream").await;
+                let up = net::fetch_lineage(&base, &token, &schema, &name, "upstream").await;
+                let down = net::fetch_lineage(&base, &token, &schema, &name, "downstream").await;
                 // A 401 on either leg fails closed to logout; any other error degrades
                 // to an empty closure so the mini-DAG still renders the current node.
                 if up.as_ref().err() == Some(&FetchError::Unauthorized)
@@ -483,9 +509,8 @@ fn workspace(props: &WorkspaceProps) -> Html {
     // effect's generation bump — so its fetch captures the post-bump generation, like
     // the preview/lineage effects above.
     let (history_runs, history_loading, history_error) = use_dataset_run_history(
-        *selected_dataset,
-        (*catalog_tab).clone(),
-        datasets.clone(),
+        catalog_sel.clone(),
+        catalog_tab.clone(),
         props.token.to_string(),
         props.on_logout.clone(),
         fetch_gen.clone(),
@@ -717,34 +742,38 @@ fn workspace(props: &WorkspaceProps) -> Html {
 
     let (list, drawer) = match route.surface {
         Surface::Catalog => {
+            // The list highlight is derived: the route holds the stable "schema.name"
+            // id, the table wants the row's position in the currently loaded page.
+            let selected_idx = catalog_sel
+                .as_deref()
+                .and_then(|id| dataset_index(&datasets, id));
             let on_row = {
-                let selected_dataset = selected_dataset.clone();
-                Callback::from(move |i: usize| selected_dataset.set(Some(i)))
+                let (route, navigate, datasets) =
+                    (route.clone(), navigate.clone(), datasets.clone());
+                // Opening a row IS a navigation → push, so Back closes the drawer.
+                Callback::from(move |i: usize| {
+                    if let Some(row) = datasets.get(i) {
+                        navigate.push(route.with_selection(dataset_route_id(row)));
+                    }
+                })
             };
             let on_tab = {
-                let catalog_tab = catalog_tab.clone();
-                Callback::from(move |t: AttrValue| catalog_tab.set(t))
+                let (route, navigate) = (route.clone(), navigate.clone());
+                Callback::from(move |t: AttrValue| navigate.replace(route.with_tab(t.as_str())))
             };
             let on_toggle_full = {
                 let show_full_lineage = show_full_lineage.clone();
                 Callback::from(move |()| show_full_lineage.set(!*show_full_lineage))
             };
-            // Control-change callbacks also reset `selected_dataset`: reordering or
-            // filtering the list shifts row indices, so a stale selection index could
-            // point at the wrong dataset (or none) after the next fetch lands.
-            let (on_sort, on_dir, on_project) = catalog_control_callbacks(
-                catalog_sort.clone(),
-                catalog_dir.clone(),
-                catalog_project.clone(),
-                selected_dataset.clone(),
-            );
+            let (on_sort, on_dir, on_project) = catalog_control_callbacks(&route, &navigate);
             let list = html! {
                 <>
                     <CatalogControls
-                        projects={(*catalog_all_projects).clone()}
-                        active_project={(*catalog_project).clone()}
-                        sort={*catalog_sort}
-                        dir={*catalog_dir}
+                        projects={project_chip_options(
+                            &catalog_all_projects, catalog_query.project.as_deref())}
+                        active_project={catalog_query.project.clone()}
+                        sort={catalog_query.sort}
+                        dir={catalog_query.dir}
                         on_project={on_project}
                         on_sort={on_sort}
                         on_dir={on_dir}
@@ -752,28 +781,30 @@ fn workspace(props: &WorkspaceProps) -> Html {
                     <CatalogList
                         datasets={(*datasets).clone()}
                         status={(*catalog_status).clone()}
-                        selected={*selected_dataset}
+                        selected={selected_idx}
                         on_row={on_row}
                     />
                 </>
             };
             // Drawer contract: only a real drawer when a row is selected; otherwise
-            // Html::default() so the Shell hides the drawer region.
-            let drawer = (*selected_dataset)
-                .and_then(|i| datasets.get(i).cloned())
-                .map(|ds| {
-                    let lineage_view = (*lineage).as_ref().map(|(up, down)| {
-                        loom_ui_core::lineage_dag((&ds.schema, &ds.name), up, down)
-                    });
+            // Html::default() so the Shell hides the drawer region. Resolved straight
+            // out of the route id, so a deep link renders before the list arrives.
+            let drawer = catalog_sel
+                .as_deref()
+                .and_then(split_dataset_id)
+                .map(|(schema, name)| {
+                    let lineage_view = (*lineage)
+                        .as_ref()
+                        .map(|(up, down)| loom_ui_core::lineage_dag((schema, name), up, down));
                     html! {
                         <CatalogDrawer
-                            name={AttrValue::from(ds.name)}
+                            name={AttrValue::from(name.to_owned())}
                             detail={(*detail).clone()}
                             preview={(*preview).clone()}
                             preview_loading={*preview_loading}
                             detail_error={(*detail_error).clone()}
                             preview_error={(*preview_error).clone()}
-                            active_tab={(*catalog_tab).clone()}
+                            active_tab={catalog_tab.clone()}
                             on_tab={on_tab}
                             lineage={lineage_view}
                             show_full={*show_full_lineage}

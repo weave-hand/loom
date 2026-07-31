@@ -53,10 +53,6 @@ impl Navigator {
     /// Navigate, replacing the current history entry — for view adjustments (drawer
     /// tab, list sort/filter, closing the drawer after an action) that should not
     /// each cost a Back press to escape.
-    #[expect(
-        dead_code,
-        reason = "the view-adjustment navigations (drawer tab, list sort/filter) that use it land with the per-surface wiring in this routing slice"
-    )]
     pub fn replace(&self, next: Route) {
         self.replace.emit(next);
     }
