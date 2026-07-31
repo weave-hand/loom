@@ -844,16 +844,101 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
         .collect()
 }
 
+/// Phase 1 of the Parquet land: establish this write's stream-vs-batch mode as
+/// **committed** state, and return it. `Some(bucket_count)` = stream, `None` = batch.
+///
+/// This replaces the read-only pre-transaction probe that used to decide the route.
+/// The probe was not merely stale — its answer was then baked into the Iceberg
+/// **physical schema** by whichever path it selected (`ensure_iceberg_table` with
+/// `include_framing` true on the stream path, false on the batch path), and that
+/// object-store create is not transactional and is never rolled back. Two racers
+/// creating the same brand-new table could therefore disagree about framing, leaving
+/// a framing-schema'd Iceberg table under a mirror row that says batch. Committing
+/// the decision first makes both racers read the same answer, so their `create_table`
+/// calls agree and the concurrent create is idempotent rather than divergent.
+///
+/// Two arms:
+///
+/// **Fast path — the mode is already permanent.** A live `iceberg_mirror.table` row
+/// means the mode can no longer change: [`crate::stream::reconcile_stream_mode`]
+/// refuses to convert an existing batch table to a stream table, and a declared
+/// stream table is never undeclared. So a committed registry answer needs no claim
+/// transaction, and the steady-state append path keeps costing exactly what it did
+/// before — no extra transaction, no burned snapshot id. The one case that still
+/// falls through is a declaration against a live-but-undeclared table: that is the
+/// batch->stream conversion attempt, and it must reach `reconcile_stream_mode` to be
+/// refused.
+///
+/// **Claim path — commit the decision.** `next_snapshot` -> `ensure_table_witnessed`
+/// -> `reconcile_stream_mode` -> COMMIT. `ensure_table_witnessed`'s unique-index race
+/// is what serializes two first-landers: the loser resolves to the winner's
+/// `table_id` with `created == false`, so its `pre_existing` witness is honest and
+/// the conversion guard fires. This deliberately takes **no** explicit advisory lock:
+/// `reconcile_stream_mode` already takes `lock_key(table)` inside its first-declare
+/// arm, AFTER the mirror-row ensure, so this transaction reproduces
+/// `iceberg_inline::inline_append`'s insert-then-lock ordering exactly and keeps the
+/// first-declare-vs-`define_transform` serialization intact. Taking the lock HERE
+/// (before the ensure) would make this lock-then-insert against `inline_append`'s
+/// insert-then-lock, which deadlocks (40P01) under precisely the concurrency this
+/// function exists to fix.
+///
+/// ACCEPTED RESIDUE, stated plainly because it is wider than the stream case: the
+/// claim commits even if the write that follows fails, and it does so on EVERY first
+/// Parquet land, batch included. A failed first land therefore now leaves a live but
+/// column-less `iceberg_mirror.table` row — visible to
+/// [`crate::iceberg_catalog::IcebergCatalog::live_tables`] and so to dataset
+/// listings — where it previously left nothing. The row's `begin_snapshot` also now
+/// precedes its own columns and files, so a read as of the claim snapshot sees the
+/// table live and empty. This is strictly better than the divergence it replaces
+/// (`ensure_table` already leaves mirror rows behind on a failed write today), and a
+/// consumed snapshot id is not a scarce resource — but it is a real, observable
+/// change, not a no-op.
+async fn claim_stream_mode(
+    pool: &PgPool,
+    table: &TableRef,
+    decl: &StreamDecl,
+) -> Result<Option<i32>> {
+    {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
+            let recorded = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
+            // Permanent, so answerable without a claim — unless this is a declaration
+            // against an undeclared table, which is the conversion attempt the claim
+            // path exists to refuse.
+            if recorded.is_some() || matches!(decl, StreamDecl::None) {
+                return Ok(recorded);
+            }
+        }
+    }
+
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let at = next_snapshot(&mut tx, None).await?;
+    let (tid, created) = ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
+    // A rejected conversion (`Validation`) or bucket mismatch (`Conflict`) is
+    // terminal — roll back and surface it, before any Iceberg table is created.
+    let effective =
+        match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, !created, table, at).await {
+            Ok(e) => e,
+            Err(e) => {
+                drop(tx.rollback().await);
+                return Err(e);
+            }
+        };
+    tx.commit().await.map_err(backend)?;
+    Ok(effective)
+}
+
 /// The Parquet branch: ensure the namespace + table exist, then append real
 /// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
 /// back. Idempotent on namespace/table (create-if-absent).
 ///
-/// Routes by stream mode. A BATCH write (`decl` is `StreamDecl::None` on a table
-/// that is not already a declared stream table) takes the unchanged
-/// [`append_parquet_snapshot`] path (`include_framing = false`, byte-identical). A
-/// STREAM write (the table is already a declared stream table, or this request
-/// declares one — log or cdc) takes [`land_parquet_stream`], which stamps gapless
-/// per-bucket offsets into the written Parquet atomically with the snapshot commit.
+/// Routes by stream mode, which [`claim_stream_mode`] establishes as **committed**
+/// state before anything physical happens — so the Iceberg table's physical schema
+/// (created with framing on the stream path, without it on the batch path) can never
+/// encode a decision a concurrent racer disagrees with. A BATCH write takes the
+/// unchanged [`append_parquet_snapshot`] path (`include_framing = false`); a STREAM
+/// write takes [`land_parquet_stream`], which stamps gapless per-bucket offsets into
+/// the written Parquet atomically with the snapshot commit.
 #[expect(
     clippy::too_many_arguments,
     reason = "the landing params (pool, catalog, table, columns, batches, lineage, stream decl) \
@@ -869,26 +954,13 @@ async fn land_parquet(
     decl: &StreamDecl,
     jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
-    // Read-only probe (no snapshot): is this table ALREADY a declared stream table?
-    // That decides which write path we take. Deliberately does NOT witness
-    // `pre_existing` for the conversion guard — this probe runs on a separate pooled
-    // connection before the transaction, so it cannot see a concurrent creator, and
-    // `ensure_table` inside the tx resolves a lost create race to the winner's row.
-    // The honest witness comes from `ensure_table_witnessed` there.
-    let existing_stream = {
-        let mut conn = pool.acquire().await.map_err(backend)?;
-        match live_table_id(&mut conn, &table.schema, &table.name).await? {
-            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?,
-            None => None,
-        }
-    };
+    // Phase 1: commit the mode claim before any physical work.
+    let effective = claim_stream_mode(pool, table, decl).await?;
 
-    // A STREAM write iff the table is already a declared stream table OR this
-    // request declares stream mode (log or cdc). (A stream-declaring request
-    // against an existing BATCH table takes the stream branch too — only to be
-    // rejected with `Validation` by `reconcile_stream_mode` there, exactly as
-    // `inline_append` does.)
-    if existing_stream.is_some() || !matches!(decl, StreamDecl::None) {
+    // Phases 2 and 3 both derive from that committed answer: each branch's first act
+    // is `ensure_iceberg_table` with the matching `include_framing`, so the Iceberg
+    // schema now encodes a decision that is already durable.
+    if effective.is_some() {
         return land_parquet_stream(pool, catalog, table, columns, batches, lineage, decl, jobs)
             .await;
     }
@@ -971,7 +1043,11 @@ async fn land_parquet_stream(
         // ONE snapshot for the whole write: allocated up front (offset allocation keys off
         // the mirror row it seeds), then REUSEd by the commit (`CommitExtras.reuse_snapshot`).
         let at = next_snapshot(&mut tx, None).await?;
-        // `pre_existing` = `!created`: only the ensure INSIDE this tx can witness it.
+        // `pre_existing` = `!created`. After `claim_stream_mode` this is normally
+        // `true` (the claim committed the row), so a declaration lands on
+        // `reconcile_stream_mode`'s idempotent redeclare arm rather than a
+        // first-declare. The witness is kept honest here regardless, so this tx does
+        // not depend on the claim having run.
         let (tid, created) =
             ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
 
