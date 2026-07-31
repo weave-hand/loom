@@ -111,6 +111,35 @@ async fn a_real_deadline_error_classifies_as_a_deadline_breach() {
     );
 }
 
+/// The no-spill property, pinned directly.
+///
+/// This is the ONLY regression test for it. Deleting the
+/// `.with_disk_manager_builder(...Disabled)` line in `build_session` would otherwise
+/// be a silent, green-CI change that converts the memory DoS into a disk DoS:
+/// `RuntimeEnvBuilder` defaults the disk manager to the OS temp directory, and
+/// `SortExec` then spills there and SUCCEEDS instead of failing. A fixture query
+/// cannot pin this — with any pool small enough to be interesting, `SortExec` fails
+/// its 10 MiB `sort_spill_reservation_bytes` pre-reservation before it ever reaches a
+/// spill decision, so it errors identically either way. Asserting on the session's
+/// disk manager is what actually distinguishes the two configurations.
+#[test]
+fn the_bounded_session_can_never_spill_to_disk() {
+    let ctx = engine_serving::governed::build_session(Some(64 * 1024)).expect("bounded session");
+    assert!(
+        !ctx.runtime_env().disk_manager.tmp_files_enabled(),
+        "a bounded governed session must fail hard, never spill — otherwise the memory \
+         DoS is merely traded for an unbounded-disk DoS in the OS temp dir"
+    );
+}
+
+/// The documented `0` escape hatch is deliberately the plain default session, so an
+/// operator who disables the bound gets stock DataFusion behaviour and not a
+/// half-configured runtime.
+#[test]
+fn the_unbounded_escape_hatch_builds_a_default_session() {
+    assert!(engine_serving::governed::build_session(None).is_ok());
+}
+
 #[test]
 fn classifier_lifts_resources_exhausted_and_nothing_else() {
     let re = DataFusionError::ResourcesExhausted("budget".into());

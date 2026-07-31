@@ -307,7 +307,11 @@ pub async fn execute_governed_sql_stream(
     serving_store: Option<&ServingStore>,
     limits: &GovernedSqlLimits,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
-    let deadline = limits.deadline.map(|d| Instant::now() + d);
+    // `checked_add`, not `+`: `LOOM_SQL_TIMEOUT_SECS` parses as a `u64`, so an absurd
+    // value would overflow the `Instant` and panic inside the Flight handler on EVERY
+    // governed query. An unrepresentable deadline degrades to "no deadline" — the same
+    // behaviour as the documented `0` escape hatch — rather than taking the engine down.
+    let deadline = limits.deadline.and_then(|d| Instant::now().checked_add(d));
     let planned = plan_governed_sql(catalog, sql, governed, serving_store, limits.memory_bytes);
     let stream = match deadline {
         None => planned.await?,
@@ -451,7 +455,7 @@ async fn register_governed_views(
 ///    at the default, `SortExec` spills instead of failing and an oversized query
 ///    succeeds while writing unbounded files into `/tmp`: a disk DoS traded for the
 ///    memory DoS. Disabled, an attempted spill errors and the budget actually binds.
-fn build_session(memory_bytes: Option<usize>) -> Result<SessionContext, EngineServingError> {
+pub fn build_session(memory_bytes: Option<usize>) -> Result<SessionContext, EngineServingError> {
     let Some(bytes) = memory_bytes else {
         return Ok(SessionContext::new());
     };

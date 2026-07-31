@@ -157,7 +157,12 @@ fn cap_and_classify(
         Err(GovernedSqlError::ResourceExhausted(m)) => {
             Err(FlightError::Tonic(Box::new(Status::resource_exhausted(m))))
         }
-        Err(e) => {
+        // Exhaustive over `GovernedSqlError`, NOT a catch-all: with a bare `Err(e)`
+        // arm, deleting the `ResourceExhausted` arm above would still compile and
+        // would silently collapse every budget breach on this wire into an opaque
+        // `internal` — exactly the regression that is invisible except as a 500. A new
+        // variant must fail compilation here and force a deliberate choice.
+        Err(e @ (GovernedSqlError::Plan(_) | GovernedSqlError::Backend(_))) => {
             tracing::error!(error = %e, "sql wire engine stream fault");
             Err(FlightError::from_external_error(Box::new(
                 std::io::Error::other("sql wire stream error"),

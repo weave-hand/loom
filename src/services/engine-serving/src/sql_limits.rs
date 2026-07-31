@@ -74,8 +74,12 @@ pub fn governed_stream_error(e: &DataFusionError) -> EngineServingError {
         DataFusionError::ResourcesExhausted(m) if m.starts_with(DEADLINE_MSG) => {
             EngineServingError::ResourceExhausted(m.clone())
         }
+        // "a memory budget", not "its memory budget": with `LOOM_SQL_MEMORY_LIMIT_BYTES=0`
+        // the session uses the default unbounded pool, yet a `ResourcesExhausted` can
+        // still arrive from another DataFusion budget — naming the disabled knob as the
+        // cause would be a confident lie on the documented escape hatch.
         DataFusionError::ResourcesExhausted(m) => EngineServingError::ResourceExhausted(format!(
-            "statement exceeded its memory budget (LOOM_SQL_MEMORY_LIMIT_BYTES): {m}"
+            "statement exceeded a memory budget (see LOOM_SQL_MEMORY_LIMIT_BYTES): {m}"
         )),
         other => EngineServingError::Engine(other.to_string()),
     }

@@ -94,13 +94,18 @@ async fn memory_bound_trips_with_the_resource_exhausted_class() {
     );
 }
 
-/// The bound must FAIL, never spill. `RuntimeEnvBuilder` defaults its disk manager to
-/// the OS temp dir, and `SortExec` spills there instead of erroring — so without an
-/// explicit `DiskManagerMode::Disabled` this query would SUCCEED while writing
-/// unbounded files to `/tmp`. A pool big enough to plan but far too small to hold the
-/// sort is exactly the case that would silently spill.
+/// A realistically-sized pool (not the degenerate 1 byte above) still trips with the
+/// RESOURCE-EXHAUSTED class over a larger table — the bound is not an artefact of a
+/// pathological limit.
+///
+/// This deliberately does NOT pin the no-spill property, despite the temptation: with
+/// any pool small enough to be interesting, `SortExec` fails its 10 MiB
+/// `sort_spill_reservation_bytes` pre-reservation before it ever reaches a spill
+/// decision, so it errors identically whether or not the disk manager is disabled
+/// (verified by deleting the setting and watching this file stay green). No-spill is
+/// pinned directly in `tests/deadline_stream.rs::the_bounded_session_can_never_spill_to_disk`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_oversized_sort_fails_rather_than_spilling_to_disk() {
+async fn a_realistic_pool_still_trips_on_a_larger_table() {
     let (_writer, catalog, cat) = setup(5_000).await;
     let limits = GovernedSqlLimits {
         memory_bytes: Some(64 * 1024),
