@@ -45,6 +45,23 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::HtmlElement;
 use yew::prelude::*;
 
+/// A request for server-side validation of the editor's current text. The editor emits
+/// this on the debounce; the caller performs the (async) fetch and answers through
+/// `respond`. Structured this way because Yew callbacks are synchronous — the editor
+/// owns *when* to ask and *what to do with the answer*, the caller owns the transport.
+pub struct ValidateRequest {
+    pub sql: String,
+    pub respond: Callback<ValidateResponse>,
+}
+
+/// The answer to a [`ValidateRequest`]. `sql` echoes the text that was validated so the
+/// editor can drop a response whose text the user has already edited past — without it,
+/// markers flicker onto text they do not describe.
+pub struct ValidateResponse {
+    pub sql: String,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[derive(Properties, PartialEq)]
 pub struct SqlEditorProps {
     /// Current SQL text (controlled).
@@ -59,14 +76,33 @@ pub struct SqlEditorProps {
     /// CSS height, e.g. "320px". Defaults to 320px.
     #[prop_or_default]
     pub height: Option<AttrValue>,
+    /// Optional server-side validation source. When `None` the editor behaves exactly as
+    /// before — only the client-side `sql_diagnostics` engine publishes markers — so the
+    /// Transforms drawer editors are unaffected and only the SQL console opts in.
+    #[prop_or_default]
+    pub validate: Option<Callback<ValidateRequest>>,
 }
 
-/// Recompute client-side SQL diagnostics for the model's current text and publish
-/// them as Monaco markers under the `loom` owner (replacing any prior `loom`
-/// markers on the model). Called on mount and on every content change; an empty
-/// result clears the squiggles. The pure engine lives in `loom_ui_core`.
-fn refresh_diagnostics(model: &TextModel, schema: &CompletionSchema) {
-    let diags: Vec<Diagnostic> = sql_diagnostics(schema, &model.get_value());
+/// Marker owner for the client-side `sql_diagnostics` engine.
+const CLIENT_OWNER: &str = "loom";
+/// Marker owner for server-side (`POST /sql/validate`) diagnostics. Distinct from
+/// [`CLIENT_OWNER`] so `set_model_markers` replaces only this source's set: the two
+/// engines publish independently and neither clears the other's squiggles.
+const SERVER_OWNER: &str = "loom-server";
+
+/// How long the editor waits after the last keystroke before asking the server. Long
+/// enough that ordinary typing does not generate a request per character, short enough
+/// that a pause feels answered.
+const VALIDATE_DEBOUNCE_MS: i32 = 500;
+
+/// The in-flight debounce: the pending `setTimeout` id plus the closure it will run.
+/// The closure MUST be held for as long as the timeout is armed (dropping it
+/// invalidates the JS callback), and the id is what cancels it.
+type PendingValidation = std::rc::Rc<std::cell::RefCell<Option<(i32, Closure<dyn FnMut()>)>>>;
+
+/// Build the Monaco marker array for `diags`. Shared by both publishers so the
+/// severity/position mapping exists once.
+fn marker_array(diags: &[Diagnostic]) -> js_sys::Array {
     let markers = js_sys::Array::new();
     for d in diags {
         let m: IMarkerData = js_sys::Object::new().unchecked_into();
@@ -81,7 +117,75 @@ fn refresh_diagnostics(model: &TextModel, schema: &CompletionSchema) {
         m.set_end_column(f64::from(d.end_col));
         markers.push(&m);
     }
-    set_model_markers(model.as_ref(), "loom", &markers);
+    markers
+}
+
+/// Recompute client-side SQL diagnostics for the model's current text and publish
+/// them as Monaco markers under the `loom` owner (replacing any prior `loom`
+/// markers on the model). Called on mount and on every content change; an empty
+/// result clears the squiggles. The pure engine lives in `loom_ui_core`.
+fn refresh_diagnostics(model: &TextModel, schema: &CompletionSchema) {
+    let diags: Vec<Diagnostic> = sql_diagnostics(schema, &model.get_value());
+    set_model_markers(model.as_ref(), CLIENT_OWNER, &marker_array(&diags));
+}
+
+/// Publish server-side diagnostics under [`SERVER_OWNER`], replacing that source's prior
+/// set (an empty slice therefore clears them). Never touches the client engine's markers.
+fn publish_server_diagnostics(model: &TextModel, diags: &[Diagnostic]) {
+    set_model_markers(model.as_ref(), SERVER_OWNER, &marker_array(diags));
+}
+
+/// Cancel any armed validation debounce, dropping its closure. Idempotent: safe to call
+/// when nothing is pending, and safe to call on unmount — which is the point, since a
+/// timeout that survived unmount would fire against a disposed model.
+fn cancel_pending_validation(pending: &PendingValidation) {
+    if let Some((handle, _closure)) = pending.borrow_mut().take()
+        && let Some(window) = web_sys::window()
+    {
+        window.clear_timeout_with_handle(handle);
+    }
+}
+
+/// Ask `validate` for server diagnostics on `model`'s current text, `VALIDATE_DEBOUNCE_MS`
+/// after the last call. Any previously scheduled request is cancelled, so a burst of
+/// keystrokes produces exactly one request. The response is dropped unless its `sql` still
+/// matches the model — otherwise markers land on text the user has already edited past.
+fn schedule_validation(
+    model: &TextModel,
+    validate: &Callback<ValidateRequest>,
+    pending: &PendingValidation,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    // Debounce cancellation: whatever was armed by the previous keystroke is disarmed
+    // (and its closure dropped) before a new timeout replaces it.
+    cancel_pending_validation(pending);
+    let model_for_request = model.clone();
+    let model_for_response = model.clone();
+    let validate = validate.clone();
+    let fire = Closure::wrap(Box::new(move || {
+        let sql = model_for_request.get_value();
+        let model_for_response = model_for_response.clone();
+        let respond = Callback::from(move |resp: ValidateResponse| {
+            // Stale-response drop: the answer describes the text that was sent, and the
+            // user may have typed since. Publishing it would squiggle text it does not
+            // describe, so a response whose `sql` no longer matches the live model is
+            // discarded outright.
+            if model_for_response.get_value() == resp.sql {
+                publish_server_diagnostics(&model_for_response, &resp.diagnostics);
+            }
+        });
+        validate.emit(ValidateRequest { sql, respond });
+    }) as Box<dyn FnMut()>);
+    if let Ok(handle) = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        fire.as_ref().unchecked_ref(),
+        VALIDATE_DEBOUNCE_MS,
+    ) {
+        // Holds the closure alive until the timeout fires or the next keystroke replaces
+        // it; a fired-but-unreplaced entry is harmless (clearing a spent handle is a no-op).
+        *pending.borrow_mut() = Some((handle, fire));
+    }
 }
 
 /// Reusable Monaco-backed SQL editor. Controlled: the caller owns the text via
@@ -111,10 +215,10 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
     });
 
     // Mount: create the editor, seed the model from the initial `value`, and
-    // subscribe to content changes. Schema/read_only are captured by value so
-    // this effect only reruns when `node` changes (i.e. once, on mount). Because
-    // of this, a caller that swaps `on_change` or flips `read_only` after mount
-    // won't see the change take effect — a known limitation for later tasks/callers.
+    // subscribe to content changes. Schema/read_only/validate are captured by value
+    // so this effect only reruns when `node` changes (i.e. once, on mount). Because
+    // of this, a caller that swaps `on_change`/`validate` or flips `read_only` after
+    // mount won't see the change take effect — a known limitation for callers.
     {
         let editor = editor.clone();
         let subscription = subscription.clone();
@@ -124,6 +228,7 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
         let initial = props.value.to_string();
         let read_only = props.read_only;
         let schema = props.schema.clone();
+        let validate = props.validate.clone();
         use_effect_with(node.clone(), move |node| {
             let el: HtmlElement = node.cast().expect("sql-editor node is an HtmlElement");
 
@@ -161,18 +266,33 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
                 ed.as_ref().update_options_editor(&ro_opts);
             }
 
+            // The armed server-validation debounce, owned by this mount: shared with the
+            // content-change subscription and disarmed by the cleanup below.
+            let pending: PendingValidation = std::rc::Rc::new(std::cell::RefCell::new(None));
+
             // Emit on_change with the model's current text on every edit, and
             // refresh client-side diagnostics (squiggles) from the same text.
             let cb_model = model.clone();
             let diag_schema = schema.clone();
+            let cb_validate = validate.clone();
+            let cb_pending = pending.clone();
             let disposable = ed.on_did_change_model_content(move |_ev| {
                 on_change.emit(cb_model.get_value());
                 refresh_diagnostics(&cb_model, &diag_schema);
+                if let Some(v) = cb_validate.as_ref() {
+                    schedule_validation(&cb_model, v, &cb_pending);
+                }
             });
             *subscription.borrow_mut() = Some(disposable);
             // Seed diagnostics for the initial value (before `schema` moves into
             // the completion provider below).
             refresh_diagnostics(&model, &schema);
+            // Seed server diagnostics for the initial value too. Deliberately through
+            // the same debounce as a keystroke: a mount that is immediately typed into
+            // then produces ONE request, not a mount request plus a typing request.
+            if let Some(v) = validate.as_ref() {
+                schedule_validation(&model, v, &pending);
+            }
             *editor.borrow_mut() = Some(ed);
             *model_ref.borrow_mut() = Some(model);
 
@@ -263,6 +383,9 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
 
             move || {
                 subscription.borrow_mut().take(); // unsubscribe
+                // Disarm the debounce BEFORE the model is disposed: a timeout that
+                // survived unmount would read (and publish markers onto) a dead model.
+                cancel_pending_validation(&pending);
                 editor.borrow_mut().take(); // dispose editor widget
                 if let Some(model) = model_ref.borrow_mut().take() {
                     model.as_ref().dispose(); // dispose the model (editor.dispose() does not)

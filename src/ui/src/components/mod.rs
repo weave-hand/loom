@@ -31,7 +31,7 @@ pub use lineage::{LineageDagView, LineageDagViewProps};
 pub use lineage_canvas::{LineageCanvasView, LineageCanvasViewProps};
 pub use panel::Panel;
 pub use shell::{Shell, ShellProps};
-pub use sql_editor::SqlEditor;
+pub use sql_editor::{SqlEditor, ValidateRequest, ValidateResponse};
 pub use status::StatusDot;
 pub use stub::{StubView, StubViewProps};
 pub use table::{Column, DataTable, TableRow};
