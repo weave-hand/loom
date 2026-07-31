@@ -124,3 +124,46 @@ fn an_unanchorable_diagnostic_over_empty_sql_is_dropped() {
     });
     assert!(parse_server_diagnostics(&body, "").is_empty());
 }
+
+#[test]
+fn anchors_via_a_quoted_span_when_no_field_name_is_named() {
+    // Not every planning fault is a `No field named …`. When the message names its
+    // subject only in quotes, the quoted-span candidates are the ONLY thing that can
+    // resolve it — without this case the whole quoted-span path could be deleted and
+    // every other test would still pass.
+    let sql = "SELECT a FROM missing_tbl";
+    let got = anchor_diagnostic(
+        sql,
+        "Error during planning: table \"missing_tbl\" not found",
+    );
+    assert_eq!(got, Some((1, 15, 26)));
+}
+
+#[test]
+fn a_quoted_span_resolves_after_an_unmatched_field_name() {
+    // The field name is tried first and fails to match; resolution must then fall
+    // through to the quoted span rather than straight to the first-line fallback.
+    let sql = "SELECT total FROM orders";
+    let got = anchor_diagnostic(
+        sql,
+        "No field named absent_col. Valid fields are \"total\".",
+    );
+    assert_eq!(got, Some((1, 8, 13)), "resolved via the quoted `total`");
+}
+
+#[test]
+fn a_trailing_comma_on_the_field_name_still_resolves() {
+    // `nope,` can never match a token; stripping the punctuation is what keeps this
+    // from silently degrading to a whole-first-line squiggle.
+    let sql = "SELECT nope FROM orders";
+    let got = anchor_diagnostic(sql, "No field named nope, valid fields are id");
+    assert_eq!(got, Some((1, 8, 12)));
+}
+
+#[test]
+fn anchors_multibyte_identifiers_by_character_not_byte() {
+    // Columns are char offsets; a byte-based scan would report 10 here, not 8.
+    let sql = "SELECT 日本語 FROM t";
+    let got = anchor_diagnostic(sql, "No field named 日本語.");
+    assert_eq!(got, Some((1, 8, 11)));
+}

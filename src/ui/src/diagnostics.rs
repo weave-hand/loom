@@ -393,9 +393,9 @@ pub fn sql_diagnostics(schema: &CompletionSchema, text: &str) -> Vec<Diagnostic>
 /// the next candidate — never a wrong-but-confident anchor.
 fn last_segment(name: &str) -> String {
     name.rsplit('.')
-        .find(|s| !s.trim_matches(['"', '`']).is_empty())
+        .find(|s| !s.trim_matches('"').is_empty())
         .unwrap_or(name)
-        .trim_matches(['"', '`'])
+        .trim_matches('"')
         .to_owned()
 }
 
@@ -403,12 +403,25 @@ fn last_segment(name: &str) -> String {
 /// identifier, so it is tried first. It arrives via `Column::quoted_flat_name`, which
 /// quotes a segment only when it needs quoting: `nope` and `"wh"."orders"."email"` are
 /// both possible, and only the last segment is a name that appears in the user's SQL.
+///
+/// Trailing punctuation is stripped, not just the sentence's `.`: a message shaped
+/// `No field named nope, valid fields are …` would otherwise yield the candidate `nope,`,
+/// which can never match anything and silently degrades to first-line anchoring.
+///
+/// KNOWN LIMIT: the scan stops at whitespace, so a quoted name that *contains* a space
+/// (`No field named "my col".`) yields `my` — the one input where this can anchor
+/// confidently to the wrong token rather than merely failing to resolve. DataFusion only
+/// quotes names needing quotes, so it is reachable, just rare.
 fn field_name_candidate(message: &str) -> Option<String> {
     const NEEDLE: &str = "No field named ";
     let at = message.find(NEEDLE)?.checked_add(NEEDLE.len())?;
     let rest = message.get(at..)?;
     let raw: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
-    let seg = last_segment(raw.trim_end_matches('.'));
+    // Unicode-aware on purpose: `is_ident_cont` is ASCII-only (it lexes SQL, where
+    // identifiers are ASCII), and reusing it here would strip a non-ASCII column name
+    // like `日本語` as if it were trailing punctuation, leaving nothing to anchor.
+    let trimmed = raw.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '"');
+    let seg = last_segment(trimmed);
     if seg.is_empty() { None } else { Some(seg) }
 }
 
@@ -451,10 +464,10 @@ fn message_candidates(message: &str) -> Vec<String> {
     if let Some(f) = field_name_candidate(message) {
         push_unique(&mut out, f);
     }
-    for span in quoted_spans(message, '"')
-        .into_iter()
-        .chain(quoted_spans(message, '`'))
-    {
+    // Double quotes only. DataFusion quotes identifiers with `"` (`quote_identifier`) and
+    // never emits backticks, so a backtick arm would be untestable-against-the-real-server
+    // code kept for a case that cannot occur.
+    for span in quoted_spans(message, '"') {
         push_unique(&mut out, last_segment(&span));
     }
     out
