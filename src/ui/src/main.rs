@@ -8,6 +8,7 @@
 )]
 
 mod net;
+mod router;
 mod session;
 mod surfaces;
 
@@ -20,6 +21,7 @@ use loom_ui_core::{
     form_to_body, form_to_def, run_action_effect, schema_from_dataset_details, schema_from_types,
 };
 use net::FetchError;
+use router::use_route;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -221,7 +223,9 @@ fn logout_button(on_logout: Callback<()>) -> Html {
 
 #[function_component(Workspace)]
 fn workspace(props: &WorkspaceProps) -> Html {
-    let surface = use_state(|| Surface::Catalog);
+    // The URL is the source of truth for the active surface, the selected row and
+    // the drawer tab; `Workspace` derives them rather than owning them.
+    let (route, navigate) = use_route();
 
     // Ontology surface state: the list of type names, each type's loaded `TypeDetail`
     // (schema) keyed by name, the selected type index, and the drawer's active tab.
@@ -706,12 +710,12 @@ fn workspace(props: &WorkspaceProps) -> Html {
     }
 
     let on_switch = {
-        let surface = surface.clone();
-        Callback::from(move |s: Surface| surface.set(s))
+        let (route, navigate) = (route.clone(), navigate.clone());
+        Callback::from(move |s: Surface| navigate.push(route.with_surface(s)))
     };
     let logout_btn = logout_button(props.on_logout.clone());
 
-    let (list, drawer) = match *surface {
+    let (list, drawer) = match route.surface {
         Surface::Catalog => {
             let on_row = {
                 let selected_dataset = selected_dataset.clone();
@@ -1114,7 +1118,7 @@ fn workspace(props: &WorkspaceProps) -> Html {
     html! {
         <>
             <GlobalStyles />
-            <Shell active={*surface} on_switch={on_switch} search={logout_btn} avatar="DK"
+            <Shell active={route.surface} on_switch={on_switch} search={logout_btn} avatar="DK"
                    list={list} drawer={drawer} />
         </>
     }
