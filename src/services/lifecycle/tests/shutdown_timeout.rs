@@ -37,6 +37,8 @@ fn a_malformed_value_fails_startup() {
 #[test]
 fn the_default_is_under_the_kubernetes_grace_period() {
     // The whole point of the bound: exit on our own terms before the container
-    // runtime SIGKILLs us at the end of its 30s default grace period.
-    assert!(loom_lifecycle::DEFAULT_SHUTDOWN_TIMEOUT_MS < 30_000);
+    // runtime SIGKILLs us at the end of its 30s default grace period. Both sides
+    // are consts, so clippy flags a bare `assert!` as trivially-constant; wrapping
+    // it in a `const` block is its own suggested fix and keeps the check live.
+    const { assert!(loom_lifecycle::DEFAULT_SHUTDOWN_TIMEOUT_MS < 30_000) }
 }
