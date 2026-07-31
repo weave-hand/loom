@@ -10,7 +10,7 @@ use loom_config::{ConfigError, invalid, overlay_opt};
 use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
-use control_plane_core::{ColumnStat, DataFile, FileFormat, StatValue};
+use control_plane_core::{ColumnStat, DataFile, FileFormat};
 use datafusion::common::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
@@ -22,7 +22,6 @@ use futures::TryStreamExt;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::file::statistics::Statistics;
 
 /// Tunables for the DataFusion write. Defaults target ~128 MiB Snappy files.
 /// Serde container `#[serde(default)]` lets a partial config document omit any field
@@ -241,50 +240,10 @@ pub fn absolute_data_files(
         .collect()
 }
 
-fn min_stat(stats: &Statistics) -> Option<StatValue> {
-    match stats {
-        Statistics::Boolean(s) => s.min_opt().map(|v| StatValue::Bool(*v)),
-        Statistics::Int32(s) => s.min_opt().map(|v| StatValue::I32(*v)),
-        Statistics::Int64(s) => s.min_opt().map(|v| StatValue::I64(*v)),
-        Statistics::Float(s) => s.min_opt().map(|v| StatValue::F32(*v)),
-        Statistics::Double(s) => s.min_opt().map(|v| StatValue::F64(*v)),
-        Statistics::ByteArray(s) => s
-            .min_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
-        _ => None,
-    }
-}
-
-fn max_stat(stats: &Statistics) -> Option<StatValue> {
-    match stats {
-        Statistics::Boolean(s) => s.max_opt().map(|v| StatValue::Bool(*v)),
-        Statistics::Int32(s) => s.max_opt().map(|v| StatValue::I32(*v)),
-        Statistics::Int64(s) => s.max_opt().map(|v| StatValue::I64(*v)),
-        Statistics::Float(s) => s.max_opt().map(|v| StatValue::F32(*v)),
-        Statistics::Double(s) => s.max_opt().map(|v| StatValue::F64(*v)),
-        Statistics::ByteArray(s) => s
-            .max_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
-        _ => None,
-    }
-}
-
-fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> {
-    use StatValue::*;
-    match (a, b) {
-        (Bool(x), Bool(y)) => x.partial_cmp(y),
-        (I32(x), I32(y)) => x.partial_cmp(y),
-        (I64(x), I64(y)) => x.partial_cmp(y),
-        (F32(x), F32(y)) => x.partial_cmp(y),
-        (F64(x), F64(y)) => x.partial_cmp(y),
-        (Str(x), Str(y)) => x.partial_cmp(y),
-        _ => None,
-    }
-}
-
 /// Extract the `DataFile` stats from a complete Parquet byte buffer,
 /// merging typed min/max across ALL row groups (preserves pruning on multi-row-group
-/// files). `path` is the relative DataFile path to record.
+/// files) via the shared `parquet_stats` reader. `path` is the relative DataFile path
+/// to record.
 pub fn file_stats_from_bytes(
     path: String,
     bytes: &[u8],
@@ -297,51 +256,18 @@ pub fn file_stats_from_bytes(
     let meta = reader.metadata();
     let record_count: i64 = meta.file_metadata().num_rows();
 
-    let mut column_stats = Vec::with_capacity(schema.fields().len());
-    for (i, field) in schema.fields().iter().enumerate() {
-        let mut null_count: i64 = 0;
-        let mut column_size_bytes: i64 = 0;
-        let mut min: Option<StatValue> = None;
-        let mut max: Option<StatValue> = None;
-        for rg in meta.row_groups() {
-            let col = rg.column(i);
-            debug_assert!(
-                col.statistics().is_some(),
-                "expected ArrowWriter to emit column statistics"
-            );
-            column_size_bytes += col.compressed_size();
-            if let Some(stats) = col.statistics() {
-                null_count += stats.null_count_opt().unwrap_or(0) as i64;
-                if let Some(b) = min_stat(stats) {
-                    min = match min {
-                        Some(cur)
-                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Greater) =>
-                        {
-                            Some(cur)
-                        }
-                        _ => Some(b),
-                    };
-                }
-                if let Some(b) = max_stat(stats) {
-                    max = match max {
-                        Some(cur)
-                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Less) =>
-                        {
-                            Some(cur)
-                        }
-                        _ => Some(b),
-                    };
-                }
-            }
-        }
-        column_stats.push(ColumnStat {
-            column_name: field.name().clone(),
-            null_count,
-            column_size_bytes,
-            min,
-            max,
-        });
-    }
+    let column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
+    // Local invariant, deliberately NOT hoisted into `parquet_stats`: everything this
+    // crate writes comes from `ArrowWriter`, which always emits column statistics. The
+    // shared reader is also used against footers written elsewhere, where a missing
+    // statistics block is legitimate input rather than a bug.
+    debug_assert!(
+        meta.row_groups()
+            .iter()
+            .all(|rg| (0..column_names.len()).all(|i| rg.column(i).statistics().is_some())),
+        "expected ArrowWriter to emit column statistics"
+    );
+    let column_stats = parquet_stats::column_stats(meta, &column_names);
 
     Ok(WrittenFile {
         path,

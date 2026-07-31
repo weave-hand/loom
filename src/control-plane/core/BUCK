@@ -224,6 +224,16 @@ rust_test(
 )
 
 rust_test(
+    name = "redacted",
+    crate = "redacted",
+    srcs = ["tests/redacted.rs"],
+    crate_root = "tests/redacted.rs",
+    edition = "2024",
+    visibility = ["PUBLIC"],
+    deps = [":core"],
+)
+
+rust_test(
     name = "gc-job",
     crate = "gc_job",
     srcs = ["tests/gc_job.rs"],

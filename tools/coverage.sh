@@ -3,7 +3,7 @@
 # out of buck-out, and (best-effort) render an HTML report with source context.
 #
 # Usage:
-#   tools/coverage.sh                        # whole codebase, all 7 crates
+#   tools/coverage.sh                        # whole codebase, all 22 crates
 #   tools/coverage.sh control-plane/core     # single crate (package under src/)
 #
 # Output lands in .loom/coverage/ (gitignored):

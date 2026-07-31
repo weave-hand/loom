@@ -394,6 +394,21 @@ run-submission routes share one `submit_new_run` helper: mint a fresh
 `run_id`, build the `Queued` `TransformRun`, and call `submit_run` with the
 body's `to_job(run_id)`.
 
+`POST /admin/transforms` also provisions catalog visibility for an untyped output — a
+behaviour that has existed for `physical` bodies since the catalog ACL gating landed and
+now covers the micro-batch variants too. `TransformBody::output_grant_table` names the
+body's bare-`TableRef` output — `physical`, `microbatch`, and `microbatch_join`, all of
+which write a table with no ontology type to inherit visibility from — and the route
+grants the reserved `admin` role `Read` on it after the define commits. A `typed` body is
+excluded: its output's visibility rides its bound type's grants. The grant is an upsert on
+`effect`, so redefining is a no-op on an already-allowed output but re-asserts `allow` over
+an operator's explicit `deny` on that table. Migration `0049_mv_output_admin_grant` backfills
+the grant for micro-batch outputs defined before the seam covered them; it is `on conflict do
+nothing`, so unlike the define-time path it never disturbs an existing deny, and it is a clean
+no-op on a database where `loom create-admin` has not yet created the `admin` role. The grant
+is still not atomic with the define — that cross-concern gap is #544, and it applies equally
+to every variant.
+
 ## Known gaps
 
 - `#fut-programmatic-transforms` — SQL authoring only; no registered-plan

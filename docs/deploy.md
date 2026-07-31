@@ -10,7 +10,7 @@ submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
 below). The deployable targets live in their own `deploy//` buck2 cell
 (deliberately off the normal `//src` CI sweep — see below).
 
-_Capabilities as of 649b69f1._
+_Capabilities as of 436e7bd7._
 
 ## What ships
 
@@ -207,6 +207,46 @@ and are deliberately not configurable.
 Surfacing the tuning knobs as first-class chart `values.yaml` fields is still
 open (`fut-deploy-config-values-wiring`) — today an operator sets the raw
 `LOOM_*` env vars or mounts a `LOOM_CONFIG_FILE` document by hand.
+
+## Graceful shutdown (#587)
+
+Every binary — ingest, query-api, worker, engine, and the standalone `loom`
+composite — shuts down on **SIGINT and SIGTERM**, from a single definition in
+the Postgres-free `loom_lifecycle` crate. All five install the handlers via
+`Shutdown::install`, which registers them **synchronously at startup** —
+before the binary does anything else — so a SIGTERM arriving in the first
+instants of process life is caught rather than killing the process. If
+registration itself fails (the signal handlers cannot be installed), the
+process logs at ERROR naming the cause and degrades to draining immediately
+rather than exiting silently.
+
+What draining means is per-service:
+
+- **ingest, query-api** — let in-flight HTTP requests complete (axum graceful
+  shutdown; the serve future does not return until they finish).
+- **worker** — finishes its in-flight job and marks it complete, releasing the
+  queue lease; cancellation is observed only between jobs and while idle.
+- **engine** — stops accepting new connections on its Unix-domain socket, lets
+  in-flight Flight/control RPCs finish, then cancels its scheduler and
+  reconcile loops via a single shared token — now on the serve-error path too,
+  where it previously was not.
+
+| Variable | Applies to | Default | Purpose |
+| --- | --- | --- | --- |
+| `LOOM_SHUTDOWN_TIMEOUT_MS` | the four service binaries (ingest, query-api, worker, engine) only | `20000` | Bounds how long a signalled process waits for its drain to finish before exiting anyway. When it fires, the process logs at ERROR (`graceful shutdown timed out; exiting with work still in flight`) and exits cleanly; a severed job's lease lapses and reclaim re-runs it. |
+
+The **standalone `loom` binary reads and validates `LOOM_SHUTDOWN_TIMEOUT_MS`
+too** (a malformed value still fails its startup, same as the four service
+binaries) but **never applies it as a bound** — its drain is deliberately
+unbounded. It drains its own `JoinSet` and stops the embedded Postgres on
+shutdown, and cutting that drain short would skip stopping the embedded
+Postgres, orphaning the cluster process — worse than waiting.
+
+The 20 s default is chosen against Kubernetes' 30 s default
+`terminationGracePeriodSeconds` — the chart does not override that default, so
+it applies as-is. The chart does not (yet) surface
+`LOOM_SHUTDOWN_TIMEOUT_MS` as a `values.yaml` field; operators set the env var
+directly on the service containers.
 
 ## Release pipeline (`.github/workflows/release.yml`)
 
@@ -423,9 +463,9 @@ full context):
   an `s3://` warehouse (the chart's S3 path sets an inert value).
 - #586 — S3 credentials are static-secret
   only; no cloud workload identity (IRSA / GKE WI) yet.
-- #587 — the lean per-service binaries have no graceful
-  shutdown/signal handling and no TLS (the standalone composite has the signal
-  wiring; TLS is open everywhere).
+- #673 — TLS is not terminated in-process by any binary;
+  edge/gateway termination is the open decision (see *Graceful shutdown* above
+  for the signal-handling story, which is closed).
 - #588 — `LOOM_CONFIG_FILE` is JSON-only; YAML authoring
   awaits a maintained YAML crate.
 

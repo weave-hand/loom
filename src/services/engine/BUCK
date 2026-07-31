@@ -196,6 +196,19 @@ rust_test(
 )
 
 rust_test(
+    name = "background-loops",
+    crate = "background_loops",
+    srcs = ["tests/background_loops.rs"],
+    crate_root = "tests/background_loops.rs",
+    deps = [
+        ":engine",
+        "//src/control-plane/core:core",
+        "//src/control-plane/memory:memory",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
     name = "flight-membership-helper",
     crate = "flight_membership_helper",
     srcs = ["tests/flight_membership_helper.rs"],

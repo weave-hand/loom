@@ -11,6 +11,7 @@ rust_library(
         "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
         "//src/loom-config:loom-config",
+        "//src/services/lifecycle:lifecycle",
         "//src/services/managed-postgres:managed-postgres",
         "//src/services/store-config:store-config",
         "//third-party:argon2",
@@ -27,7 +28,6 @@ rust_library(
         "//third-party:time",
         "//third-party:tokio",
         "//third-party:tracing",
-        "//third-party:tracing-subscriber",
         "//third-party:utoipa",
         "//third-party:utoipa-scalar",
         "//third-party:uuid",
@@ -61,15 +61,6 @@ rust_test(
     crate = "overlay_opt",
     srcs = ["tests/overlay_opt.rs"],
     crate_root = "tests/overlay_opt.rs",
-    edition = "2024",
-    deps = [":runtime"],
-)
-
-rust_test(
-    name = "init-tracing",
-    crate = "init_tracing",
-    srcs = ["tests/init_tracing.rs"],
-    crate_root = "tests/init_tracing.rs",
     edition = "2024",
     deps = [":runtime"],
 )

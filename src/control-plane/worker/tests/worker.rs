@@ -292,3 +292,62 @@ async fn emits_tracing_event_on_contained_panic() {
         "worker should emit the panic-contained tracing event"
     );
 }
+
+// A SIGTERM drain must let the IN-FLIGHT job finish and be completed (its lease
+// released), not sever it mid-handler. `Worker::run` claims it observes
+// cancellation only between jobs and while idle; nothing asserted it until now.
+#[tokio::test]
+async fn cancel_mid_job_lets_the_in_flight_job_finish() {
+    let cp = MemoryControlPlane::new(LOCK_TIMEOUT);
+    cp.enqueue(job(KIND)).await.unwrap();
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let e = entered.clone();
+    let finished = Arc::new(AtomicU32::new(0));
+    let f = finished.clone();
+
+    let token = CancellationToken::new();
+    let t = token.clone();
+    let worker =
+        Worker::new(cp.clone(), "w1", LOCK_TIMEOUT).with_poll_interval(Duration::from_millis(50));
+    let handle = tokio::spawn(async move {
+        worker
+            .run(&[KIND.to_string()], t, move |_job| {
+                let e = e.clone();
+                let f = f.clone();
+                async move {
+                    e.notify_one();
+                    // Long enough that the cancel below lands inside the handler.
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    f.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .await
+    });
+
+    // Cancel while the handler is running, not between jobs.
+    entered.notified().await;
+    token.cancel();
+
+    handle.await.unwrap().unwrap();
+    assert_eq!(
+        finished.load(Ordering::SeqCst),
+        1,
+        "the in-flight job was severed by cancellation"
+    );
+    // `MemoryControlPlane::dequeue` only returns a job whose lock has EXPIRED
+    // (`locked_at < now - lock_timeout`); a still-claimed-but-unexpired row is
+    // filtered out identically to a completed (removed) one. Wait past the
+    // lease before probing so a job left `running` (claimed but never
+    // completed) WOULD come back here — only then does `is_none()` actually
+    // distinguish "completed and removed" from "left claimed".
+    tokio::time::sleep(LOCK_TIMEOUT + Duration::from_millis(100)).await;
+    assert!(
+        cp.dequeue(&[KIND.to_string()], "probe")
+            .await
+            .unwrap()
+            .is_none(),
+        "the job was completed and its lease released, not left claimed and reclaimable"
+    );
+}

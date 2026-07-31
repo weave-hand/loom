@@ -17,9 +17,9 @@ use control_plane_core::{
     ADMIN_ROLE, Action, ActionDef, ActionName, Aggregation, Auth, COMPACT_JOB_KIND, ControlPlane,
     ControlPlaneError, DerivedPropertyDef, Effect, GC_JOB_KIND, IndexSpec, JobSchedule,
     JobScheduleStatus, LengthConstraint, LinkDef, Metric, NewUser, ObjectType, PageReq, Policy,
-    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, RoleId, RowFilter, RunState,
-    RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName, TransformRun,
-    TypeName, UserSummary, VectorIndexDef, ViewDef,
+    PolicyTarget, PropertyConstraints, PropertyDef, RangeConstraint, Redacted, RoleId, RowFilter,
+    RunState, RunTrigger, SubjectId, TableRef, TransformBody, TransformDef, TransformName,
+    TransformRun, TypeName, UserSummary, VectorIndexDef, ViewDef,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -102,7 +102,7 @@ async fn create_user(State(st): State<AdminState>, Json(req): Json<CreateUserReq
         .create_user(&NewUser {
             subject_id: subject.clone(),
             username: req.username.clone(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await
     {
@@ -255,7 +255,11 @@ async fn reset_password(
         return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
     };
     let subject = SubjectId(username);
-    if let Err(e) = st.auth.update_password(&subject, &new_phc).await {
+    if let Err(e) = st
+        .auth
+        .update_password(&subject, &Redacted::new(new_phc))
+        .await
+    {
         return error_response(&e);
     }
     if let Err(e) = st.auth.revoke_subject_sessions(&subject, None).await {
@@ -1522,10 +1526,13 @@ async fn submit_new_run(
     post, path = "/admin/transforms",
     request_body(
         content = serde_json::Value,
-        description = "A `TransformDef` in its serde shape: `{\"name\", \"body\": \
-            {\"kind\": \"physical\"|\"typed\", \"inputs\", \"output\", \"sql\", \"output_mode\"?}, \
-            \"schedule\"?, \"on_input_commit\"?}`. `schedule`, if present, is a live 5-field \
-            UTC cron expression (e.g. `\"0 3 * * *\"`) validated at define time.",
+        description = "A `TransformDef` in its serde shape: `{\"name\", \"body\", \
+            \"schedule\"?, \"on_input_commit\"?}`. `body` is tagged by `kind`: \
+            `physical`/`typed` carry `{\"inputs\", \"output\", \"sql\", \"output_mode\"?}`; \
+            `microbatch` carries `{\"source\", \"output\", \"buckets\", \"sql\"}` and \
+            `microbatch_join` additionally `{\"enrich\", \"on\"?}`. `schedule`, if present, \
+            is a live 5-field UTC cron expression (e.g. `\"0 3 * * *\"`) validated at \
+            define time.",
     ),
     responses(
         (status = 201, description = "Transform defined"),
@@ -1551,16 +1558,20 @@ async fn define_transform_route(
                 .into_response();
         }
     };
-    // Capture the physical output table (if any) before the def is moved into define.
-    let grant_table = def.body.physical_output_grant_table().cloned();
+    // Capture the untyped output table (if any) before the def is moved into define.
+    let grant_table = def.body.output_grant_table().cloned();
     if let Err(e) = st.cp.transforms().define_transform(def).await {
         return error_response(&e);
     }
-    // A physical output is a fresh untyped table with no grant; grant the reserved
-    // admin role Read so its catalog metadata + lineage node are visible regardless
-    // of the defining client. Idempotent (no-op upsert on redefine). A grant failure
-    // surfaces (the define is committed and idempotent, so a re-POST recovers — the
-    // known cross-concern-atomicity gap, fut-auth-acl-provisioning-tx).
+    // An untyped output — a `physical` table or either micro-batch variant's log-stream
+    // output — is a fresh table with no grant; grant the reserved admin role Read so its
+    // catalog metadata + lineage node are visible regardless of the defining client.
+    // Repeatable, not inert: `Acl::grant` upserts `effect = excluded.effect`, so a redefine
+    // is a no-op on an already-allowed output but RE-ASSERTS `allow` over an operator's
+    // explicit `deny` on that table. (Migration 0049's backfill deliberately differs — it
+    // is `on conflict do nothing`, so it never disturbs a deny.) A grant failure surfaces
+    // (the define is committed and repeatable, so a re-POST recovers — the known
+    // cross-concern-atomicity gap, #544).
     if let Some(output) = grant_table
         && let Err(e) = st
             .cp

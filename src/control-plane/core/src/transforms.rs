@@ -84,16 +84,19 @@ pub enum TransformBody {
 }
 
 impl TransformBody {
-    /// The physical (untyped) output table that must be explicitly Read-granted for
-    /// the output to be visible in the catalog / lineage. `Some` only for a `Physical`
-    /// body — a `Typed` output's visibility rides its bound type's grants, and the MV
-    /// variants' output governance is out of scope here (matching the UI's Physical-only
-    /// self-grant split this replaces).
+    /// The bare physical (untyped) output table that must be explicitly Read-granted
+    /// for the output to be visible in the catalog / lineage. `Some` for every body
+    /// whose output is a bare [`TableRef`] — `Physical` and both micro-batch
+    /// (materialized-view) variants, all of which write an untyped table with no type
+    /// to inherit visibility from. `None` only for `Typed`, whose output visibility
+    /// rides its bound ontology type's grants.
     #[must_use]
-    pub fn physical_output_grant_table(&self) -> Option<&TableRef> {
+    pub fn output_grant_table(&self) -> Option<&TableRef> {
         match self {
-            Self::Physical { output, .. } => Some(output),
-            Self::Typed { .. } | Self::MicroBatch { .. } | Self::MicroBatchJoin { .. } => None,
+            Self::Physical { output, .. }
+            | Self::MicroBatch { output, .. }
+            | Self::MicroBatchJoin { output, .. } => Some(output),
+            Self::Typed { .. } => None,
         }
     }
 

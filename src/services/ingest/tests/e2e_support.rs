@@ -32,7 +32,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::header::AUTHORIZATION;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{Acl, Auth, NewUser, RoleId, SubjectId};
+use control_plane_core::{Acl, Auth, NewUser, Redacted, RoleId, SubjectId};
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -184,7 +184,7 @@ pub async fn session_token(pg: &PgControlPlane, subject: &str) -> String {
     pg.create_user(&NewUser {
         subject_id: SubjectId(subject.into()),
         username: subject.into(),
-        password_phc: phc,
+        password_phc: Redacted::new(phc),
     })
     .await
     .expect("create_user");
