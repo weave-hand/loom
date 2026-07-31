@@ -9,7 +9,7 @@ load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "ui-core",
     crate = "loom_ui_core",
-    srcs = ["src/lib.rs", "src/completion.rs", "src/diagnostics.rs", "src/transforms.rs", "src/lineage_layout.rs"],
+    srcs = ["src/lib.rs", "src/completion.rs", "src/diagnostics.rs", "src/transforms.rs", "src/lineage_layout.rs", "src/route.rs"],
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
@@ -41,6 +41,15 @@ rust_test(
     crate = "surface",
     srcs = ["tests/surface.rs"],
     crate_root = "tests/surface.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "route",
+    crate = "route",
+    srcs = ["tests/route.rs"],
+    crate_root = "tests/route.rs",
     edition = "2024",
     deps = [":ui-core"],
 )

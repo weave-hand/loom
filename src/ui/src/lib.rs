@@ -27,6 +27,9 @@ pub use lineage_layout::{
     LaidOutEdge, LaidOutNode, LineageLayout, LineageLayoutParams, lineage_layout,
 };
 
+mod route;
+pub use route::{CatalogQuery, Route};
+
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
 /// can't be read as `var(--loom-*)`. The `:root` custom properties in
 /// `components/global.rs` and the Monaco editor theme in `components/sql_editor.rs`
