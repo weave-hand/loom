@@ -1,9 +1,3 @@
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "rust_test body: assertions unwrap/expect and a failed browser start panics"
-)]
 //! Per-component render tests: mount ONE shipped component in headless Chrome
 //! with JSON props and assert what it renders. The full-page layer is
 //! `//src/ui/e2e:login`; this is the component-unit layer that pairs with it.
@@ -111,6 +105,11 @@ async fn tabs_onselect_fires_with_the_clicked_id() {
     assert!(
         classes.split_whitespace().any(|c| c == "active"),
         "the active tab carries .active, got {classes:?}"
+    );
+    let inactive_classes = buttons[1].attr("class").await.unwrap().unwrap_or_default();
+    assert!(
+        !inactive_classes.split_whitespace().any(|c| c == "active"),
+        "the inactive tab does not carry .active, got {inactive_classes:?}"
     );
 
     // Nothing has fired yet — the log exists and is empty.

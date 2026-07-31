@@ -15,6 +15,15 @@
 //! `*Spec` struct rather than reusing its `Properties` type — `Properties` structs
 //! hold `Callback`s, which are not deserializable. The harness constructs the
 //! callbacks itself and records each invocation into `window.__loom_events`.
+//!
+//! `AlignSpec`/`ToneSpec` mirror the plain C-like `Align`/`BadgeTone` enums from
+//! `loom_ui_core` for a second, unrelated reason: those enums hold no `Callback`s
+//! and could in principle derive `Deserialize` directly, but `src/ui/src/lib.rs`
+//! (where they live) was off-limits on this branch (a parallel worker owned it),
+//! so this file mirrors them instead. That mirror can drift from the real enums
+//! silently (a new variant added to `Align`/`BadgeTone` has no compiler-enforced
+//! counterpart here); the eventual exit is to derive `Deserialize` on the core
+//! token enums once `lib.rs` is free again, and delete `AlignSpec`/`ToneSpec`.
 
 use loom_ui_components::{Badge, Column, DataTable, GlobalStyles, TabItem, TableRow, Tabs};
 use loom_ui_core::{Align, BadgeTone};
@@ -71,7 +80,7 @@ fn record_event(event: &str, payload: &str) {
     let Ok(log) = js_sys::Reflect::get(&win, &JsValue::from_str("__loom_events")) else {
         return;
     };
-    if !log.is_object() {
+    if !js_sys::Array::is_array(&log) {
         return;
     }
     // `unchecked_into`, not `Array::from`: the latter copies the array, so the
@@ -136,6 +145,7 @@ impl From<ToneSpec> for BadgeTone {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ColumnSpec {
     label: String,
     #[serde(default)]
@@ -143,12 +153,14 @@ struct ColumnSpec {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DataTableSpec {
     columns: Vec<ColumnSpec>,
     rows: Vec<Vec<String>>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct BadgeSpec {
     label: String,
     #[serde(default)]
@@ -156,12 +168,14 @@ struct BadgeSpec {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TabSpec {
     id: String,
     label: String,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct TabsSpec {
     tabs: Vec<TabSpec>,
     active: String,

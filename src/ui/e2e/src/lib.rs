@@ -40,8 +40,12 @@ impl Drop for Backend {
     }
 }
 
-/// Pick a currently-free TCP port by binding to :0 and releasing it. Small TOCTOU
-/// race is acceptable for a single-process test.
+/// Pick a currently-free TCP port by binding to :0 and releasing it. `tests/
+/// components.rs` now runs three `#[tokio::test]`s concurrently in one libtest
+/// process, so there are several near-simultaneous bind-then-release windows
+/// rather than one — the TOCTOU race is still low-probability, but "single-process
+/// test" is no longer the reason it's acceptable. A collision would surface as a
+/// nondeterministic "chromedriver exited before listening" rather than a flaky pass.
 fn free_port() -> u16 {
     TcpListener::bind("127.0.0.1:0")
         .expect("bind ephemeral port")
@@ -300,6 +304,18 @@ impl Harness {
             .for_element(fantoccini::Locator::Css("#mount"))
             .await
             .expect("harness mount point");
+        // The harness renders its own diagnostics into #harness-error (bad props, unknown
+        // component name). Surface that message instead of letting the caller fail later
+        // with an opaque "no such element" on whatever it went looking for.
+        if let Ok(err) = self
+            .browser
+            .client
+            .find(fantoccini::Locator::Css("#harness-error"))
+            .await
+        {
+            let msg = err.text().await.unwrap_or_default();
+            panic!("harness error for component {component}: {msg}");
+        }
     }
 }
 

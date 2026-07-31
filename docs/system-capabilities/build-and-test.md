@@ -169,7 +169,11 @@ X"* and not only what rendered. The target is a plain `loom_rust_test`, delibera
 not `loom_fixture_test`: a render test needs no Postgres, and the fixture macro would
 burn one of the eight shared boot slots per test. Covering another component is a
 `*Spec` plus one `match` arm in `src/ui/src/harness.rs` — no new buck rule and no new
-vendored tool. Like `:login`, these tests need the browser's host libs (supplied by
+vendored tool — but that only covers static render coverage, not a live prop change
+on an already-mounted component, since `Harness::show` does a fresh page `goto` per
+call and so cannot distinguish "the component reacted" from "the page reloaded"
+(the gap issue #653's SqlEditor prop-swap needs). Like `:login`, these tests need
+the browser's host libs (supplied by
 the RE image and by dev hosts), so a container missing `libnspr4.so` fails them for
 environmental reasons unrelated to the diff.
 
