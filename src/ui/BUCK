@@ -136,6 +136,15 @@ rust_test(
 )
 
 rust_test(
+    name = "anchor-diagnostic",
+    crate = "anchor_diagnostic",
+    srcs = ["tests/anchor_diagnostic.rs"],
+    crate_root = "tests/anchor_diagnostic.rs",
+    edition = "2024",
+    deps = [":ui-core", "//third-party:serde_json"],
+)
+
+rust_test(
     name = "transforms-parse",
     crate = "transforms_parse",
     srcs = ["tests/transforms_parse.rs"],
