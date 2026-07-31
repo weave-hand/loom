@@ -43,7 +43,7 @@ async fn an_in_flight_request_completes_across_a_shutdown() {
             "done"
         }),
     );
-    let serve = tokio::spawn(async move {
+    let mut serve = tokio::spawn(async move {
         service_runtime::serve_with_shutdown(listener, router, async move {
             drop(rx.await);
         })
@@ -67,6 +67,21 @@ async fn an_in_flight_request_completes_across_a_shutdown() {
     // Signal shutdown while the request is still in flight.
     tokio::time::sleep(Duration::from_millis(50)).await;
     tx.send(()).unwrap();
+
+    // The distinguishing property of a *graceful* drain is ordering: `serve`
+    // must not return until the in-flight request has finished, not merely
+    // that the client eventually gets a response (a dropped, ungraceful
+    // accept loop leaves the already-spawned connection task to finish on
+    // its own, which would satisfy the body assertion below even though
+    // `serve` returned immediately). Check this at 100ms after the signal —
+    // still well inside the handler's 300ms sleep, so a `serve` that has
+    // already finished by then proves it did not wait for the drain.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut serve)
+            .await
+            .is_err(),
+        "serve returned while a request was still in flight — the drain is not graceful"
+    );
 
     let body = tokio::time::timeout(Duration::from_secs(5), client)
         .await
