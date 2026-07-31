@@ -7,7 +7,9 @@
 
 mod shutdown;
 
-pub use shutdown::shutdown_signal;
+pub use shutdown::{
+    DEFAULT_SHUTDOWN_TIMEOUT_MS, Shutdown, run_bounded, shutdown_signal, shutdown_timeout,
+};
 
 /// Install a `tracing-subscriber` for the process. Uses `RUST_LOG` env (default
 /// `info`). Idempotent — a second call from a test harness or re-entrant path does

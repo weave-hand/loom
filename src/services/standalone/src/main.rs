@@ -51,14 +51,13 @@ async fn main() -> Result<(), BoxErr> {
     let addrs = resolve_addrs(&env)?;
     let tuning = standalone::StandaloneTuning::from_map(&env)?;
 
-    standalone::run(
-        cfg,
-        addrs,
-        tuning,
-        service_runtime::shutdown_signal(),
-        ready_noop(),
-    )
-    .await
+    // The seam registers SIGINT/SIGTERM synchronously, so a signal in the first
+    // instants of process life is caught rather than killing the process. The
+    // composite is deliberately NOT wrapped in `run_bounded`: cutting its drain
+    // short would skip stopping the embedded Postgres, which is worse than waiting.
+    let shutdown = service_runtime::Shutdown::install(service_runtime::shutdown_timeout(&env)?);
+
+    standalone::run(cfg, addrs, tuning, shutdown.signalled(), ready_noop()).await
 }
 
 async fn create_admin_cli() -> Result<(), BoxErr> {

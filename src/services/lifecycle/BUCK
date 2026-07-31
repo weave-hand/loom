@@ -11,7 +11,9 @@ rust_library(
     crate_root = "src/lib.rs",
     edition = "2024",
     deps = [
+        "//src/loom-config:loom-config",
         "//third-party:tokio",
+        "//third-party:tokio-util",
         "//third-party:tracing",
         "//third-party:tracing-subscriber",
     ],
@@ -38,6 +40,44 @@ rust_test(
     crate = "init_tracing",
     srcs = ["tests/init_tracing.rs"],
     crate_root = "tests/init_tracing.rs",
+    edition = "2024",
+    deps = [":lifecycle"],
+)
+
+# Own binary: sigterm.rs raises on a loop, which would vacuously satisfy this
+# test's single-raise assertion if they shared a process.
+rust_test(
+    name = "install-race",
+    crate = "install_race",
+    srcs = ["tests/install_race.rs"],
+    crate_root = "tests/install_race.rs",
+    edition = "2024",
+    deps = [
+        ":lifecycle",
+        "//third-party:libc",
+        "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "shutdown-seam",
+    crate = "shutdown_seam",
+    srcs = ["tests/shutdown_seam.rs"],
+    crate_root = "tests/shutdown_seam.rs",
+    edition = "2024",
+    deps = [
+        ":lifecycle",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-test",
+    ],
+)
+
+rust_test(
+    name = "shutdown-timeout",
+    crate = "shutdown_timeout",
+    srcs = ["tests/shutdown_timeout.rs"],
+    crate_root = "tests/shutdown_timeout.rs",
     edition = "2024",
     deps = [":lifecycle"],
 )

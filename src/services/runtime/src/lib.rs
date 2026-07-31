@@ -49,7 +49,10 @@ pub use loom_config::{
 // Process lifecycle lives in the tiny, Postgres-free `loom_lifecycle` crate so
 // `worker-bin` can share these without pulling the control plane into its closure.
 // Re-exported here so binaries that already depend on service_runtime keep one import.
-pub use loom_lifecycle::{init_tracing, shutdown_signal};
+pub use loom_lifecycle::{
+    DEFAULT_SHUTDOWN_TIMEOUT_MS, Shutdown, init_tracing, run_bounded, shutdown_signal,
+    shutdown_timeout,
+};
 
 /// Default application database name in embedded mode (used by both
 /// `DbConfig::from_map` and `EmbeddedSettings::from_map` so `cfg.db` and the
