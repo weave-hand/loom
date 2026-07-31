@@ -14,7 +14,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
-    ADMIN_ROLE, Acl, Action, Auth, ControlPlane, Decision, NewUser, PolicyTarget, RoleId,
+    ADMIN_ROLE, Acl, Action, Auth, ControlPlane, Decision, NewUser, PolicyTarget, Redacted, RoleId,
     SubjectId, TableRef,
 };
 use control_plane_postgres::PgControlPlane;
@@ -78,7 +78,7 @@ async fn seed_session(cp: &PgControlPlane, username: &str) -> String {
     cp.create_user(&NewUser {
         subject_id: SubjectId(username.into()),
         username: username.into(),
-        password_phc: hash_password("pw").expect("hash"),
+        password_phc: Redacted::new(hash_password("pw").expect("hash")),
     })
     .await
     .expect("create_user");
@@ -672,6 +672,6 @@ async fn admin_reset_over_postgres() {
         .unwrap();
     assert!(service_runtime::verify_password(
         "reset-pw",
-        &cred.password_phc
+        cred.password_phc.expose()
     ));
 }

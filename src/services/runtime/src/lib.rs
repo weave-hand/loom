@@ -8,7 +8,7 @@ pub use auth::{
     resolve_bearer, service_account_openapi, service_account_routes, service_token_max_ttl,
     session_routes, session_ttl, status_for,
 };
-pub use control_plane_core::LockoutPolicy;
+pub use control_plane_core::{LockoutPolicy, Redacted};
 
 pub mod create_admin;
 
@@ -124,7 +124,9 @@ pub struct DbConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: String,
+    /// The Postgres password. `Redacted` so a `{:?}` of this struct — or of the
+    /// `Config` that embeds it — can never print the plaintext credential.
+    pub password: Redacted<String>,
     pub dbname: String,
     /// Max pool connections. `None` ⇒ sqlx default. From `LOOM_DB_MAX_CONNECTIONS`.
     pub max_connections: Option<u32>,
@@ -162,7 +164,7 @@ impl DbConfig {
                 .get("LOOM_DB_USER")
                 .cloned()
                 .unwrap_or_else(|| "postgres".to_string()),
-            password: vars.get("LOOM_DB_PASSWORD").cloned().unwrap_or_default(),
+            password: Redacted::new(vars.get("LOOM_DB_PASSWORD").cloned().unwrap_or_default()),
             dbname: vars
                 .get("LOOM_DB_NAME")
                 .cloned()
@@ -179,7 +181,7 @@ impl DbConfig {
                 .parse::<u16>()
                 .map_err(|e| invalid("LOOM_DB_PORT", e))?,
             user: req_var(vars, "LOOM_DB_USER")?,
-            password: req_var(vars, "LOOM_DB_PASSWORD")?,
+            password: Redacted::new(req_var(vars, "LOOM_DB_PASSWORD")?),
             dbname: req_var(vars, "LOOM_DB_NAME")?,
             max_connections: Self::max_connections(vars)?,
         })
@@ -209,7 +211,7 @@ impl DbConfig {
         // sqlx probes the default 5432 and misses a cluster on any other port.
         base.port(self.port)
             .username(&self.user)
-            .password(&self.password)
+            .password(self.password.expose())
             .database(&self.dbname)
     }
 
@@ -222,22 +224,43 @@ impl DbConfig {
     /// containing URL-reserved characters (`@ : / ? #`) would corrupt parsing. This is
     /// the only URL-form connection (unlike `pg_connect_options`, which is structured).
     /// Acceptable for the current controlled-deploy posture; percent-encode here if
-    /// free-form passwords are ever supported.
-    pub fn pg_url(&self) -> String {
-        if self.host.starts_with('/') {
+    /// free-form passwords are ever supported. The returned DSN carries the password in
+    /// clear (it is, after all, a connection string), which is why it comes back
+    /// `Redacted` rather than `String` — `.into_inner()` at the call site is the audit
+    /// marker for "yes, this one really does need the plaintext". Both callers
+    /// (`ingest`'s `build_iceberg_catalog` and `engine`'s inline setup in `run`)
+    /// immediately put the DSN into the Iceberg catalog's `props` map and pass it to
+    /// the vendored `control_plane_postgres::iceberg_sql_catalog::SqlCatalogBuilder`'s
+    /// `load` (loom's own catalog, implementing `iceberg::CatalogBuilder`), which moves
+    /// it into a private
+    /// `SqlCatalogConfig` that derives `Debug`. Nothing formats that config today, and
+    /// the built `SqlCatalog` itself retains only the connected `PgPool`, not the URI —
+    /// so the plaintext does not persist past `load`, but a future `tracing::debug!`
+    /// on `SqlCatalogConfig` would reopen exactly this leak.
+    pub fn pg_url(&self) -> Redacted<String> {
+        let url = if self.host.starts_with('/') {
             // The port is carried in the authority even for the socket form: libpq/sqlx
             // derive the `.s.PGSQL.<port>` socket filename from it, so omitting it probes
             // the default 5432 and misses a cluster listening on any other port.
             format!(
                 "postgres://{}:{}@localhost:{}/{}?host={}",
-                self.user, self.password, self.port, self.dbname, self.host
+                self.user,
+                self.password.expose(),
+                self.port,
+                self.dbname,
+                self.host
             )
         } else {
             format!(
                 "postgres://{}:{}@{}:{}/{}",
-                self.user, self.password, self.host, self.port, self.dbname
+                self.user,
+                self.password.expose(),
+                self.host,
+                self.port,
+                self.dbname
             )
-        }
+        };
+        Redacted::new(url)
     }
 }
 
@@ -350,7 +373,7 @@ pub fn build_storage_factory(
             s.endpoint.clone(),
             s.region.clone(),
             s.access_key_id.clone(),
-            s.secret_access_key.clone(),
+            s.secret_access_key.expose().clone(),
             s.path_style,
         ))),
     }

@@ -50,7 +50,7 @@ fn s3_uri_with_creds_and_endpoint_parses_path_style() {
             assert_eq!(s.endpoint.as_deref(), Some("http://127.0.0.1:9000"));
             assert_eq!(s.region, "us-east-1"); // default when endpoint set
             assert_eq!(s.access_key_id, "ak");
-            assert_eq!(s.secret_access_key, "sk");
+            assert_eq!(s.secret_access_key.expose(), "sk");
             assert!(s.path_style); // endpoint set => path-style
         }
         _ => panic!("expected S3 backend"),
@@ -116,4 +116,30 @@ fn build_storage_factory_s3_for_s3_backend() {
         .unwrap()
         .unwrap();
     assert_eq!(serving.bucket, "warehouse");
+}
+
+#[test]
+fn object_store_config_debug_redacts_the_s3_secret_key() {
+    // Same defect class as `db_config_debug_redacts_the_db_password` (runtime/tests/config.rs),
+    // at equal or higher severity: this is the live S3/MinIO credential, not a hash.
+    let mut m = base();
+    m.insert("LOOM_WAREHOUSE_URI".into(), "s3://warehouse/loom".into());
+    m.insert("AWS_ENDPOINT_URL".into(), "http://127.0.0.1:9000".into());
+    m.insert("AWS_ACCESS_KEY_ID".into(), "ak".into());
+    m.insert("AWS_SECRET_ACCESS_KEY".into(), "super-secret-key".into());
+    let cfg = Config::from_map(&m).unwrap();
+    let rendered = format!("{:?}", cfg.object_store);
+    assert!(
+        !rendered.contains("super-secret-key"),
+        "ObjectStoreConfig Debug leaked the S3 secret key: {rendered}"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "ObjectStoreConfig Debug should mark the S3 secret key redacted: {rendered}"
+    );
+    // The access key id is not a secret and stays visible — what operators debug with.
+    assert!(
+        rendered.contains("ak"),
+        "lost the access key id: {rendered}"
+    );
 }

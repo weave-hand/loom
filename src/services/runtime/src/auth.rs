@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use control_plane_core::{
     ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, LockoutPolicy, NewServiceAccount, PageReq,
-    RoleId, SubjectId,
+    Redacted, RoleId, SubjectId,
 };
 use time::OffsetDateTime;
 
@@ -184,7 +184,7 @@ async fn login(State(st): State<AuthState>, axum::Json(req): axum::Json<LoginReq
         return unauthorized();
     }
 
-    if crate::verify_password(&req.password, &cred.password_phc) {
+    if crate::verify_password(&req.password, cred.password_phc.expose()) {
         if let Err(e) = st.auth.reset_failed_logins(&req.username).await {
             return status_for(&e).into_response();
         }
@@ -269,13 +269,17 @@ async fn change_password(
         Ok(None) => return unauthorized(),
         Err(e) => return status_for(&e).into_response(),
     };
-    if !crate::verify_password(&req.current, &phc) {
+    if !crate::verify_password(&req.current, phc.expose()) {
         return (StatusCode::FORBIDDEN, "current password is incorrect").into_response();
     }
     let Ok(new_phc) = crate::hash_password(&req.new) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
     };
-    if let Err(e) = st.auth.update_password(&subject.0, &new_phc).await {
+    if let Err(e) = st
+        .auth
+        .update_password(&subject.0, &Redacted::new(new_phc))
+        .await
+    {
         return status_for(&e).into_response();
     }
     // Keep the current session, revoke the rest.

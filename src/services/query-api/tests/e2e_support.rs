@@ -32,7 +32,8 @@ use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, Auth, Cardinality,
     ControlPlane, ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent,
     LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget, PropertyDef,
-    RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName, VectorIndexDef,
+    Redacted, RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName,
+    VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -271,7 +272,7 @@ pub async fn session_token(cp: &PgControlPlane, subject: &str) -> String {
         .create_user(&NewUser {
             subject_id: SubjectId(subject.into()),
             username: subject.into(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await
     {
