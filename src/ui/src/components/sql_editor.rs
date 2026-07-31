@@ -29,8 +29,8 @@
 //     which the genrule's `out=dist` already captures. No CDN, no extra copy.
 
 use loom_ui_core::{
-    CompletionSchema, Diagnostic, DiagnosticSeverity, LOOM_BG, LOOM_TEXT, SuggestionKind,
-    cursor_context, sql_completions, sql_diagnostics,
+    CompletionSchema, Diagnostic, DiagnosticSeverity, LOOM_BG, LOOM_TEXT, Suggestion,
+    SuggestionKind, cursor_context, sql_completions, sql_diagnostics,
 };
 use monaco::api::{CodeEditor, CodeEditorOptions, DisposableClosure, TextModel};
 use monaco::sys::editor::{
@@ -208,8 +208,115 @@ fn schedule_validation(
     }
 }
 
+/// The completion provider's closure AND its registration, held together for the
+/// editor's life: dropping the `Closure` invalidates the JS callback, and disposing the
+/// `IDisposable` unregisters the provider.
+type CompletionRegistration = (
+    Closure<dyn FnMut(ITextModel, Position) -> JsValue>,
+    IDisposable,
+);
+
+/// Define the `loom-dark` Monaco theme (mirrors the `--loom-*` palette tokens from
+/// `global.rs`). Monaco tolerates redefinition, so this runs on every mount rather than
+/// behind a "define once" flag.
+///
+/// Monaco cannot read CSS custom properties, so the editor chrome draws its colors from
+/// the same `loom_ui_core` palette constants that back the `--loom-bg`/`--loom-text`
+/// tokens — one source of truth.
+fn define_loom_theme() {
+    let theme_data: IStandaloneThemeData = js_sys::Object::new().unchecked_into();
+    theme_data.set_base(BuiltinTheme::VsDark);
+    theme_data.set_inherit(true);
+    theme_data.set_rules(&js_sys::Array::new());
+    let colors = js_sys::Object::new();
+    js_sys::Reflect::set(&colors, &"editor.background".into(), &LOOM_BG.into())
+        .expect("set editor.background");
+    js_sys::Reflect::set(&colors, &"editor.foreground".into(), &LOOM_TEXT.into())
+        .expect("set editor.foreground");
+    theme_data.set_colors(&colors);
+    monaco::sys::editor::define_theme("loom-dark", &theme_data).expect("define loom-dark theme");
+}
+
+/// The replace range every suggestion on a line shares — the word under the cursor.
+/// Modern Monaco silently drops range-less completion items, so this is mandatory.
+fn suggestion_range(line: f64, start_column: f64, end_column: f64) -> js_sys::Object {
+    let range = js_sys::Object::new();
+    for (key, value) in [
+        ("startLineNumber", line),
+        ("endLineNumber", line),
+        ("startColumn", start_column),
+        ("endColumn", end_column),
+    ] {
+        js_sys::Reflect::set(&range, &key.into(), &JsValue::from_f64(value))
+            .expect("set suggestion range field");
+    }
+    range
+}
+
+/// One Monaco completion item built from a `loom_ui_core` suggestion.
+fn suggestion_item(s: Suggestion, range: &js_sys::Object) -> js_sys::Object {
+    let kind = match s.kind {
+        SuggestionKind::Keyword => 17.0, // CompletionItemKind.Keyword
+        SuggestionKind::Table => 5.0,    // CompletionItemKind.Class
+        SuggestionKind::Column => 3.0,   // CompletionItemKind.Field
+    };
+    let item = js_sys::Object::new();
+    js_sys::Reflect::set(&item, &"label".into(), &s.label.into()).expect("set label");
+    js_sys::Reflect::set(&item, &"kind".into(), &JsValue::from_f64(kind)).expect("set kind");
+    js_sys::Reflect::set(&item, &"insertText".into(), &s.insert_text.into())
+        .expect("set insertText");
+    if let Some(detail) = s.detail {
+        js_sys::Reflect::set(&item, &"detail".into(), &detail.into()).expect("set detail");
+    }
+    js_sys::Reflect::set(&item, &"range".into(), range).expect("set range");
+    item
+}
+
+/// Register one `sql` `CompletionItemProvider` driven by the pure engine over `schema`,
+/// returning the closure + registration the caller must hold for the editor's life.
+///
+/// KNOWN LIMITATION (v1): the provider is registered per mounted editor capturing that
+/// editor's schema, so two concurrently-mounted `SqlEditor`s would register two `sql`
+/// providers. Acceptable — the current surfaces mount exactly one; multi-editor
+/// de-duplication is a follow-up.
+fn register_completion(schema: CompletionSchema) -> CompletionRegistration {
+    let provider: CompletionItemProvider = js_sys::Object::new().unchecked_into();
+    let cb = Closure::wrap(
+        Box::new(move |model: ITextModel, position: Position| -> JsValue {
+            let text = model.get_value(None, None);
+            let offset = model.get_offset_at(position.unchecked_ref()) as usize;
+            let (prefix, qualifier) = cursor_context(&text, offset);
+            let items = sql_completions(&schema, &prefix, qualifier.as_deref());
+
+            let word = model.get_word_until_position(position.unchecked_ref());
+            let range = suggestion_range(
+                position.line_number(),
+                word.start_column(),
+                word.end_column(),
+            );
+
+            let suggestions = js_sys::Array::new();
+            for s in items {
+                suggestions.push(&suggestion_item(s, &range));
+            }
+            let list = js_sys::Object::new();
+            js_sys::Reflect::set(&list, &"suggestions".into(), &suggestions)
+                .expect("set suggestions");
+            list.into()
+        }) as Box<dyn FnMut(ITextModel, Position) -> JsValue>,
+    );
+    js_sys::Reflect::set(
+        &provider,
+        &"provideCompletionItems".into(),
+        cb.as_ref().unchecked_ref(),
+    )
+    .expect("set provideCompletionItems");
+    let reg = monaco::sys::languages::register_completion_item_provider("sql", &provider);
+    (cb, reg)
+}
+
 /// Reusable Monaco-backed SQL editor. Controlled: the caller owns the text via
-/// `value`/`on_change`; schema-fed completion is added in Task 5.
+/// `value`/`on_change`, with schema-fed completion and both diagnostic sources wired in.
 #[styled_component(SqlEditor)]
 pub fn sql_editor(props: &SqlEditorProps) -> Html {
     let node = use_node_ref();
@@ -252,24 +359,7 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
         use_effect_with(node.clone(), move |node| {
             let el: HtmlElement = node.cast().expect("sql-editor node is an HtmlElement");
 
-            // Define the `loom-dark` theme (mirrors the --loom-* palette tokens from
-            // global.rs). Monaco tolerates redefinition, so it's safe to call this on
-            // every mount rather than gate it behind a "define once" flag.
-            let theme_data: IStandaloneThemeData = js_sys::Object::new().unchecked_into();
-            theme_data.set_base(BuiltinTheme::VsDark);
-            theme_data.set_inherit(true);
-            theme_data.set_rules(&js_sys::Array::new());
-            // Monaco can't read CSS custom properties, so the editor chrome draws its
-            // colors from the same `loom_ui_core` palette constants that back the
-            // `--loom-bg`/`--loom-text` tokens in global.rs — one source of truth.
-            let colors = js_sys::Object::new();
-            js_sys::Reflect::set(&colors, &"editor.background".into(), &LOOM_BG.into())
-                .expect("set editor.background");
-            js_sys::Reflect::set(&colors, &"editor.foreground".into(), &LOOM_TEXT.into())
-                .expect("set editor.foreground");
-            theme_data.set_colors(&colors);
-            monaco::sys::editor::define_theme("loom-dark", &theme_data)
-                .expect("define loom-dark theme");
+            define_loom_theme();
 
             let model =
                 TextModel::create(&initial, Some("sql"), None).expect("create SQL text model");
@@ -321,90 +411,9 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
             }
             *editor.borrow_mut() = Some(ed);
 
-            // Schema-fed completion: register one `sql` CompletionItemProvider,
-            // driven by the pure engine over this editor's captured `schema`.
-            // KNOWN LIMITATION (v1): the provider is registered per mounted
-            // editor capturing that editor's schema, so two concurrently-mounted
-            // `SqlEditor`s would register two 'sql' providers. Acceptable — the
-            // isolation scope has exactly one editor; multi-editor de-duplication
-            // is a follow-up.
-            let provider: CompletionItemProvider = js_sys::Object::new().unchecked_into();
-            let cb = Closure::wrap(Box::new(
-                move |model: ITextModel, position: Position| -> JsValue {
-                    let text = model.get_value(None, None);
-                    let offset = model.get_offset_at(position.unchecked_ref()) as usize;
-                    let (prefix, qualifier) = cursor_context(&text, offset);
-                    let items = sql_completions(&schema, &prefix, qualifier.as_deref());
-
-                    // Every suggestion MUST carry an IRange (modern Monaco drops
-                    // range-less items). Build it once from the word under the
-                    // cursor; all items on this line share the same replace range.
-                    let word = model.get_word_until_position(position.unchecked_ref());
-                    let line = position.line_number();
-                    let start_column = word.start_column();
-                    let end_column = word.end_column();
-
-                    let suggestions = js_sys::Array::new();
-                    for s in items {
-                        let kind = match s.kind {
-                            SuggestionKind::Keyword => 17.0, // CompletionItemKind.Keyword
-                            SuggestionKind::Table => 5.0,    // CompletionItemKind.Class
-                            SuggestionKind::Column => 3.0,   // CompletionItemKind.Field
-                        };
-
-                        let range = js_sys::Object::new();
-                        js_sys::Reflect::set(
-                            &range,
-                            &"startLineNumber".into(),
-                            &JsValue::from_f64(line),
-                        )
-                        .unwrap();
-                        js_sys::Reflect::set(
-                            &range,
-                            &"endLineNumber".into(),
-                            &JsValue::from_f64(line),
-                        )
-                        .unwrap();
-                        js_sys::Reflect::set(
-                            &range,
-                            &"startColumn".into(),
-                            &JsValue::from_f64(start_column),
-                        )
-                        .unwrap();
-                        js_sys::Reflect::set(
-                            &range,
-                            &"endColumn".into(),
-                            &JsValue::from_f64(end_column),
-                        )
-                        .unwrap();
-
-                        let item = js_sys::Object::new();
-                        js_sys::Reflect::set(&item, &"label".into(), &s.label.into()).unwrap();
-                        js_sys::Reflect::set(&item, &"kind".into(), &JsValue::from_f64(kind))
-                            .unwrap();
-                        js_sys::Reflect::set(&item, &"insertText".into(), &s.insert_text.into())
-                            .unwrap();
-                        if let Some(detail) = s.detail {
-                            js_sys::Reflect::set(&item, &"detail".into(), &detail.into()).unwrap();
-                        }
-                        js_sys::Reflect::set(&item, &"range".into(), &range).unwrap();
-                        suggestions.push(&item);
-                    }
-
-                    let list = js_sys::Object::new();
-                    js_sys::Reflect::set(&list, &"suggestions".into(), &suggestions).unwrap();
-                    list.into()
-                },
-            )
-                as Box<dyn FnMut(ITextModel, Position) -> JsValue>);
-            js_sys::Reflect::set(
-                &provider,
-                &"provideCompletionItems".into(),
-                cb.as_ref().unchecked_ref(),
-            )
-            .unwrap();
-            let reg = monaco::sys::languages::register_completion_item_provider("sql", &provider);
-            *completion.borrow_mut() = Some((cb, reg));
+            // Schema-fed completion, registered for this editor's life (see
+            // `register_completion` for the one-provider-per-mount limitation).
+            *completion.borrow_mut() = Some(register_completion(schema));
 
             move || {
                 subscription.borrow_mut().take(); // unsubscribe
