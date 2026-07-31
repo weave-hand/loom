@@ -28,7 +28,7 @@ pub use lineage_layout::{
 };
 
 mod route;
-pub use route::{CatalogQuery, Route};
+pub use route::{CatalogQuery, Route, dataset_index, dataset_route_id, split_dataset_id};
 
 /// Design-token hex values that must be consumed *outside* the CSS layer and so
 /// can't be read as `var(--loom-*)`. The `:root` custom properties in

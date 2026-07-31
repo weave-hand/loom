@@ -17,7 +17,7 @@
 //! default rather than erroring, so a hand-edited or stale URL still renders a
 //! working app instead of a blank one.
 
-use crate::{CatalogSortDir, DatasetSort, Surface};
+use crate::{CatalogSortDir, DatasetRow, DatasetSort, Surface};
 
 /// One uppercase hex digit for a nibble. Deliberately not `format!`: appending a
 /// `format!` to a `String` trips `clippy::format_push_string`, and this crate is
@@ -281,4 +281,31 @@ impl Route {
             .then_some(self.tab.as_deref())
             .flatten()
     }
+}
+
+/// The Catalog route id for a dataset row: `"schema.name"` — the same spelling the
+/// Transforms editor uses for its dataset options, so the two agree.
+#[must_use]
+pub fn dataset_route_id(row: &DatasetRow) -> String {
+    format!("{}.{}", row.schema, row.name)
+}
+
+/// Split a Catalog route id back into `(schema, name)` at the **first** dot,
+/// matching how [`dataset_route_id`] composes it. `None` when the id carries no dot.
+/// A schema name containing a dot would be mis-split; loom schemas are SQL/Iceberg
+/// namespace identifiers, and the Transforms editor already relies on the same
+/// convention.
+#[must_use]
+pub fn split_dataset_id(id: &str) -> Option<(&str, &str)> {
+    id.split_once('.')
+}
+
+/// The list index of the dataset with route id `id`, for row highlighting. `None`
+/// when the current list does not hold it — a deep link into a project-filtered
+/// list, or one whose list has not loaded yet. The drawer does not depend on this:
+/// it resolves schema/name straight out of the id, so a deep-linked drawer renders
+/// before the list arrives.
+#[must_use]
+pub fn dataset_index(rows: &[DatasetRow], id: &str) -> Option<usize> {
+    rows.iter().position(|row| dataset_route_id(row) == id)
 }
