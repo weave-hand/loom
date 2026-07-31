@@ -3,13 +3,15 @@
 A [Yew](https://yew.rs) app that cross-compiles to `wasm32-unknown-unknown` and
 bundles to browser-loadable JS via wasm-bindgen.
 
-Once authenticated, the `app` renders the **`Explorer`** (`src/explorer.rs`): a
-three-pane object browser — type sidebar (`GET /ontology/types`) → paginated object
-`DataTable` with a **"Load more"** button appending the next cursor page
-(`GET /objects/{type}?limit=&cursor=`) → detail drawer (Object tab) — composed from
-the `loom_ui_components` primitives. Response parsing is pure in `loom_ui_core`
-(`parse_objects_page`/`columns_from_objects`/`cell_to_string`, `rust_test`'d); `net.rs`
-holds the Bearer-auth `fetch_types`/`fetch_page` (a 401 fails closed to logout).
+Once authenticated, the `app` renders the **`Workspace`** (`src/main.rs`): the
+`Shell` chrome from `loom_ui_components` (surface nav, logout, a resizable
+width-persisting drawer region) wrapping one of the surfaces in `src/surfaces/` —
+**Catalog**, **Transforms**, **Query** and **Ontology** are live list+drawer pane
+pairs, **Workbooks**/**Dashboards** are `StubView` placeholders. `Workspace` owns
+the load effects and the per-surface state and passes it down / callbacks up; the
+location (surface, selection, drawer tab, Catalog list controls) lives in the URL —
+see **Routing** below. Response parsing is pure in `loom_ui_core` (`rust_test`'d);
+`net.rs` holds the Bearer-auth fetchers (a 401 fails closed to logout).
 Rendering is verified against a live backend (no DOM in buck2 `rust_test`; browser e2e
 deferred → `fut-ui-browser-test-fixture`). Spec/plan:
 `docs/superpowers/{specs,plans}/2026-07-02-object-explorer-ui*`.
@@ -74,7 +76,10 @@ kept the whole change inside `src/ui/`.
   out of the id, so a deep-linked drawer renders before the dataset list has loaded.
   **Ontology is deliberately asymmetric**: its drawer is gated on the type being
   present in the loaded list (details are eagerly loaded alongside the list), so an
-  unknown type name shows no drawer rather than a permanent "Loading…".
+  unknown type name shows no drawer rather than a permanent "Loading…". **Transforms
+  is a third gate**: its drawer renders only once the per-selection definition fetch
+  (`get_transform`) has landed, so `#/transforms/does-not-exist` shows no drawer and
+  no message.
 - **Lazy drawer effects put `already_loaded` in their dependency tuple.** The
   row-select effect clears the cached body in the same commit, so a Back/Forward that
   changes selection while a non-default tab is active would otherwise bail on a stale

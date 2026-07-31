@@ -4,27 +4,32 @@ loom's web UI is framed by its founding spec as an **experiment**, not a committ
 product surface: the interesting work was teaching the buck2 build to cross-compile
 Rust to `wasm32-unknown-unknown`, with the [Yew](https://yew.rs) app riding on top.
 The experiment has since grown real substance — a design-system component library
-and a working post-login object explorer over the live governed endpoints — but the
-composite Foundry-style screens (dataset catalog, lineage DAG) remain separate,
-un-started arcs, and the UI should still be read as an exploratory slice of the
-platform rather than a finished front end.
+and a multi-surface post-login workspace (catalog, transforms, query console,
+ontology) over the live governed endpoints — but it should still be read as an
+exploratory slice of the platform rather than a finished front end.
 
-_As of cdda64be._
+_As of 9a328789._
 
 ## What the UI does today
 
-The `app` binary (`src/ui/`) is a Yew 0.21 single-page app with a login flow and an
-object explorer. Unauthenticated, it renders a login form that calls `POST
+The `app` binary (`src/ui/`) is a Yew 0.21 single-page app with a login flow and a
+multi-surface workspace. Unauthenticated, it renders a login form that calls `POST
 /auth/login` against the existing backend auth (bearer token stored in
 `sessionStorage` under `loom_token`; the API base is resolved at runtime from
 `config.js`, so one bundle works both served-by-query-api and detached/CORS).
-Once authenticated, the `Explorer` (`src/ui/src/explorer.rs`) renders a three-pane,
-master-detail object browser: a type sidebar fed by `GET /ontology/types`, a
-paginated object `DataTable` with a "Load more" button appending the next
-keyset-cursor page from `GET /objects/{type}?limit=&cursor=`, and a detail drawer
-(single "Object" tab) showing the selected row's fields. A 401 from any fetch fails
-closed to logout. Row selection is by **stable id, carried in the URL** (see
-[Routing and URL state](#routing-and-url-state-617)) — a list index would be
+Once authenticated, it renders the **`Workspace`** (`src/ui/src/main.rs`): the
+`Shell` chrome from `loom_ui_components` — a surface nav, a logout control, and a
+resizable, width-persisting drawer region — wrapping one of the surfaces in
+`src/ui/src/surfaces/`. Four are live, each a list-plus-drawer pane pair:
+**Catalog** (`catalog.rs`), **Transforms** (`transforms.rs`), **Query**
+(`query.rs`) and **Ontology** (`ontology.rs` — a type list fed by
+`GET /ontology/types`, with a Properties/Links drawer whose details are eagerly
+loaded alongside the list from `GET /ontology/types/{name}`); **Workbooks** and
+**Dashboards** render a `StubView` placeholder. `Workspace` owns the per-surface
+load effects and passes state down and callbacks up. A 401 from any fetch fails
+closed to logout. The active surface, the selected row and the drawer tab all live
+in the URL fragment, and row selection is by **stable id, never a list index** (see
+[Routing and URL state](#routing-and-url-state-617)) — an index would be
 meaningless in a link and unresolvable before the list has loaded.
 
 Underneath sits the component library, `loom_ui_components`
@@ -49,8 +54,9 @@ reshaping the list client-side. The query string is built by a pure
 control changes, guarded by its own `FetchGeneration` counter so an out-of-order
 arrival can't stale the list. The chip options are refreshed only from an
 **unfiltered** load, so selecting a project never collapses them to the filtered
-subset, and changing any control clears the drawer selection (row indices shift when
-the list reorders). The sort control is rendered as buttons, not a `<select>` —
+subset, and changing any control clears the drawer selection — re-sorting or
+filtering changes *what the list contains*, so the row you were looking at may no
+longer be in it. The sort control is rendered as buttons, not a `<select>` —
 reading a `<select>` value would need `web_sys::HtmlSelectElement`, which this crate
 does not enable.
 
@@ -255,7 +261,10 @@ Catalog drawer resolves schema/name straight out of the route id, so a deep-link
 drawer renders its fetches immediately, before the dataset list has loaded. The
 **Ontology** drawer is deliberately asymmetric — it is gated on the type being
 present in the loaded list (type details are eagerly loaded alongside the list), so
-an unknown type name shows *no* drawer rather than a permanent "Loading…".
+an unknown type name shows *no* drawer rather than a permanent "Loading…". The
+**Transforms** drawer is a third gate again: it renders only once the per-selection
+`GET /admin/transforms/{name}` definition fetch has landed, so
+`#/transforms/does-not-exist` shows no drawer and no message at all.
 `Route::selection_on`/`tab_on` scope the route to a single surface, so the
 per-surface effects — which stay mounted whichever surface is active — can never read
 each other's selection.
