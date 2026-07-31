@@ -16,7 +16,6 @@ use iceberg::CatalogBuilder;
 use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tokio_stream::wrappers::UnixListenerStream;
-use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 
 use engine_wire::pb::engine_control_server::EngineControlServer;
@@ -200,35 +199,17 @@ pub async fn run(
     // The send fails only if the receiver dropped (e.g. throwaway in main.rs), which is fine.
     let _sent = ready.send(());
 
-    let reconcile_cp = sched_cp.clone();
+    let loops = scheduler::BackgroundLoops::spawn(sched_cp, &tuning);
 
-    let sched_cancel = CancellationToken::new();
-    let sched = tokio::spawn(scheduler::scheduler_loop(
-        sched_cp,
-        tuning.scheduler_tick,
-        sched_cancel.clone(),
-    ));
-
-    let reconcile_cancel = CancellationToken::new();
-    let reconcile = tokio::spawn(scheduler::reconcile_loop(
-        reconcile_cp,
-        tuning.reconcile_tick,
-        tuning.reconcile_grace,
-        reconcile_cancel.clone(),
-    ));
-
-    Server::builder()
+    let served = Server::builder()
         .add_service(EngineControlServer::new(control))
         .add_service(FlightServiceServer::new(flight))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
-        .await?;
+        .await;
 
-    // On a serve ERROR the `?` above skips this cancel and the scheduler task
-    // is reaped by process/runtime teardown instead — acceptable, we are
-    // exiting either way.
-    sched_cancel.cancel();
-    drop(sched.await);
-    reconcile_cancel.cancel();
-    drop(reconcile.await);
+    // Stop the loops on EVERY exit — a serve error previously skipped both cancels,
+    // leaving them ticking against the pool while the process tore down.
+    loops.stop().await;
+    served?;
     Ok(())
 }
