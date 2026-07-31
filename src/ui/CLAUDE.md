@@ -6,8 +6,9 @@ bundles to browser-loadable JS via wasm-bindgen.
 Once authenticated, the `app` renders the **`Workspace`** (`src/main.rs`): the
 `Shell` chrome from `loom_ui_components` (surface nav, logout, a resizable
 width-persisting drawer region) wrapping one of the surfaces in `src/surfaces/` —
-**Catalog**, **Transforms**, **Query** and **Ontology** are live list+drawer pane
-pairs, **Workbooks**/**Dashboards** are `StubView` placeholders. `Workspace` owns
+**Catalog**, **Transforms** and **Ontology** are live list+drawer pane
+pairs, **Query** owns its whole pane (no drawer), **Workbooks**/**Dashboards** are
+`StubView` placeholders. `Workspace` owns
 the load effects and the per-surface state and passes it down / callbacks up; the
 location (surface, selection, drawer tab, Catalog list controls) lives in the URL —
 see **Routing** below. Response parsing is pure in `loom_ui_core` (`rust_test`'d);

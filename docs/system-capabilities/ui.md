@@ -20,12 +20,12 @@ multi-surface workspace. Unauthenticated, it renders a login form that calls `PO
 Once authenticated, it renders the **`Workspace`** (`src/ui/src/main.rs`): the
 `Shell` chrome from `loom_ui_components` — a surface nav, a logout control, and a
 resizable, width-persisting drawer region — wrapping one of the surfaces in
-`src/ui/src/surfaces/`. Four are live, each a list-plus-drawer pane pair:
-**Catalog** (`catalog.rs`), **Transforms** (`transforms.rs`), **Query**
-(`query.rs`) and **Ontology** (`ontology.rs` — a type list fed by
+`src/ui/src/surfaces/`. Four are live: **Catalog** (`catalog.rs`), **Transforms**
+(`transforms.rs`) and **Ontology** (`ontology.rs` — a type list fed by
 `GET /ontology/types`, with a Properties/Links drawer whose details are eagerly
-loaded alongside the list from `GET /ontology/types/{name}`); **Workbooks** and
-**Dashboards** render a `StubView` placeholder. `Workspace` owns the per-surface
+loaded alongside the list from `GET /ontology/types/{name}`) are list-plus-drawer
+pane pairs; **Query** (`query.rs`) owns its whole pane, with no drawer;
+**Workbooks** and **Dashboards** render a `StubView` placeholder. `Workspace` owns the per-surface
 load effects and passes state down and callbacks up. A 401 from any fetch fails
 closed to logout. The active surface, the selected row and the drawer tab all live
 in the URL fragment, and row selection is by **stable id, never a list index** (see
