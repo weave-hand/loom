@@ -4,8 +4,15 @@
 //! one-line dispatch arm. It reuses the shared `SqlEditor` for input and the
 //! `DataTable` primitive for the governed result grid, and POSTs to `/sql` via
 //! `net::run_sql` (a 401 fails closed to logout, mirroring the other surfaces).
+//!
+//! It is also the only `SqlEditor` consumer that opts into **server-side** diagnostics:
+//! it passes a `validate` callback that the editor drives on its own debounce, answering
+//! from `POST /sql/validate` (`net::validate_sql`). Every other editor in the app leaves
+//! the prop unset and is unaffected.
 
-use loom_ui_components::{Button, Column, DataTable, Panel, SqlEditor, TableRow};
+use loom_ui_components::{
+    Button, Column, DataTable, Panel, SqlEditor, TableRow, ValidateRequest, ValidateResponse,
+};
 use loom_ui_core::{Align, ButtonVariant, QueryResult};
 use stylist::yew::styled_component;
 use wasm_bindgen_futures::spawn_local;
@@ -116,10 +123,39 @@ pub fn query_view(props: &QueryViewProps) -> Html {
         })
     };
 
+    // Server-side diagnostics: the editor asks (debounced), we fetch, and the editor
+    // decides whether the answer is still current — this callback only moves bytes. A
+    // failed validation is deliberately SILENT: the client-side engine's squiggles remain
+    // and a transport blip must not shout at someone who is only typing. A 401 still fails
+    // closed to logout, like every other fetch on this surface.
+    let on_validate = {
+        let token = props.token.to_string();
+        let on_logout = props.on_logout.clone();
+        Callback::from(move |req: ValidateRequest| {
+            let token = token.clone();
+            let on_logout = on_logout.clone();
+            spawn_local(async move {
+                match net::validate_sql(&net::api_base(), &token, &req.sql).await {
+                    Ok(diagnostics) => req.respond.emit(ValidateResponse {
+                        sql: req.sql,
+                        diagnostics,
+                    }),
+                    Err(FetchError::Unauthorized) => on_logout.emit(()),
+                    Err(_other) => {}
+                }
+            });
+        })
+    };
+
     let run_label = if *running { "Running…" } else { "Run" };
     html! {
         <Panel>
-            <SqlEditor value={(*sql).clone()} on_change={on_change} read_only={false} />
+            <SqlEditor
+                value={(*sql).clone()}
+                on_change={on_change}
+                read_only={false}
+                validate={Some(on_validate)}
+            />
             <div>
                 <Button variant={ButtonVariant::Primary} disabled={*running} onclick={on_run}>
                     { run_label }

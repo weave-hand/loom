@@ -217,3 +217,49 @@ renders whatever the governed engine returns. The response parser
 pure and `rust_test`'d; the component itself is verified in the gallery/e2e like
 every other surface. Deferred: feeding the live `/datasets` schema into the
 editor's completion provider (today the console's editor takes an empty schema).
+
+## Server-side SQL diagnostics in the console (#657)
+
+The console's editor now also squiggles what the *engine* thinks, not only what
+the client-side heuristics can guess. `SqlEditor` gained an optional `validate`
+prop (`Callback<ValidateRequest>`): when set, the editor debounces 500 ms after
+the last keystroke and emits a `ValidateRequest { sql, respond }`. The component
+owns *when* to ask and *what to do with the answer*; the caller owns the
+transport — the split exists because Yew callbacks are synchronous, so the
+async fetch cannot live inside the editor. The initial value is validated
+through that same debounce rather than immediately, so a mount that is typed
+into straight away produces one request, not a mount request plus a typing one.
+`QueryView` answers by calling `net::validate_sql` (`POST /sql/validate`, see
+[query-api.md](query-api.md)) and parsing the body with the pure
+`loom_ui_core::parse_server_diagnostics` — the server's typed positions when it
+has them, and `anchor_diagnostic` when they are `null`, which is every *plan*
+error. Anchoring resolves the identifiers the message names (the offending
+field first, then each quoted span's last dotted segment) as whole words in the
+*live* editor text, falls back to the whole first non-empty line, and drops the
+diagnostic outright when there is no non-empty line to point at. Both functions
+are `rust_test`'d (`//src/ui:anchor-diagnostic`); a malformed body degrades to
+"no squiggles" rather than an error.
+
+Four properties are load-bearing:
+
+- **Two marker owners.** Client diagnostics publish under `loom`, server ones
+  under `loom-server`. Monaco's `set_model_markers` replaces only the named
+  owner's set, so the two engines publish independently and neither clears the
+  other's squiggles (an empty server list clears the server's alone).
+- **Stale responses are dropped.** The response echoes the `sql` that was
+  validated; if the model's current text no longer matches it, the answer is
+  discarded instead of published, so markers never land on text the user has
+  already edited past.
+- **Unmount drops both the armed debounce and any in-flight answer.** Cleanup
+  cancels the pending `setTimeout` before the model is disposed, and takes the
+  model out of the slot the response callback reads — so a request that cannot
+  be cancelled becomes a no-op rather than a `get_value()` on a disposed model
+  (which throws).
+- **A failed validation is silent.** A transport blip must not shout at someone
+  who is only typing, so the client-side squiggles simply remain and nothing is
+  reported; a 401 still fails closed to logout like every other fetch on this
+  surface.
+
+An `SqlEditor` with no `validate` prop is unchanged — only the client-side
+engine publishes markers — so the Transforms drawer editors and the gallery are
+untouched and the Query console is the only opt-in.

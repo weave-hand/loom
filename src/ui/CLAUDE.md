@@ -59,14 +59,25 @@ clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
   keyword/table/column completion. The pure completion engine (`sql_completions`,
   `cursor_context`) lives in `loom_ui_core`, lint-clean and `rust_test`'d via
   `//src/ui:sql-completions` and `//src/ui:cursor-context` — the DOM-free logic is
-  fully covered even though the Monaco-hosting component itself isn't. Editor chrome
+  fully covered even though the Monaco-hosting component itself isn't. It also takes an
+  optional **`validate`** prop (`Callback<ValidateRequest>`): when set, the editor
+  debounces 500 ms after the last keystroke, hands the caller a `ValidateRequest { sql,
+  respond }` to fetch `POST /sql/validate` with (the transport lives in the caller
+  because Yew callbacks are synchronous), and publishes the answer as markers under the
+  **`loom-server`** owner — distinct from the client-side `sql_diagnostics` engine's
+  **`loom`** owner, so `set_model_markers` replaces one source's squiggles without
+  clearing the other's. A response whose echoed `sql` no longer matches the live model is
+  dropped, and unmount disarms the debounce and empties the shared model slot so a late
+  answer is a no-op instead of a `get_value()` on a disposed model. Left unset — every
+  editor but the Query console's — the component behaves exactly as it did before.
+  Editor chrome
   uses a defined `loom-dark` Monaco theme (`monaco::sys::editor::define_theme`, an
   `IStandaloneThemeData` inheriting `vs-dark` with `editor.background`/`editor.foreground`
   overridden to the `--loom-bg`/`--loom-text` values) rather than the builtin `vs-dark`.
   Monaco's JS ships **vendored inside the crate** via wasm-bindgen module snippets — the
   `--target web` build emits `snippets/` into `dist/`, already captured by the `:bundle`/
   `:gallery-bundle` genrules' `out=dist`; no CDN, no separate copy step. **Known
-  limitations:** props (`on_change`/`read_only`/`schema`) are captured at mount time by
+  limitations:** props (`on_change`/`read_only`/`schema`/`validate`) are captured at mount time by
   the mount effect, so a caller changing them post-mount won't see it take effect; and the
   completion provider is registered once per mounted editor instance, so two
   concurrently-mounted `SqlEditor`s would double-register Monaco's `sql` provider (fine
