@@ -1,7 +1,10 @@
-//! The engine's background loops stop when it drains. `run` owns them as a unit so
-//! the serve path cannot cancel one and forget the other — and so a serve *error*
-//! cannot skip both, which is what the previous `serve(...).await?`-before-cancel
-//! ordering did.
+//! The engine's background loops stop together when `BackgroundLoops::stop()` is
+//! called: both join handles resolve, so neither loop is left ticking after a
+//! drain. This test drives `stop()` directly — it does not exercise `run`'s serve
+//! path, so it does not by itself prove that a serve *error* still reaches
+//! `stop()` rather than skipping it via an early `?`. That ordering (calling
+//! `stop()` unconditionally, not gated behind `serve(...).await?`) is enforced by
+//! `run`'s structure in `run.rs`, not by this test.
 use std::sync::Arc;
 use std::time::Duration;
 

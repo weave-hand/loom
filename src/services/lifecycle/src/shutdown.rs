@@ -85,7 +85,18 @@ impl Shutdown {
     pub fn install(bound: Duration) -> Shutdown {
         match register_signals() {
             Ok(signals) => Shutdown::driven_by(signals, bound),
-            Err(_) => Shutdown::driven_by(std::future::ready(()), bound),
+            Err(e) => {
+                // This degradation makes the process drain immediately and exit 0,
+                // which looks like a clean, intentional completion under
+                // Kubernetes — with nothing else logged, an operator has no way to
+                // tell "finished" from "could not listen for SIGTERM." Log it at
+                // the same severity as the drain-timeout case so it is not silent.
+                tracing::error!(
+                    error = %e,
+                    "failed to register SIGINT/SIGTERM handlers; shutting down immediately instead of listening for signals"
+                );
+                Shutdown::driven_by(std::future::ready(()), bound)
+            }
         }
     }
 

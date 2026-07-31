@@ -21,6 +21,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // One env snapshot drives both the bootstrap reads and the composed config.
     let env = loom_config::env_map();
+
+    // Registered immediately after the env snapshot, before any of the config
+    // parsing/store-building work below — a SIGTERM arriving during that
+    // window is caught here instead of hitting the kernel default and killing
+    // the process outright. SIGTERM is what container runtimes send; the
+    // previous `ctrl_c()`-only listener (SIGINT) meant every Kubernetes
+    // rolling restart SIGKILLed this process with a job in flight.
+    // `run_bounded` (below) keeps a wedged job from holding the process past
+    // the termination grace period — its lease then lapses and reclaim re-runs
+    // it.
+    let shutdown = loom_lifecycle::Shutdown::install(loom_lifecycle::shutdown_timeout(&env)?);
+
     let socket = env
         .get("LOOM_ENGINE_SOCKET")
         .ok_or("LOOM_ENGINE_SOCKET must be set")?
@@ -42,12 +54,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let write = Arc::new(store_config::build_write_store(&store_cfg)?);
     let mut threshold_bytes: i64 = 128 * 1024 * 1024;
     loom_config::overlay_opt(&env, "LOOM_COMPACT_THRESHOLD_BYTES", &mut threshold_bytes)?;
-
-    // SIGTERM is what container runtimes send; the previous `ctrl_c()`-only listener
-    // (SIGINT) meant every Kubernetes rolling restart SIGKILLed this process with a
-    // job in flight. `run_bounded` keeps a wedged job from holding the process past
-    // the termination grace period — its lease then lapses and reclaim re-runs it.
-    let shutdown = loom_lifecycle::Shutdown::install(loom_lifecycle::shutdown_timeout(&env)?);
 
     loom_lifecycle::run_bounded(
         &shutdown,

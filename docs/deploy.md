@@ -10,7 +10,7 @@ submoduled — buck2 fetches the pinned commit automatically (see *Build rules*
 below). The deployable targets live in their own `deploy//` buck2 cell
 (deliberately off the normal `//src` CI sweep — see below).
 
-_Capabilities as of 49167301._
+_Capabilities as of 436e7bd7._
 
 ## What ships
 
@@ -215,7 +215,10 @@ composite — shuts down on **SIGINT and SIGTERM**, from a single definition in
 the Postgres-free `loom_lifecycle` crate. All five install the handlers via
 `Shutdown::install`, which registers them **synchronously at startup** —
 before the binary does anything else — so a SIGTERM arriving in the first
-instants of process life is caught rather than killing the process.
+instants of process life is caught rather than killing the process. If
+registration itself fails (the signal handlers cannot be installed), the
+process logs at ERROR naming the cause and degrades to draining immediately
+rather than exiting silently.
 
 What draining means is per-service:
 
@@ -232,9 +235,12 @@ What draining means is per-service:
 | --- | --- | --- | --- |
 | `LOOM_SHUTDOWN_TIMEOUT_MS` | the four service binaries (ingest, query-api, worker, engine) only | `20000` | Bounds how long a signalled process waits for its drain to finish before exiting anyway. When it fires, the process logs at ERROR (`graceful shutdown timed out; exiting with work still in flight`) and exits cleanly; a severed job's lease lapses and reclaim re-runs it. |
 
-The **standalone composite is deliberately not bounded** by this timeout: it
-drains its own `JoinSet` and stops the embedded Postgres on shutdown, and
-cutting that drain short would leave the embedded cluster running.
+The **standalone `loom` binary reads and validates `LOOM_SHUTDOWN_TIMEOUT_MS`
+too** (a malformed value still fails its startup, same as the four service
+binaries) but **never applies it as a bound** — its drain is deliberately
+unbounded. It drains its own `JoinSet` and stops the embedded Postgres on
+shutdown, and cutting that drain short would skip stopping the embedded
+Postgres, orphaning the cluster process — worse than waiting.
 
 The 20 s default is chosen against Kubernetes' 30 s default
 `terminationGracePeriodSeconds` — the chart does not override that default, so

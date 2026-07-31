@@ -40,6 +40,27 @@ async fn run_bounded_returns_the_work_result_when_work_finishes_first() {
     assert_eq!(out, Err("serve failed"), "the work's own result must win");
 }
 
+// `run_bounded`'s `select!` is `biased;` so already-completed work wins over a
+// deadline that fired in the same tick. Cancel the token BEFORE calling
+// `run_bounded` (rather than relying on `driven_by`'s background task to race
+// it) so `sd.drain_deadline()` is Ready on its very first poll too — with a
+// `Duration::ZERO` bound, `token.cancelled()` and the trailing zero-length
+// `sleep` both resolve without registering a waiter, so both the work arm and
+// the deadline arm are simultaneously ready on the first poll of `select!`.
+// Without `biased;` (or with the arms reordered), `select!` picks a ready
+// branch at random, so this would flake rather than fail outright.
+#[tokio::test]
+async fn run_bounded_prefers_ready_work_over_a_deadline_that_fired_in_the_same_tick() {
+    let sd = Shutdown::driven_by(std::future::pending(), Duration::ZERO);
+    sd.token().cancel();
+    let out: Result<(), &str> = run_bounded(&sd, Box::pin(async { Err("work won") })).await;
+    assert_eq!(
+        out,
+        Err("work won"),
+        "biased select must prefer already-ready work over the deadline arm"
+    );
+}
+
 // The bound is only useful if it is loud: an operator seeing a pod exit needs to
 // know work was severed rather than drained. `#[traced_test]` captures the span
 // for this test; assert on the MESSAGE, not the fn name (which would be trivially
