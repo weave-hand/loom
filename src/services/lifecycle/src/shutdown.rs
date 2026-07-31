@@ -17,7 +17,7 @@ use std::future::Future;
 /// module exists to prevent, and a real one during fast rolling restarts.
 ///
 /// Must be called from within a tokio runtime (the signal driver lives there).
-fn register_signals() -> std::io::Result<impl Future<Output = ()> + Send + 'static> {
+pub(crate) fn register_signals() -> std::io::Result<impl Future<Output = ()> + Send + 'static> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
