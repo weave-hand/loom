@@ -13,6 +13,7 @@ use control_plane_postgres::fixture::{IcebergWriter, PgFixture};
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use engine::flight::FlightDataService;
 use engine_wire::flight::{FlightSqlClient, GovernedStatementQuery};
+use futures::StreamExt as _;
 use futures::TryStreamExt;
 use loom_test_flight::spawn_flight_uds;
 use loom_test_seed::local_sql_catalog;
@@ -40,6 +41,7 @@ async fn do_get_governed_applies_policy() {
         serving_store: None,
         pool,
         cp,
+        sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
     };
 
     // Policy: only rows with id >= 2 are visible on `s.orders`.
@@ -173,5 +175,74 @@ async fn client_execute_governed_stream_applies_policy() {
     assert!(
         names.iter().all(|n| n == "***"),
         "every name value must be masked to the literal '***', got {names:?}"
+    );
+}
+
+/// The budget breach must reach the wire as `resource_exhausted`, NOT `internal`.
+/// A sort raises `ResourcesExhausted` on first POLL, so the fault travels as a
+/// stream item — through `encode_response`, whose tail previously mapped every
+/// stream error to `Status::internal`. This pins the class-preserving tail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn budget_breach_reaches_the_wire_as_resource_exhausted() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let wh = tempfile::tempdir().expect("warehouse");
+
+    let cols = vec![
+        ("id".to_string(), "long".to_string(), false),
+        ("name".to_string(), "string".to_string(), false),
+    ];
+    let writer = IcebergWriter::new(pool.clone(), dsn.clone());
+    writer.seed("s", "orders", &cols, &[500]).await;
+
+    let file_catalog = Arc::new(local_sql_catalog(dsn, &wh.path().display().to_string()).await);
+    let svc = FlightDataService {
+        catalog: file_catalog,
+        serving_catalog: IcebergCatalog::new(pool.clone()),
+        serving_store: None,
+        pool,
+        cp,
+        // A pool too small to sort, and no deadline: the memory mechanism is the
+        // one under test here.
+        sql_limits: engine_serving::GovernedSqlLimits {
+            memory_bytes: Some(1),
+            deadline: None,
+        },
+    };
+
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: TableRef {
+                schema: "s".into(),
+                name: "orders".into(),
+            },
+            row_filters: vec![],
+            denied: vec![],
+            masked: vec![],
+        }],
+    };
+    let ticket = GovernedStatementQuery {
+        sql: r#"SELECT "id", "name" FROM "s"."orders" ORDER BY "name" DESC"#.to_string(),
+        catalog: cat,
+    };
+
+    let resp = svc
+        .do_get(Request::new(Ticket {
+            ticket: ticket.encode().into(),
+        }))
+        .await
+        .expect("do_get opens; the breach arrives mid-stream");
+
+    let items: Vec<_> = resp.into_inner().collect::<Vec<_>>().await;
+    let status = items
+        .into_iter()
+        .find_map(std::result::Result::err)
+        .expect("the stream must carry an error item");
+    assert_eq!(
+        status.code(),
+        tonic::Code::ResourceExhausted,
+        "budget breach must not collapse to internal/500; got: {status:?}"
     );
 }

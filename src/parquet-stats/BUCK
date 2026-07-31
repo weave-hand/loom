@@ -1,0 +1,42 @@
+load("//src:loom_test.bzl", "rust_test")
+
+rust_library(
+    name = "parquet-stats",
+    crate = "parquet_stats",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [
+        "//src/control-plane/core:core",
+        "//third-party:parquet",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "merge",
+    crate = "merge",
+    srcs = ["tests/merge.rs"],
+    crate_root = "tests/merge.rs",
+    edition = "2024",
+    deps = [
+        ":parquet-stats",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:bytes",
+        "//third-party:parquet",
+    ],
+)
+
+rust_test(
+    name = "ordering",
+    crate = "ordering",
+    srcs = ["tests/ordering.rs"],
+    crate_root = "tests/ordering.rs",
+    edition = "2024",
+    deps = [
+        ":parquet-stats",
+        "//src/control-plane/core:core",
+    ],
+)

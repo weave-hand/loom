@@ -5,7 +5,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Auth, NewUser, SubjectId};
+use control_plane_core::{Auth, NewUser, Redacted, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
 use service_runtime::{AuthState, hash_password, login_routes, session_routes, token_sha256};
@@ -23,7 +23,7 @@ async fn seed_user(cp: &MemoryControlPlane, username: &str, password: &str) {
     cp.create_user(&NewUser {
         subject_id: SubjectId(username.into()),
         username: username.into(),
-        password_phc: hash_password(password).unwrap(),
+        password_phc: Redacted::new(hash_password(password).unwrap()),
     })
     .await
     .unwrap();

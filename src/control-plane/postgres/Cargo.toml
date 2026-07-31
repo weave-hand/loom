@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 control-plane-core = { path = "../core" }
+# The shared parquet-footer stats merge (src/iceberg_stats.rs delegates to it).
+# Declared here — not just in BUCK — because tools/sqlx-prepare.sh cargo-compiles
+# this crate (`cargo sqlx prepare -- --lib`) to regenerate the .sqlx cache.
+parquet-stats = { path = "../../parquet-stats" }
 async-trait = "0.1"
 # Local unix-socket connections only (no TLS). Compile-time query!/query_scalar!
 # macros validate SQL against the committed .sqlx offline cache (see CLAUDE.md).

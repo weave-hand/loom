@@ -15,7 +15,7 @@ use axum::http::header::AUTHORIZATION;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, Auth, Catalog, ControlPlaneError, Effect, NewUser, ObjectType, Ontology,
-    PolicyTarget, PropertyDef, RoleId, SubjectId, TableRef, TypeName,
+    PolicyTarget, PropertyDef, Redacted, RoleId, SubjectId, TableRef, TypeName,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::PgFixture;
@@ -48,7 +48,7 @@ async fn session_token(pg: &PgControlPlane, subject: &str) -> String {
         .create_user(&NewUser {
             subject_id: SubjectId(subject.into()),
             username: subject.into(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await
     {

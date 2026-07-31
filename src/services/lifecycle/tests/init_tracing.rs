@@ -1,4 +1,4 @@
-use service_runtime::init_tracing;
+use loom_lifecycle::init_tracing;
 
 #[test]
 fn double_call_does_not_panic() {

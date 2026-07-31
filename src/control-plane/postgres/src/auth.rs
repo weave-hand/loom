@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use control_plane_core::{
     Auth, ControlPlaneError, LockoutPolicy, NewServiceAccount, NewUser, Page, PageReq,
-    PasswordCredential, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
+    PasswordCredential, Redacted, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -52,7 +52,7 @@ impl Auth for PgControlPlane {
         sqlx::query!(
             "insert into auth.password_credential (subject_id, password_phc) values ($1, $2)",
             &user.subject_id.0,
-            &user.password_phc,
+            user.password_phc.expose(),
         )
         .execute(&mut *tx)
         .await
@@ -75,7 +75,7 @@ impl Auth for PgControlPlane {
         .map_err(backend)?;
         Ok(row.map(|r| PasswordCredential {
             subject_id: SubjectId(r.subject_id),
-            password_phc: r.password_phc,
+            password_phc: Redacted::new(r.password_phc),
             locked_until: r.locked_until,
         }))
     }
@@ -230,12 +230,12 @@ impl Auth for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
+    async fn update_password(&self, subject: &SubjectId, new_phc: &Redacted<String>) -> Result<()> {
         let res = sqlx::query!(
             "update auth.password_credential set password_phc = $2, updated_at = now() \
              where subject_id = $1",
             &subject.0,
-            new_phc,
+            new_phc.expose(),
         )
         .execute(self.pool())
         .await
@@ -250,7 +250,10 @@ impl Auth for PgControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>> {
+    async fn password_phc_for_subject(
+        &self,
+        subject: &SubjectId,
+    ) -> Result<Option<Redacted<String>>> {
         let phc = sqlx::query_scalar!(
             "select password_phc from auth.password_credential where subject_id = $1",
             &subject.0,
@@ -258,7 +261,7 @@ impl Auth for PgControlPlane {
         .fetch_optional(self.pool())
         .await
         .map_err(backend)?;
-        Ok(phc)
+        Ok(phc.map(Redacted::new))
     }
 
     #[tracing::instrument(skip(self, keep), level = "debug")]

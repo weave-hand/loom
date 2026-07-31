@@ -50,3 +50,15 @@ fn conflict_is_aborted_with_inner_message() {
     assert_eq!(s.code(), tonic::Code::Aborted);
     assert_eq!(s.message(), "expected version 3, saw 4");
 }
+
+#[test]
+fn resource_exhausted_is_resource_exhausted_with_inner_message() {
+    let s = serving_status(EngineServingError::ResourceExhausted(
+        "statement exceeded its wall-clock budget (LOOM_SQL_TIMEOUT_SECS)".into(),
+    ));
+    assert_eq!(s.code(), tonic::Code::ResourceExhausted);
+    assert_eq!(
+        s.message(),
+        "statement exceeded its wall-clock budget (LOOM_SQL_TIMEOUT_SECS)"
+    );
+}

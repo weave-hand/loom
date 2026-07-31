@@ -24,9 +24,15 @@ async fn run(
     sql: &str,
     cat: &GovernedCatalog,
 ) -> Vec<arrow::record_batch::RecordBatch> {
-    let stream = execute_governed_sql_stream(catalog, sql, cat, None)
-        .await
-        .expect("governed stream");
+    let stream = execute_governed_sql_stream(
+        catalog,
+        sql,
+        cat,
+        None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
+    )
+    .await
+    .expect("governed stream");
     stream.try_collect().await.expect("collect")
 }
 
@@ -169,9 +175,14 @@ async fn denied_column_is_absent() {
         }],
     };
     // Naming the denied column => planning error.
-    let err =
-        execute_governed_sql_stream(&catalog, "SELECT \"secret\" FROM \"s\".\"t\"", &cat, None)
-            .await;
+    let err = execute_governed_sql_stream(
+        &catalog,
+        "SELECT \"secret\" FROM \"s\".\"t\"",
+        &cat,
+        None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
+    )
+    .await;
     assert!(err.is_err(), "denied column must not resolve");
     // SELECT * must not include it.
     let batches = run(&catalog, "SELECT * FROM \"s\".\"t\"", &cat).await;
@@ -312,8 +323,14 @@ async fn unlisted_table_is_not_registered() {
     let catalog = IcebergCatalog::new(pool);
     // No GovernedTable entry at all => the table is not registered — closed-world.
     let cat = GovernedCatalog::default();
-    let result =
-        execute_governed_sql_stream(&catalog, "SELECT \"id\" FROM \"s\".\"t\"", &cat, None).await;
+    let result = execute_governed_sql_stream(
+        &catalog,
+        "SELECT \"id\" FROM \"s\".\"t\"",
+        &cat,
+        None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
+    )
+    .await;
     let Err(err) = result else {
         panic!("unlisted table must not resolve");
     };

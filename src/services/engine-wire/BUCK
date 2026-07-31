@@ -186,3 +186,16 @@ rust_test(
         "//third-party:tonic",
     ],
 )
+
+rust_test(
+    name = "governed-sql-status",
+    crate = "governed_sql_status",
+    srcs = ["tests/governed_sql_status.rs"],
+    crate_root = "tests/governed_sql_status.rs",
+    edition = "2024",
+    deps = [
+        ":engine-wire",
+        "//third-party:arrow-flight",
+        "//third-party:tonic",
+    ],
+)

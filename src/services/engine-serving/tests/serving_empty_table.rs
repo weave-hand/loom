@@ -245,9 +245,15 @@ async fn governed_read_of_empty_table_returns_zero_rows() {
             masked: vec![],
         }],
     };
-    let stream = execute_governed_sql_stream(&catalog, "SELECT * FROM \"s\".\"empty\"", &cat, None)
-        .await
-        .expect("governed SELECT * over a live-but-empty table must plan");
+    let stream = execute_governed_sql_stream(
+        &catalog,
+        "SELECT * FROM \"s\".\"empty\"",
+        &cat,
+        None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
+    )
+    .await
+    .expect("governed SELECT * over a live-but-empty table must plan");
     let batches: Vec<_> = stream.try_collect().await.expect("collect");
     let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(rows, 0);

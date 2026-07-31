@@ -8,6 +8,7 @@ rust_library(
     deps = [
         "//src/control-plane/core:core",
         "//src/loom-config:loom-config",
+        "//src/parquet-stats:parquet-stats",
         "//third-party:arrow",
         "//third-party:bytes",
         "//third-party:datafusion",
@@ -121,5 +122,19 @@ rust_test(
         "//third-party:datafusion",
         "//third-party:object_store",
         "//third-party:tokio",
+    ],
+)
+
+rust_test(
+    name = "stats-equivalence",
+    crate = "stats_equivalence",
+    srcs = ["tests/stats_equivalence.rs"],
+    crate_root = "tests/stats_equivalence.rs",
+    edition = "2024",
+    deps = [
+        ":datafusion-io",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:parquet",
     ],
 )
