@@ -336,11 +336,18 @@ async fn cancel_mid_job_lets_the_in_flight_job_finish() {
         1,
         "the in-flight job was severed by cancellation"
     );
+    // `MemoryControlPlane::dequeue` only returns a job whose lock has EXPIRED
+    // (`locked_at < now - lock_timeout`); a still-claimed-but-unexpired row is
+    // filtered out identically to a completed (removed) one. Wait past the
+    // lease before probing so a job left `running` (claimed but never
+    // completed) WOULD come back here — only then does `is_none()` actually
+    // distinguish "completed and removed" from "left claimed".
+    tokio::time::sleep(LOCK_TIMEOUT + Duration::from_millis(100)).await;
     assert!(
         cp.dequeue(&[KIND.to_string()], "probe")
             .await
             .unwrap()
             .is_none(),
-        "the job was completed and its lease released, not left claimed"
+        "the job was completed and its lease released, not left claimed and reclaimable"
     );
 }
