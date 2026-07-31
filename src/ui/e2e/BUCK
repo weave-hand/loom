@@ -57,3 +57,22 @@ loom_fixture_test(
         "LOOM_UI_DIR": "$(location :bundle-wasm)",
     },
 )
+
+loom_fixture_test(
+    name = "routing",
+    crate = "routing",
+    srcs = ["tests/routing.rs"],
+    crate_root = "tests/routing.rs",
+    deps = [
+        ":e2e-support",
+        "//third-party:fantoccini",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+        "//src/control-plane/postgres:postgres",
+    ],
+    env = {
+        "CHROME_BIN": "$(location //third-party/browser:chrome-headless-shell)/chrome-headless-shell",
+        "CHROMEDRIVER_BIN": "$(location //third-party/browser:chromedriver)",
+        "LOOM_UI_DIR": "$(location :bundle-wasm)",
+    },
+)

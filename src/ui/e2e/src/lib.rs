@@ -194,3 +194,42 @@ pub async fn start_browser() -> Result<Browser, String> {
         _driver: DriverGuard(child),
     })
 }
+
+/// Load the app and sign in as the seeded admin, returning once the Shell's `<nav>`
+/// has rendered. Shared by the e2e tests that need an authenticated workspace;
+/// `tests/login.rs` deliberately does not use it, because it asserts on the
+/// intermediate states of the sign-in itself.
+pub async fn sign_in(client: &Client, base_url: &str) {
+    client.goto(base_url).await.expect("load app");
+    client
+        .wait()
+        .for_element(fantoccini::Locator::Css("#login-username"))
+        .await
+        .expect("login form");
+    client
+        .find(fantoccini::Locator::Css("#login-username"))
+        .await
+        .expect("username field")
+        .send_keys(ADMIN_USER)
+        .await
+        .expect("type username");
+    client
+        .find(fantoccini::Locator::Css("#login-password"))
+        .await
+        .expect("password field")
+        .send_keys(ADMIN_PASS)
+        .await
+        .expect("type password");
+    client
+        .find(fantoccini::Locator::Css(".signin"))
+        .await
+        .expect("sign-in button")
+        .click()
+        .await
+        .expect("click sign in");
+    client
+        .wait()
+        .for_element(fantoccini::Locator::Css("nav"))
+        .await
+        .expect("shell nav after sign-in");
+}
