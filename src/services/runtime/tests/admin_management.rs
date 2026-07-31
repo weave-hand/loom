@@ -626,6 +626,25 @@ const TYPED_TRANSFORM_BODY: &str = r#"{
              "sql": "select 1"}
 }"#;
 
+const MICROBATCH_TRANSFORM_BODY: &str = r#"{
+    "name": "rollup_mv",
+    "body": {"kind": "microbatch",
+             "source": {"schema": "main", "name": "events"},
+             "output": {"schema": "main", "name": "rollup"},
+             "buckets": 4,
+             "sql": "select 1"}
+}"#;
+
+const MICROBATCH_JOIN_TRANSFORM_BODY: &str = r#"{
+    "name": "enriched_mv",
+    "body": {"kind": "microbatch_join",
+             "source": {"schema": "main", "name": "events"},
+             "enrich": {"schema": "main", "name": "users"},
+             "output": {"schema": "main", "name": "enriched"},
+             "buckets": 2,
+             "sql": "select 1"}
+}"#;
+
 /// A subject in the reserved admin role can read main.dst iff a Table grant exists.
 async fn admin_can_read_table(cp: &MemoryControlPlane, schema: &str, name: &str) -> bool {
     // ADMIN is seeded into ADMIN_ROLE by seed_admin_session.
@@ -686,6 +705,64 @@ async fn typed_define_grants_no_table() {
     assert_eq!(status, StatusCode::CREATED);
     // No Table grant was created for a typed output.
     assert!(!admin_can_read_table(&cp, "onto", "dst").await);
+}
+
+#[tokio::test]
+async fn microbatch_define_grants_admin_read_on_output() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    assert!(!admin_can_read_table(&cp, "main", "rollup").await);
+
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/transforms",
+            &token,
+            MICROBATCH_TRANSFORM_BODY,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(admin_can_read_table(&cp, "main", "rollup").await);
+
+    // Re-define is idempotent: still 201, still granted.
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/transforms",
+            &token,
+            MICROBATCH_TRANSFORM_BODY,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(admin_can_read_table(&cp, "main", "rollup").await);
+}
+
+#[tokio::test]
+async fn microbatch_join_define_grants_admin_read_on_output() {
+    let cp = Arc::new(MemoryControlPlane::new(Duration::from_millis(300)));
+    let token = seed_admin_session(&cp, ADMIN).await;
+    assert!(!admin_can_read_table(&cp, "main", "enriched").await);
+
+    let (status, body) = send(
+        app(cp.clone()),
+        req_json(
+            "POST",
+            "/admin/transforms",
+            &token,
+            MICROBATCH_JOIN_TRANSFORM_BODY,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(admin_can_read_table(&cp, "main", "enriched").await);
+
+    // The MV's source and enrich inputs are NOT granted — only the output is.
+    assert!(!admin_can_read_table(&cp, "main", "events").await);
+    assert!(!admin_can_read_table(&cp, "main", "users").await);
 }
 
 #[tokio::test]
