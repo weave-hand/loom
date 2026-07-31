@@ -50,6 +50,17 @@ language = "system"
 types = ["rust"]
 pass_filenames = true
 
+# A `main.rs` whose shutdown source is `pending()` can never shut down gracefully —
+# the future never resolves, so the container runtime SIGKILLs the process with work
+# in flight. See tools/check-no-pending-shutdown.sh (#587).
+[[repos.hooks]]
+id = "no-pending-shutdown"
+name = "no pending() shutdown source in a service main"
+entry = "tools/check-no-pending-shutdown.sh"
+language = "system"
+types = ["rust"]
+pass_filenames = true
+
 # When a Cargo manifest/lock changes, regenerate third-party/BUCK and fail if it
 # drifted — keeps reindeer's output in sync with the dependency graph.
 [[repos.hooks]]

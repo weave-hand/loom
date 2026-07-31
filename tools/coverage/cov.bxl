@@ -52,7 +52,7 @@
 #       absolute/stdlib paths, and any `/tests/`. Result: crate X's report shows
 #       ONLY `src/<X>/src/**` rows (including the fixture crates' own coverage),
 #       never linked-but-unexercised siblings at 0%.
-#     - The COMBINED report uses `_combined_ignore()`: keep ALL 7 crates' own
+#     - The COMBINED report uses `_combined_ignore()`: keep ALL 22 crates' own
 #       src, exclude only third-party, absolute/stdlib, `/tests/`, and testkit
 #       (the shared contract harness, not a measured crate).
 #   The regex matches the EMBEDDED source path (the lcov `SF:` path), which keeps
@@ -228,7 +228,7 @@ def _cov_impl(ctx):
 
     # One combined report across ALL bins/profraws. Bins are appended in
     # sorted-package then sorted-label order, so the combined object order is
-    # deterministic too. Uses COMBINED_IGNORE (keep all 7 crates' src, drop
+    # deterministic too. Uses COMBINED_IGNORE (keep all 22 crates' src, drop
     # testkit) — a DIFFERENT regex than the per-crate reports.
     combined_dir = actions.declare_output("combined", dir = True)
     combined_profdata = actions.declare_output("combined.profdata")
