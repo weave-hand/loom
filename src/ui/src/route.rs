@@ -211,4 +211,74 @@ impl Route {
         }
         out
     }
+
+    /// Switch surfaces: nothing selected, the target's default tab. The Catalog list
+    /// controls ride along, because they are view configuration rather than a
+    /// location — returning to Catalog restores the same list.
+    #[must_use]
+    pub fn with_surface(&self, surface: Surface) -> Route {
+        Route {
+            surface,
+            selection: None,
+            tab: surface.default_tab().map(str::to_owned),
+            catalog: self.catalog.clone(),
+        }
+    }
+
+    /// Select a row on the current surface. The drawer resets to its default tab,
+    /// matching what a freshly-opened drawer shows.
+    #[must_use]
+    pub fn with_selection(&self, id: impl Into<String>) -> Route {
+        Route {
+            selection: Some(id.into()),
+            tab: self.surface.default_tab().map(str::to_owned),
+            ..self.clone()
+        }
+    }
+
+    /// Switch the drawer tab, keeping the selection.
+    #[must_use]
+    pub fn with_tab(&self, tab: impl Into<String>) -> Route {
+        Route {
+            tab: Some(tab.into()),
+            ..self.clone()
+        }
+    }
+
+    /// Replace the Catalog list controls. Re-sorting or filtering changes what the
+    /// list contains, so the selection is cleared and the drawer closes.
+    #[must_use]
+    pub fn with_catalog(&self, catalog: CatalogQuery) -> Route {
+        Route {
+            catalog,
+            selection: None,
+            tab: self.surface.default_tab().map(str::to_owned),
+            ..self.clone()
+        }
+    }
+
+    /// Close the drawer without leaving the surface (list controls preserved).
+    #[must_use]
+    pub fn cleared(&self) -> Route {
+        self.with_surface(self.surface)
+    }
+
+    /// The selection id, but only when the route is pointing at `surface`. Each
+    /// surface reads its own selection through this, so an Ontology type name can
+    /// never be mistaken for a Catalog dataset id by an effect that stays mounted
+    /// regardless of the active surface.
+    #[must_use]
+    pub fn selection_on(&self, surface: Surface) -> Option<&str> {
+        (self.surface == surface)
+            .then_some(self.selection.as_deref())
+            .flatten()
+    }
+
+    /// The active drawer tab, but only when the route is pointing at `surface`.
+    #[must_use]
+    pub fn tab_on(&self, surface: Surface) -> Option<&str> {
+        (self.surface == surface)
+            .then_some(self.tab.as_deref())
+            .flatten()
+    }
 }

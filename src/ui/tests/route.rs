@@ -158,3 +158,92 @@ fn a_leading_hash_is_optional() {
     assert_eq!(Route::parse("/ontology"), Route::parse("#/ontology"));
     assert_eq!(Route::parse("ontology"), Route::parse("#/ontology"));
 }
+
+#[test]
+fn switching_surface_clears_the_selection_and_resets_the_tab() {
+    let from = Route {
+        surface: Surface::Catalog,
+        selection: Some("main.txns".to_string()),
+        tab: Some("preview".to_string()),
+        catalog: CatalogQuery {
+            sort: DatasetSort::Updated,
+            dir: CatalogSortDir::Desc,
+            project: Some("main".to_string()),
+        },
+    };
+    let to = from.with_surface(Surface::Ontology);
+    assert_eq!(to.surface, Surface::Ontology);
+    assert_eq!(to.selection, None, "a surface switch is a change of location");
+    assert_eq!(to.tab.as_deref(), Some("properties"));
+    assert_eq!(
+        to.catalog, from.catalog,
+        "list controls are view configuration, carried so returning to Catalog restores them"
+    );
+}
+
+#[test]
+fn switching_to_a_tabless_surface_leaves_no_tab() {
+    assert_eq!(Route::default().with_surface(Surface::Query).tab, None);
+}
+
+#[test]
+fn selecting_a_row_resets_the_drawer_to_its_default_tab() {
+    let r = Route::default().with_tab("lineage").with_selection("main.txns");
+    assert_eq!(r.selection.as_deref(), Some("main.txns"));
+    assert_eq!(
+        r.tab.as_deref(),
+        Some("schema"),
+        "a newly-opened drawer always starts on the default tab"
+    );
+}
+
+#[test]
+fn switching_tabs_keeps_the_selection() {
+    let r = Route::default().with_selection("main.txns").with_tab("preview");
+    assert_eq!(r.selection.as_deref(), Some("main.txns"));
+    assert_eq!(r.tab.as_deref(), Some("preview"));
+}
+
+#[test]
+fn changing_list_controls_clears_the_selection() {
+    let r = Route::default()
+        .with_selection("main.txns")
+        .with_tab("preview")
+        .with_catalog(CatalogQuery { sort: DatasetSort::Updated, ..CatalogQuery::default() });
+    assert_eq!(r.catalog.sort, DatasetSort::Updated);
+    assert_eq!(
+        r.selection, None,
+        "re-sorting/filtering changes what the list holds, so the drawer closes"
+    );
+    assert_eq!(r.tab.as_deref(), Some("schema"));
+}
+
+#[test]
+fn cleared_closes_the_drawer_without_leaving_the_surface() {
+    let r = Route::new(Surface::Transforms)
+        .with_selection("daily_rollup")
+        .with_tab("runs")
+        .cleared();
+    assert_eq!(r.surface, Surface::Transforms);
+    assert_eq!(r.selection, None);
+    assert_eq!(r.tab.as_deref(), Some("definition"));
+}
+
+#[test]
+fn selection_and_tab_are_scoped_to_their_own_surface() {
+    let r = Route::new(Surface::Ontology).with_selection("Customer").with_tab("links");
+    assert_eq!(r.selection_on(Surface::Ontology), Some("Customer"));
+    assert_eq!(r.tab_on(Surface::Ontology), Some("links"));
+    // The Catalog surface must not read the Ontology selection as a dataset id.
+    assert_eq!(r.selection_on(Surface::Catalog), None);
+    assert_eq!(r.tab_on(Surface::Catalog), None);
+    assert_eq!(r.selection_on(Surface::Transforms), None);
+}
+
+#[test]
+fn scoped_accessors_return_none_when_nothing_is_selected() {
+    let r = Route::default();
+    assert_eq!(r.selection_on(Surface::Catalog), None);
+    assert_eq!(r.tab_on(Surface::Catalog), Some("schema"));
+    assert_eq!(r.tab_on(Surface::Query), None);
+}
