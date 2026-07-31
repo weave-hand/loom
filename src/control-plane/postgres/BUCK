@@ -1946,6 +1946,25 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "stream-create-race-schema",
+    crate = "stream_create_race_schema",
+    srcs = ["tests/stream_create_race_schema.rs"],
+    crate_root = "tests/stream_create_race_schema.rs",
+    deps = [
+        "//src/testing:seed",
+        ":postgres",
+        "//src/control-plane/core:core",
+        "//third-party:arrow-array",
+        "//third-party:arrow-schema",
+        "//third-party:iceberg",
+        "//third-party:serde_json",
+        "//third-party:sqlx",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "define-transform-refuse",
     crate = "define_transform_refuse",
     srcs = ["tests/define_transform_refuse.rs"],
