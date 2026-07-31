@@ -15,10 +15,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio_util::sync::CancellationToken;
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    loom_lifecycle::init_tracing();
+
     // One env snapshot drives both the bootstrap reads and the composed config.
     let env = loom_config::env_map();
     let socket = env
@@ -43,23 +43,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut threshold_bytes: i64 = 128 * 1024 * 1024;
     loom_config::overlay_opt(&env, "LOOM_COMPACT_THRESHOLD_BYTES", &mut threshold_bytes)?;
 
-    let shutdown = CancellationToken::new();
-    let sig = shutdown.clone();
-    tokio::spawn(async move {
-        drop(tokio::signal::ctrl_c().await);
-        sig.cancel();
-    });
+    // SIGTERM is what container runtimes send; the previous `ctrl_c()`-only listener
+    // (SIGINT) meant every Kubernetes rolling restart SIGKILLed this process with a
+    // job in flight. `run_bounded` keeps a wedged job from holding the process past
+    // the termination grace period — its lease then lapses and reclaim re-runs it.
+    let shutdown = loom_lifecycle::Shutdown::install(loom_lifecycle::shutdown_timeout(&env)?);
 
-    worker::runtime::run_worker(
-        worker::runtime::WorkerRuntime {
-            socket,
-            worker_id,
-            lease,
-            write,
-            jobs: wcfg,
-            compact_threshold_bytes: threshold_bytes,
-        },
-        shutdown,
+    loom_lifecycle::run_bounded(
+        &shutdown,
+        worker::runtime::run_worker(
+            worker::runtime::WorkerRuntime {
+                socket,
+                worker_id,
+                lease,
+                write,
+                jobs: wcfg,
+                compact_threshold_bytes: threshold_bytes,
+            },
+            shutdown.token(),
+        ),
     )
     .await?;
     Ok(())
