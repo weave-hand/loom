@@ -25,19 +25,32 @@ fn selection_segment_parses() {
     let r = Route::parse("#/catalog/main.txns");
     assert_eq!(r.surface, Surface::Catalog);
     assert_eq!(r.selection.as_deref(), Some("main.txns"));
-    assert_eq!(r.tab.as_deref(), Some("schema"), "unspecified tab falls back to the default");
+    assert_eq!(
+        r.tab.as_deref(),
+        Some("schema"),
+        "unspecified tab falls back to the default"
+    );
 }
 
 #[test]
 fn tab_param_parses_and_unknown_tabs_fall_back() {
-    assert_eq!(Route::parse("#/catalog/main.txns?tab=preview").tab.as_deref(), Some("preview"));
     assert_eq!(
-        Route::parse("#/catalog/main.txns?tab=nonsense").tab.as_deref(),
+        Route::parse("#/catalog/main.txns?tab=preview")
+            .tab
+            .as_deref(),
+        Some("preview")
+    );
+    assert_eq!(
+        Route::parse("#/catalog/main.txns?tab=nonsense")
+            .tab
+            .as_deref(),
         Some("schema"),
         "a tab id the surface does not render must degrade to its default"
     );
     assert_eq!(
-        Route::parse("#/catalog/main.txns?tab=properties").tab.as_deref(),
+        Route::parse("#/catalog/main.txns?tab=properties")
+            .tab
+            .as_deref(),
         Some("schema"),
         "another surface's tab id is not valid here"
     );
@@ -64,7 +77,12 @@ fn malformed_input_degrades_instead_of_failing() {
 #[test]
 fn extra_path_segments_are_ignored() {
     // Only reachable by hand-typing: `to_hash` percent-encodes `/` inside an id.
-    assert_eq!(Route::parse("#/catalog/main.txns/extra").selection.as_deref(), Some("main.txns"));
+    assert_eq!(
+        Route::parse("#/catalog/main.txns/extra")
+            .selection
+            .as_deref(),
+        Some("main.txns")
+    );
 }
 
 #[test]
@@ -85,7 +103,10 @@ fn non_defaults_are_serialised_in_a_stable_order() {
             project: Some("main".to_string()),
         },
     };
-    assert_eq!(r.to_hash(), "#/catalog/main.txns?tab=lineage&sort=updated&dir=desc&project=main");
+    assert_eq!(
+        r.to_hash(),
+        "#/catalog/main.txns?tab=lineage&sort=updated&dir=desc&project=main"
+    );
 }
 
 #[test]
@@ -139,7 +160,10 @@ fn structural_characters_in_ids_survive_the_round_trip() {
     // Selection ids and the project filter are user data (SQL identifiers): they
     // must never be able to inject a `/`, `?`, `&` or `=` into the route grammar.
     for id in ["a/b", "a?b", "a&b=c", "a b", "100%", "naïve", "a#b"] {
-        let r = Route { selection: Some(id.to_string()), ..Route::default() };
+        let r = Route {
+            selection: Some(id.to_string()),
+            ..Route::default()
+        };
         assert_eq!(
             Route::parse(&r.to_hash()).selection.as_deref(),
             Some(id),
@@ -147,10 +171,16 @@ fn structural_characters_in_ids_survive_the_round_trip() {
         );
     }
     let r = Route {
-        catalog: CatalogQuery { project: Some("a&b=c".to_string()), ..CatalogQuery::default() },
+        catalog: CatalogQuery {
+            project: Some("a&b=c".to_string()),
+            ..CatalogQuery::default()
+        },
         ..Route::default()
     };
-    assert_eq!(Route::parse(&r.to_hash()).catalog.project.as_deref(), Some("a&b=c"));
+    assert_eq!(
+        Route::parse(&r.to_hash()).catalog.project.as_deref(),
+        Some("a&b=c")
+    );
 }
 
 #[test]
@@ -173,7 +203,10 @@ fn switching_surface_clears_the_selection_and_resets_the_tab() {
     };
     let to = from.with_surface(Surface::Ontology);
     assert_eq!(to.surface, Surface::Ontology);
-    assert_eq!(to.selection, None, "a surface switch is a change of location");
+    assert_eq!(
+        to.selection, None,
+        "a surface switch is a change of location"
+    );
     assert_eq!(to.tab.as_deref(), Some("properties"));
     assert_eq!(
         to.catalog, from.catalog,
@@ -188,7 +221,9 @@ fn switching_to_a_tabless_surface_leaves_no_tab() {
 
 #[test]
 fn selecting_a_row_resets_the_drawer_to_its_default_tab() {
-    let r = Route::default().with_tab("lineage").with_selection("main.txns");
+    let r = Route::default()
+        .with_tab("lineage")
+        .with_selection("main.txns");
     assert_eq!(r.selection.as_deref(), Some("main.txns"));
     assert_eq!(
         r.tab.as_deref(),
@@ -199,7 +234,9 @@ fn selecting_a_row_resets_the_drawer_to_its_default_tab() {
 
 #[test]
 fn switching_tabs_keeps_the_selection() {
-    let r = Route::default().with_selection("main.txns").with_tab("preview");
+    let r = Route::default()
+        .with_selection("main.txns")
+        .with_tab("preview");
     assert_eq!(r.selection.as_deref(), Some("main.txns"));
     assert_eq!(r.tab.as_deref(), Some("preview"));
 }
@@ -209,7 +246,10 @@ fn changing_list_controls_clears_the_selection() {
     let r = Route::default()
         .with_selection("main.txns")
         .with_tab("preview")
-        .with_catalog(CatalogQuery { sort: DatasetSort::Updated, ..CatalogQuery::default() });
+        .with_catalog(CatalogQuery {
+            sort: DatasetSort::Updated,
+            ..CatalogQuery::default()
+        });
     assert_eq!(r.catalog.sort, DatasetSort::Updated);
     assert_eq!(
         r.selection, None,
@@ -231,7 +271,9 @@ fn cleared_closes_the_drawer_without_leaving_the_surface() {
 
 #[test]
 fn selection_and_tab_are_scoped_to_their_own_surface() {
-    let r = Route::new(Surface::Ontology).with_selection("Customer").with_tab("links");
+    let r = Route::new(Surface::Ontology)
+        .with_selection("Customer")
+        .with_tab("links");
     assert_eq!(r.selection_on(Surface::Ontology), Some("Customer"));
     assert_eq!(r.tab_on(Surface::Ontology), Some("links"));
     // The Catalog surface must not read the Ontology selection as a dataset id.

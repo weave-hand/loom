@@ -44,7 +44,11 @@ fn every_surface_has_a_unique_slug_that_round_trips() {
         assert!(!slug.is_empty(), "{s:?} has an empty slug");
         assert!(!seen.contains(&slug), "duplicate slug {slug}");
         seen.push(slug);
-        assert_eq!(Surface::from_slug(slug), Some(s), "slug {slug} must round-trip");
+        assert_eq!(
+            Surface::from_slug(slug),
+            Some(s),
+            "slug {slug} must round-trip"
+        );
     }
 }
 
@@ -57,7 +61,10 @@ fn unknown_slug_is_none() {
 
 #[test]
 fn drawer_tabs_match_the_ids_the_surfaces_render() {
-    assert_eq!(Surface::Catalog.tabs(), ["schema", "preview", "lineage", "history"]);
+    assert_eq!(
+        Surface::Catalog.tabs(),
+        ["schema", "preview", "lineage", "history"]
+    );
     assert_eq!(Surface::Ontology.tabs(), ["properties", "links"]);
     assert_eq!(Surface::Transforms.tabs(), ["definition", "runs"]);
     assert!(Surface::Query.tabs().is_empty());
