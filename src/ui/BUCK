@@ -348,3 +348,49 @@ chmod +x $OUT
     executable = True,
     visibility = ["PUBLIC"],
 )
+
+# Component render harness — a backend-free wasm bundle that mounts ONE component
+# from `?component=…&props=…`, driven by the native //src/ui/e2e:components test.
+# Deliberately separate from :gallery (the human-facing showcase stays free of
+# test scaffolding, and the two evolve independently).
+rust_binary(
+    name = "harness",
+    crate = "harness",
+    srcs = ["src/harness.rs"],
+    crate_root = "src/harness.rs",
+    edition = "2024",
+    default_target_platform = "//platforms:wasm",
+    deps = [
+        "//third-party:js-sys",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:wasm-bindgen",
+        "//third-party:web-sys",
+        "//third-party:yew",
+        ":ui-components",
+        ":ui-core",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# Mirrors :gallery-bundle (incl. the wasm-bindgen CLI version assertion — see the
+# long comment on :bundle for why that guard exists).
+genrule(
+    name = "harness-bundle",
+    out = "dist",
+    default_target_platform = "//platforms:wasm",
+    srcs = ["harness.html"],
+    cmd = """
+set -euo pipefail
+got=`$(exe //tools:wasm-bindgen) --version`
+want="wasm-bindgen {ver}"
+if [ "$got" != "$want" ]; then
+  echo "wasm-bindgen CLI/version mismatch: got '$got', want '$want'" >&2
+  exit 1
+fi
+mkdir -p $OUT
+$(exe //tools:wasm-bindgen) --target web --no-typescript --out-dir $OUT --out-name harness $(location :harness)
+cp $SRCDIR/harness.html $OUT/index.html
+""".format(ver = WASM_BINDGEN_VERSION),
+    visibility = ["PUBLIC"],
+)
