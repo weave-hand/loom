@@ -105,3 +105,58 @@ fn compact_small_file_bytes_negative_is_rejected() {
         if var == "LOOM_COMPACT_THRESHOLD_BYTES")
     );
 }
+
+#[test]
+fn sql_limit_defaults_are_1_gib_and_60_secs() {
+    let t = EngineTuning::from_map(&map(&[])).unwrap();
+    assert_eq!(t.sql_memory_limit_bytes, 1024 * 1024 * 1024);
+    assert_eq!(t.sql_timeout_secs, 60);
+    let l = t.governed_sql_limits();
+    assert_eq!(l.memory_bytes, Some(1024 * 1024 * 1024));
+    assert_eq!(l.deadline, Some(Duration::from_secs(60)));
+}
+
+#[test]
+fn sql_limit_overrides_parse() {
+    let t = EngineTuning::from_map(&map(&[
+        ("LOOM_SQL_MEMORY_LIMIT_BYTES", "4096"),
+        ("LOOM_SQL_TIMEOUT_SECS", "7"),
+    ]))
+    .unwrap();
+    assert_eq!(t.sql_memory_limit_bytes, 4096);
+    assert_eq!(t.sql_timeout_secs, 7);
+    let l = t.governed_sql_limits();
+    assert_eq!(l.memory_bytes, Some(4096));
+    assert_eq!(l.deadline, Some(Duration::from_secs(7)));
+}
+
+#[test]
+fn zero_is_the_documented_unbounded_escape_hatch() {
+    let t = EngineTuning::from_map(&map(&[
+        ("LOOM_SQL_MEMORY_LIMIT_BYTES", "0"),
+        ("LOOM_SQL_TIMEOUT_SECS", "0"),
+    ]))
+    .unwrap();
+    assert_eq!(
+        t.governed_sql_limits(),
+        engine_serving::GovernedSqlLimits::unbounded()
+    );
+}
+
+#[test]
+fn malformed_sql_memory_limit_is_startup_error_naming_key() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_SQL_MEMORY_LIMIT_BYTES", "lots")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_SQL_MEMORY_LIMIT_BYTES")
+    );
+}
+
+#[test]
+fn malformed_sql_timeout_is_startup_error_naming_key() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_SQL_TIMEOUT_SECS", "soon")])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. }
+        if var == "LOOM_SQL_TIMEOUT_SECS")
+    );
+}

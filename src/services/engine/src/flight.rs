@@ -32,10 +32,11 @@ use tonic::{Request, Response, Status, Streaming};
 /// inline-delta write RPCs (`service.rs`). Class-preserving: `Plan` (bad SQL —
 /// the client's fault) -> `invalid_argument`; `NoIndex` -> `not_found`;
 /// `DimMismatch` -> `invalid_argument`; `Conflict` (inline-delta CAS lost a
-/// race) -> `aborted`, so callers can retry; `Engine` (execution/backend) ->
-/// `internal`. The NoIndex/DimMismatch/Conflict arms carry the INNER message
-/// only (no enum prefix), preserving the wire messages the clients' inverse
-/// mappings decode.
+/// race) -> `aborted`, so callers can retry; `ResourceExhausted` (the governed-SQL
+/// budget — memory pool or wall-clock deadline — was breached) -> `resource_exhausted`,
+/// so callers can back off; `Engine` (execution/backend) -> `internal`. The
+/// NoIndex/DimMismatch/Conflict arms carry the INNER message only (no enum
+/// prefix), preserving the wire messages the clients' inverse mappings decode.
 pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
     use engine_serving::EngineServingError as E;
     match e {
@@ -43,6 +44,7 @@ pub fn serving_status(e: engine_serving::EngineServingError) -> Status {
         E::DimMismatch(m) => Status::invalid_argument(m),
         E::Validation(m) => Status::invalid_argument(m),
         E::Conflict(m) => Status::aborted(m),
+        E::ResourceExhausted(m) => Status::resource_exhausted(m),
         e @ E::Plan(_) => Status::invalid_argument(e.to_string()),
         e @ E::Engine(_) => Status::internal(e.to_string()),
     }
@@ -59,19 +61,32 @@ pub struct FlightDataService {
     /// The mv-delta plane's control-plane handle (`StreamTables`/`MvWatermarks`
     /// reads — `mv_delta_scan`'s `cp` argument).
     pub cp: PgControlPlane,
+    /// Per-statement resource budget applied to the arbitrary-SQL governed plane
+    /// (`do_get_governed_sql`). From `EngineTuning::governed_sql_limits`.
+    pub sql_limits: engine_serving::GovernedSqlLimits,
 }
 
 impl FlightDataService {
     /// Flight-encode a `RecordBatch` stream (schema message first, then batches)
     /// and box it as the `do_get` response. Encoder/stream errors map to
-    /// `Status::internal`, matching the old unary handler's mapping so query-api's
-    /// HTTP error codes are unchanged. The shared tail of all four serving planes.
+    /// `Status::internal` UNLESS the stream item already carries a fully-formed
+    /// `Status` (see the `.map_err` below), matching the old unary handler's
+    /// mapping so query-api's HTTP error codes are unchanged. The shared tail of
+    /// all four serving planes.
     fn encode_response(
         batches: impl futures::Stream<Item = Result<RecordBatch, FlightError>> + Send + 'static,
     ) -> Response<<Self as FlightService>::DoGetStream> {
         let out = FlightDataEncoderBuilder::new()
             .build(batches)
-            .map_err(|e| Status::internal(e.to_string()));
+            // Class-preserving: a stream item that already carries a fully-formed
+            // `Status` (today only the governed plane's `resource_exhausted`) passes
+            // through with its code intact instead of collapsing to `internal`. Every
+            // other plane produces `Arrow`/`External`/`Protocol` errors, so their
+            // mapping is unchanged.
+            .map_err(|e| match e {
+                FlightError::Tonic(s) => *s,
+                other => Status::internal(other.to_string()),
+            });
         Response::new(Box::pin(out))
     }
 
@@ -128,11 +143,18 @@ impl FlightDataService {
             &q.sql,
             &q.catalog,
             self.serving_store.as_ref(),
+            &self.sql_limits,
         )
         .await
         .map_err(serving_status)?;
+        // Per-item errors go through the SAME classifier as the eager path, so a
+        // budget breach raised mid-plan (the usual case — a sort reserves on first
+        // poll, not at `execute_stream`) reaches the caller as `resource_exhausted`
+        // rather than an opaque `internal`.
         Ok(Self::encode_response(stream.map_err(|e| {
-            FlightError::from_external_error(Box::new(e))
+            FlightError::Tonic(Box::new(serving_status(
+                engine_serving::governed_stream_error(&e),
+            )))
         })))
     }
 

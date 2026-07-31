@@ -60,6 +60,17 @@ pub struct EngineTuning {
     /// `1` is rejected at startup (would re-enqueue immediately after every
     /// compaction whose output stays under the cutoff); `>= 2` enables.
     pub compact_trigger_files: i64,
+    /// Ceiling on ONE arbitrary-SQL governed statement's DataFusion memory pool
+    /// (`LOOM_SQL_MEMORY_LIMIT_BYTES`, default 1 GiB). `0` disables the bound —
+    /// the documented escape hatch for an operator who needs an unbounded query,
+    /// matching the `LOOM_COMPACT_TRIGGER_FILES == 0` convention. Applies ONLY to
+    /// the arbitrary-SQL path; server-built plans (as-of, MV micro-batches,
+    /// compaction) are shape-bounded and deliberately unbounded here.
+    pub sql_memory_limit_bytes: usize,
+    /// Wall-clock budget for ONE arbitrary-SQL governed statement, in seconds
+    /// (`LOOM_SQL_TIMEOUT_SECS`, default 60). `0` disables the bound. Covers the
+    /// whole query lifetime — planning through the last batch.
+    pub sql_timeout_secs: u64,
 }
 
 impl EngineTuning {
@@ -107,6 +118,12 @@ impl EngineTuning {
                 "LOOM_COMPACT_TRIGGER_FILES",
                 8_i64,
             )?,
+            sql_memory_limit_bytes: service_runtime::parse_var(
+                vars,
+                "LOOM_SQL_MEMORY_LIMIT_BYTES",
+                1024 * 1024 * 1024_usize,
+            )?,
+            sql_timeout_secs: service_runtime::parse_var(vars, "LOOM_SQL_TIMEOUT_SECS", 60_u64)?,
         };
         validate_compact_trigger_files(tuning.compact_trigger_files)?;
         if tuning.compact_small_file_bytes <= 0 {
@@ -116,6 +133,17 @@ impl EngineTuning {
             ));
         }
         Ok(tuning)
+    }
+
+    /// The per-statement budget the governed-SQL plane enforces. `0` on either knob
+    /// means that mechanism is off (`None`).
+    #[must_use]
+    pub fn governed_sql_limits(&self) -> engine_serving::GovernedSqlLimits {
+        engine_serving::GovernedSqlLimits {
+            memory_bytes: (self.sql_memory_limit_bytes > 0).then_some(self.sql_memory_limit_bytes),
+            deadline: (self.sql_timeout_secs > 0)
+                .then(|| Duration::from_secs(self.sql_timeout_secs)),
+        }
     }
 }
 
@@ -195,6 +223,7 @@ pub async fn run(
         serving_store,
         pool,
         cp,
+        sql_limits: tuning.governed_sql_limits(),
     };
 
     // Signal readiness: the caller binds `listener` before spawning us, so the

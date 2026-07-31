@@ -62,6 +62,55 @@ pub fn sql_status(s: tonic::Status) -> ControlPlaneError {
     }
 }
 
+/// [`crate::flight::FlightSqlClient::execute_governed_stream`]'s status-preserving
+/// error. The governed-SQL plane carries THREE classes the caller must tell apart —
+/// a client SQL fault (400), a per-statement resource-budget breach (429), and a
+/// backend fault (500) — and a plain [`ControlPlaneError`] has no variant for the
+/// middle one, so [`be`] would erase it into an opaque 500. Mirrors
+/// [`ChangelogLatestError`] and `flight::VectorSearchError`, which preserve
+/// `tonic::Code` the same way for their own planes.
+#[derive(Debug, thiserror::Error)]
+pub enum GovernedSqlError {
+    /// The engine rejected the SQL at planning time (`InvalidArgument`) — the
+    /// client's own fault. Pass-through Display, no re-prefixing.
+    #[error("{0}")]
+    Plan(String),
+    /// The statement exceeded its memory pool or wall-clock budget
+    /// (`ResourceExhausted`): valid SQL, too expensive. The message names only the
+    /// budget, never data, so it is safe to echo.
+    #[error("{0}")]
+    ResourceExhausted(String),
+    /// Any other transport/backend fault, opaque like every other [`be`]-mapped RPC.
+    #[error(transparent)]
+    Backend(ControlPlaneError),
+}
+
+/// Map a tonic [`tonic::Status`] from the engine's **governed**-SQL Flight plane back
+/// to a [`GovernedSqlError`], inverting the engine-side `serving_status` mapping so
+/// both client-fault classes survive the wire.
+#[must_use]
+pub fn governed_sql_status(s: tonic::Status) -> GovernedSqlError {
+    match s.code() {
+        tonic::Code::InvalidArgument => GovernedSqlError::Plan(s.message().to_string()),
+        tonic::Code::ResourceExhausted => {
+            GovernedSqlError::ResourceExhausted(s.message().to_string())
+        }
+        _ => GovernedSqlError::Backend(be(s)),
+    }
+}
+
+/// Map a mid-stream [`arrow_flight::error::FlightError`] on the governed-SQL plane.
+/// A `Tonic` item is a server-sent status (the engine emits `resource_exhausted`
+/// this way when a budget trips after the first poll), so re-classify it; anything
+/// else is transport/decode noise and stays opaque.
+#[must_use]
+pub fn governed_sql_flight_error(e: arrow_flight::error::FlightError) -> GovernedSqlError {
+    match e {
+        arrow_flight::error::FlightError::Tonic(s) => governed_sql_status(*s),
+        other => GovernedSqlError::Backend(be(other)),
+    }
+}
+
 /// [`GrpcQueueClient::changelog_latest`]'s status-preserving error: distinguishes an
 /// engine that does not (yet) implement `ChangelogLatest` — a rolling-deploy skew,
 /// where query-api is ahead of the engine — from a genuine backend fault, so the
