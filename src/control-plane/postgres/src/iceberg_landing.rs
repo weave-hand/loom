@@ -1074,55 +1074,7 @@ async fn land_parquet_stream(
             ));
         };
 
-        // Per-row bucket = row_index % bc (bc >= 1 by reconcile, so the modulo is
-        // panic-free). Count rows per bucket, reserve a contiguous offset run per
-        // touched bucket on THIS tx, then hand out sequential offsets from each
-        // bucket's cursor — the exact scheme `inline_append` uses.
-        let bc_usize = usize::try_from(bc).map_err(|e| {
-            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
-        })?;
-        let mut counts = vec![0i64; bc_usize];
-        for row in 0..n {
-            let b = row % bc_usize;
-            let c = counts
-                .get_mut(b)
-                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
-            *c += 1;
-        }
-        let mut cursor = vec![0i64; bc_usize];
-        for (b, count) in counts.iter().enumerate() {
-            if *count > 0 {
-                let b_i32 = i32::try_from(b).map_err(|e| {
-                    ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
-                })?;
-                let first = crate::stream::pg_allocate_offset(&mut *tx, tid, b_i32, *count).await?;
-                let slot = cursor.get_mut(b).ok_or_else(|| {
-                    ControlPlaneError::Backend("bucket index out of range".into())
-                })?;
-                *slot = first;
-            }
-        }
-
-        // Build the framing arrays aligned to the concatenated batch, in row order:
-        // the k-th row of bucket b gets `first_b + k`.
-        let mut buckets: Vec<i32> = Vec::with_capacity(n);
-        let mut offsets: Vec<i64> = Vec::with_capacity(n);
-        for row in 0..n {
-            let b = row % bc_usize;
-            let off = *cursor
-                .get(b)
-                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
-            {
-                let slot = cursor.get_mut(b).ok_or_else(|| {
-                    ControlPlaneError::Backend("bucket index out of range".into())
-                })?;
-                *slot += 1;
-            }
-            buckets.push(i32::try_from(b).map_err(|e| {
-                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
-            })?);
-            offsets.push(off);
-        }
+        let (buckets, offsets) = allocate_row_framing(&mut tx, tid, bc, n).await?;
 
         // Stamp framing + rewrap under the table's field-id schema (which carries the
         // framing fields), exactly like the batch path's `coerce_batch_to_ice`.
@@ -1172,6 +1124,73 @@ async fn land_parquet_stream(
             }
         }
     }
+}
+
+/// Assign every row of a stream write its `(bucket, offset)` framing pair, reserving
+/// the offset runs on the caller's transaction.
+///
+/// Per-row bucket is `row_index % bc` (`bc >= 1` by `reconcile_stream_mode`, so the
+/// modulo is panic-free). Rows are counted per bucket, a contiguous offset run is
+/// reserved for each TOUCHED bucket on `tx` — so the allocation commits iff the
+/// caller's snapshot does — and each row then takes the next offset from its bucket's
+/// cursor. The k-th row of bucket b gets `first_b + k`. This is the exact scheme
+/// `iceberg_inline::inline_append` uses, so the inline and direct-write paths cannot
+/// drift on offset semantics.
+///
+/// Returns `(buckets, offsets)`, both aligned to the concatenated batch in row order
+/// and both of length `n` — the shape [`stamp_framing`] requires.
+///
+/// Extracted from [`land_parquet_stream`]'s attempt loop, which was over the
+/// complexity register's MI threshold; the arithmetic and the allocation order are
+/// unchanged.
+async fn allocate_row_framing(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    bc: i32,
+    n: usize,
+) -> Result<(Vec<i32>, Vec<i64>)> {
+    let oor = || ControlPlaneError::Backend("bucket index out of range".into());
+    let bc_usize = usize::try_from(bc).map_err(|e| {
+        ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+    })?;
+
+    // Rows are handed to buckets round-robin (`row % bc`), so the count per bucket is
+    // closed-form: bucket b takes `n / bc` rows, plus one more iff `b < n % bc`. (The
+    // previous counting loop computed exactly this.) `bc_usize >= 1`, so no div-by-zero.
+    #[expect(
+        clippy::integer_division,
+        reason = "truncation is the point: the floor is each bucket's guaranteed share, \
+                  and `remainder` below hands the dropped rows to the first buckets"
+    )]
+    let per_bucket = n / bc_usize;
+    let remainder = n % bc_usize;
+
+    let mut cursor = vec![0i64; bc_usize];
+    for (b, slot) in cursor.iter_mut().enumerate() {
+        let count = i64::try_from(per_bucket + usize::from(b < remainder)).map_err(|e| {
+            ControlPlaneError::Backend(format!("bucket row count overflowed i64: {e}").into())
+        })?;
+        if count > 0 {
+            let b_i32 = i32::try_from(b).map_err(|e| {
+                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+            })?;
+            *slot = crate::stream::pg_allocate_offset(&mut *tx, tid, b_i32, count).await?;
+        }
+    }
+
+    let mut buckets: Vec<i32> = Vec::with_capacity(n);
+    let mut offsets: Vec<i64> = Vec::with_capacity(n);
+    for row in 0..n {
+        let b = row % bc_usize;
+        let slot = cursor.get_mut(b).ok_or_else(oor)?;
+        let off = *slot;
+        *slot += 1;
+        buckets.push(i32::try_from(b).map_err(|e| {
+            ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+        })?);
+        offsets.push(off);
+    }
+    Ok((buckets, offsets))
 }
 
 /// Append the three log-framing columns to `batch` in fixed order —
