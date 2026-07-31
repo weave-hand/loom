@@ -220,9 +220,11 @@ impl DbConfig {
     /// clear (it is, after all, a connection string), which is why it comes back
     /// `Redacted` rather than `String` — `.into_inner()` at the call site is the audit
     /// marker for "yes, this one really does need the plaintext". Both callers
-    /// (`ingest`'s and `engine`'s `build_iceberg_catalog`) immediately put the DSN into
-    /// the Iceberg catalog's `props` map and pass it to
-    /// `iceberg::SqlCatalogBuilder::load`, which moves it into a private
+    /// (`ingest`'s `build_iceberg_catalog` and `engine`'s inline setup in `run`)
+    /// immediately put the DSN into the Iceberg catalog's `props` map and pass it to
+    /// the vendored `control_plane_postgres::iceberg_sql_catalog::SqlCatalogBuilder`'s
+    /// `load` (loom's own catalog, implementing `iceberg::CatalogBuilder`), which moves
+    /// it into a private
     /// `SqlCatalogConfig` that derives `Debug`. Nothing formats that config today, and
     /// the built `SqlCatalog` itself retains only the connected `PgPool`, not the URI —
     /// so the plaintext does not persist past `load`, but a future `tracing::debug!`
