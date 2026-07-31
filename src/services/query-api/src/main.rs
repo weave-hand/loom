@@ -14,14 +14,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let engine_socket = service_runtime::req_var(&env, "LOOM_ENGINE_SOCKET")?;
 
+    // SIGTERM (what container runtimes send) and SIGINT both drain the server; the
+    // previous shutdown source never resolved, so shutdown never fired.
+    // `run_bounded` stops a wedged request from holding the process past the grace period.
+    let shutdown = service_runtime::Shutdown::install(service_runtime::shutdown_timeout(&env)?);
+
     let listener = tokio::net::TcpListener::bind(ctx.cfg.bind_addr).await?;
-    query_api::serve(
-        &ctx.cfg,
-        ctx.pg.clone(),
-        ctx.auth.clone(),
-        engine_socket,
-        listener,
-        std::future::pending(),
+    service_runtime::run_bounded(
+        &shutdown,
+        query_api::serve(
+            &ctx.cfg,
+            ctx.pg.clone(),
+            ctx.auth.clone(),
+            engine_socket,
+            listener,
+            shutdown.signalled(),
+        ),
     )
     .await
 }

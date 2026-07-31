@@ -13,15 +13,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     let cp: Arc<dyn ControlPlane> = ctx.pg.clone();
 
+    // SIGTERM (what container runtimes send) and SIGINT both drain the server. The
+    // shutdown source here used to be a future that never resolves, so the
+    // graceful-shutdown plumbing behind it could never fire; `run_bounded` then
+    // stops a wedged request from holding the process past the grace period.
+    let shutdown = service_runtime::Shutdown::install(service_runtime::shutdown_timeout(&env)?);
+
     let listener = tokio::net::TcpListener::bind(ctx.cfg.bind_addr).await?;
-    ingest::serve(
-        &ctx.cfg,
-        ctx.pool.clone(),
-        cp,
-        ctx.auth.clone(),
-        ctx.max_ttl,
-        listener,
-        std::future::pending(),
+    service_runtime::run_bounded(
+        &shutdown,
+        ingest::serve(
+            &ctx.cfg,
+            ctx.pool.clone(),
+            cp,
+            ctx.auth.clone(),
+            ctx.max_ttl,
+            listener,
+            shutdown.signalled(),
+        ),
     )
     .await
 }
