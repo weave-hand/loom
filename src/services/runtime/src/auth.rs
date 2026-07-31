@@ -17,7 +17,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use control_plane_core::{
     ADMIN_ROLE, Auth, ControlPlane, ControlPlaneError, LockoutPolicy, NewServiceAccount, PageReq,
-    RoleId, SubjectId,
+    Redacted, RoleId, SubjectId,
 };
 use time::OffsetDateTime;
 
@@ -275,7 +275,11 @@ async fn change_password(
     let Ok(new_phc) = crate::hash_password(&req.new) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
     };
-    if let Err(e) = st.auth.update_password(&subject.0, &new_phc).await {
+    if let Err(e) = st
+        .auth
+        .update_password(&subject.0, &Redacted::new(new_phc))
+        .await
+    {
         return status_for(&e).into_response();
     }
     // Keep the current session, revoke the rest.

@@ -199,7 +199,6 @@ rust_test(
     srcs = ["tests/secret_not_in_span.rs"],
     crate_root = "tests/secret_not_in_span.rs",
     edition = "2024",
-    visibility = ["PUBLIC"],
     deps = [
         ":memory",
         "//src/control-plane/core:core",

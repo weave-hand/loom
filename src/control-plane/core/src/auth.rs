@@ -155,7 +155,7 @@ pub trait Auth {
     /// the self-service change and the admin reset — the verify-current decision is a
     /// service-layer concern, consistent with this trait's no-cryptography contract.
     /// `NotFound` if the subject has no password credential.
-    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()>;
+    async fn update_password(&self, subject: &SubjectId, new_phc: &Redacted<String>) -> Result<()>;
 
     /// The stored PHC for `subject`, or `None` if the subject has no credential. Lets
     /// the self-service change verify the current password when the caller is

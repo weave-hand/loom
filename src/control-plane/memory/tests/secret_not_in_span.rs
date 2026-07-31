@@ -46,9 +46,12 @@ async fn update_password_does_not_log_the_verifier() {
     .unwrap();
 
     let _guard = tracing::subscriber::set_default(subscriber);
-    cp.update_password(&SubjectId("u-secret".into()), "$argon2id$v=19$m=1$LEAKME")
-        .await
-        .unwrap();
+    cp.update_password(
+        &SubjectId("u-secret".into()),
+        &Redacted::new("$argon2id$v=19$m=1$LEAKME".to_owned()),
+    )
+    .await
+    .unwrap();
     drop(_guard);
 
     let logged = String::from_utf8(sink.lock().unwrap().clone()).unwrap();

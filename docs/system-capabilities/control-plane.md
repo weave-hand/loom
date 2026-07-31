@@ -496,28 +496,42 @@ never a type name, length, or hash prefix, since a length is itself a hint — a
 yields its inner value only through an explicit `.expose()`, which is the
 grep-able audit point for where a secret escapes. It carries no `Display`, no
 `Deref`, and no serde impls, so there is no implicit path back to the plaintext.
-Three fields are wrapped: both Argon2 PHC verifiers (`NewUser::password_phc`,
-`PasswordCredential::password_phc`) and — the more severe case, since it is the
-credential itself rather than a hash — `service_runtime::DbConfig::password`, the
+Four fields are wrapped: both Argon2 PHC verifiers (`NewUser::password_phc`,
+`PasswordCredential::password_phc`); `service_runtime::DbConfig::password`, the
 plaintext Postgres password read from `LOOM_DB_PASSWORD` and reachable through
-the `Debug` on the enclosing `Config`. The two accessors that hand the same
-secrets back are wrapped for the same reason, since a naked return is the same
-hazard one indirection away: `Auth::password_phc_for_subject` yields a
-`Redacted<String>`, and so does `DbConfig::pg_url`, whose `postgres://` DSN
-interpolates the password in clear and is the string an operator is most likely
-to log when a connection fails. The guarantee is asserted on the containing
-structs, not only on the wrapper, so a future `#[derive(Debug)]` field cannot
-silently regress it.
+the `Debug` on the enclosing `Config`; and — the credential itself, not a hash,
+so at equal or higher severity — `store_config::S3Backend::secret_access_key`,
+the S3/MinIO secret key read from `AWS_SECRET_ACCESS_KEY` and reachable through
+`Debug` on the enclosing `ObjectStoreConfig`/`Config`. The two accessors that
+hand the same secrets back are wrapped for the same reason, since a naked
+return is the same hazard one indirection away: `Auth::password_phc_for_subject`
+yields a `Redacted<String>`, and so does `DbConfig::pg_url`, whose
+`postgres://` DSN interpolates the password in clear and is the string an
+operator is most likely to log when a connection fails. The guarantee is
+asserted on the containing structs, not only on the wrapper, so a future
+`#[derive(Debug)]` field cannot silently regress it. One mirror type is
+deliberately left unwrapped: `control_plane_postgres`'s vendored
+`iceberg_sql_catalog::s3_storage::S3Settings` carries the same secret but
+derives `Serialize`/`Deserialize` (it round-trips through the `typetag::serde`
+`StorageFactory`/`Storage` traits), and `Redacted` has no serde impls by
+design — wrapping it would break the vendored trait, not close a leak.
 
 Those exposures were latent — nothing formatted the structs. One live leak was
-found and closed alongside them: both `Auth::update_password` implementations
-were annotated `#[tracing::instrument(skip(self))]` while taking the raw Argon2
-verifier as an argument, so `tracing` recorded the verifier as a span field on
-every password change at `debug` level. `new_phc` is now skipped in both
-adapters, matching the treatment every other secret-carrying parameter in those
-files already had, and a regression test asserts on span *creation* (`FmtSpan::NEW`)
-rather than on events — an event-only capture passes vacuously here, because the
-method emits no event of its own.
+found and closed alongside it, and — since it was the only field a per-site
+`skip()` was protecting and the discipline proved asymmetric across the two
+adapters (deleting `skip(new_phc)` from one adapter left the whole suite green,
+because the only regression test covered the other) — closed at the type level
+rather than by convention: `Auth::update_password` took the raw Argon2 verifier
+as a plain `&str` argument, and both implementations were annotated
+`#[tracing::instrument(skip(self, new_phc))]` to keep `tracing` from recording
+it as a span field at `debug` level on every password change. The trait method
+now takes `new_phc: &Redacted<String>`, both adapters expose it only at the
+sqlx bind / struct-field write site, and the `skip(new_phc)` is gone from both
+— the span now records `new_phc=<redacted>` via the wrapper's `Debug`, so the
+guarantee is carried by the type and cannot regress in one adapter without a
+change to the shared trait breaking both at once. A regression test asserts on
+span *creation* (`FmtSpan::NEW`) rather than on events — an event-only capture
+passes vacuously here, because the method emits no event of its own.
 
 ## Transforms
 

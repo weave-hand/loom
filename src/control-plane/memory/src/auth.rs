@@ -193,13 +193,12 @@ impl Auth for MemoryControlPlane {
         Ok(())
     }
 
-    // `new_phc` is the raw Argon2 verifier — never record it as a span field.
-    #[tracing::instrument(skip(self, new_phc), level = "debug")]
-    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
+    #[tracing::instrument(skip(self), level = "debug")]
+    async fn update_password(&self, subject: &SubjectId, new_phc: &Redacted<String>) -> Result<()> {
         let mut auth = self.auth.lock();
         match auth.users.values_mut().find(|u| u.subject_id == subject.0) {
             Some(u) => {
-                u.password_phc = Redacted::new(new_phc.to_owned());
+                u.password_phc = new_phc.clone();
                 Ok(())
             }
             None => Err(ControlPlaneError::NotFound(format!(

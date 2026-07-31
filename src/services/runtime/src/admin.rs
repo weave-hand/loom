@@ -255,7 +255,11 @@ async fn reset_password(
         return (StatusCode::INTERNAL_SERVER_ERROR, "password hashing failed").into_response();
     };
     let subject = SubjectId(username);
-    if let Err(e) = st.auth.update_password(&subject, &new_phc).await {
+    if let Err(e) = st
+        .auth
+        .update_password(&subject, &Redacted::new(new_phc))
+        .await
+    {
         return error_response(&e);
     }
     if let Err(e) = st.auth.revoke_subject_sessions(&subject, None).await {

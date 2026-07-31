@@ -219,7 +219,14 @@ impl DbConfig {
     /// free-form passwords are ever supported. The returned DSN carries the password in
     /// clear (it is, after all, a connection string), which is why it comes back
     /// `Redacted` rather than `String` — `.into_inner()` at the call site is the audit
-    /// marker for "yes, this one really does need the plaintext".
+    /// marker for "yes, this one really does need the plaintext". Both callers
+    /// (`ingest`'s and `engine`'s `build_iceberg_catalog`) immediately put the DSN into
+    /// the Iceberg catalog's `props` map and pass it to
+    /// `iceberg::SqlCatalogBuilder::load`, which moves it into a private
+    /// `SqlCatalogConfig` that derives `Debug`. Nothing formats that config today, and
+    /// the built `SqlCatalog` itself retains only the connected `PgPool`, not the URI —
+    /// so the plaintext does not persist past `load`, but a future `tracing::debug!`
+    /// on `SqlCatalogConfig` would reopen exactly this leak.
     pub fn pg_url(&self) -> Redacted<String> {
         let url = if self.host.starts_with('/') {
             // The port is carried in the authority even for the socket form: libpq/sqlx
@@ -356,7 +363,7 @@ pub fn build_storage_factory(
             s.endpoint.clone(),
             s.region.clone(),
             s.access_key_id.clone(),
-            s.secret_access_key.clone(),
+            s.secret_access_key.expose().clone(),
             s.path_style,
         ))),
     }

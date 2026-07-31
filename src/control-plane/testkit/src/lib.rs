@@ -37,6 +37,12 @@ fn job(kind: &str) -> NewJob {
     }
 }
 
+/// Wrap a PHC literal for a fixture. `Redacted<String>` deliberately has no
+/// `From<&str>`, so this keeps the seeds terse.
+fn phc(s: &str) -> Redacted<String> {
+    Redacted::new(s.to_owned())
+}
+
 /// Define a minimal ontology type (all-`String`, optional properties) so a
 /// contract can reference it as a Type target. The table name is the lowercased
 /// type name. Used where a type only needs to *exist* (e.g. to satisfy the
@@ -3368,7 +3374,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-alice"),
         username: "alice".into(),
-        password_phc: Redacted::new("phc-alice".to_owned()),
+        password_phc: phc("phc-alice"),
     })
     .await
     .unwrap();
@@ -3386,7 +3392,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
         .create_user(&NewUser {
             subject_id: sid("u-other"),
             username: "alice".into(),
-            password_phc: Redacted::new("phc-other".to_owned()),
+            password_phc: phc("phc-other"),
         })
         .await;
     assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
@@ -3429,7 +3435,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-bob"),
         username: "bob".into(),
-        password_phc: Redacted::new("phc-bob".to_owned()),
+        password_phc: phc("phc-bob"),
     })
     .await
     .unwrap();
@@ -3526,7 +3532,7 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("human-1"),
         username: "human-1".into(),
-        password_phc: Redacted::new("phc".to_owned()),
+        password_phc: phc("phc"),
     })
     .await
     .unwrap();
@@ -3654,25 +3660,19 @@ pub async fn password_lifecycle_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-al"),
         username: "al".into(),
-        password_phc: Redacted::new("phc-1".to_owned()),
+        password_phc: phc("phc-1"),
     })
     .await
     .unwrap();
 
     // --- update_password round-trip (keyed by subject) ---
+    let al = sid("u-al");
+    let got = a.password_phc_for_subject(&al).await.unwrap();
+    assert_eq!(got.map(Redacted::into_inner), Some("phc-1".to_owned()));
+    a.update_password(&al, &phc("phc-2")).await.unwrap();
+    let got = a.password_phc_for_subject(&al).await.unwrap();
     assert_eq!(
-        a.password_phc_for_subject(&sid("u-al"))
-            .await
-            .unwrap()
-            .map(Redacted::into_inner),
-        Some("phc-1".to_owned())
-    );
-    a.update_password(&sid("u-al"), "phc-2").await.unwrap();
-    assert_eq!(
-        a.password_phc_for_subject(&sid("u-al"))
-            .await
-            .unwrap()
-            .map(Redacted::into_inner),
+        got.map(Redacted::into_inner),
         Some("phc-2".to_owned()),
         "update replaced the stored PHC"
     );
@@ -3682,7 +3682,7 @@ pub async fn password_lifecycle_contract<A: Auth + Acl>(a: &A) {
     assert!(cred.locked_until.is_none(), "unlocked by default");
     // unknown subject → NotFound
     assert!(matches!(
-        a.update_password(&sid("ghost"), "x").await,
+        a.update_password(&sid("ghost"), &phc("x")).await,
         Err(ControlPlaneError::NotFound(_))
     ));
     assert!(
