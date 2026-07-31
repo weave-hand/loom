@@ -22,17 +22,20 @@
 //! router via a oneshot request), and `ids_i64` (parse an `{objects:[…]}`
 //! body's `id`s as sorted `i64`s).
 
-use loom_test_seed::{id_val_batch, id_val_columns, vec4_batches, vec4_columns};
+use loom_test_seed::{id_val_batch, id_val_columns, local_sql_catalog, vec4_batches, vec4_columns};
 use std::sync::Arc;
 
+use arrow_array::{Int64Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use control_plane_core::{
     Acl, Action, ActionDef, ActionKind, ActionName, ActionStep, Assignment, Auth, Cardinality,
-    ControlPlane, ControlPlaneError, DatasetId, Effect, EventType, IndexSpec, LineageEvent,
-    LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy, PolicyTarget, PropertyDef,
-    RoleId, RowFilter, RunId, StreamTables, SubjectId, TableRef, TypeName, VectorIndexDef,
+    ColumnSpec, CompareOp, ControlPlane, ControlPlaneError, DatasetId, Effect, EventType,
+    IndexSpec, LineageEvent, LinkDef, Metric, NewUser, ObjectType, Ontology, ParamDef, Policy,
+    PolicyTarget, PropertyDef, RoleId, RowFilter, RunId, ScalarValue, StreamTables, SubjectId,
+    TableRef, TypeName, VectorIndexDef,
 };
 use control_plane_postgres::PgControlPlane;
 use control_plane_postgres::fixture::{IcebergWriter, PgFixture, SeedCol};
@@ -41,10 +44,11 @@ use control_plane_postgres::iceberg_landing::{InlineLimits, land};
 use control_plane_postgres::vector_index::build_vector_index;
 use http_body_util::BodyExt;
 use query_api::action::{ActionDeps, run_action};
+use query_api::engine_client::EngineServingClient;
 use query_api::handler::{ObjectQuery, QueryDeps, Subject, read_object};
 use query_api::http::{AppState, router};
 use query_api::render::objects_to_json;
-use query_api::serving::{ActionEngine, ServingError, SqlValue, inline_params};
+use query_api::serving::{ActionEngine, ServingEngine, ServingError, SqlValue, inline_params};
 use query_api::serving_datafusion::batches_to_rows;
 use query_api::sql::DataFusionDialect;
 use service_runtime::{AuthState, protect, token_sha256};
@@ -1585,4 +1589,226 @@ pub async fn post_action_text(
         ))
     };
     (status, json)
+}
+
+/// Convenience constructor for a non-nullable `ColumnSpec` in the governed-SQL fixture.
+fn sql_col(name: &str, ty: &str) -> ColumnSpec {
+    ColumnSpec {
+        name: name.into(),
+        ty: ty.into(),
+        nullable: false,
+    }
+}
+
+/// A completed landing lineage event for the governed-SQL fixture's tables.
+fn sql_lineage(schema: &str, name: &str) -> LineageEvent {
+    LineageEvent {
+        run_id: RunId(uuid::Uuid::new_v4()),
+        event_type: EventType::Complete,
+        event_time: time::OffsetDateTime::now_utc(),
+        inputs: vec![],
+        outputs: vec![DatasetId::from(&tref(schema, name)).dataset_ref()],
+        payload: serde_json::json!({ "source": "sql-console-e2e" }),
+    }
+}
+
+/// Everything a governed-SQL test needs kept alive: the control plane (for the driver),
+/// the real engine serving client (the `eng` the router uses), and the guards that must
+/// not drop.
+pub struct GovernedSqlHarness {
+    pub cp: Arc<PgControlPlane>,
+    pub serving: Arc<dyn ServingEngine>,
+    _wh: tempfile::TempDir,
+    _eng: EngineGuard,
+}
+
+/// Seed the shared governed-SQL fixture and boot a REAL engine over a UDS.
+///
+/// Lands three Iceberg tables through the real landing path — `wh.orders(id,
+/// customer_id, email)` with 4 rows, `wh.customers(id, name, ssn)` with 2, and
+/// `wh.secrets(id, value)` with 1 — binds an ontology type to each (`Order`,
+/// `Customer`, `Secret`), then grants role `reader`:
+///
+/// * `Order` — Read, row-filtered to `id >= 2` (3 of 4 rows) with `email` masked;
+/// * `Customer` — Read with `ssn` denied;
+/// * `Secret` — **nothing**, so its table is unresolvable under the closed-world
+///   governed catalog and cannot be distinguished from a nonexistent one.
+///
+/// The caller MUST keep the returned harness alive: it owns the warehouse `TempDir`
+/// and the engine guard, and dropping it pulls the Parquet files and the engine out
+/// from under the serving client.
+pub async fn governed_sql_harness(fx: &PgFixture) -> GovernedSqlHarness {
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let wh = tempfile::tempdir().expect("warehouse");
+    let warehouse = wh.path().display().to_string();
+    let catalog = local_sql_catalog(dsn, &warehouse).await;
+    let limits = InlineLimits {
+        inline_byte_limit: 0,
+        flush_byte_threshold: i64::MAX,
+    };
+
+    // wh.orders(id, customer_id, email): 4 rows.
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("customer_id", DataType::Int64, false),
+        Field::new("email", DataType::Utf8, false),
+    ]));
+    let orders = RecordBatch::try_new(
+        orders_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2, 3, 4])),
+            Arc::new(Int64Array::from(vec![1i64, 1, 2, 2])),
+            Arc::new(StringArray::from(vec![
+                "a1@x.com", "a2@x.com", "a3@x.com", "a4@x.com",
+            ])),
+        ],
+    )
+    .expect("orders batch");
+    land(
+        &pool,
+        &catalog,
+        &tref("wh", "orders"),
+        &[
+            sql_col("id", "long"),
+            sql_col("customer_id", "long"),
+            sql_col("email", "string"),
+        ],
+        orders_schema,
+        vec![orders],
+        limits,
+        sql_lineage("wh", "orders"),
+        None,
+    )
+    .await
+    .expect("land orders");
+
+    // wh.customers(id, name, ssn): 2 rows.
+    let cust_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("ssn", DataType::Utf8, false),
+    ]));
+    let customers = RecordBatch::try_new(
+        cust_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64, 2])),
+            Arc::new(StringArray::from(vec!["Alice", "Bob"])),
+            Arc::new(StringArray::from(vec!["111-11-1111", "222-22-2222"])),
+        ],
+    )
+    .expect("customers batch");
+    land(
+        &pool,
+        &catalog,
+        &tref("wh", "customers"),
+        &[
+            sql_col("id", "long"),
+            sql_col("name", "string"),
+            sql_col("ssn", "string"),
+        ],
+        cust_schema,
+        vec![customers],
+        limits,
+        sql_lineage("wh", "customers"),
+        None,
+    )
+    .await
+    .expect("land customers");
+
+    // wh.secrets(id, value): 1 row — reader holds NO grant on its type.
+    let sec_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("value", DataType::Utf8, false),
+    ]));
+    let secrets = RecordBatch::try_new(
+        sec_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![1i64])),
+            Arc::new(StringArray::from(vec!["top-secret"])),
+        ],
+    )
+    .expect("secrets batch");
+    land(
+        &pool,
+        &catalog,
+        &tref("wh", "secrets"),
+        &[sql_col("id", "long"), sql_col("value", "string")],
+        sec_schema,
+        vec![secrets],
+        limits,
+        sql_lineage("wh", "secrets"),
+        None,
+    )
+    .await
+    .expect("land secrets");
+
+    cp.define_type(
+        ObjectType::build("Order", ("wh".to_string(), "orders".to_string()))
+            .add_prop(prop("id", "long", true))
+            .add_prop(prop("customer_id", "long", true))
+            .add_prop(prop("email", "string", true))
+            .identity("id")
+            .done(),
+    )
+    .await
+    .expect("define Order");
+    cp.define_type(
+        ObjectType::build("Customer", ("wh".to_string(), "customers".to_string()))
+            .add_prop(prop("id", "long", true))
+            .add_prop(prop("name", "string", true))
+            .add_prop(prop("ssn", "string", true))
+            .identity("id")
+            .done(),
+    )
+    .await
+    .expect("define Customer");
+    cp.define_type(
+        ObjectType::build("Secret", ("wh".to_string(), "secrets".to_string()))
+            .add_prop(prop("id", "long", true))
+            .add_prop(prop("value", "string", true))
+            .identity("id")
+            .done(),
+    )
+    .await
+    .expect("define Secret");
+
+    // ACL: reader gets a row-filtered (id >= 2) + email-masked Read on Order, a
+    // ssn-denied Read on Customer, and NOTHING on Secret.
+    let (_subj, role) = subject_with_role(&cp, "reader").await;
+    grant_read(&cp, &role, "Order").await;
+    cp.set_policy(
+        &role,
+        Action::Read,
+        Policy {
+            target: PolicyTarget::Type(TypeName("Order".into())),
+            row_filter: Some(RowFilter::Compare {
+                property: "id".into(),
+                op: CompareOp::Ge,
+                value: ScalarValue::Int(2),
+            }),
+            deny_columns: vec![],
+            mask_columns: vec!["email".into()],
+        },
+    )
+    .await
+    .expect("set Order policy");
+    grant_read_columns(&cp, &role, "Customer", vec!["ssn".into()], vec![]).await;
+
+    // Boot the engine over a UDS and connect a real EngineServingClient (control+flight).
+    let (sock, eng) = spawn_engine_full(fx, &db, wh.path(), 0, i64::MAX).await;
+    let serving: Arc<dyn ServingEngine> = Arc::new(
+        EngineServingClient::connect(sock)
+            .await
+            .expect("engine connect"),
+    );
+    let cp = Arc::new(cp);
+
+    GovernedSqlHarness {
+        cp,
+        serving,
+        _wh: wh,
+        _eng: eng,
+    }
 }

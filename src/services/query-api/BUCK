@@ -783,23 +783,12 @@ loom_fixture_test(
     srcs = ["tests/sql_console_e2e.rs"],
     crate_root = "tests/sql_console_e2e.rs",
     deps = [
-        "//src/testing:seed",
-        "//src/testing:flight",
         ":query-api",
         ":e2e-support",
-        "//src/services/engine:engine",
-        "//src/services/engine-wire:engine-wire",
-        "//src/services/runtime:runtime",
-        "//src/control-plane/core:core",
         "//src/control-plane/postgres:postgres",
-        "//third-party:arrow-array",
-        "//third-party:arrow-schema",
         "//third-party:axum",
         "//third-party:serde_json",
-        "//third-party:tempfile",
-        "//third-party:time",
         "//third-party:tokio",
-        "//third-party:uuid",
     ],
 )
 
