@@ -209,6 +209,20 @@ INSERT blocks until the winner commits, so exactly one live row is guaranteed to
 be found. `ensure_table` must run inside the caller's transaction; every
 production write path already does.
 
+Per-column Parquet-footer statistics have **one reader** in the tree. The merge —
+typed min/max folded across every row group, plus null counts and compressed sizes —
+lives in `//src/parquet-stats` (`parquet_stats::column_stats`), a leaf crate over
+`parquet` and `core` alone, and both the mirror's landing/commit path
+(`iceberg_stats::column_stats_from_parquet`) and the DataFusion write path
+(`datafusion_io::write::file_stats_from_bytes`) call it (#570). The two had been
+hand-copied while the tree carried two parquet majors and the `Statistics` enum was a
+distinct type in each; the arrow-58 converge removed that split, and the copies are now
+collapsed. It takes already-parsed `ParquetMetaData` rather than bytes, so it is
+infallible and each caller keeps its own reader construction and error type. A
+cross-crate equivalence test asserts the two entry points return identical
+`ColumnStat`s for the same buffer, and `parquet_stats` is now the single file a future
+parquet major bump has to touch.
+
 ## Catalog views
 
 A **view** is a first-class virtual dataset — a named row/column subset of one
