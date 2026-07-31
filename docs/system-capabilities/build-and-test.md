@@ -10,7 +10,7 @@ test estate provides, why each piece is shaped the way it is, and where the know
 gaps are. Design docs live in git history; planning history in the GitHub
 issue tracker (labels `roadmap`, `idea`, `bug`).
 
-_As of 4861433b._
+_As of 1f831467._
 
 ## Hermetic build, toolchains, and remote execution
 
@@ -151,6 +151,27 @@ measures the whole `//src` tree: it discovers every `rust_test`, applies an
 instrumentation constraint modifier that normal builds can never trip, runs
 fixtures locally and pure-logic tests on RE, and merges to per-crate and combined
 lcov/HTML reports. See CLAUDE.md's Testing section for the operating footguns.
+
+**Component render harness.** UI components are asserted, not eyeballed:
+`//src/ui:harness-bundle` is a backend-free wasm bundle (mirroring `:gallery-bundle`,
+same wasm-bindgen version assertion) that reads `?component=<name>&props=<json>` from
+the URL and mounts exactly that one component inside `<div id="mount">`, and
+`//src/ui/e2e:components` drives it in the vendored headless Chromium — the
+component-unit layer that pairs with the full-page `//src/ui/e2e:login` e2e (#592).
+`loom_ui_e2e::mount` serves the bundle from an in-process axum `ServeDir` on an
+ephemeral port, because a wasm bundle cannot boot from `file://` and the gallery's
+`python3 -m http.server` dev script is not something a test can depend on. Props cross
+a JSON boundary, so each component under test gets a harness-local `*Spec` struct
+rather than reusing its yew `Properties` type — `Properties` hold `Callback`s, which
+are not deserializable; the harness constructs those callbacks itself and records each
+invocation into `window.__loom_events`, so a test can assert *"`on_change` fired with
+X"* and not only what rendered. The target is a plain `loom_rust_test`, deliberately
+not `loom_fixture_test`: a render test needs no Postgres, and the fixture macro would
+burn one of the eight shared boot slots per test. Covering another component is a
+`*Spec` plus one `match` arm in `src/ui/src/harness.rs` — no new buck rule and no new
+vendored tool. Like `:login`, these tests need the browser's host libs (supplied by
+the RE image and by dev hosts), so a container missing `libnspr4.so` fails them for
+environmental reasons unrelated to the diff.
 
 ## Lint and quality gates
 

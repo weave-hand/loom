@@ -268,6 +268,11 @@ pub fn percent_encode(s: &str) -> String {
 /// killed/shut down when this is dropped, so the test must hold it for as long
 /// as it drives the client (this is why `mount` returns the guard rather than a
 /// bare `Client`).
+///
+/// Field order is load-bearing: Rust drops struct fields in declaration order,
+/// so `browser` (whose drop kills chromedriver) must be dropped before `server`
+/// shuts down — otherwise the static server could wind down while Chrome is
+/// still fetching from it. Do not reorder these fields.
 pub struct Harness {
     browser: Browser,
     server: StaticServer,
