@@ -338,6 +338,45 @@ impl Surface {
             Surface::Catalog | Surface::Ontology | Surface::Transforms | Surface::Query
         )
     }
+
+    /// The URL slug for this surface — the first path segment of the hash route
+    /// (`#/catalog`). Lowercase and stable: changing one breaks existing links.
+    #[must_use]
+    pub fn slug(self) -> &'static str {
+        match self {
+            Surface::Catalog => "catalog",
+            Surface::Transforms => "transforms",
+            Surface::Query => "query",
+            Surface::Ontology => "ontology",
+            Surface::Workbooks => "workbooks",
+            Surface::Dashboards => "dashboards",
+        }
+    }
+
+    /// Parse a URL slug back to a surface (the inverse of [`Self::slug`]).
+    #[must_use]
+    pub fn from_slug(slug: &str) -> Option<Surface> {
+        Surface::all().into_iter().find(|s| s.slug() == slug)
+    }
+
+    /// The drawer tab ids this surface renders, in tab-bar order — the vocabulary
+    /// the route's `?tab=` is validated against. Empty for a surface with no
+    /// drawer (Query owns its whole pane; the stubs have no detail view).
+    #[must_use]
+    pub fn tabs(self) -> &'static [&'static str] {
+        match self {
+            Surface::Catalog => &["schema", "preview", "lineage", "history"],
+            Surface::Ontology => &["properties", "links"],
+            Surface::Transforms => &["definition", "runs"],
+            Surface::Query | Surface::Workbooks | Surface::Dashboards => &[],
+        }
+    }
+
+    /// The tab a freshly-opened drawer starts on: the first of [`Self::tabs`].
+    #[must_use]
+    pub fn default_tab(self) -> Option<&'static str> {
+        self.tabs().first().copied()
+    }
 }
 
 /// A property row in the ontology drawer.
@@ -546,6 +585,17 @@ impl CatalogSortDir {
             CatalogSortDir::Desc => "▼",
         }
     }
+
+    /// Parse a `?dir=` wire token back to a direction (the inverse of
+    /// [`Self::as_param`]).
+    #[must_use]
+    pub fn from_param(s: &str) -> Option<CatalogSortDir> {
+        match s {
+            "asc" => Some(CatalogSortDir::Asc),
+            "desc" => Some(CatalogSortDir::Desc),
+            _ => None,
+        }
+    }
 }
 
 /// Build the `GET /datasets` query string from the active controls. `project = None`
@@ -569,6 +619,22 @@ pub fn distinct_projects(rows: &[DatasetRow]) -> Vec<String> {
     ps.sort();
     ps.dedup();
     ps
+}
+
+/// The project chips to render: the options discovered on the last **unfiltered**
+/// dataset load, plus the active project when it is not among them. A deep link
+/// carrying `?project=` makes the first load filtered, so the unfiltered option set
+/// has never been fetched — without this the controls bar would show only "All" and
+/// the active filter would be invisible.
+#[must_use]
+pub fn project_chip_options(discovered: &[String], active: Option<&str>) -> Vec<String> {
+    let mut out = discovered.to_vec();
+    if let Some(active) = active
+        && !out.iter().any(|p| p == active)
+    {
+        out.push(active.to_string());
+    }
+    out
 }
 
 /// A schema column in the Catalog › Schema tab.

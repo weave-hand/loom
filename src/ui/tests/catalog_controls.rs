@@ -3,6 +3,7 @@
 
 use loom_ui_core::{
     CatalogSortDir, DatasetRow, DatasetSort, dataset_list_query, distinct_projects,
+    project_chip_options,
 };
 
 fn row(schema: &str, name: &str) -> DatasetRow {
@@ -58,4 +59,27 @@ fn distinct_projects_are_sorted_and_deduped() {
         distinct_projects(&rows),
         vec!["main".to_string(), "other".to_string()]
     );
+}
+
+#[test]
+fn chip_options_are_the_discovered_projects_when_nothing_is_filtered() {
+    let discovered = vec!["main".to_string(), "analytics".to_string()];
+    assert_eq!(project_chip_options(&discovered, None), discovered);
+}
+
+#[test]
+fn chip_options_include_an_active_project_the_list_has_not_discovered() {
+    // A deep link carrying `?project=main` loads FILTERED, so the unfiltered
+    // option set was never fetched — without this the bar would show only "All"
+    // and the active filter would be invisible.
+    assert_eq!(
+        project_chip_options(&[], Some("main")),
+        vec!["main".to_string()]
+    );
+}
+
+#[test]
+fn chip_options_do_not_duplicate_an_already_discovered_active_project() {
+    let discovered = vec!["main".to_string(), "analytics".to_string()];
+    assert_eq!(project_chip_options(&discovered, Some("main")), discovered);
 }
