@@ -100,6 +100,11 @@ const VALIDATE_DEBOUNCE_MS: i32 = 500;
 /// invalidates the JS callback), and the id is what cancels it.
 type PendingValidation = std::rc::Rc<std::cell::RefCell<Option<(i32, Closure<dyn FnMut()>)>>>;
 
+/// The mounted editor's Monaco model, or `None` once the cleanup has taken it. Shared
+/// with any armed or in-flight validation so both can tell that the editor is gone —
+/// `TextModel` has no "is disposed" query, and calling into a disposed one throws.
+type LiveModel = std::rc::Rc<std::cell::RefCell<Option<TextModel>>>;
+
 /// Build the Monaco marker array for `diags`. Shared by both publishers so the
 /// severity/position mapping exists once.
 fn marker_array(diags: &[Diagnostic]) -> js_sys::Array {
@@ -146,12 +151,19 @@ fn cancel_pending_validation(pending: &PendingValidation) {
     }
 }
 
-/// Ask `validate` for server diagnostics on `model`'s current text, `VALIDATE_DEBOUNCE_MS`
-/// after the last call. Any previously scheduled request is cancelled, so a burst of
-/// keystrokes produces exactly one request. The response is dropped unless its `sql` still
-/// matches the model — otherwise markers land on text the user has already edited past.
+/// Ask `validate` for server diagnostics on the live model's current text,
+/// `VALIDATE_DEBOUNCE_MS` after the last call. Any previously scheduled request is
+/// cancelled, so a burst of keystrokes produces exactly one request. The response is
+/// dropped unless its `sql` still matches the model — otherwise markers land on text the
+/// user has already edited past.
+///
+/// Takes the model through the shared [`LiveModel`] slot rather than by reference,
+/// because a request already in flight can outlive the component: the cleanup takes the
+/// model out of the slot before disposing it, so both the request and the response see
+/// `None` after unmount and do nothing. Holding a `TextModel` clone instead would let a
+/// late response call `get_value()` on a disposed model, which throws.
 fn schedule_validation(
-    model: &TextModel,
+    live: &LiveModel,
     validate: &Callback<ValidateRequest>,
     pending: &PendingValidation,
 ) {
@@ -161,19 +173,27 @@ fn schedule_validation(
     // Debounce cancellation: whatever was armed by the previous keystroke is disarmed
     // (and its closure dropped) before a new timeout replaces it.
     cancel_pending_validation(pending);
-    let model_for_request = model.clone();
-    let model_for_response = model.clone();
+    let live_for_request = live.clone();
     let validate = validate.clone();
     let fire = Closure::wrap(Box::new(move || {
-        let sql = model_for_request.get_value();
-        let model_for_response = model_for_response.clone();
+        // Unmounted between arming and firing: nothing to validate.
+        let Some(sql) = live_for_request.borrow().as_ref().map(TextModel::get_value) else {
+            return;
+        };
+        let live_for_response = live_for_request.clone();
         let respond = Callback::from(move |resp: ValidateResponse| {
+            // Unmounted while the request was in flight: the model is gone and touching
+            // it would throw. Nothing to publish onto, so drop the answer.
+            let live = live_for_response.borrow();
+            let Some(model) = live.as_ref() else {
+                return;
+            };
             // Stale-response drop: the answer describes the text that was sent, and the
             // user may have typed since. Publishing it would squiggle text it does not
             // describe, so a response whose `sql` no longer matches the live model is
             // discarded outright.
-            if model_for_response.get_value() == resp.sql {
-                publish_server_diagnostics(&model_for_response, &resp.diagnostics);
+            if model.get_value() == resp.sql {
+                publish_server_diagnostics(model, &resp.diagnostics);
             }
         });
         validate.emit(ValidateRequest { sql, respond });
@@ -272,15 +292,21 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
 
             // Emit on_change with the model's current text on every edit, and
             // refresh client-side diagnostics (squiggles) from the same text.
+            // Publish the model into the shared slot BEFORE anything can schedule a
+            // validation: `schedule_validation` reads the model from here, and the
+            // cleanup empties it so a late response knows the editor is gone.
+            *model_ref.borrow_mut() = Some(model.clone());
+
             let cb_model = model.clone();
             let diag_schema = schema.clone();
             let cb_validate = validate.clone();
             let cb_pending = pending.clone();
+            let cb_live = model_ref.clone();
             let disposable = ed.on_did_change_model_content(move |_ev| {
                 on_change.emit(cb_model.get_value());
                 refresh_diagnostics(&cb_model, &diag_schema);
                 if let Some(v) = cb_validate.as_ref() {
-                    schedule_validation(&cb_model, v, &cb_pending);
+                    schedule_validation(&cb_live, v, &cb_pending);
                 }
             });
             *subscription.borrow_mut() = Some(disposable);
@@ -291,10 +317,9 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
             // the same debounce as a keystroke: a mount that is immediately typed into
             // then produces ONE request, not a mount request plus a typing request.
             if let Some(v) = validate.as_ref() {
-                schedule_validation(&model, v, &pending);
+                schedule_validation(&model_ref, v, &pending);
             }
             *editor.borrow_mut() = Some(ed);
-            *model_ref.borrow_mut() = Some(model);
 
             // Schema-fed completion: register one `sql` CompletionItemProvider,
             // driven by the pure engine over this editor's captured `schema`.
@@ -387,6 +412,10 @@ pub fn sql_editor(props: &SqlEditorProps) -> Html {
                 // survived unmount would read (and publish markers onto) a dead model.
                 cancel_pending_validation(&pending);
                 editor.borrow_mut().take(); // dispose editor widget
+                // Taking the model out of the shared slot is load-bearing beyond the
+                // dispose: a request already in flight cannot be cancelled from here, and
+                // its `respond` callback reads this slot. Emptying it first is what makes
+                // that late answer a no-op instead of a `get_value()` on a disposed model.
                 if let Some(model) = model_ref.borrow_mut().take() {
                     model.as_ref().dispose(); // dispose the model (editor.dispose() does not)
                 }
