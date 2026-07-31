@@ -20,7 +20,14 @@
 //! collect metrics — [`analyze_refusal`] turns it into a diagnostic instead of planning
 //! it.
 
+use axum::extract::{Json, State};
 use serde::{Deserialize, Serialize};
+use service_runtime::Subject;
+
+use crate::governed::resolve_governed_catalog;
+use crate::handler::QueryError;
+use crate::http::{AppState, query_error_response};
+use crate::serving::ServingError;
 
 /// Severity of a [`SqlDiagnostic`]. The engine only ever reports planning *errors*, so
 /// this carries a single variant today; it is an enum (not a bare string) so the wire
@@ -90,11 +97,49 @@ pub fn parse_error_position(message: &str) -> Option<(u32, u32)> {
     Some((line.parse().ok()?, leading_u32(rest)?))
 }
 
-/// The maximal identifier-ish words of `sql`, in order — the cheapest whole-word view of
-/// a statement's leading keywords that needs no indexing and no tokenizer.
-fn ident_words(sql: &str) -> impl Iterator<Item = &str> {
-    sql.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-        .filter(|w| !w.is_empty())
+/// The first two identifier words of `sql`, skipping leading whitespace and SQL comments
+/// (`-- …` to end of line, `/* … */`) the way a parser does. Stops after two words —
+/// that is all either caller needs.
+///
+/// **Comment-awareness is load-bearing, not cosmetic.** A naive split on non-identifier
+/// characters treats a comment body as ordinary words, so `EXPLAIN /*x*/ ANALYZE …` reads
+/// as `EXPLAIN`, `x` — slipping past [`analyze_refusal`] into the engine, which then
+/// *executes* it. sqlparser treats comments as whitespace, so anything this scanner
+/// disagrees with the parser about is a hole in the refusal.
+///
+/// Unterminated comments consume the rest of the input, matching what the parser will
+/// make of them.
+fn leading_keywords(sql: &str) -> (Option<&str>, Option<&str>) {
+    let mut rest = sql.trim_start();
+    let mut out: Vec<&str> = Vec::with_capacity(2);
+    while out.len() < 2 && !rest.is_empty() {
+        rest = if let Some(after) = rest.strip_prefix("--") {
+            after
+                .find('\n')
+                .map_or("", |k| after.get(k..).unwrap_or(""))
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            after
+                .find("*/")
+                .map_or("", |k| after.get(k.saturating_add(2)..).unwrap_or(""))
+        } else {
+            let end = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(rest.len());
+            if end == 0 {
+                // A non-identifier character (punctuation, a quote, …) — consume just it,
+                // so the scan always makes progress.
+                rest.get(rest.chars().next().map_or(0, char::len_utf8)..)
+                    .unwrap_or("")
+            } else {
+                if let Some(word) = rest.get(..end) {
+                    out.push(word);
+                }
+                rest.get(end..).unwrap_or("")
+            }
+        }
+        .trim_start();
+    }
+    (out.first().copied(), out.get(1).copied())
 }
 
 /// The wrapper this module prepends when the caller did not write their own `EXPLAIN`.
@@ -124,9 +169,8 @@ const EXPLAIN_COLS: u32 = EXPLAIN_PREFIX.len() as u32;
 /// text and squiggles the caller's own keywords, wherever on the buffer they sit.
 #[must_use]
 pub fn analyze_refusal(sql: &str) -> Option<SqlDiagnostic> {
-    let mut words = ident_words(sql);
-    let first = words.next()?;
-    let second = words.next()?;
+    let (first, second) = leading_keywords(sql);
+    let (first, second) = (first?, second?);
     if first.eq_ignore_ascii_case("EXPLAIN") && second.eq_ignore_ascii_case("ANALYZE") {
         return Some(SqlDiagnostic {
             message: "`EXPLAIN ANALYZE` runs the statement to measure it; validation only \
@@ -157,10 +201,10 @@ pub fn analyze_refusal(sql: &str) -> Option<SqlDiagnostic> {
 /// wrapped like anything else.
 #[must_use]
 pub fn explain_wrap(sql: &str) -> (String, u32) {
-    // The first identifier run IS the keyword iff it is exactly `EXPLAIN` — the whole-word
-    // rule without any byte/char index juggling.
-    let already = ident_words(sql)
-        .next()
+    // The first keyword IS `EXPLAIN` only as a whole word — and only when it is really
+    // the leading keyword, not the contents of a leading comment.
+    let already = leading_keywords(sql)
+        .0
         .is_some_and(|w| w.eq_ignore_ascii_case("EXPLAIN"));
     if already {
         (sql.to_owned(), 0)
@@ -197,5 +241,101 @@ pub fn plan_diagnostic(message: String, col_offset: u32) -> SqlDiagnostic {
         end_col: pos.map(|(_l, c)| c.saturating_add(1)),
         message,
         severity: DiagnosticSeverity::Error,
+    }
+}
+
+/// Rows buffered from the `EXPLAIN` result. The plan text is discarded, so the smallest
+/// non-zero cap is right: it bounds the buffer without changing what is reported.
+/// Row cap handed to `execute_governed`. It collects batches until the cumulative count
+/// *exceeds* the cap, so any value below the first batch's size stops the stream after
+/// **one batch** — which is the real bound here, not one row. The rows are discarded
+/// either way; this exists so a pathological plan string cannot be buffered indefinitely.
+const VALIDATE_MAX_ROWS: usize = 1;
+
+/// Shape a diagnostic list into the `POST /sql/validate` body. An empty list is the
+/// "planned cleanly" answer, so every exit from [`validate_sql`] goes through here.
+fn diagnostics_response(diagnostics: Vec<SqlDiagnostic>) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    Json(SqlValidateResponse { diagnostics }).into_response()
+}
+
+/// `POST /sql/validate` — plan the authenticated subject's SQL under their governed
+/// catalog and return typed diagnostics, executing nothing.
+///
+/// The statement is wrapped in `EXPLAIN` and run through the SQL console's own
+/// `execute_governed` substrate, so DataFusion plans it fully — unknown columns, type
+/// errors, and bad function signatures are all caught, which is exactly what no
+/// client-side heuristic can do — while execution is only plan formatting. `EXPLAIN`
+/// passes the read-only guard untouched: `SQLOptions::verify_plan` gates `Ddl`, `Dml`
+/// and `Statement` nodes, and descends into `Explain`'s inner plan, so `EXPLAIN INSERT …`
+/// is still rejected while `EXPLAIN SELECT …` is not.
+///
+/// A planning fault is a `200` carrying one diagnostic — a valid request about invalid
+/// SQL is not an error. Empty SQL is likewise a `200` with no diagnostics: a
+/// debounce-driven editor sends the empty buffer routinely and an empty statement is not
+/// a *fault*, it is nothing to say. Every other engine fault delegates to the shared
+/// [`query_error_response`], so this route's status mapping cannot drift from
+/// `POST /sql`'s (and inherits future `ServingError` arms without a second match).
+#[utoipa::path(
+    post, path = "/sql/validate",
+    request_body = SqlValidateRequest,
+    responses(
+        (status = 200, description = "Diagnostics for the statement (empty when it plans cleanly)", body = SqlValidateResponse),
+        (status = 400, description = "Malformed request body"),
+        (status = 500, description = "Serving error"),
+    ),
+    security(("bearer_auth" = [])),
+    tag = "sql",
+)]
+pub async fn validate_sql(
+    State(st): State<AppState>,
+    subject: Subject,
+    Json(req): Json<SqlValidateRequest>,
+) -> axum::response::Response {
+    if req.sql.trim().is_empty() {
+        return diagnostics_response(Vec::new());
+    }
+    // `EXPLAIN ANALYZE` executes the statement to measure it, so it is refused before any
+    // engine round-trip rather than passed through by `explain_wrap`. Validation is
+    // plan-only; see `analyze_refusal`.
+    //
+    // This sits BEFORE the catalog resolve deliberately: the refusal reads no data, names
+    // no table, and its output is a pure function of the caller's own body, so it leaks
+    // nothing and skips no authorization check (`resolve_governed_catalog` constructs a
+    // catalog, it is not a gate — it has no `Forbidden` outcome). It also avoids N+2
+    // control-plane round trips for a request that is going to be refused, which matters
+    // on a debounced per-keystroke endpoint. INVARIANT: if a route-level permission
+    // ("may use the SQL console") is ever added, it must land ABOVE this line.
+    if let Some(d) = analyze_refusal(&req.sql) {
+        return diagnostics_response(vec![d]);
+    }
+    // Server-resolved, never from the wire: validating outside the caller's catalog
+    // would turn this route into an existence oracle for tables they cannot read.
+    let catalog = match resolve_governed_catalog(st.cp.ontology(), st.cp.acl(), &subject.0).await {
+        Ok(c) => c,
+        Err(e) => return query_error_response(e, "sql validate catalog"),
+    };
+    // The RAW `sql` is wrapped, deliberately not the trimmed one: trimming would delete
+    // leading newlines and shift every reported line number away from the line the user
+    // is actually looking at. Only the emptiness check above trims.
+    let (statement, col_offset) = explain_wrap(&req.sql);
+    match st
+        .serving
+        .execute_governed(statement, catalog, VALIDATE_MAX_ROWS)
+        .await
+    {
+        // The plan text is deliberately dropped here — it names file paths and storage
+        // layout, and the caller asked whether their SQL is valid, not how it will run.
+        //
+        // Treating a successful stream as "planned cleanly" is sound only because EXPLAIN
+        // cannot fail after its first batch: `ExplainExec` emits precomputed plan text
+        // with no upstream execution, so a fault surfaces either when opening the stream
+        // or on the first item, and both map to `ServingError::Plan`. The row cap above
+        // discards later batches, so for a statement that really executed, a late fault
+        // would be swallowed into a false 200 — which is the other reason
+        // `analyze_refusal` must keep `EXPLAIN ANALYZE` off this path.
+        Ok(_plan_rows) => diagnostics_response(Vec::new()),
+        Err(ServingError::Plan(m)) => diagnostics_response(vec![plan_diagnostic(m, col_offset)]),
+        Err(e) => query_error_response(QueryError::Serving(e), "sql validate execute"),
     }
 }

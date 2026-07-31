@@ -198,6 +198,49 @@ fn explain_analyze_refusal_is_case_and_whitespace_insensitive() {
 }
 
 #[test]
+fn a_comment_cannot_smuggle_analyze_past_the_refusal() {
+    // sqlparser treats comments as whitespace, so the engine reads every one of these as
+    // a genuine `EXPLAIN ANALYZE` and EXECUTES it. A keyword scan that treats a comment
+    // body as an ordinary word sees `EXPLAIN`, `x` and waves them through.
+    for sql in [
+        "EXPLAIN /*x*/ ANALYZE SELECT 1",
+        "EXPLAIN --x\n ANALYZE SELECT 1",
+        "/* lead */ EXPLAIN ANALYZE SELECT 1",
+        "-- lead\nEXPLAIN ANALYZE SELECT 1",
+        "EXPLAIN/*a*//*b*/ANALYZE SELECT 1",
+    ] {
+        assert!(
+            analyze_refusal(sql).is_some(),
+            "comment-smuggled ANALYZE must still be refused: {sql:?}"
+        );
+    }
+}
+
+#[test]
+fn a_leading_comment_does_not_hide_the_callers_own_explain() {
+    // The same scan drives double-wrap detection: miss the `EXPLAIN` behind a comment and
+    // the statement gets wrapped again, reporting a spurious diagnostic on valid SQL.
+    assert_eq!(
+        explain_wrap("/* note */ EXPLAIN SELECT 1"),
+        ("/* note */ EXPLAIN SELECT 1".to_owned(), 0)
+    );
+    assert_eq!(
+        explain_wrap("-- note\nEXPLAIN SELECT 1"),
+        ("-- note\nEXPLAIN SELECT 1".to_owned(), 0)
+    );
+}
+
+#[test]
+fn an_unterminated_comment_consumes_the_rest_and_refuses_nothing() {
+    // Matches what the parser will make of it; the engine reports the real fault.
+    assert!(analyze_refusal("/* unterminated EXPLAIN ANALYZE SELECT 1").is_none());
+    assert_eq!(
+        explain_wrap("/* unterminated"),
+        ("EXPLAIN /* unterminated".to_owned(), 8)
+    );
+}
+
+#[test]
 fn ordinary_statements_are_not_refused() {
     for sql in [
         "SELECT 1",

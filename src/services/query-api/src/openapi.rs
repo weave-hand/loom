@@ -292,6 +292,7 @@ pub struct SqlQueryResponse {
         crate::http::get_dataset,
         crate::http::dataset_preview,
         crate::sql_console::run_sql,
+        crate::sql_validate::validate_sql,
     ),
     components(schemas(
         ObjectsResponse,
@@ -318,6 +319,10 @@ pub struct SqlQueryResponse {
         DatasetPreviewResponse,
         SqlQueryResponse,
         crate::sql_console::SqlQueryRequest,
+        crate::sql_validate::SqlValidateRequest,
+        crate::sql_validate::SqlValidateResponse,
+        crate::sql_validate::SqlDiagnostic,
+        crate::sql_validate::DiagnosticSeverity,
         crate::http::VectorSearchRequest,
         crate::lineage_read::DatasetNode,
         crate::lineage_read::DatasetClosureResponse,
