@@ -22,9 +22,9 @@ use control_plane_core::{
     Effect, EventType, GC_JOB_KIND, GcJob, IndexSpec, JobSchedule, JobTemplate, LINEAGE_MAX_DEPTH,
     Lineage, LineageEvent, LinkBacking, LinkDef, LockoutPolicy, Metric, NewJob, NewServiceAccount,
     NewUser, ObjectType, Ontology, Page, PageReq, ParamDef, Policy, PolicyTarget, PropertyDef,
-    Queue, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, RunRole, RunSummary, ScalarValue,
-    SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName, VectorIndexDef,
-    ViewDef,
+    Queue, Redacted, RetryPolicy, RoleId, RolePolicy, RowFilter, RunId, RunRole, RunSummary,
+    ScalarValue, SnapshotId, SubjectId, TableControlPlane, TableRef, Transforms, TypeName,
+    VectorIndexDef, ViewDef,
 };
 use time::OffsetDateTime;
 
@@ -35,6 +35,12 @@ fn job(kind: &str) -> NewJob {
         run_at: None,
         priority: 0,
     }
+}
+
+/// Wrap a PHC literal for a fixture. `Redacted<String>` deliberately has no
+/// `From<&str>`, so this keeps the seeds terse.
+fn phc(s: &str) -> Redacted<String> {
+    Redacted::new(s.to_owned())
 }
 
 /// Define a minimal ontology type (all-`String`, optional properties) so a
@@ -3368,7 +3374,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-alice"),
         username: "alice".into(),
-        password_phc: "phc-alice".into(),
+        password_phc: phc("phc-alice"),
     })
     .await
     .unwrap();
@@ -3386,7 +3392,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
         .create_user(&NewUser {
             subject_id: sid("u-other"),
             username: "alice".into(),
-            password_phc: "phc-other".into(),
+            password_phc: phc("phc-other"),
         })
         .await;
     assert!(matches!(dup, Err(ControlPlaneError::Conflict(_))));
@@ -3394,7 +3400,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     // --- find_password_credential ---
     let cred = a.find_password_credential("alice").await.unwrap().unwrap();
     assert_eq!(cred.subject_id, sid("u-alice"));
-    assert_eq!(cred.password_phc, "phc-alice");
+    assert_eq!(cred.password_phc.expose(), "phc-alice");
     assert!(a.find_password_credential("ghost").await.unwrap().is_none());
 
     // --- sessions ---
@@ -3429,7 +3435,7 @@ pub async fn auth_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-bob"),
         username: "bob".into(),
-        password_phc: "phc-bob".into(),
+        password_phc: phc("phc-bob"),
     })
     .await
     .unwrap();
@@ -3526,7 +3532,7 @@ pub async fn service_account_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("human-1"),
         username: "human-1".into(),
-        password_phc: "phc".into(),
+        password_phc: phc("phc"),
     })
     .await
     .unwrap();
@@ -3654,29 +3660,29 @@ pub async fn password_lifecycle_contract<A: Auth + Acl>(a: &A) {
     a.create_user(&NewUser {
         subject_id: sid("u-al"),
         username: "al".into(),
-        password_phc: "phc-1".into(),
+        password_phc: phc("phc-1"),
     })
     .await
     .unwrap();
 
     // --- update_password round-trip (keyed by subject) ---
+    let al = sid("u-al");
+    let got = a.password_phc_for_subject(&al).await.unwrap();
+    assert_eq!(got.map(Redacted::into_inner), Some("phc-1".to_owned()));
+    a.update_password(&al, &phc("phc-2")).await.unwrap();
+    let got = a.password_phc_for_subject(&al).await.unwrap();
     assert_eq!(
-        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
-        Some("phc-1".to_string())
-    );
-    a.update_password(&sid("u-al"), "phc-2").await.unwrap();
-    assert_eq!(
-        a.password_phc_for_subject(&sid("u-al")).await.unwrap(),
-        Some("phc-2".to_string()),
+        got.map(Redacted::into_inner),
+        Some("phc-2".to_owned()),
         "update replaced the stored PHC"
     );
     // the login read reflects the new PHC too
     let cred = a.find_password_credential("al").await.unwrap().unwrap();
-    assert_eq!(cred.password_phc, "phc-2");
+    assert_eq!(cred.password_phc.expose(), "phc-2");
     assert!(cred.locked_until.is_none(), "unlocked by default");
     // unknown subject → NotFound
     assert!(matches!(
-        a.update_password(&sid("ghost"), "x").await,
+        a.update_password(&sid("ghost"), &phc("x")).await,
         Err(ControlPlaneError::NotFound(_))
     ));
     assert!(

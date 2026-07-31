@@ -10,7 +10,7 @@ Postgres, so services program against `core` and tests get a faithful fake. This
 document describes what those concerns can do today, the guarantees they carry,
 and the design decisions behind them.
 
-_As of 168e27c9._
+_As of 49167301._
 
 ## The concern library, transactions, and hardening
 
@@ -504,6 +504,49 @@ identically: `define_vector_index` probes `object_type_exists` first and
 returns `NotFound` (→ the documented 404) rather than the postgres adapter's
 old misleading `Validation`/400 "type has no property" message (#387).
 
+Secrets held in memory are redacted at the type level (#549). A
+`control_plane_core::Redacted<T>` newtype renders `<redacted>` for `Debug` —
+never a type name, length, or hash prefix, since a length is itself a hint — and
+yields its inner value only through an explicit `.expose()`, which is the
+grep-able audit point for where a secret escapes. It carries no `Display`, no
+`Deref`, and no serde impls, so there is no implicit path back to the plaintext.
+Four fields are wrapped: both Argon2 PHC verifiers (`NewUser::password_phc`,
+`PasswordCredential::password_phc`); `service_runtime::DbConfig::password`, the
+plaintext Postgres password read from `LOOM_DB_PASSWORD` and reachable through
+the `Debug` on the enclosing `Config`; and — the credential itself, not a hash,
+so at equal or higher severity — `store_config::S3Backend::secret_access_key`,
+the S3/MinIO secret key read from `AWS_SECRET_ACCESS_KEY` and reachable through
+`Debug` on the enclosing `ObjectStoreConfig`/`Config`. The two accessors that
+hand the same secrets back are wrapped for the same reason, since a naked
+return is the same hazard one indirection away: `Auth::password_phc_for_subject`
+yields a `Redacted<String>`, and so does `DbConfig::pg_url`, whose
+`postgres://` DSN interpolates the password in clear and is the string an
+operator is most likely to log when a connection fails. The guarantee is
+asserted on the containing structs, not only on the wrapper, so a future
+`#[derive(Debug)]` field cannot silently regress it. One mirror type is
+deliberately left unwrapped: `control_plane_postgres`'s vendored
+`iceberg_sql_catalog::s3_storage::S3Settings` carries the same secret but
+derives `Serialize`/`Deserialize` (it round-trips through the `typetag::serde`
+`StorageFactory`/`Storage` traits), and `Redacted` has no serde impls by
+design — wrapping it would break the vendored trait, not close a leak.
+
+Those exposures were latent — nothing formatted the structs. One live leak was
+found and closed alongside it, and — since it was the only field a per-site
+`skip()` was protecting and the discipline proved asymmetric across the two
+adapters (deleting `skip(new_phc)` from one adapter left the whole suite green,
+because the only regression test covered the other) — closed at the type level
+rather than by convention: `Auth::update_password` took the raw Argon2 verifier
+as a plain `&str` argument, and both implementations were annotated
+`#[tracing::instrument(skip(self, new_phc))]` to keep `tracing` from recording
+it as a span field at `debug` level on every password change. The trait method
+now takes `new_phc: &Redacted<String>`, both adapters expose it only at the
+sqlx bind / struct-field write site, and the `skip(new_phc)` is gone from both
+— the span now records `new_phc=<redacted>` via the wrapper's `Debug`, so the
+guarantee is carried by the type and cannot regress in one adapter without a
+change to the shared trait breaking both at once. A regression test asserts on
+span *creation* (`FmtSpan::NEW`) rather than on events — an event-only capture
+passes vacuously here, because the method emits no event of its own.
+
 ## Transforms
 
 The transforms concern gives loom's existing queue-driven transform jobs a
@@ -669,7 +712,6 @@ lives entirely in the service layer.
 - `#fut-auth-login-rate-limit` — per-IP login rate-limiting
 - `#fut-auth-password-policy` — forced rotation + strength policy
 - `#fut-auth-session-refresh` — session refresh / sliding expiry
-- `#fut-auth-credential-debug-redact` — redact password verifier from credential `Debug`
 - `#fut-multi-tenancy` — tenant_id partitioning
 - `#fut-wider-tx-composition` — wider `Tx` composition
 - `#fut-metrics-crate` — metrics counters and histograms

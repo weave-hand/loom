@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
-use control_plane_core::{Auth, LockoutPolicy, NewUser, SubjectId};
+use control_plane_core::{Auth, LockoutPolicy, NewUser, Redacted, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use service_runtime::{AuthState, hash_password, login_routes};
 use tower::ServiceExt;
@@ -24,7 +24,7 @@ async fn seed(cp: &MemoryControlPlane, user: &str, pw: &str) {
     cp.create_user(&NewUser {
         subject_id: SubjectId(user.into()),
         username: user.into(),
-        password_phc: hash_password(pw).unwrap(),
+        password_phc: Redacted::new(hash_password(pw).unwrap()),
     })
     .await
     .unwrap();

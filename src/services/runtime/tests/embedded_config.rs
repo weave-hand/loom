@@ -67,7 +67,7 @@ fn embedded_defaults_db_vars_from_data_path() {
     assert_eq!(cfg.db.host, "/tmp/loomdata/pgrun");
     assert_eq!(cfg.db.port, 5432);
     assert_eq!(cfg.db.user, "postgres");
-    assert_eq!(cfg.db.password, "");
+    assert_eq!(cfg.db.password.expose(), "");
     assert_eq!(cfg.db.dbname, "loom");
 }
 

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use control_plane_core::Redacted;
 use object_store::ObjectStore;
 use object_store::local::LocalFileSystem;
 
@@ -62,7 +63,10 @@ pub struct S3Backend {
     pub endpoint: Option<String>,
     pub region: String,
     pub access_key_id: String,
-    pub secret_access_key: String,
+    /// The S3/MinIO secret key itself — not a hash, the live credential.
+    /// `Redacted` so a `{:?}` of this struct (or anything embedding it, like
+    /// `ObjectStoreConfig`/`service_runtime::Config`) can never print it.
+    pub secret_access_key: Redacted<String>,
     pub path_style: bool,
 }
 
@@ -83,7 +87,7 @@ impl ObjectStoreConfig {
                 endpoint: Some(endpoint),
                 region: "us-east-1".into(),
                 access_key_id,
-                secret_access_key,
+                secret_access_key: Redacted::new(secret_access_key),
                 path_style: true,
             }),
         }
@@ -134,7 +138,7 @@ impl ObjectStoreConfig {
                 endpoint,
                 region,
                 access_key_id: req("AWS_ACCESS_KEY_ID")?,
-                secret_access_key: req("AWS_SECRET_ACCESS_KEY")?,
+                secret_access_key: Redacted::new(req("AWS_SECRET_ACCESS_KEY")?),
             })
         } else {
             return Err(StoreConfigError::Invalid {
@@ -182,7 +186,7 @@ fn s3_serving_store(s: &S3Backend) -> Result<ServingStore, StoreConfigError> {
         .with_bucket_name(&s.bucket)
         .with_region(&s.region)
         .with_access_key_id(&s.access_key_id)
-        .with_secret_access_key(&s.secret_access_key)
+        .with_secret_access_key(s.secret_access_key.expose())
         .with_virtual_hosted_style_request(!s.path_style);
     if let Some(ep) = &s.endpoint {
         b = b.with_endpoint(ep).with_allow_http(true);

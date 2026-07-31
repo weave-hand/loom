@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
-use control_plane_core::{Auth, LockoutPolicy, NewUser, SubjectId};
+use control_plane_core::{Auth, LockoutPolicy, NewUser, Redacted, SubjectId};
 use control_plane_memory::MemoryControlPlane;
 use service_runtime::{AuthState, hash_password, session_routes, token_sha256};
 use tower::ServiceExt;
@@ -25,7 +25,7 @@ async fn seed_user_session(cp: &MemoryControlPlane, user: &str, pw: &str, token:
     cp.create_user(&NewUser {
         subject_id: SubjectId(user.into()),
         username: user.into(),
-        password_phc: hash_password(pw).unwrap(),
+        password_phc: Redacted::new(hash_password(pw).unwrap()),
     })
     .await
     .unwrap();
@@ -66,7 +66,10 @@ async fn wrong_current_is_403_and_unchanged() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     // password unchanged: original still verifies
     let cred = cp.find_password_credential("al").await.unwrap().unwrap();
-    assert!(service_runtime::verify_password("orig", &cred.password_phc));
+    assert!(service_runtime::verify_password(
+        "orig",
+        cred.password_phc.expose()
+    ));
 }
 
 #[tokio::test]
@@ -109,11 +112,11 @@ async fn right_current_rotates_revokes_others_keeps_current() {
     let cred = cp.find_password_credential("al").await.unwrap().unwrap();
     assert!(service_runtime::verify_password(
         "fresh",
-        &cred.password_phc
+        cred.password_phc.expose()
     ));
     assert!(!service_runtime::verify_password(
         "orig",
-        &cred.password_phc
+        cred.password_phc.expose()
     ));
 }
 
