@@ -340,58 +340,8 @@ async fn plan_governed_sql(
     memory_bytes: Option<usize>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
     let ctx = build_session(memory_bytes)?;
-    for table in catalog.live_tables().await.map_err(to_serving)? {
-        // Closed-world: a live table with NO GovernedTable entry is not
-        // registered at all — it does not exist for this session. Deny-by-
-        // default holds even if the edge under-lists (unbound datasets,
-        // ungranted types). See 2026-07-09-external-sql-wire-design.md.
-        if governed.table_for(&table).is_none() {
-            continue;
-        }
-        // This loop always passes `at: None` (current snapshot), so
-        // `build_serving_provider`'s `Ok(None)` (as-of-not-live) case is
-        // unreachable here in practice — a live-but-empty table now yields
-        // `Ok(Some(_))` (a zero-row provider). Kept as a harmless skip.
-        let Some(inner) =
-            build_serving_provider(&ctx, catalog, &table, serving_store, None).await?
-        else {
-            continue;
-        };
-        let policy = policy_for(governed, &table);
-        let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
-        register_qualified(&ctx, &table.schema, &table.name, provider)?;
-    }
-    // Catalog views: a view is an ordinary governed relation. It registers only
-    // when the VIEW itself has a `GovernedTable` entry (closed-world, exactly as
-    // for a base table) — a view grant is sufficient and never requires the
-    // base's own grant. The view's inner base relation is therefore built
-    // PRIVATELY and UNGOVERNED (`build_serving_provider`, never `ctx.table`): in
-    // this governed session a base is registered only when it has its own entry,
-    // and then it is wrapped in the BASE's policy — both wrong for the view. The
-    // folded view is wrapped in the VIEW's policy, so no base policy contaminates
-    // the view scan.
-    use control_plane_core::Catalog as _;
-    for v in catalog
-        .list_views(control_plane_core::PageReq::unbounded())
-        .await
-        .map_err(to_serving)?
-        .items
-    {
-        if governed.table_for(&v.view).is_none() {
-            continue; // closed-world: unlisted view is unresolvable
-        }
-        let policy = policy_for(governed, &v.view);
-        let Some(inner) =
-            build_serving_provider(&ctx, catalog, &v.base, serving_store, None).await?
-        else {
-            continue; // dangling view: base not live here
-        };
-        let df = ctx.read_table(inner).map_err(to_serving)?;
-        let provider = fold_view(df, &v)?.into_view();
-        let governed_provider: Arc<dyn TableProvider> =
-            Arc::new(GovernedTableProvider::new(provider, policy)?);
-        register_qualified(&ctx, &v.view.schema, &v.view.name, governed_provider)?;
-    }
+    register_governed_tables(&ctx, catalog, governed, serving_store).await?;
+    register_governed_views(&ctx, catalog, governed, serving_store).await?;
     // Read-only guard (load-bearing): this path plans ARBITRARY client SQL, so it must
     // reject DDL, DML, and statements — `COPY … TO`, `INSERT`/`UPDATE`/`DELETE`,
     // `CREATE`, `SET`, … — none of which route through the governed `TableProvider`s and
@@ -412,6 +362,80 @@ async fn plan_governed_sql(
     df.execute_stream()
         .await
         .map_err(|e| governed_stream_error(&e))
+}
+
+/// Register every live base table **listed in the governed catalog** on `ctx`, each
+/// wrapped in its own `GovernedTableProvider`.
+///
+/// Closed-world: a live table with NO `GovernedTable` entry is not registered at all —
+/// it does not exist for this session, so an ungranted table is indistinguishable from
+/// a nonexistent one and there is no existence leak through plan errors. Deny-by-default
+/// therefore holds even if the edge under-lists (unbound datasets, ungranted types).
+/// See 2026-07-09-external-sql-wire-design.md.
+async fn register_governed_tables(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+) -> Result<(), EngineServingError> {
+    for table in catalog.live_tables().await.map_err(to_serving)? {
+        if governed.table_for(&table).is_none() {
+            continue;
+        }
+        // This loop always passes `at: None` (current snapshot), so
+        // `build_serving_provider`'s `Ok(None)` (as-of-not-live) case is
+        // unreachable here in practice — a live-but-empty table now yields
+        // `Ok(Some(_))` (a zero-row provider). Kept as a harmless skip.
+        let Some(inner) = build_serving_provider(ctx, catalog, &table, serving_store, None).await?
+        else {
+            continue;
+        };
+        let policy = policy_for(governed, &table);
+        let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
+        register_qualified(ctx, &table.schema, &table.name, provider)?;
+    }
+    Ok(())
+}
+
+/// Register every catalog view listed in the governed catalog on `ctx`.
+///
+/// A view is an ordinary governed relation, with one deliberate twist: it registers only
+/// when the VIEW itself has a `GovernedTable` entry (closed-world, exactly as for a base
+/// table) — a view grant is sufficient and never requires the base's own grant. The
+/// view's inner base relation is therefore built PRIVATELY and UNGOVERNED
+/// (`build_serving_provider`, never `ctx.table`): in this governed session a base is
+/// registered only when it has its own entry, and then it is wrapped in the BASE's
+/// policy — both wrong for the view. The folded view is wrapped in the VIEW's policy, so
+/// no base policy contaminates the view scan.
+async fn register_governed_views(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+) -> Result<(), EngineServingError> {
+    use control_plane_core::Catalog as _;
+    for v in catalog
+        .list_views(control_plane_core::PageReq::unbounded())
+        .await
+        .map_err(to_serving)?
+        .items
+    {
+        if governed.table_for(&v.view).is_none() {
+            continue; // closed-world: unlisted view is unresolvable
+        }
+        let policy = policy_for(governed, &v.view);
+        let Some(inner) =
+            build_serving_provider(ctx, catalog, &v.base, serving_store, None).await?
+        else {
+            continue; // dangling view: base not live here
+        };
+        let df = ctx.read_table(inner).map_err(to_serving)?;
+        let provider = fold_view(df, &v)?.into_view();
+        let governed_provider: Arc<dyn TableProvider> =
+            Arc::new(GovernedTableProvider::new(provider, policy)?);
+        register_qualified(ctx, &v.view.schema, &v.view.name, governed_provider)?;
+    }
+    Ok(())
 }
 
 /// A fresh `SessionContext` for one governed statement, optionally over a runtime
