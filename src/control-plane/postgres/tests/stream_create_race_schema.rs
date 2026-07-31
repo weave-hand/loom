@@ -7,167 +7,30 @@
 //! conversion — but the framing-schema'd Iceberg table it already created survives,
 //! under a mirror row that says batch. Physical schema and mirror mode diverge.
 //!
-//! This test drives that exact race deterministically (the same `pg_stat_activity`
-//! barrier as `stream_declare_vs_concurrent_create.rs`: connection A holds an
-//! uncommitted `iceberg_mirror.table` insert for `s.t`, the declaring lander blocks on
-//! it, and we commit A once it is observably blocked) and then asserts what that test
-//! does not: framing columns are present in the Iceberg physical schema **iff** the
-//! mirror says the table is a stream table.
+//! These tests pin both directions of the property the fix establishes: framing
+//! columns are present in the Iceberg physical schema **iff** the mirror says the
+//! table is a stream table. The race arrangement itself lives in
+//! `stream_race_support` (shared with `stream_declare_vs_concurrent_create.rs`).
 //! loom_fixture_test (Postgres).
 
-use std::sync::Arc;
-
-use arrow_array::{Int64Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
-use control_plane_core::{ColumnSpec, ControlPlaneError, LineageEvent, TableRef};
+use control_plane_core::{ControlPlaneError, TableRef};
 use control_plane_postgres::fixture::PgFixture;
-use control_plane_postgres::iceberg_landing::{InlineLimits, land};
-use control_plane_postgres::iceberg_mirror::next_snapshot;
-use iceberg::{Catalog, NamespaceIdent, TableIdent};
-use loom_test_seed::local_sql_catalog;
-use sqlx::PgPool;
-
-fn columns() -> Vec<ColumnSpec> {
-    vec![ColumnSpec {
-        name: "id".into(),
-        ty: "long".into(),
-        nullable: false,
-    }]
-}
-
-fn batch() -> (Arc<Schema>, Vec<RecordBatch>) {
-    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    let b = RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))])
-        .expect("batch");
-    (schema, vec![b])
-}
-
-fn lineage() -> LineageEvent {
-    LineageEvent::completed(vec![], serde_json::json!({ "source": "test" }))
-}
-
-/// Direct-write (Parquet) limits: never inline, so the write takes `land_parquet` —
-/// the path whose mode decision this test is about. `land` routes inline iff
-/// `bytes <= inline_byte_limit`, so a limit of 0 forces Parquet, but ONLY because
-/// `batch()` is non-empty. Keep the batch non-empty.
-fn never_inline() -> InlineLimits {
-    InlineLimits {
-        inline_byte_limit: 0,
-        flush_byte_threshold: 0,
-    }
-}
-
-/// Barrier: block until some backend is waiting on another transaction's lock inside
-/// an `iceberg_mirror.table` insert — i.e. the lander's mirror-row ensure is blocked
-/// on our uncommitted row. Panics rather than hanging. The bound is generous (30 s)
-/// because a loaded CI box is slow. Reads another backend's `query` column —
-/// superuser only; the fixture connects as `postgres`.
-async fn await_ensure_table_blocked(pool: &PgPool) {
-    for _ in 0..3000 {
-        let blocked: i64 = sqlx::query_scalar(
-            "select count(*) from pg_stat_activity \
-             where datname = current_database() \
-               and wait_event_type = 'Lock' \
-               and wait_event = 'transactionid' \
-               and query like 'insert into iceberg_mirror.table%'",
-        )
-        .fetch_one(pool)
-        .await
-        .expect("pg_stat_activity barrier probe");
-        if blocked >= 1 {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the lander's mirror-row ensure never blocked on the concurrent creator");
-}
-
-/// The three reserved framing column names, as `framing_column_specs` fixes them.
-const FRAMING: [&str; 3] = ["loom_change_kind", "loom_bucket", "loom_offset"];
-
-/// Field names of the Iceberg table's current physical schema, or `None` if the
-/// Iceberg table does not exist at all.
-async fn iceberg_field_names(
-    catalog: &control_plane_postgres::iceberg_sql_catalog::SqlCatalog,
-    table: &TableRef,
-) -> Option<Vec<String>> {
-    let ident = TableIdent::new(
-        NamespaceIdent::new(table.schema.clone()),
-        table.name.clone(),
-    );
-    if !catalog.table_exists(&ident).await.expect("table_exists") {
-        return None;
-    }
-    let loaded = catalog.load_table(&ident).await.expect("load_table");
-    Some(
-        loaded
-            .metadata()
-            .current_schema()
-            .as_struct()
-            .fields()
-            .iter()
-            .map(|f| f.name.clone())
-            .collect(),
-    )
-}
+use control_plane_postgres::iceberg_landing::land;
+use stream_race_support::{
+    FRAMING, batch, columns, harness, iceberg_field_names, lineage, losing_stream_declare,
+    never_inline,
+};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_losing_stream_declare_leaves_no_framing_schema_behind() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let wh = tempfile::tempdir().expect("warehouse");
-    // `SqlCatalog` is NOT `Clone`, so share it with the spawned lander through an
-    // `Arc` — `&Arc<SqlCatalog>` derefs to the `&SqlCatalog` that `land` wants.
-    let catalog =
-        Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await);
-
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let table = TableRef {
         schema: "s".into(),
         name: "t".into(),
     };
 
-    // A: a concurrent BATCH writer that has created the mirror row for s.t but has
-    // not committed. Held open.
-    let mut winner = pool.begin().await.expect("begin winner tx");
-    let at = next_snapshot(&mut winner, None)
-        .await
-        .expect("winner snapshot");
-    sqlx::query(
-        "insert into iceberg_mirror.table (table_namespace, table_name, begin_snapshot) \
-         values ($1, $2, $3)",
-    )
-    .bind(&table.schema)
-    .bind(&table.name)
-    .bind(at.0)
-    .execute(&mut *winner)
-    .await
-    .expect("winner creates the mirror row");
-
-    // B: a stream-declaring land that will lose the mirror-row race to A.
-    let (schema, batches) = batch();
-    let pool_b = pool.clone();
-    let cat_b = Arc::clone(&catalog);
-    let table_b = table.clone();
-    let lander = tokio::spawn(async move {
-        land(
-            &pool_b,
-            &cat_b,
-            &table_b,
-            &columns(),
-            schema,
-            batches,
-            never_inline(),
-            lineage(),
-            Some(2),
-        )
-        .await
-    });
-
-    await_ensure_table_blocked(&pool).await;
-    winner.commit().await.expect("commit winner");
-
-    let res = lander.await.expect("join lander");
+    let res = losing_stream_declare(&pool, &catalog, &table, 2).await;
     assert!(
         matches!(&res, Err(ControlPlaneError::Validation(msg))
                  if msg.contains("cannot convert existing batch table")),
@@ -216,23 +79,18 @@ async fn a_losing_stream_declare_leaves_no_framing_schema_behind() {
     );
 }
 
-/// The other half of the spec's "framing present **iff** the mirror says stream".
-/// The test above pins the batch direction under a lost race; this pins the stream
-/// direction, so neither can be satisfied by a fix that just never writes framing.
+/// The other half of "framing present **iff** the mirror says stream". The test above
+/// pins the batch direction under a lost race; this pins the stream direction, so
+/// neither can be satisfied by a fix that simply never writes framing.
 ///
 /// No barrier needed: the declaration commits first, so a following plain batch land
 /// must observe the committed stream mode and agree with it. (This direction already
-/// holds on the current tree — it is a characterization test guarding the
-/// restructure, not a regression gate. The gate is the test above.)
+/// held before the fix — it is a characterization test guarding the restructure, not
+/// the regression gate. The gate is the test above.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_batch_land_after_a_declaration_agrees_with_the_committed_stream_mode() {
     let fx = PgFixture::shared();
-    let (_cp, db) = fx.fresh_db().await;
-    let pool = fx.pool_for(&db).await;
-    let wh = tempfile::tempdir().expect("warehouse");
-    let catalog =
-        Arc::new(local_sql_catalog(fx.pg_dsn(&db), &wh.path().display().to_string()).await);
-
+    let (_cp, _db, _wh, catalog, pool) = harness(fx).await;
     let table = TableRef {
         schema: "s".into(),
         name: "t".into(),
@@ -270,7 +128,9 @@ async fn a_batch_land_after_a_declaration_agrees_with_the_committed_stream_mode(
     .await
     .expect("a plain batch land into a declared stream table must succeed");
 
-    // The mirror says stream ...
+    // The mirror says stream. `stream.stream_table` is keyed by `table_id`, so it is
+    // joined through the LIVE mirror row rather than queried by name; `bucket_count`
+    // is `int not null`, so an absent row (not a null) is what "batch" looks like.
     let bucket_count: Option<i32> = sqlx::query_scalar(
         "select st.bucket_count from stream.stream_table st \
          join iceberg_mirror.table t on t.table_id = st.table_id \
