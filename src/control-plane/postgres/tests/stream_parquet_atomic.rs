@@ -250,7 +250,7 @@ async fn large_write_rejects_bucket_mismatch() {
 
 /// Two matching (`buckets=2`) large direct-Parquet writes to the SAME stream table:
 /// the second write must NOT error (exercises the `(Some(n),Some(m)) n==m` reconcile
-/// arm + the `existing_stream.is_some()` branch on the direct path), and each bucket's
+/// arm + `claim_stream_mode`'s already-declared fast path), and each bucket's
 /// per-bucket offsets must CONTINUE gaplessly across the two writes — write 1 fills
 /// `[0..k)` and write 2 continues at `[k..2k)`, never restarting at 0.
 ///

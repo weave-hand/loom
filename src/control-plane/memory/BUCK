@@ -192,3 +192,18 @@ rust_test(
         "//third-party:tokio",
     ],
 )
+
+rust_test(
+    name = "secret-not-in-span",
+    crate = "secret_not_in_span",
+    srcs = ["tests/secret_not_in_span.rs"],
+    crate_root = "tests/secret_not_in_span.rs",
+    edition = "2024",
+    deps = [
+        ":memory",
+        "//src/control-plane/core:core",
+        "//third-party:tokio",
+        "//third-party:tracing",
+        "//third-party:tracing-subscriber",
+    ],
+)

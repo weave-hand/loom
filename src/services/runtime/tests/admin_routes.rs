@@ -10,7 +10,7 @@ use axum::extract::Request;
 use axum::http::{StatusCode, header::AUTHORIZATION};
 use control_plane_core::{
     ADMIN_ROLE, Acl, Aggregation, Auth, Cardinality, DerivedPropertyDef, LinkDef, NewUser,
-    ObjectType, Ontology, RoleId, SubjectId, TypeName,
+    ObjectType, Ontology, Redacted, RoleId, SubjectId, TypeName,
 };
 use control_plane_memory::MemoryControlPlane;
 use http_body_util::BodyExt;
@@ -38,7 +38,7 @@ async fn seed_session(cp: &MemoryControlPlane, username: &str) -> String {
     cp.create_user(&NewUser {
         subject_id: SubjectId(username.into()),
         username: username.into(),
-        password_phc: hash_password("pw").unwrap(),
+        password_phc: Redacted::new(hash_password("pw").unwrap()),
     })
     .await
     .unwrap();
@@ -298,7 +298,7 @@ async fn admin_reset_revokes_all_sessions_and_sets_new_password() {
         .unwrap();
     assert!(service_runtime::verify_password(
         "reset-pw",
-        &cred.password_phc
+        cred.password_phc.expose()
     ));
 }
 

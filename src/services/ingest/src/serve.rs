@@ -76,7 +76,10 @@ async fn build_iceberg_catalog(
     routing: &RoutingTuning,
 ) -> Result<SqlCatalog, BoxErr> {
     let mut props = HashMap::new();
-    props.insert(SQL_CATALOG_PROP_URI.to_string(), cfg.db.pg_url());
+    props.insert(
+        SQL_CATALOG_PROP_URI.to_string(),
+        cfg.db.pg_url().into_inner(),
+    );
     props.insert(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
         cfg.object_store.warehouse_uri.clone(),

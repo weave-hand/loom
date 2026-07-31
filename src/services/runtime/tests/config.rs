@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use service_runtime::{Config, ConfigError, DbConfig};
+use service_runtime::{Config, ConfigError, DbConfig, Redacted};
 
 fn full() -> HashMap<String, String> {
     [
@@ -26,7 +26,7 @@ fn parses_a_full_config() {
     assert_eq!(cfg.db.host, "db.internal");
     assert_eq!(cfg.db.port, 5432);
     assert_eq!(cfg.db.user, "loom");
-    assert_eq!(cfg.db.password, "secret");
+    assert_eq!(cfg.db.password.expose(), "secret");
     assert_eq!(cfg.db.dbname, "loom");
     assert_eq!(cfg.data_path, std::path::PathBuf::from("/var/loom/data"));
     assert_eq!(cfg.lock_timeout, Duration::from_millis(750));
@@ -102,11 +102,14 @@ fn pg_url_tcp_and_socket() {
         host: "db.internal".into(),
         port: 5432,
         user: "loom".into(),
-        password: "secret".into(),
+        password: Redacted::new("secret".to_owned()),
         dbname: "loom".into(),
         max_connections: None,
     };
-    assert_eq!(tcp.pg_url(), "postgres://loom:secret@db.internal:5432/loom");
+    assert_eq!(
+        tcp.pg_url().expose(),
+        "postgres://loom:secret@db.internal:5432/loom"
+    );
 
     // A non-default port must survive into the socket URL: libpq/sqlx derive the
     // socket filename `.s.PGSQL.<port>` from it, so dropping the port silently probes
@@ -115,12 +118,12 @@ fn pg_url_tcp_and_socket() {
         host: "/var/run/postgresql".into(),
         port: 54398,
         user: "loom".into(),
-        password: "secret".into(),
+        password: Redacted::new("secret".to_owned()),
         dbname: "loom".into(),
         max_connections: None,
     };
     assert_eq!(
-        socket.pg_url(),
+        socket.pg_url().expose(),
         "postgres://loom:secret@localhost:54398/loom?host=/var/run/postgresql"
     );
 }
@@ -131,7 +134,7 @@ fn pg_connect_options_honor_port_on_both_branches() {
         host: "db.internal".into(),
         port: 6001,
         user: "loom".into(),
-        password: "secret".into(),
+        password: Redacted::new("secret".to_owned()),
         dbname: "loom".into(),
         max_connections: None,
     };
@@ -145,7 +148,7 @@ fn pg_connect_options_honor_port_on_both_branches() {
         host: "/var/run/postgresql".into(),
         port: 54398,
         user: "loom".into(),
-        password: "secret".into(),
+        password: Redacted::new("secret".to_owned()),
         dbname: "loom".into(),
         max_connections: None,
     };
@@ -219,7 +222,7 @@ fn db_config_from_map_parses_discrete_fields() {
     assert_eq!(db.host, "db.internal");
     assert_eq!(db.port, 5432);
     assert_eq!(db.user, "loom");
-    assert_eq!(db.password, "secret");
+    assert_eq!(db.password.expose(), "secret");
     assert_eq!(db.dbname, "loom");
     assert_eq!(db.max_connections, Some(9));
 }
@@ -244,4 +247,35 @@ fn migrate_requested_reads_the_snapshot() {
     assert!(service_runtime::migrate_requested(&v));
     v.insert("LOOM_MIGRATE".into(), "yes".into());
     assert!(!service_runtime::migrate_requested(&v));
+}
+
+#[test]
+fn db_config_debug_redacts_the_password() {
+    let cfg = Config::from_map(&full()).expect("parse");
+    let rendered = format!("{:?}", cfg.db);
+    assert!(
+        !rendered.contains("secret"),
+        "DbConfig Debug leaked the password: {rendered}"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "DbConfig Debug should mark the password redacted: {rendered}"
+    );
+    // Non-secret connection fields stay visible — they are what operators debug.
+    assert!(
+        rendered.contains("db.internal"),
+        "lost the host: {rendered}"
+    );
+}
+
+#[test]
+fn whole_config_debug_redacts_the_db_password() {
+    // `Config` embeds `DbConfig` and also derives Debug, so the enclosing struct
+    // is the realistic leak path (`tracing::debug!(?cfg)`).
+    let cfg = Config::from_map(&full()).expect("parse");
+    let rendered = format!("{cfg:?}");
+    assert!(
+        !rendered.contains("secret"),
+        "Config Debug leaked the db password: {rendered}"
+    );
 }

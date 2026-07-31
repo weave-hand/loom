@@ -963,6 +963,7 @@ dependencies = [
  "libc",
  "object_store",
  "parquet",
+ "parquet-stats",
  "proptest",
  "reqwest",
  "serde",
@@ -4153,6 +4154,14 @@ dependencies = [
  "tokio",
  "twox-hash",
  "zstd",
+]
+
+[[package]]
+name = "parquet-stats"
+version = "0.1.0"
+dependencies = [
+ "control-plane-core",
+ "parquet",
 ]
 
 [[package]]

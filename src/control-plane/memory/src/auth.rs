@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use control_plane_core::{
     Auth, ControlPlaneError, LockoutPolicy, NewServiceAccount, NewUser, Page, PageReq,
-    PasswordCredential, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
+    PasswordCredential, Redacted, Result, ServiceAccount, ServiceToken, SubjectId, UserSummary,
 };
 use time::OffsetDateTime;
 
@@ -11,7 +11,7 @@ use crate::MemoryControlPlane;
 
 struct MemUser {
     subject_id: String,
-    password_phc: String,
+    password_phc: Redacted<String>,
     disabled: bool,
     created_at: OffsetDateTime,
     failed_attempt_count: u32,
@@ -194,11 +194,11 @@ impl Auth for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn update_password(&self, subject: &SubjectId, new_phc: &str) -> Result<()> {
+    async fn update_password(&self, subject: &SubjectId, new_phc: &Redacted<String>) -> Result<()> {
         let mut auth = self.auth.lock();
         match auth.users.values_mut().find(|u| u.subject_id == subject.0) {
             Some(u) => {
-                u.password_phc = new_phc.to_string();
+                u.password_phc = new_phc.clone();
                 Ok(())
             }
             None => Err(ControlPlaneError::NotFound(format!(
@@ -209,7 +209,10 @@ impl Auth for MemoryControlPlane {
     }
 
     #[tracing::instrument(skip(self), level = "debug")]
-    async fn password_phc_for_subject(&self, subject: &SubjectId) -> Result<Option<String>> {
+    async fn password_phc_for_subject(
+        &self,
+        subject: &SubjectId,
+    ) -> Result<Option<Redacted<String>>> {
         let auth = self.auth.lock();
         Ok(auth
             .users
