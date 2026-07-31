@@ -3,6 +3,7 @@
 # loom_fixture_test so it inherits the PgFixture env (POSTGRES_BIN_DIR, slot dir)
 # and the local/RE placement policy; the extra env wires the browser + bundle.
 load("//src/control-plane/postgres:defs.bzl", "loom_fixture_test")
+load("//src:loom_test.bzl", "rust_test")
 
 # `//src/ui:bundle` self-selects the wasm platform via its own
 # `default_target_platform` ONLY when it is a root/top-level build target;
@@ -66,5 +67,30 @@ loom_fixture_test(
         "CHROME_BIN": "$(location //third-party/browser:chrome-headless-shell)/chrome-headless-shell",
         "CHROMEDRIVER_BIN": "$(location //third-party/browser:chromedriver)",
         "LOOM_UI_DIR": "$(location :bundle-wasm)",
+    },
+)
+
+# Per-component render tests. The loom_test.bzl `rust_test` wrapper (which is what
+# the spec means by loom_rust_test), NOT loom_fixture_test:
+# nothing here needs Postgres, so booting one (and consuming one of the 8 shared
+# fixture boot slots per test) would be pure overhead. The browser's host libs
+# come from the RE image (tools/ci/rbe-browser, pinned in platforms/defs.bzl) on
+# RE and from the host locally, exactly as for :login.
+rust_test(
+    name = "components",
+    crate = "components",
+    srcs = ["tests/components.rs"],
+    crate_root = "tests/components.rs",
+    edition = "2024",
+    deps = [
+        ":e2e-support",
+        "//third-party:fantoccini",
+        "//third-party:serde_json",
+        "//third-party:tokio",
+    ],
+    env = {
+        "CHROME_BIN": "$(location //third-party/browser:chrome-headless-shell)/chrome-headless-shell",
+        "CHROMEDRIVER_BIN": "$(location //third-party/browser:chromedriver)",
+        "LOOM_UI_DIR": "$(location :harness-bundle-wasm)",
     },
 )
