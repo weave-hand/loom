@@ -143,13 +143,19 @@ impl Shutdown {
 /// Drive `work` — a serve loop already wired to `sd.signalled()` — to completion,
 /// giving up `bound` after the shutdown signal fires.
 ///
+/// `work` arrives boxed: a service's serve future is tens of KiB (it inlines the
+/// whole call graph it awaits), and taking it by value would carry all of it in
+/// this function's own future frame — and, transitively, in every caller's frame
+/// that awaits `run_bounded` — tripping `clippy::large_futures`. A caller builds
+/// it with `Box::pin(service::serve(...))`.
+///
 /// Abandoning wedged work (a job's lease then lapses and reclaim re-runs it) beats
 /// being SIGKILLed past the container's grace period, so an expired drain is a
 /// clean exit; it logs at ERROR because it means work was severed.
-pub async fn run_bounded<E>(
-    sd: &Shutdown,
-    work: impl Future<Output = Result<(), E>>,
-) -> Result<(), E> {
+pub async fn run_bounded<E, F>(sd: &Shutdown, work: std::pin::Pin<Box<F>>) -> Result<(), E>
+where
+    F: Future<Output = Result<(), E>>,
+{
     tokio::select! {
         // Prefer a completed drain over a deadline that fired in the same tick.
         biased;

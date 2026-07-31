@@ -36,7 +36,7 @@ async fn the_drain_deadline_does_not_fire_before_the_signal() {
 #[tokio::test]
 async fn run_bounded_returns_the_work_result_when_work_finishes_first() {
     let sd = Shutdown::driven_by(std::future::ready(()), Duration::from_secs(30));
-    let out: Result<(), &str> = run_bounded(&sd, async { Err("serve failed") }).await;
+    let out: Result<(), &str> = run_bounded(&sd, Box::pin(async { Err("serve failed") })).await;
     assert_eq!(out, Err("serve failed"), "the work's own result must win");
 }
 
@@ -58,7 +58,7 @@ async fn run_bounded_gives_up_on_stuck_work_after_the_bound_and_says_so() {
     // Work that never completes — a job wedged past the grace period.
     let out: Result<(), &str> = tokio::time::timeout(
         Duration::from_secs(5),
-        run_bounded(&sd, std::future::pending()),
+        run_bounded(&sd, Box::pin(std::future::pending())),
     )
     .await
     .expect("run_bounded hung past its own bound");

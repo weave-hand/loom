@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loom_lifecycle::run_bounded(
         &shutdown,
-        worker::runtime::run_worker(
+        Box::pin(worker::runtime::run_worker(
             worker::runtime::WorkerRuntime {
                 socket,
                 worker_id,
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 compact_threshold_bytes: threshold_bytes,
             },
             shutdown.token(),
-        ),
+        )),
     )
     .await?;
     Ok(())

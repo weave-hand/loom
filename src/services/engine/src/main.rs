@@ -25,14 +25,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (ready_tx, _ready_rx) = tokio::sync::oneshot::channel();
     service_runtime::run_bounded(
         &shutdown,
-        engine::run(
+        Box::pin(engine::run(
             listener,
             &ctx.cfg,
             ctx.pool.clone(),
             tuning,
             ready_tx,
             shutdown.signalled(),
-        ),
+        )),
     )
     .await
 }

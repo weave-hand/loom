@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(ctx.cfg.bind_addr).await?;
     service_runtime::run_bounded(
         &shutdown,
-        ingest::serve(
+        Box::pin(ingest::serve(
             &ctx.cfg,
             ctx.pool.clone(),
             cp,
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ctx.max_ttl,
             listener,
             shutdown.signalled(),
-        ),
+        )),
     )
     .await
 }

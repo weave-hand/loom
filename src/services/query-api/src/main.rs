@@ -22,14 +22,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(ctx.cfg.bind_addr).await?;
     service_runtime::run_bounded(
         &shutdown,
-        query_api::serve(
+        Box::pin(query_api::serve(
             &ctx.cfg,
             ctx.pg.clone(),
             ctx.auth.clone(),
             engine_socket,
             listener,
             shutdown.signalled(),
-        ),
+        )),
     )
     .await
 }
