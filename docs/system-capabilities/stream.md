@@ -48,6 +48,37 @@ validated before any row is written:
   derive `pre_existing` this way, so a stream declare that loses the mirror-row
   create race sees the winner's table as pre-existing and is rejected rather
   than converting it.
+- **The mode claim is COMMITTED before any physical work (#623).** The
+  `pre_existing` witness above makes the *mirror* decision honest, but the
+  direct-write Parquet route used to pick stream-vs-batch from a read-only probe
+  taken outside any transaction, and then bake that answer into the Iceberg
+  **physical schema** — `ensure_iceberg_table` with `include_framing` true on the
+  stream path, false on the batch path. That object-store create is not
+  transactional and is never rolled back, so two racers creating the same
+  brand-new table could disagree: a stream declarer that lost the mirror-row race
+  was rejected, but only *after* it had already created a framing-schema'd Iceberg
+  table, leaving three reserved columns under a mirror row that said batch.
+  `land_parquet` now opens with `claim_stream_mode`
+  (`iceberg_landing.rs`), a short transaction —
+  `next_snapshot` → `ensure_table_witnessed` → `reconcile_stream_mode` → COMMIT —
+  that turns the mode into committed state before anything physical happens. Both
+  routes derive their framing from that committed answer, so concurrent
+  `create_table` calls agree and the create is **idempotent rather than
+  divergent**. It deliberately takes no explicit advisory lock: the lock is still
+  taken inside `reconcile_stream_mode`'s first-declare arm, *after* the mirror
+  ensure, which keeps this transaction's ordering identical to
+  `inline_append`'s (insert, then lock) — locking first would invert it and
+  deadlock. A table whose mirror row already exists skips the claim entirely: its
+  mode is permanent (no retroactive conversion, and a declaration is never
+  removed), so steady-state appends pay nothing.
+  - **Accepted residue:** the claim commits even when the write that follows
+    fails, and it does so on *every* first Parquet land, batch included. A failed
+    first land therefore leaves a live but column-less `iceberg_mirror.table` row
+    — visible to `live_tables` and so to dataset listings — where it previously
+    left nothing, and the row's `begin_snapshot` now precedes its own columns and
+    files. This is strictly better than the divergence it replaces (`ensure_table`
+    already leaves mirror rows behind on a failed write), but it is a real,
+    observable change.
 - **The same "no retroactive conversion" policy is now also enforced
   structurally at the primitive (#625).** `pg_declare_stream`/`pg_declare_cdc`
   (`postgres/src/stream.rs`) each call a shared guard,
