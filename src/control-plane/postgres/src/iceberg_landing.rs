@@ -171,8 +171,15 @@ pub async fn land_cdc(
 
     // A CDC declaration also owns a durable changelog Iceberg table (spec §4). Its
     // object-store metadata is created HERE (before any commit tx), so both landing
-    // routes can assume it exists; its mirror row + registry pointer are set inside
-    // the write tx by `reconcile_stream_mode`. Idempotent.
+    // routes can assume it exists; its mirror row + registry pointer are set by
+    // `reconcile_stream_mode`, which on the Parquet route now runs inside
+    // `claim_stream_mode`'s claim transaction rather than the write tx. Idempotent.
+    //
+    // NOTE: this create precedes the mode claim, so it is the one piece of physical
+    // work the claim does NOT gate. A CDC declare the claim then refuses leaves an
+    // orphan `<table>__changelog` behind. That cannot produce #623's divergence — it
+    // carries no mirror row for the schema to disagree with, and a later legitimate
+    // CDC declare finds it already correct — so it is deliberately left alone.
     if matches!(decl, StreamDecl::Cdc { .. }) {
         let clog = changelog_table_ref(table);
         ensure_iceberg_table(catalog, &clog, columns, true).await?;
@@ -889,10 +896,12 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
 /// [`crate::iceberg_catalog::IcebergCatalog::live_tables`] and so to dataset
 /// listings — where it previously left nothing. The row's `begin_snapshot` also now
 /// precedes its own columns and files, so a read as of the claim snapshot sees the
-/// table live and empty. This is strictly better than the divergence it replaces
-/// (`ensure_table` already leaves mirror rows behind on a failed write today), and a
-/// consumed snapshot id is not a scarce resource — but it is a real, observable
-/// change, not a no-op.
+/// table live and empty. This is accepted as strictly better than the divergence it
+/// replaces — an empty table is inert, a framing-schema'd table under a batch mirror
+/// row is not — and a consumed snapshot id is not a scarce resource. But it is a
+/// real, observable change, not a no-op: every other `ensure_table` call site runs
+/// in the same transaction as the write it accompanies, so this is the first place
+/// loom commits a mirror row that a later failure will not roll back.
 async fn claim_stream_mode(
     pool: &PgPool,
     table: &TableRef,
@@ -933,9 +942,11 @@ async fn claim_stream_mode(
 /// back. Idempotent on namespace/table (create-if-absent).
 ///
 /// Routes by stream mode, which [`claim_stream_mode`] establishes as **committed**
-/// state before anything physical happens — so the Iceberg table's physical schema
-/// (created with framing on the stream path, without it on the batch path) can never
-/// encode a decision a concurrent racer disagrees with. A BATCH write takes the
+/// state before this function does any physical work — so the Iceberg table's
+/// physical schema (created with framing on the stream path, without it on the batch
+/// path) can never encode a decision a concurrent racer disagrees with. (`land_cdc`
+/// creates the CDC changelog table's metadata before calling here; see the note
+/// there.) A BATCH write takes the
 /// unchanged [`append_parquet_snapshot`] path (`include_framing = false`); a STREAM
 /// write takes [`land_parquet_stream`], which stamps gapless per-bucket offsets into
 /// the written Parquet atomically with the snapshot commit.
@@ -1022,9 +1033,12 @@ async fn land_parquet_stream(
     // The Iceberg table, created WITH framing so its physical schema (and thus the
     // mirror, via `columns_of` on the commit) carries loom_change_kind/bucket/offset.
     // Idempotent + outside the tx (a rolled-back retry leaves the created table for
-    // the next attempt, exactly as the batch path leaves it). A pre-existing table's
-    // schema is untouched, so a batch table asked to convert stays framing-free and
-    // is rejected by `reconcile_stream_mode` below.
+    // the next attempt, exactly as the batch path leaves it). `include_framing = true`
+    // is safe here because `claim_stream_mode` has already COMMITTED this table's
+    // stream mode — a concurrent creator reads the same decision, so the create
+    // converges instead of diverging (#623). A batch table asked to convert never
+    // reaches this line: the claim refuses it first. The `reconcile_stream_mode` call
+    // below is now the idempotent redeclare arm.
     ensure_iceberg_table(catalog, table, columns, true).await?;
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());

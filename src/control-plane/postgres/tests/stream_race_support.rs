@@ -100,9 +100,10 @@ pub async fn harness(
 /// an `iceberg_mirror.table` insert — i.e. the lander's mirror-row ensure is blocked
 /// on our uncommitted row. Panics rather than hanging.
 ///
-/// The bound is deliberately generous (30 s): on a loaded CI box the lander has real
-/// work to do before it reaches the insert. Reads another backend's `query` column,
-/// which is superuser-only — the fixture connects as `postgres`.
+/// The bound is deliberately generous (30 s) to absorb a loaded CI box; the lander
+/// now reaches the insert almost immediately (it is the claim transaction's second
+/// statement), so the wait is normally sub-millisecond. Reads another backend's
+/// `query` column, which is superuser-only — the fixture connects as `postgres`.
 pub async fn await_ensure_table_blocked(pool: &PgPool) {
     for _ in 0..3000 {
         let blocked: i64 = sqlx::query_scalar(
