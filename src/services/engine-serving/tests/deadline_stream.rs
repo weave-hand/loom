@@ -19,6 +19,15 @@ fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]))
 }
 
+/// A deadline already one second in the past, so the very first poll must trip.
+/// `checked_sub` rather than `-` because clippy's pedantic group rejects unchecked
+/// `Duration` subtraction (it can panic on a monotonic clock close to its origin).
+fn already_elapsed() -> Instant {
+    Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .expect("the monotonic clock is at least 1s past its origin")
+}
+
 /// A two-batch stream of `[0]` then `[1]`, with the given schema.
 fn two_batches() -> SendableRecordBatchStream {
     let s = schema();
@@ -53,7 +62,7 @@ async fn forwards_the_inner_schema() {
 async fn past_deadline_yields_resources_exhausted_then_terminates() {
     let inner = two_batches();
     // A deadline already in the past: the very first poll must trip.
-    let ds = DeadlineStream::until(inner, Instant::now() - Duration::from_secs(1));
+    let ds = DeadlineStream::until(inner, already_elapsed());
     let got: Vec<_> = ds.collect().await;
     assert_eq!(got.len(), 1, "one error item, then the stream ends");
     let err = got.into_iter().next().unwrap().unwrap_err();
@@ -89,7 +98,7 @@ async fn the_timer_preempts_an_inner_stream_that_never_resolves() {
 #[tokio::test]
 async fn a_real_deadline_error_classifies_as_a_deadline_breach() {
     let inner = two_batches();
-    let ds = DeadlineStream::until(inner, Instant::now() - Duration::from_secs(1));
+    let ds = DeadlineStream::until(inner, already_elapsed());
     let got: Vec<_> = ds.collect().await;
     let err = got.into_iter().next().unwrap().unwrap_err();
     let EngineServingError::ResourceExhausted(m) = governed_stream_error(&err) else {
