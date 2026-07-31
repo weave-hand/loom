@@ -223,8 +223,8 @@ impl Drop for StaticServer {
 pub async fn start_static_server(dir: impl Into<PathBuf>) -> StaticServer {
     let dir = dir.into();
     let index = dir.join("index.html");
-    let app = axum::Router::new()
-        .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
+    let app =
+        axum::Router::new().fallback_service(ServeDir::new(dir).fallback(ServeFile::new(index)));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind static server");
