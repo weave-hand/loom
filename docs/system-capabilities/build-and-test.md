@@ -84,6 +84,25 @@ hermetic interpreter's absolute path from the par-build action's (RE) sandbox
 into the generated entrypoint's shebang, which only resolves when the test
 itself also runs on RE — see `fut-python-par-local-shebang`.
 
+The Python toolchain is wired by **loom's own
+`remote_python_toolchain_no_bytecode`** (`toolchains/python_dist.bzl`), not the
+prelude's `remote_python_toolchain`. It is a copy of that macro with one change:
+`PYTHONDONTWRITEBYTECODE=1` on the `cpython` `command_alias`. The interpreter runs
+in place out of its materialized artifact
+(`buck-out/v2/art/toolchains/<hash>/__cpython_archive__/`), so without this it
+byte-compiles stdlib modules into `__pycache__/` directories *inside a buck2
+output*. buck2 must clean an output path to re-materialize it, and files it did
+not write can defeat that — `Permission denied` when the stray `.pyc`s belong to
+another uid, `Directory not empty` when a writer races the clean. Normally it is
+latent (the files are yours and get deleted); it becomes an unrecoverable wedge on
+a machine where something ran the interpreter as another user, or on the
+BuildBuddy `affected` runner, whose `buck-out` is preserved across runs
+(`git clean -x -d --force -e buck-out`) so it never self-heals — it presents as
+flaky CI but is deterministic, and retries fail identically. Upstream `main` still
+has no `env` on that alias, so bumping the prelude does not fix it; the copy lives
+alongside `cxx_dist.bzl`/`rust_dist.bzl` for the same reason, and
+`python_dist.bzl` records when to delete it.
+
 ## Test infrastructure
 
 Tests are `rust_test` integration targets only — buck2 never runs inline
