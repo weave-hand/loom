@@ -157,11 +157,20 @@ clippy::restriction)]` because `html!`/`css!` expansion isn't lint-clean.
   serves a dev-only "kitchen sink" (`:gallery` binary, `src/gallery.rs` + `gallery.html`)
   rendering every primitive with its variants. It has **no backend/config.js** and never
   ships in the prod login bundle.
-- **Testing limit (deliberate):** component *rendering* (`html!`) is **not**
-  `rust_test`-able — buck2's runner has no DOM. It's verified by eye in the gallery; the
-  per-component headless-wasm render harness is still deferred
-  (`fut-ui-component-test-fixture`). Don't add an inline
-  `#[test]` for a component (the `no-inline-tests` hook fails the build regardless).
+- **Component render testing:** component *rendering* (`html!`) is not
+  `rust_test`-able directly — buck2's runner has no DOM — but it is assertable via
+  `//src/ui/e2e:components`, which drives `//src/ui:harness-bundle` (a backend-free
+  wasm bundle mounting exactly one component from `?component=<name>&props=<json>`)
+  in the vendored headless Chrome. Covering another component is a `*Spec` struct
+  plus one `match` arm in `src/ui/src/harness.rs` — no new buck rule; that only
+  covers static render coverage, though, not a live prop change on an
+  already-mounted component, since `Harness::show` does a fresh `goto` per call
+  and so cannot distinguish "the component reacted" from "the page reloaded"
+  (the gap issue #653's SqlEditor prop-swap needs, which would require a
+  JS-side props setter the harness doesn't have). The gallery remains the
+  human-facing showcase for eyeballing every variant at once. Don't add
+  an inline `#[test]` for a component (the `no-inline-tests` hook fails the build
+  regardless — buck2 never runs inline tests).
 - **Login e2e (`//src/ui/e2e:login`)** — the full-page layer that *does* exercise the
   rendered DOM: a `fantoccini` (Rust WebDriver) test that boots the composite (fresh DB on
   the shared `PgFixture`, `standalone::run` serving this bundle via `LOOM_UI_DIR`) and
