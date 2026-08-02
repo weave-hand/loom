@@ -74,10 +74,12 @@ impl crate::serving::ServingEngine for EngineServingClient {
         catalog: control_plane_core::GovernedCatalog,
         max_rows: usize,
     ) -> Result<crate::serving::GovernedRows, ServingError> {
+        use engine_wire::client::GovernedSqlError;
         use futures::StreamExt as _;
         let map_err = |e| match e {
-            control_plane_core::ControlPlaneError::Validation(m) => ServingError::Plan(m),
-            other => ServingError::Engine(other.to_string()),
+            GovernedSqlError::Plan(m) => ServingError::Plan(m),
+            GovernedSqlError::ResourceExhausted(m) => ServingError::ResourceExhausted(m),
+            GovernedSqlError::Backend(other) => ServingError::Engine(other.to_string()),
         };
         let mut stream = self
             .sql

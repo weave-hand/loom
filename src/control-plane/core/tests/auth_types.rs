@@ -7,7 +7,9 @@ fn new_user_and_credential_construct() {
     let u = NewUser {
         subject_id: SubjectId("alice".into()),
         username: "alice".into(),
-        password_phc: "$argon2id$v=19$m=19456,t=2,p=1$abc$def".into(),
+        password_phc: control_plane_core::Redacted::new(
+            "$argon2id$v=19$m=19456,t=2,p=1$abc$def".to_owned(),
+        ),
     };
     assert_eq!(u.subject_id, SubjectId("alice".into()));
     assert_eq!(u.username, "alice");
@@ -64,4 +66,47 @@ fn service_account_types_construct() {
     };
     assert_eq!(tok.token_sha256, [7u8; 32]);
     assert!(tok.revoked_at.is_none());
+}
+
+#[test]
+fn new_user_debug_redacts_the_verifier() {
+    let u = NewUser {
+        subject_id: SubjectId("alice".into()),
+        username: "alice".into(),
+        password_phc: control_plane_core::Redacted::new(
+            "$argon2id$v=19$m=19456,t=2,p=1$abc$def".to_owned(),
+        ),
+    };
+    let rendered = format!("{u:?}");
+    assert!(
+        !rendered.contains("$argon2id$"),
+        "NewUser Debug leaked the verifier: {rendered}"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "NewUser Debug should mark the field redacted: {rendered}"
+    );
+    // The non-secret fields must still be visible — redaction is not censorship
+    // of the whole struct.
+    assert!(rendered.contains("alice"), "lost the username: {rendered}");
+}
+
+#[test]
+fn password_credential_debug_redacts_the_verifier() {
+    let c = PasswordCredential {
+        subject_id: SubjectId("alice".into()),
+        password_phc: control_plane_core::Redacted::new(
+            "$argon2id$v=19$m=19456,t=2,p=1$abc$def".to_owned(),
+        ),
+        locked_until: None,
+    };
+    let rendered = format!("{c:?}");
+    assert!(
+        !rendered.contains("$argon2id$"),
+        "PasswordCredential Debug leaked the verifier: {rendered}"
+    );
+    assert!(
+        rendered.contains("<redacted>"),
+        "PasswordCredential Debug should mark the field redacted: {rendered}"
+    );
 }

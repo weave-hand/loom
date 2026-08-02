@@ -11,7 +11,7 @@ use arrow::array::{Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use control_plane_core::{Catalog, ControlPlane, TableRef};
+use control_plane_core::{Catalog, ControlPlane, Redacted, TableRef};
 use control_plane_postgres::fixture::PgFixture;
 use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::{
@@ -60,7 +60,7 @@ async fn lands_through_real_runtime_wiring() {
         host: fixture.socket_path().to_string_lossy().into_owned(),
         port: 5432, // ignored for a socket host
         user: "postgres".into(),
-        password: String::new(),
+        password: Redacted::new(String::new()),
         dbname: db.clone(),
         max_connections: None,
     };

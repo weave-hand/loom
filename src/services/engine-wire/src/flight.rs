@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tonic::transport::Channel;
 
+use crate::client::GovernedSqlError;
+
 /// What a Flight `Ticket` names: an explicit set of a table's data files to
 /// stream. `files` are the data-file path strings exactly as stored in the
 /// iceberg mirror (passed verbatim to the engine's `FileIO::new_input`).
@@ -542,11 +544,19 @@ impl FlightSqlClient {
     /// `GovernedStatementQuery` ticket (the standard `CommandStatementQuery`
     /// cannot carry the catalog). The stream never materialises in the caller —
     /// query-api's external SQL wire relays it straight out.
+    ///
+    /// Errors are [`GovernedSqlError`], not [`control_plane_core::ControlPlaneError`]:
+    /// this plane carries a resource-budget class (#664) that `be` would erase, and
+    /// the budget can trip either eagerly or mid-stream, so BOTH the open and the
+    /// per-item errors are classified.
     pub async fn execute_governed_stream(
         &self,
         sql: String,
         catalog: GovernedCatalog,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<RecordBatch>> + Send>>> {
+    ) -> std::result::Result<
+        Pin<Box<dyn Stream<Item = std::result::Result<RecordBatch, GovernedSqlError>> + Send>>,
+        GovernedSqlError,
+    > {
         let ticket = GovernedStatementQuery { sql, catalog };
         let resp = self
             .inner
@@ -555,8 +565,10 @@ impl FlightSqlClient {
                 ticket: ticket.encode().into(),
             })
             .await
-            .map_err(crate::client::sql_status)?;
-        Ok(Box::pin(decode_batches(resp).map_err(crate::client::be)))
+            .map_err(crate::client::governed_sql_status)?;
+        Ok(Box::pin(
+            decode_batches(resp).map_err(crate::client::governed_sql_flight_error),
+        ))
     }
 
     /// Execute `sql` with every referenced table read at `as_of_snapshot`, buffering

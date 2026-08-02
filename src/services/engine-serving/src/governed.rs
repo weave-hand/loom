@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -15,7 +16,10 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::DFSchema;
 use datafusion::error::{DataFusionError, Result as DfResult};
-use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionContext};
+use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionConfig, SessionContext};
+use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
+use datafusion::execution::memory_pool::GreedyMemoryPool;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType, not};
 use datafusion::physical_expr::{
     PhysicalExpr, create_physical_expr,
@@ -34,6 +38,7 @@ use store_config::ServingStore;
 use crate::serving::{
     EngineServingError, build_serving_provider, fold_view, register_qualified, to_serving,
 };
+use crate::sql_limits::{DeadlineStream, GovernedSqlLimits, governed_stream_error};
 
 /// The redaction marker a masked column's every value is replaced with. Kept local
 /// to engine-serving (query-api owns its own private copy) so the enforcing path has
@@ -289,65 +294,58 @@ impl TableProvider for GovernedTableProvider {
 /// schema-qualified, then run the SQL. Governance is enforced by the providers, so the
 /// client SQL is arbitrary — it can never observe a denied column, an unmasked value,
 /// or a filter-excluded row.
+///
+/// THE single choke point for arbitrary client SQL: both surfaces (`POST /sql` and the
+/// external Flight SQL wire) reach it through `do_get_governed_sql`, so bounding here
+/// means neither can be forgotten and a future third caller inherits the bound by
+/// construction. `limits` applies a per-statement memory pool and a wall-clock deadline
+/// covering the whole query lifetime — registration, planning, and every batch. See #664.
 pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,
     governed: &GovernedCatalog,
     serving_store: Option<&ServingStore>,
+    limits: &GovernedSqlLimits,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
-    let ctx = SessionContext::new();
-    for table in catalog.live_tables().await.map_err(to_serving)? {
-        // Closed-world: a live table with NO GovernedTable entry is not
-        // registered at all — it does not exist for this session. Deny-by-
-        // default holds even if the edge under-lists (unbound datasets,
-        // ungranted types). See 2026-07-09-external-sql-wire-design.md.
-        if governed.table_for(&table).is_none() {
-            continue;
-        }
-        // This loop always passes `at: None` (current snapshot), so
-        // `build_serving_provider`'s `Ok(None)` (as-of-not-live) case is
-        // unreachable here in practice — a live-but-empty table now yields
-        // `Ok(Some(_))` (a zero-row provider). Kept as a harmless skip.
-        let Some(inner) =
-            build_serving_provider(&ctx, catalog, &table, serving_store, None).await?
-        else {
-            continue;
-        };
-        let policy = policy_for(governed, &table);
-        let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
-        register_qualified(&ctx, &table.schema, &table.name, provider)?;
-    }
-    // Catalog views: a view is an ordinary governed relation. It registers only
-    // when the VIEW itself has a `GovernedTable` entry (closed-world, exactly as
-    // for a base table) — a view grant is sufficient and never requires the
-    // base's own grant. The view's inner base relation is therefore built
-    // PRIVATELY and UNGOVERNED (`build_serving_provider`, never `ctx.table`): in
-    // this governed session a base is registered only when it has its own entry,
-    // and then it is wrapped in the BASE's policy — both wrong for the view. The
-    // folded view is wrapped in the VIEW's policy, so no base policy contaminates
-    // the view scan.
-    use control_plane_core::Catalog as _;
-    for v in catalog
-        .list_views(control_plane_core::PageReq::unbounded())
-        .await
-        .map_err(to_serving)?
-        .items
-    {
-        if governed.table_for(&v.view).is_none() {
-            continue; // closed-world: unlisted view is unresolvable
-        }
-        let policy = policy_for(governed, &v.view);
-        let Some(inner) =
-            build_serving_provider(&ctx, catalog, &v.base, serving_store, None).await?
-        else {
-            continue; // dangling view: base not live here
-        };
-        let df = ctx.read_table(inner).map_err(to_serving)?;
-        let provider = fold_view(df, &v)?.into_view();
-        let governed_provider: Arc<dyn TableProvider> =
-            Arc::new(GovernedTableProvider::new(provider, policy)?);
-        register_qualified(&ctx, &v.view.schema, &v.view.name, governed_provider)?;
-    }
+    // `checked_add`, not `+`: `LOOM_SQL_TIMEOUT_SECS` parses as a `u64`, so an absurd
+    // value would overflow the `Instant` and panic inside the Flight handler on EVERY
+    // governed query. An unrepresentable deadline degrades to "no deadline" — the same
+    // behaviour as the documented `0` escape hatch — rather than taking the engine down.
+    let deadline = limits.deadline.and_then(|d| Instant::now().checked_add(d));
+    let planned = plan_governed_sql(catalog, sql, governed, serving_store, limits.memory_bytes);
+    let stream = match deadline {
+        None => planned.await?,
+        Some(t) => tokio::time::timeout_at(t.into(), planned)
+            .await
+            .map_err(|_elapsed| {
+                EngineServingError::ResourceExhausted(
+                    "statement exceeded its wall-clock budget (LOOM_SQL_TIMEOUT_SECS) \
+                     while planning"
+                        .to_string(),
+                )
+            })??,
+    };
+    // The SAME absolute deadline bounds the stream the caller will drive: a wrapping
+    // future could not bound work performed after this function returns.
+    Ok(match deadline {
+        None => stream,
+        Some(t) => Box::pin(DeadlineStream::until(stream, t)),
+    })
+}
+
+/// The registration + planning + execute half of [`execute_governed_sql_stream`],
+/// split out so the wrapper above can wrap the WHOLE of it in one wall-clock budget.
+/// `memory_bytes` bounds the statement's DataFusion memory pool.
+async fn plan_governed_sql(
+    catalog: &IcebergCatalog,
+    sql: &str,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+    memory_bytes: Option<usize>,
+) -> Result<SendableRecordBatchStream, EngineServingError> {
+    let ctx = build_session(memory_bytes)?;
+    register_governed_tables(&ctx, catalog, governed, serving_store).await?;
+    register_governed_views(&ctx, catalog, governed, serving_store).await?;
     // Read-only guard (load-bearing): this path plans ARBITRARY client SQL, so it must
     // reject DDL, DML, and statements — `COPY … TO`, `INSERT`/`UPDATE`/`DELETE`,
     // `CREATE`, `SET`, … — none of which route through the governed `TableProvider`s and
@@ -363,5 +361,110 @@ pub async fn execute_governed_sql_stream(
         .sql_with_options(sql, opts)
         .await
         .map_err(EngineServingError::Plan)?;
-    df.execute_stream().await.map_err(to_serving)
+    // CLASSIFICATION IS LOAD-BEARING: `to_serving` is class-erasing and would bury a
+    // pool breach raised here as `Engine`/500. Route through the shared classifier.
+    df.execute_stream()
+        .await
+        .map_err(|e| governed_stream_error(&e))
+}
+
+/// Register every live base table **listed in the governed catalog** on `ctx`, each
+/// wrapped in its own `GovernedTableProvider`.
+///
+/// Closed-world: a live table with NO `GovernedTable` entry is not registered at all —
+/// it does not exist for this session, so an ungranted table is indistinguishable from
+/// a nonexistent one and there is no existence leak through plan errors. Deny-by-default
+/// therefore holds even if the edge under-lists (unbound datasets, ungranted types).
+/// See 2026-07-09-external-sql-wire-design.md.
+async fn register_governed_tables(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+) -> Result<(), EngineServingError> {
+    for table in catalog.live_tables().await.map_err(to_serving)? {
+        if governed.table_for(&table).is_none() {
+            continue;
+        }
+        // This loop always passes `at: None` (current snapshot), so
+        // `build_serving_provider`'s `Ok(None)` (as-of-not-live) case is
+        // unreachable here in practice — a live-but-empty table now yields
+        // `Ok(Some(_))` (a zero-row provider). Kept as a harmless skip.
+        let Some(inner) = build_serving_provider(ctx, catalog, &table, serving_store, None).await?
+        else {
+            continue;
+        };
+        let policy = policy_for(governed, &table);
+        let provider: Arc<dyn TableProvider> = Arc::new(GovernedTableProvider::new(inner, policy)?);
+        register_qualified(ctx, &table.schema, &table.name, provider)?;
+    }
+    Ok(())
+}
+
+/// Register every catalog view listed in the governed catalog on `ctx`.
+///
+/// A view is an ordinary governed relation, with one deliberate twist: it registers only
+/// when the VIEW itself has a `GovernedTable` entry (closed-world, exactly as for a base
+/// table) — a view grant is sufficient and never requires the base's own grant. The
+/// view's inner base relation is therefore built PRIVATELY and UNGOVERNED
+/// (`build_serving_provider`, never `ctx.table`): in this governed session a base is
+/// registered only when it has its own entry, and then it is wrapped in the BASE's
+/// policy — both wrong for the view. The folded view is wrapped in the VIEW's policy, so
+/// no base policy contaminates the view scan.
+async fn register_governed_views(
+    ctx: &SessionContext,
+    catalog: &IcebergCatalog,
+    governed: &GovernedCatalog,
+    serving_store: Option<&ServingStore>,
+) -> Result<(), EngineServingError> {
+    use control_plane_core::Catalog as _;
+    for v in catalog
+        .list_views(control_plane_core::PageReq::unbounded())
+        .await
+        .map_err(to_serving)?
+        .items
+    {
+        if governed.table_for(&v.view).is_none() {
+            continue; // closed-world: unlisted view is unresolvable
+        }
+        let policy = policy_for(governed, &v.view);
+        let Some(inner) =
+            build_serving_provider(ctx, catalog, &v.base, serving_store, None).await?
+        else {
+            continue; // dangling view: base not live here
+        };
+        let df = ctx.read_table(inner).map_err(to_serving)?;
+        let provider = fold_view(df, &v)?.into_view();
+        let governed_provider: Arc<dyn TableProvider> =
+            Arc::new(GovernedTableProvider::new(provider, policy)?);
+        register_qualified(ctx, &v.view.schema, &v.view.name, governed_provider)?;
+    }
+    Ok(())
+}
+
+/// A fresh `SessionContext` for one governed statement, optionally over a runtime
+/// whose memory pool is capped at `memory_bytes`.
+///
+/// TWO settings, both required — neither implies the other:
+///
+/// 1. `GreedyMemoryPool`, NOT `FairSpillPool`. Memory-tracked operators (sort, hash
+///    aggregate, hash join, sort-merge join) reserve from the pool and fail with
+///    `DataFusionError::ResourcesExhausted` once it is exhausted.
+/// 2. `DiskManagerMode::Disabled`. The pool choice does NOT disable spilling — the
+///    disk manager does, and `RuntimeEnvBuilder` defaults it to the OS temp dir. Left
+///    at the default, `SortExec` spills instead of failing and an oversized query
+///    succeeds while writing unbounded files into `/tmp`: a disk DoS traded for the
+///    memory DoS. Disabled, an attempted spill errors and the budget actually binds.
+pub fn build_session(memory_bytes: Option<usize>) -> Result<SessionContext, EngineServingError> {
+    let Some(bytes) = memory_bytes else {
+        return Ok(SessionContext::new());
+    };
+    let rt = RuntimeEnvBuilder::new()
+        .with_memory_pool(Arc::new(GreedyMemoryPool::new(bytes)))
+        .with_disk_manager_builder(
+            DiskManagerBuilder::default().with_mode(DiskManagerMode::Disabled),
+        )
+        .build_arc()
+        .map_err(to_serving)?;
+    Ok(SessionContext::new_with_config_rt(SessionConfig::new(), rt))
 }

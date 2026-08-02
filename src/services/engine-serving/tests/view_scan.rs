@@ -98,9 +98,15 @@ async fn run_governed(
     sql: &str,
     cat: &GovernedCatalog,
 ) -> Vec<RecordBatch> {
-    let stream = execute_governed_sql_stream(catalog, sql, cat, None)
-        .await
-        .expect("governed stream");
+    let stream = execute_governed_sql_stream(
+        catalog,
+        sql,
+        cat,
+        None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
+    )
+    .await
+    .expect("governed stream");
     stream.try_collect().await.expect("collect")
 }
 
@@ -316,6 +322,7 @@ async fn governed_view_without_entry_is_not_queryable() {
         "SELECT \"id\" FROM \"gov\".\"customers_v\"",
         &cat,
         None,
+        &engine_serving::sql_limits::GovernedSqlLimits::unbounded(),
     )
     .await;
     let Err(err) = result else {

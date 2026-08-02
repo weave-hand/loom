@@ -145,6 +145,7 @@ pub async fn spawn_engine_uds(
             serving_store: None,
             pool,
             cp,
+            sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
         })
     });
 

@@ -20,6 +20,7 @@ mod ontology;
 mod orphan_sweep;
 mod page;
 mod queue;
+mod secret;
 pub mod snapshot;
 mod stream;
 mod stream_consolidate_job;
@@ -80,6 +81,7 @@ pub use queue::{
     Job, JobFailure, JobId, JobScheduleStatus, KNOWN_JOB_KINDS, NewJob, Queue, RetryPolicy,
     ScheduleFired,
 };
+pub use secret::Redacted;
 pub use snapshot::{ColumnSpec, ColumnStat, DataFile, FileFormat, StatValue};
 pub use stream::{
     BucketOffsets, ChangeEvent, ChangeFeedPage, MergeEngine, MvWatermarks, StreamKind, StreamMeta,

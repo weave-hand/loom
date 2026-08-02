@@ -1,7 +1,9 @@
 //! First-admin bootstrap logic shared by the `loom create-admin` CLI. Seeds the
 //! first admin and seals the instance in a single logical sequence; refuses once
 //! sealed. No HTTP path — the caller is the host CLI only.
-use control_plane_core::{ADMIN_ROLE, Acl, Auth, ControlPlaneError, NewUser, RoleId, SubjectId};
+use control_plane_core::{
+    ADMIN_ROLE, Acl, Auth, ControlPlaneError, NewUser, Redacted, RoleId, SubjectId,
+};
 
 /// Failure modes of [`run_create_admin`].
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +43,7 @@ pub async fn run_create_admin<CP: Auth + Acl + Sync>(
         .create_user(&NewUser {
             subject_id: subject.clone(),
             username: username.to_string(),
-            password_phc: phc,
+            password_phc: Redacted::new(phc),
         })
         .await
     {

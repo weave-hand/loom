@@ -22,6 +22,15 @@ async fn main() -> Result<(), BoxErr> {
 
     let mut env = service_runtime::env_map();
 
+    // Registered immediately after the env snapshot — before the migrate-and-exit
+    // gate below and, on the normal boot path, before the embedded-Postgres
+    // self-extraction (the slowest startup step in the tree) — so a SIGTERM
+    // arriving during that window is caught here instead of hitting the kernel
+    // default and killing the process outright. Harmless on the early-return
+    // paths (`create-admin` returns before this point; migrate-and-exit below
+    // just leaves this handle unused and it is dropped with the process).
+    let shutdown = service_runtime::Shutdown::install(service_runtime::shutdown_timeout(&env)?);
+
     // Migrate-and-exit works for the loom image too (chart one-shot migrator).
     // This path targets an EXTERNAL/managed PG (it connects to `cfg.db`), so it runs
     // before any embedded `extract_pg` and does not set `LOOM_PG_MODE=embedded`.
@@ -51,7 +60,10 @@ async fn main() -> Result<(), BoxErr> {
     let addrs = resolve_addrs(&env)?;
     let tuning = standalone::StandaloneTuning::from_map(&env)?;
 
-    standalone::run(cfg, addrs, tuning, shutdown_signal(), ready_noop()).await
+    // The composite is deliberately NOT wrapped in `run_bounded`: cutting its
+    // drain short would skip stopping the embedded Postgres, which is worse
+    // than waiting.
+    standalone::run(cfg, addrs, tuning, shutdown.signalled(), ready_noop()).await
 }
 
 async fn create_admin_cli() -> Result<(), BoxErr> {
@@ -112,17 +124,4 @@ fn resolve_addrs(env: &HashMap<String, String>) -> Result<StandaloneAddrs, BoxEr
 fn ready_noop() -> tokio::sync::oneshot::Sender<()> {
     let (tx, _rx) = tokio::sync::oneshot::channel();
     tx
-}
-
-/// Resolve on SIGINT or SIGTERM (container runtimes send SIGTERM).
-async fn shutdown_signal() {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut term = match signal(SignalKind::terminate()) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {}
-        _ = term.recv() => {}
-    }
 }

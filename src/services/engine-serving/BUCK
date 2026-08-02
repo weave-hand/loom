@@ -15,6 +15,7 @@ rust_library(
         "//third-party:arrow",
         "//third-party:async-trait",
         "//third-party:datafusion",
+        "//third-party:futures",
         "//third-party:iceberg",
         "//third-party:object_store",
         "//third-party:serde_json",
@@ -146,6 +147,21 @@ rust_test(
         ":engine-serving",
         "//src/control-plane/core:core",
         "//third-party:datafusion",
+    ],
+)
+
+rust_test(
+    name = "deadline-stream",
+    crate = "deadline_stream",
+    srcs = ["tests/deadline_stream.rs"],
+    crate_root = "tests/deadline_stream.rs",
+    edition = "2024",
+    deps = [
+        ":engine-serving",
+        "//third-party:arrow",
+        "//third-party:datafusion",
+        "//third-party:futures",
+        "//third-party:tokio",
     ],
 )
 
@@ -375,6 +391,21 @@ loom_fixture_test(
         "//third-party:futures",
         "//third-party:tokio",
         "//third-party:uuid",
+    ],
+)
+
+loom_fixture_test(
+    name = "governed-sql-limits",
+    crate = "governed_sql_limits",
+    srcs = ["tests/governed_sql_limits.rs"],
+    crate_root = "tests/governed_sql_limits.rs",
+    deps = [
+        ":engine-serving",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//third-party:arrow",
+        "//third-party:futures",
+        "//third-party:tokio",
     ],
 )
 

@@ -393,6 +393,42 @@ Two governed egress surfaces exist beyond the internal read path:
   client's own vocabulary), everything else is an opaque `internal` (detail
   logged server-side only). Plaintext TCP — TLS is deferred to
   [[fut-flight-export-tls]], behind an operator-supplied terminator.
+- **Per-statement resource bounds** (#664): both arbitrary-SQL surfaces above
+  reach `execute_governed_sql_stream` through `do_get_governed_sql`, so that
+  one choke point carries the bound and neither surface can be forgotten — a
+  future third caller inherits it by construction. Each statement runs on a
+  fresh `SessionContext` over a `GreedyMemoryPool` capped at
+  `LOOM_SQL_MEMORY_LIMIT_BYTES` (default 1 GiB), and the returned stream is
+  wrapped in a `DeadlineStream` bounded by `LOOM_SQL_TIMEOUT_SECS` (default
+  60). Both knobs take `0` to disable, matching the
+  `LOOM_COMPACT_TRIGGER_FILES == 0` convention; a malformed value fails
+  startup naming the key. The two mechanisms ship together because neither
+  suffices alone: a pipelined cross-join streams forever without ever
+  reserving tracked memory, and the clock cannot stop a single oversized
+  allocation. **The bound fails hard — it never spills.** That takes two
+  settings, not one: `GreedyMemoryPool` rather than `FairSpillPool`, *and* an
+  explicit `DiskManagerMode::Disabled`, because `RuntimeEnvBuilder` otherwise
+  defaults to the OS temp directory and `SortExec` would spill there and
+  succeed — trading the memory DoS for a disk DoS, with no spill quota or GC
+  to bound it. The deadline is one absolute clock covering registration,
+  planning and every batch, so a client that stalls mid-stream to pin a plan
+  open is cut off too; the cost is that a legitimately slow consumer of a
+  large result can be cut off, which the generous default mitigates. A breach
+  is `EngineServingError::ResourceExhausted` → gRPC `resource_exhausted` →
+  HTTP 429, a class distinct from `Plan` (400, your SQL is malformed) and
+  `Engine` (500, our fault). Classification is load-bearing: the pool breach
+  usually arrives as a *stream item* (a sort reserves on first poll, not at
+  `execute_stream`), so `encode_response` preserves an already-formed status
+  instead of collapsing it to `internal`, and `to_serving` — which is
+  class-erasing — is bypassed on both paths. The messages name the budget
+  that was exceeded, never data. `execute_query_stream` (internal, as-of, and
+  system SQL — MV micro-batches, compaction) is deliberately **unbounded**:
+  those plans are server-built and shape-bounded. The existing row caps
+  (`LOOM_SQL_WIRE_MAX_ROWS`, the console's `limit`) are unchanged and bound a
+  different thing — the output *pulled*, not the compute performed before the
+  first batch. Out of scope: an engine-wide concurrent-query budget (N
+  statements can still sum to N × the limit), spill-to-disk, and per-subject
+  quotas.
 - **Governed Arrow Flight export** (#204): query-api hosts a TCP Flight
   server whose ticket carries a loom export *command* (typed object + slice
   filters), never SQL. `do_get` re-derives the ACL'd SQL per call for the
@@ -698,8 +734,6 @@ and maintenance schedules.
   time-travel reads.
 - `#fut-iceberg-schema-cache` — schema cache for the serving engine's
   per-query table registration.
-- `#fut-iceberg-stats-dedup` — unify the iceberg/datafusion parquet-footer
-  stats readers.
 - `#fut-iceberg-retry-cap-tunable` — env-tunable CAS-commit retry cap.
 - `#fut-iceberg-s3-multipart` — S3 multipart upload for large data files.
 - `#fut-iceberg-s3-serving-e2e` — end-to-end serving read against S3.
