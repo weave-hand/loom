@@ -10,7 +10,9 @@ pub use completion::{
 };
 
 mod diagnostics;
-pub use diagnostics::{Diagnostic, DiagnosticSeverity, sql_diagnostics};
+pub use diagnostics::{
+    Diagnostic, DiagnosticSeverity, anchor_diagnostic, parse_server_diagnostics, sql_diagnostics,
+};
 
 mod transforms;
 pub use transforms::{

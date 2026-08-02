@@ -34,6 +34,7 @@ pub mod serving;
 pub mod serving_datafusion;
 pub mod sql;
 pub mod sql_console;
+pub mod sql_validate;
 pub mod subscribe;
 pub mod web_static;
 pub mod wire_control_plane;

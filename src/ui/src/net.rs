@@ -2,10 +2,11 @@
 
 use gloo_net::http::Request;
 use loom_ui_core::{
-    AuthError, DatasetDetail, DatasetRow, DatasetRunRow, PreviewData, QueryResult, RunRow,
-    TransformDefView, TransformSummary, TypeDetail, lineage_closure_path, parse_dataset_detail,
-    parse_dataset_runs, parse_datasets, parse_preview, parse_query_result, parse_runs,
-    parse_transform_def, parse_transform_list, parse_type_detail, status_to_error, url,
+    AuthError, DatasetDetail, DatasetRow, DatasetRunRow, Diagnostic, PreviewData, QueryResult,
+    RunRow, TransformDefView, TransformSummary, TypeDetail, lineage_closure_path,
+    parse_dataset_detail, parse_dataset_runs, parse_datasets, parse_preview, parse_query_result,
+    parse_runs, parse_server_diagnostics, parse_transform_def, parse_transform_list,
+    parse_type_detail, status_to_error, url,
 };
 use serde_json::Value;
 use wasm_bindgen::JsValue;
@@ -390,6 +391,37 @@ pub async fn run_sql(
     }
     let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
     Ok(parse_query_result(&body))
+}
+
+/// POST /sql/validate — ask the engine to plan `sql` under the caller's governed catalog
+/// and return editor diagnostics, executing nothing. Invalid SQL is a **200** whose body
+/// carries the diagnostics, so a non-200 here is a genuine transport/authorization fault,
+/// never a verdict about the SQL — which is why this maps statuses with
+/// [`fetch_status_err`] rather than `run_sql`'s body-reading `write_status_err`: a 400 on
+/// this route means a malformed *request body*, so there is no engine plan message to
+/// surface.
+///
+/// The response body is parsed by the pure `parse_server_diagnostics`, which anchors a
+/// position-less diagnostic (every *plan* error — DataFusion attaches no position to
+/// `No field named …`) against `sql` itself.
+pub async fn validate_sql(
+    base: &str,
+    token: &str,
+    sql: &str,
+) -> Result<Vec<Diagnostic>, FetchError> {
+    let body = serde_json::json!({ "sql": sql });
+    let resp = Request::post(&url(base, "/sql/validate"))
+        .header("Authorization", &format!("Bearer {token}"))
+        .json(&body)
+        .map_err(|_| FetchError::Network)?
+        .send()
+        .await
+        .map_err(|_| FetchError::Network)?;
+    if resp.status() != 200 {
+        return Err(fetch_status_err(resp.status()));
+    }
+    let body: Value = resp.json().await.map_err(|_| FetchError::Network)?;
+    Ok(parse_server_diagnostics(&body, sql))
 }
 
 /// POST /admin/transforms/run — run an ad-hoc body (expects 202 {run_id}).
