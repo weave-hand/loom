@@ -4,27 +4,33 @@ loom's web UI is framed by its founding spec as an **experiment**, not a committ
 product surface: the interesting work was teaching the buck2 build to cross-compile
 Rust to `wasm32-unknown-unknown`, with the [Yew](https://yew.rs) app riding on top.
 The experiment has since grown real substance — a design-system component library
-and a working post-login object explorer over the live governed endpoints — but the
-composite Foundry-style screens (dataset catalog, lineage DAG) remain separate,
-un-started arcs, and the UI should still be read as an exploratory slice of the
-platform rather than a finished front end.
+and a multi-surface post-login workspace (catalog, transforms, query console,
+ontology) over the live governed endpoints — but it should still be read as an
+exploratory slice of the platform rather than a finished front end.
 
-_As of 4861433b._
+_As of 9a328789._
 
 ## What the UI does today
 
-The `app` binary (`src/ui/`) is a Yew 0.21 single-page app with a login flow and an
-object explorer. Unauthenticated, it renders a login form that calls `POST
+The `app` binary (`src/ui/`) is a Yew 0.21 single-page app with a login flow and a
+multi-surface workspace. Unauthenticated, it renders a login form that calls `POST
 /auth/login` against the existing backend auth (bearer token stored in
 `sessionStorage` under `loom_token`; the API base is resolved at runtime from
 `config.js`, so one bundle works both served-by-query-api and detached/CORS).
-Once authenticated, the `Explorer` (`src/ui/src/explorer.rs`) renders a three-pane,
-master-detail object browser: a type sidebar fed by `GET /ontology/types`, a
-paginated object `DataTable` with a "Load more" button appending the next
-keyset-cursor page from `GET /objects/{type}?limit=&cursor=`, and a detail drawer
-(single "Object" tab) showing the selected row's fields. A 401 from any fetch fails
-closed to logout. Row selection is by index, not identity — a deliberate
-thin-slice choice.
+Once authenticated, it renders the **`Workspace`** (`src/ui/src/main.rs`): the
+`Shell` chrome from `loom_ui_components` — a surface nav, a logout control, and a
+resizable, width-persisting drawer region — wrapping one of the surfaces in
+`src/ui/src/surfaces/`. Four are live: **Catalog** (`catalog.rs`), **Transforms**
+(`transforms.rs`) and **Ontology** (`ontology.rs` — a type list fed by
+`GET /ontology/types`, with a Properties/Links drawer whose details are eagerly
+loaded alongside the list from `GET /ontology/types/{name}`) are list-plus-drawer
+pane pairs; **Query** (`query.rs`) owns its whole pane, with no drawer;
+**Workbooks** and **Dashboards** render a `StubView` placeholder. `Workspace` owns the per-surface
+load effects and passes state down and callbacks up. A 401 from any fetch fails
+closed to logout. The active surface, the selected row and the drawer tab all live
+in the URL fragment, and row selection is by **stable id, never a list index** (see
+[Routing and URL state](#routing-and-url-state-617)) — an index would be
+meaningless in a link and unresolvable before the list has loaded.
 
 Underneath sits the component library, `loom_ui_components`
 (`src/ui/src/components/`): a design-token layer (`GlobalStyles` injects `:root
@@ -48,8 +54,9 @@ reshaping the list client-side. The query string is built by a pure
 control changes, guarded by its own `FetchGeneration` counter so an out-of-order
 arrival can't stale the list. The chip options are refreshed only from an
 **unfiltered** load, so selecting a project never collapses them to the filtered
-subset, and changing any control clears the drawer selection (row indices shift when
-the list reorders). The sort control is rendered as buttons, not a `<select>` —
+subset, and changing any control clears the drawer selection — re-sorting or
+filtering changes *what the list contains*, so the row you were looking at may no
+longer be in it. The sort control is rendered as buttons, not a `<select>` —
 reading a `<select>` value would need `web_sys::HtmlSelectElement`, which this crate
 does not enable.
 
@@ -177,7 +184,6 @@ publish-time smoke test gates the image on a real `chrome-headless-shell
 - `#fut-object-explorer-drawer-tabs` — the drawer's Links and Schema tabs
   (link traversal, per-type property definitions).
 - `#fut-object-explorer-filtering` — filtering and search over the object table.
-- `#fut-object-explorer-routing` — URL routing and deep-linking (`yew-router`).
 - `#fut-ui-sql-completion-polish` — unqualified SQL completion now **dedups**
   column names shared across input tables (a column present in two inputs is
   offered once; the first table's type wins and the table origin is dropped),
@@ -265,3 +271,97 @@ Four properties are load-bearing:
 An `SqlEditor` with no `validate` prop is unchanged — only the client-side
 engine publishes markers — so the Transforms drawer editors and the gallery are
 untouched and the Query console is the only opt-in.
+
+## Routing and URL state (#617)
+
+The workspace is now **addressable**. Where the shell previously kept the active
+surface, the selected row and the drawer tab in `use_state` hooks — invisible to the
+address bar, lost on reload, and unreachable by the browser's Back button — the
+location lives in the **URL fragment**:
+`#/{surface}[/{selection}][?tab=…&sort=…&dir=…&project=…]`, e.g.
+`#/catalog/main.orders?tab=preview` or
+`#/catalog?sort=updated&dir=desc&project=analytics`. `Workspace` derives its
+location from the route rather than owning it.
+
+**Why the fragment and not a path.** query-api's `with_static`
+(`src/services/query-api/src/web_static.rs`) *does* attach a `ServeDir`/`ServeFile`
+SPA fallback, so path routes would survive a reload when query-api serves the
+bundle. They would not under `buck2 run //src/ui:serve` (a bare `python3 -m
+http.server`), nor on an arbitrary static host in the detached/CORS topology that the
+same runtime-`config.js` design supports. The fragment never reaches a server, so the
+URL grammar is independent of how the bundle is served — and the whole change stayed
+inside `src/ui/`, with no serving-path or deploy coupling.
+
+**What is in the URL:** the surface slug (`catalog`, `ontology`, `transforms`,
+`query`, `workbooks`, `dashboards`); the selection as a **stable id** —
+`"schema.name"` on Catalog, the type name on Ontology, the transform name on
+Transforms, percent-encoded so a name can't inject route punctuation; the active
+drawer tab (`?tab=`, validated against that surface's own tab vocabulary); and the
+Catalog list controls (`?sort=`, `?dir=`, `?project=`), which mirror the
+`GET /datasets` query params so a linked Catalog view reproduces the same
+server-side sort and filter. Defaults are omitted from the serialisation and params
+are emitted in a fixed order, so the common route is just `#/catalog` and the address
+bar is stable across renders.
+
+**Selection by id, not index.** An index moves when the list is re-sorted, filtered
+or reloaded, and cannot be resolved before the list has arrived; an id can. The
+Catalog drawer resolves schema/name straight out of the route id, so a deep-linked
+drawer renders its fetches immediately, before the dataset list has loaded. The
+**Ontology** drawer is deliberately asymmetric — it is gated on the type being
+present in the loaded list (type details are eagerly loaded alongside the list), so
+an unknown type name shows *no* drawer rather than a permanent "Loading…". The
+**Transforms** drawer is a third gate again: it renders only once the per-selection
+`GET /admin/transforms/{name}` definition fetch has landed, so
+`#/transforms/does-not-exist` shows no drawer and no message at all.
+`Route::selection_on`/`tab_on` scope the route to a single surface, so the
+per-surface effects — which stay mounted whichever surface is active — can never read
+each other's selection.
+
+**Guarantees.** A URL can be copied, pasted and reloaded onto the same view (subject
+to the same auth). Back/Forward work: `Navigator::push` (surface switch, row
+selection) only writes `location.hash` and lets the resulting `hashchange` drive the
+state, which is exactly what the browser buttons fire — no extra bookkeeping.
+`Navigator::replace` (drawer tab, list sort/filter, the drawer-closing that follows a
+New/Delete action) swaps the current entry via `history.replaceState`, so a handful of
+tab clicks doesn't cost a handful of Back presses to leave the app; `replaceState`
+fires no event, so that path writes the state itself. On first load the address bar is
+canonicalised with `replaceState` rather than a push, so Back still exits the app
+instead of bouncing between spellings of the same route. Parsing is **total**: an
+unrecognised surface, tab or sort token degrades to the default rather than erroring,
+so a hand-edited or stale link still renders a working app.
+
+**One deliberate asymmetry, and the reason for it.** `Route::with_surface` *resets*
+the Catalog list controls, while `Route::cleared` (close the drawer, stay put)
+*preserves* them. `to_hash` cannot encode the Catalog controls off the Catalog
+surface, so a value carried across a surface switch would be silently re-parsed away
+by the `hashchange` that `push` triggers — the URL is the location, and nothing
+hidden rides along with it. Closing a drawer, by contrast, leaves you looking at the
+same filtered, sorted list. A unit test pins both halves. **Known degradation:** a
+`?project=X` deep link makes the first dataset-list load *filtered*, and the project
+chip options are refreshed only from an *unfiltered* load — so until the filter is
+cleared the chip bar shows "All" plus the active project rather than the full set
+(`project_chip_options` is what keeps the active chip from disappearing entirely).
+
+**Pure model vs DOM layer.** The grammar, total parsing, `to_hash` and the
+transitions (`with_surface`/`with_selection`/`with_tab`/`with_catalog`/`cleared`,
+plus `selection_on`/`tab_on` and the dataset-id helpers) are pure code in
+`loom_ui_core::route` (`src/ui/src/route.rs`), covered by 21 unit tests in
+`//src/ui:route`. The only DOM-touching piece is `src/ui/src/router.rs` —
+`use_route()` (hash read, `hashchange` subscription, canonicalisation, the
+push/replace `Navigator`) and `current_route()`; it is covered by the browser e2e
+`//src/ui/e2e:routing`. Async callbacks that navigate after a response lands read
+`router::current_route()` rather than a captured `Route`: by the time a Run or Delete
+reply arrives the user may have navigated away, and re-emitting the stale route would
+yank them back. The lazy drawer-tab effects carry `already_loaded` in their dependency
+tuple, because the row-select effect clears the cached body in the same commit — a
+Back/Forward that changes selection while a non-default tab is active would otherwise
+bail on a stale `true` and leave the tab permanently blank.
+
+**Non-goals.** Not everything is a location: the Transforms editor form
+(`tf_editing`/`tf_edit_name` — unsaved input), the Query console's scratch state, and
+the lineage full-view toggle are deliberately kept out of the URL, and a surface
+switch clears the selection. **No `yew-router`** — a new third-party dependency would
+force a whole-graph `reindeer update` (which the root CLAUDE.md warns can silently
+downgrade unrelated crates), and its `Routable` derive would put the codec inside the
+wasm crate, where nothing can `rust_test` it; a hand-written model in `loom_ui_core`
+keeps the whole grammar natively testable.

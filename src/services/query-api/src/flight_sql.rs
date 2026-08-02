@@ -22,7 +22,8 @@ use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
     HandshakeRequest, HandshakeResponse, PollInfo, PutResult, SchemaResult, Ticket,
 };
-use control_plane_core::{Auth, ControlPlane, ControlPlaneError};
+use control_plane_core::{Auth, ControlPlane};
+use engine_wire::client::GovernedSqlError;
 use engine_wire::flight::FlightSqlClient;
 use futures::{StreamExt, TryStreamExt};
 use prost::Message;
@@ -99,17 +100,75 @@ fn map_query_err(e: QueryError) -> Status {
 
 /// Map the engine's governed-SQL plane error to a gRPC status. Unlike the export
 /// (whose SQL loom compiled itself, so any failure there is an internal bug),
-/// this wire forwards the CLIENT'S OWN SQL, so a `Validation` fault (bad syntax,
+/// this wire forwards the CLIENT'S OWN SQL, so a `Plan` fault (bad syntax,
 /// unknown/unlisted table — the engine's closed-world catalog makes an
 /// ungoverned table indistinguishable from a nonexistent one) is a legitimate
 /// client error: `InvalidArgument` carrying the engine's plan message, which is
-/// safe to echo because it is entirely in the client's own SQL vocabulary.
+/// safe to echo because it is entirely in the client's own SQL vocabulary. A
+/// `ResourceExhausted` fault (valid SQL, over its memory/wall-clock budget) is
+/// also safe to surface directly — the caller should narrow it and retry.
 /// Everything else (a real backend/execution fault) stays an opaque `Internal`.
-fn map_engine_err(e: ControlPlaneError) -> Status {
+fn map_engine_err(e: engine_wire::client::GovernedSqlError) -> Status {
+    use engine_wire::client::GovernedSqlError as E;
     match e {
-        ControlPlaneError::Validation(msg) => Status::invalid_argument(msg),
+        E::Plan(msg) => Status::invalid_argument(msg),
+        // Valid SQL, over budget — surface the gRPC status directly so the external
+        // client can tell "narrow it and retry" from "the server is broken".
+        E::ResourceExhausted(msg) => Status::resource_exhausted(msg),
         other => internal("sql wire engine stream open", other),
     }
+}
+
+/// Apply the wire's row cap to the engine's governed result stream and classify its
+/// per-item faults, yielding the `FlightError` stream the encoder consumes.
+///
+/// **Row cap:** count rows as they stream; once cumulative rows exceed `max_rows`, emit
+/// a stream error so the query fails explicitly instead of truncating. The cap message
+/// is safe to surface (a fixed string + the limit). Mirrors `flight_export.rs`'s cap
+/// block; diverges only in naming the `LOOM_SQL_WIRE_MAX_ROWS` knob and in having no
+/// `+1` sentinel to rely on — the counting itself is identical.
+///
+/// **Fault classification:** a resource-budget breach keeps its class, carried as a
+/// `Tonic` item so the encoder's tail preserves the `resource_exhausted` code instead of
+/// collapsing it to `internal` — its message names only the budget that was exceeded,
+/// never data, so it is safe to echo. Every other engine/stream fault is logged
+/// server-side and surfaced OPAQUELY: the consumer sees a failed stream (not a silent
+/// short read), but no internal detail leaks.
+fn cap_and_classify(
+    batches: impl futures::Stream<Item = Result<arrow::record_batch::RecordBatch, GovernedSqlError>>,
+    max_rows: u32,
+) -> impl futures::Stream<Item = Result<arrow::record_batch::RecordBatch, FlightError>> {
+    let max = u64::from(max_rows);
+    let mut seen: u64 = 0;
+    batches.map(move |item| match item {
+        Ok(batch) => {
+            // num_rows() is usize; widen losslessly to u64.
+            seen += u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
+            if seen > max {
+                Err(FlightError::from_external_error(Box::new(
+                    std::io::Error::other(format!(
+                        "sql wire exceeded LOOM_SQL_WIRE_MAX_ROWS ({max})"
+                    )),
+                )))
+            } else {
+                Ok(batch)
+            }
+        }
+        Err(GovernedSqlError::ResourceExhausted(m)) => {
+            Err(FlightError::Tonic(Box::new(Status::resource_exhausted(m))))
+        }
+        // Exhaustive over `GovernedSqlError`, NOT a catch-all: with a bare `Err(e)`
+        // arm, deleting the `ResourceExhausted` arm above would still compile and
+        // would silently collapse every budget breach on this wire into an opaque
+        // `internal` — exactly the regression that is invisible except as a 500. A new
+        // variant must fail compilation here and force a deliberate choice.
+        Err(e @ (GovernedSqlError::Plan(_) | GovernedSqlError::Backend(_))) => {
+            tracing::error!(error = %e, "sql wire engine stream fault");
+            Err(FlightError::from_external_error(Box::new(
+                std::io::Error::other("sql wire stream error"),
+            )))
+        }
+    })
 }
 
 #[tonic::async_trait]
@@ -199,41 +258,14 @@ impl FlightService for FlightSqlWireService {
             .await
             .map_err(map_engine_err)?;
 
-        // Row cap: count rows as they stream; once cumulative rows exceed `max_rows`,
-        // emit a stream error so the query fails explicitly instead of truncating.
-        // The cap message is safe to surface (a fixed string + the limit). An
-        // engine/stream fault is logged server-side and surfaced to the client as an
-        // OPAQUE stream error — the consumer sees a failed stream (not a silent short
-        // read), but no internal detail leaks. Copied from flight_export.rs's cap
-        // block (~:267-291); diverges only in naming the `LOOM_SQL_WIRE_MAX_ROWS`
-        // knob and in having no `+1` sentinel to rely on (see the `max_rows` field
-        // doc) — the counting itself is identical.
-        let max = u64::from(self.max_rows);
-        let mut seen: u64 = 0;
-        let capped = batches.map(move |item| match item {
-            Ok(batch) => {
-                // num_rows() is usize; widen losslessly to u64.
-                seen += u64::try_from(batch.num_rows()).unwrap_or(u64::MAX);
-                if seen > max {
-                    Err(FlightError::from_external_error(Box::new(
-                        std::io::Error::other(format!(
-                            "sql wire exceeded LOOM_SQL_WIRE_MAX_ROWS ({max})"
-                        )),
-                    )))
-                } else {
-                    Ok(batch)
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "sql wire engine stream fault");
-                Err(FlightError::from_external_error(Box::new(
-                    std::io::Error::other("sql wire stream error"),
-                )))
-            }
-        });
         let out = FlightDataEncoderBuilder::new()
-            .build(capped)
-            .map_err(|e| internal("sql wire encode", e));
+            .build(cap_and_classify(batches, self.max_rows))
+            .map_err(|e| match e {
+                // A status the cap/classify stage formed itself (the budget breach)
+                // keeps its code; everything else stays an opaque, logged `internal`.
+                FlightError::Tonic(s) => *s,
+                other => internal("sql wire encode", other),
+            });
         Ok(Response::new(Box::pin(out)))
     }
 

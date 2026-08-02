@@ -1,116 +1,24 @@
-//! Per-column Parquet-footer stats for the Iceberg mirror, computed against
-//! `parquet` 58 — the single arrow/parquet major now shared across the tree.
-//! This still DUPLICATES the merge logic in `datafusion_io::write::file_stats_from_bytes`;
-//! that duplication was once forced by a parquet 57↔58 type split, which the
-//! arrow-58 converge removed — both readers now share the parquet 58 `Statistics`
-//! type, so this and `file_stats_from_bytes` could be unified into one helper.
-//! Deferred (see FUTURE: fut-iceberg-stats-dedup). Output is the version-neutral
+//! Per-column Parquet-footer stats for the Iceberg mirror. The merge itself lives in
+//! the shared `parquet_stats` crate — the tree's single reader of parquet's
+//! `Statistics` enum, shared with `datafusion_io::write::file_stats_from_bytes` — so
+//! this module is just the mirror's `Bytes`-in entry point plus the text codec the
+//! `data_file_column_stat` columns are stored through. Output is the version-neutral
 //! core::snapshot::{ColumnStat, StatValue}.
 
 use bytes::Bytes; // impl parquet ChunkReader; the type iceberg's InputFile::read() yields
 use control_plane_core::Result;
 use control_plane_core::snapshot::{ColumnStat, StatValue};
 use parquet::file::reader::{FileReader, SerializedFileReader};
-use parquet::file::statistics::Statistics;
 
 use crate::backend;
 
-/// Typed lower bound of a row-group column's `Statistics`, as a neutral `StatValue`.
-/// Only the primitive types loom prunes on carry a bound; others -> `None`.
-fn min_stat(stats: &Statistics) -> Option<StatValue> {
-    match stats {
-        Statistics::Boolean(s) => s.min_opt().map(|v| StatValue::Bool(*v)),
-        Statistics::Int32(s) => s.min_opt().map(|v| StatValue::I32(*v)),
-        Statistics::Int64(s) => s.min_opt().map(|v| StatValue::I64(*v)),
-        Statistics::Float(s) => s.min_opt().map(|v| StatValue::F32(*v)),
-        Statistics::Double(s) => s.min_opt().map(|v| StatValue::F64(*v)),
-        Statistics::ByteArray(s) => s
-            .min_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
-        _ => None,
-    }
-}
-
-/// Typed upper bound of a row-group column's `Statistics`, as a neutral `StatValue`.
-fn max_stat(stats: &Statistics) -> Option<StatValue> {
-    match stats {
-        Statistics::Boolean(s) => s.max_opt().map(|v| StatValue::Bool(*v)),
-        Statistics::Int32(s) => s.max_opt().map(|v| StatValue::I32(*v)),
-        Statistics::Int64(s) => s.max_opt().map(|v| StatValue::I64(*v)),
-        Statistics::Float(s) => s.max_opt().map(|v| StatValue::F32(*v)),
-        Statistics::Double(s) => s.max_opt().map(|v| StatValue::F64(*v)),
-        Statistics::ByteArray(s) => s
-            .max_opt()
-            .and_then(|v| v.as_utf8().ok().map(|s| StatValue::Str(s.to_string()))),
-        _ => None,
-    }
-}
-
-/// Partial order over same-typed `StatValue`s; used to fold per-row-group bounds
-/// into a file-wide min/max. `None` for mismatched/float-NaN cases (keeps current).
-fn stat_partial_cmp(a: &StatValue, b: &StatValue) -> Option<std::cmp::Ordering> {
-    use StatValue::*;
-    match (a, b) {
-        (Bool(x), Bool(y)) => x.partial_cmp(y),
-        (I32(x), I32(y)) => x.partial_cmp(y),
-        (I64(x), I64(y)) => x.partial_cmp(y),
-        (F32(x), F32(y)) => x.partial_cmp(y),
-        (F64(x), F64(y)) => x.partial_cmp(y),
-        (Str(x), Str(y)) => x.partial_cmp(y),
-        _ => None,
-    }
-}
-
 /// Merge typed min/max + null/size counts across ALL row groups for each column
-/// index, mirroring `datafusion_io::write::file_stats_from_bytes` against parquet.
-/// `column_names[i]` is the name recorded for row-group column `i` (Iceberg writes
-/// columns in schema order, so pass `columns_of(table)`-ordered names). Takes the
-/// `Bytes` by value so it feeds `SerializedFileReader::new` directly.
+/// index. `column_names[i]` is the name recorded for row-group column `i` (Iceberg
+/// writes columns in schema order, so pass `columns_of(table)`-ordered names). Takes
+/// the `Bytes` by value so it feeds `SerializedFileReader::new` directly.
 pub fn column_stats_from_parquet(bytes: Bytes, column_names: &[String]) -> Result<Vec<ColumnStat>> {
     let reader = SerializedFileReader::new(bytes).map_err(backend)?;
-    let meta = reader.metadata();
-    let mut out = Vec::with_capacity(column_names.len());
-    for (i, name) in column_names.iter().enumerate() {
-        let mut null_count = 0i64;
-        let mut column_size_bytes = 0i64;
-        let mut min: Option<StatValue> = None;
-        let mut max: Option<StatValue> = None;
-        for rg in meta.row_groups() {
-            let col = rg.column(i);
-            column_size_bytes += col.compressed_size();
-            if let Some(stats) = col.statistics() {
-                null_count += stats.null_count_opt().unwrap_or(0) as i64;
-                if let Some(b) = min_stat(stats) {
-                    min = match min {
-                        Some(cur)
-                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Greater) =>
-                        {
-                            Some(cur)
-                        }
-                        _ => Some(b),
-                    };
-                }
-                if let Some(b) = max_stat(stats) {
-                    max = match max {
-                        Some(cur)
-                            if stat_partial_cmp(&cur, &b) != Some(std::cmp::Ordering::Less) =>
-                        {
-                            Some(cur)
-                        }
-                        _ => Some(b),
-                    };
-                }
-            }
-        }
-        out.push(ColumnStat {
-            column_name: name.clone(),
-            null_count,
-            column_size_bytes,
-            min,
-            max,
-        });
-    }
-    Ok(out)
+    Ok(parquet_stats::column_stats(reader.metadata(), column_names))
 }
 
 /// Render a stat bound as the text the `data_file_column_stat.min_value/max_value`

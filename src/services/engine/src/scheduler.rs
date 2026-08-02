@@ -126,3 +126,44 @@ pub async fn reconcile_loop(
         }
     }
 }
+
+/// The engine's background loops (scheduler + reconcile), owned as one unit so the
+/// serve path cannot cancel one and forget the other — or, as it previously did,
+/// skip both when serve exits with an error.
+pub struct BackgroundLoops {
+    cancel: CancellationToken,
+    scheduler: tokio::task::JoinHandle<()>,
+    reconcile: tokio::task::JoinHandle<()>,
+}
+
+impl BackgroundLoops {
+    /// Spawn both loops against `cp`, ticking per `tuning`.
+    #[must_use]
+    pub fn spawn(cp: Arc<dyn ControlPlane>, tuning: &crate::EngineTuning) -> BackgroundLoops {
+        // One token for both: they start and stop together, always.
+        let cancel = CancellationToken::new();
+        let scheduler = tokio::spawn(scheduler_loop(
+            cp.clone(),
+            tuning.scheduler_tick,
+            cancel.clone(),
+        ));
+        let reconcile = tokio::spawn(reconcile_loop(
+            cp,
+            tuning.reconcile_tick,
+            tuning.reconcile_grace,
+            cancel.clone(),
+        ));
+        BackgroundLoops {
+            cancel,
+            scheduler,
+            reconcile,
+        }
+    }
+
+    /// Cancel both loops and wait for them to exit.
+    pub async fn stop(self) {
+        self.cancel.cancel();
+        drop(self.scheduler.await);
+        drop(self.reconcile.await);
+    }
+}

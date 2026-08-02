@@ -44,13 +44,16 @@ pub struct SqlQueryRequest {
 /// subject cannot see — the engine's closed-world catalog makes an ungranted table
 /// indistinguishable from a nonexistent one) is a legitimate client `400` carrying the
 /// engine's plan message, which is safe to echo (it is the caller's own SQL vocabulary);
-/// a backend fault is an opaque `500` with the detail logged server-side.
+/// a backend fault is an opaque `500` with the detail logged server-side. A statement
+/// that exceeds the engine's per-statement memory or wall-clock budget is a 429
+/// carrying the budget name — valid SQL, too expensive.
 #[utoipa::path(
     post, path = "/sql",
     request_body = SqlQueryRequest,
     responses(
         (status = 200, description = "Governed result rows", body = SqlQueryResponse),
         (status = 400, description = "Empty/malformed SQL, a rejected write (DDL/DML/COPY), or a table not visible to the subject"),
+        (status = 429, description = "Statement exceeded its engine memory or wall-clock budget — narrow the query and retry"),
         (status = 500, description = "Serving error"),
     ),
     security(("bearer_auth" = [])),

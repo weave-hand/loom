@@ -106,6 +106,12 @@ pub enum ServingError {
     /// failure.
     #[error("conflict: {0}")]
     Conflict(String),
+    /// The statement exceeded its per-statement engine budget — memory pool
+    /// (`LOOM_SQL_MEMORY_LIMIT_BYTES`) or wall clock (`LOOM_SQL_TIMEOUT_SECS`)
+    /// → 429. Valid SQL, too expensive: the caller should narrow it and retry.
+    /// Kept distinct from `Engine` so a bounded query never reads as a 500.
+    #[error("{0}")]
+    ResourceExhausted(String),
     /// The engine does not implement this capability (e.g. the changelog feed on
     /// the wire client before the engine-wire hop lands) → 501.
     #[error("unsupported by this engine: {0}")]

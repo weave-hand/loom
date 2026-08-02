@@ -3,6 +3,7 @@
 
 use loom_ui_core::{
     CatalogSortDir, DatasetRow, DatasetSort, dataset_list_query, distinct_projects,
+    project_chip_options,
 };
 
 fn row(schema: &str, name: &str) -> DatasetRow {
@@ -36,6 +37,18 @@ fn empty_project_is_omitted() {
 }
 
 #[test]
+fn project_filter_cannot_inject_query_parameters() {
+    // The project value now comes out of the URL fragment, so it must be encoded
+    // on the way back into loom's own `GET /datasets` query string.
+    let q = dataset_list_query(DatasetSort::Name, CatalogSortDir::Asc, Some("a&sort=rows"));
+    assert_eq!(q, "?sort=name&dir=asc&project=a%26sort%3Drows");
+    assert!(
+        !q.contains("&sort=rows"),
+        "raw `&` must not reach the query string"
+    );
+}
+
+#[test]
 fn sort_tokens_and_roundtrip() {
     for s in DatasetSort::all() {
         assert_eq!(DatasetSort::from_param(s.as_param()), Some(s));
@@ -58,4 +71,27 @@ fn distinct_projects_are_sorted_and_deduped() {
         distinct_projects(&rows),
         vec!["main".to_string(), "other".to_string()]
     );
+}
+
+#[test]
+fn chip_options_are_the_discovered_projects_when_nothing_is_filtered() {
+    let discovered = vec!["main".to_string(), "analytics".to_string()];
+    assert_eq!(project_chip_options(&discovered, None), discovered);
+}
+
+#[test]
+fn chip_options_include_an_active_project_the_list_has_not_discovered() {
+    // A deep link carrying `?project=main` loads FILTERED, so the unfiltered
+    // option set was never fetched — without this the bar would show only "All"
+    // and the active filter would be invisible.
+    assert_eq!(
+        project_chip_options(&[], Some("main")),
+        vec!["main".to_string()]
+    );
+}
+
+#[test]
+fn chip_options_do_not_duplicate_an_already_discovered_active_project() {
+    let discovered = vec!["main".to_string(), "analytics".to_string()];
+    assert_eq!(project_chip_options(&discovered, Some("main")), discovered);
 }

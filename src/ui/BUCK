@@ -9,7 +9,7 @@ load("//src:loom_test.bzl", "rust_test")
 rust_library(
     name = "ui-core",
     crate = "loom_ui_core",
-    srcs = ["src/lib.rs", "src/completion.rs", "src/diagnostics.rs", "src/transforms.rs", "src/lineage_layout.rs"],
+    srcs = ["src/lib.rs", "src/completion.rs", "src/diagnostics.rs", "src/transforms.rs", "src/lineage_layout.rs", "src/route.rs"],
     crate_root = "src/lib.rs",
     edition = "2024",
     visibility = ["PUBLIC"],
@@ -41,6 +41,15 @@ rust_test(
     crate = "surface",
     srcs = ["tests/surface.rs"],
     crate_root = "tests/surface.rs",
+    edition = "2024",
+    deps = [":ui-core"],
+)
+
+rust_test(
+    name = "route",
+    crate = "route",
+    srcs = ["tests/route.rs"],
+    crate_root = "tests/route.rs",
     edition = "2024",
     deps = [":ui-core"],
 )
@@ -201,7 +210,7 @@ rust_test(
 rust_binary(
     name = "app",
     crate = "app",
-    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/catalog.rs", "src/surfaces/ontology.rs", "src/surfaces/query.rs", "src/surfaces/transforms.rs", "src/net.rs", "src/session.rs"],
+    srcs = ["src/main.rs", "src/surfaces/mod.rs", "src/surfaces/catalog.rs", "src/surfaces/ontology.rs", "src/surfaces/query.rs", "src/surfaces/transforms.rs", "src/net.rs", "src/router.rs", "src/session.rs"],
     crate_root = "src/main.rs",
     edition = "2024",
     default_target_platform = "//platforms:wasm",

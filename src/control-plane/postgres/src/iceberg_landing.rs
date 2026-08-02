@@ -171,8 +171,15 @@ pub async fn land_cdc(
 
     // A CDC declaration also owns a durable changelog Iceberg table (spec §4). Its
     // object-store metadata is created HERE (before any commit tx), so both landing
-    // routes can assume it exists; its mirror row + registry pointer are set inside
-    // the write tx by `reconcile_stream_mode`. Idempotent.
+    // routes can assume it exists; its mirror row + registry pointer are set by
+    // `reconcile_stream_mode`, which on the Parquet route now runs inside
+    // `claim_stream_mode`'s claim transaction rather than the write tx. Idempotent.
+    //
+    // NOTE: this create precedes the mode claim, so it is the one piece of physical
+    // work the claim does NOT gate. A CDC declare the claim then refuses leaves an
+    // orphan `<table>__changelog` behind. That cannot produce #623's divergence — it
+    // carries no mirror row for the schema to disagree with, and a later legitimate
+    // CDC declare finds it already correct — so it is deliberately left alone.
     if matches!(decl, StreamDecl::Cdc { .. }) {
         let clog = changelog_table_ref(table);
         ensure_iceberg_table(catalog, &clog, columns, true).await?;
@@ -844,16 +851,105 @@ fn projected_files(files: &[DataFile]) -> Result<Vec<ProjectedFile>> {
         .collect()
 }
 
+/// Phase 1 of the Parquet land: establish this write's stream-vs-batch mode as
+/// **committed** state, and return it. `Some(bucket_count)` = stream, `None` = batch.
+///
+/// This replaces the read-only pre-transaction probe that used to decide the route.
+/// The probe was not merely stale — its answer was then baked into the Iceberg
+/// **physical schema** by whichever path it selected (`ensure_iceberg_table` with
+/// `include_framing` true on the stream path, false on the batch path), and that
+/// object-store create is not transactional and is never rolled back. Two racers
+/// creating the same brand-new table could therefore disagree about framing, leaving
+/// a framing-schema'd Iceberg table under a mirror row that says batch. Committing
+/// the decision first makes both racers read the same answer, so their `create_table`
+/// calls agree and the concurrent create is idempotent rather than divergent.
+///
+/// Two arms:
+///
+/// **Fast path — the mode is already permanent.** A live `iceberg_mirror.table` row
+/// means the mode can no longer change: [`crate::stream::reconcile_stream_mode`]
+/// refuses to convert an existing batch table to a stream table, and a declared
+/// stream table is never undeclared. So a committed registry answer needs no claim
+/// transaction, and the steady-state append path keeps costing exactly what it did
+/// before — no extra transaction, no burned snapshot id. The one case that still
+/// falls through is a declaration against a live-but-undeclared table: that is the
+/// batch->stream conversion attempt, and it must reach `reconcile_stream_mode` to be
+/// refused.
+///
+/// **Claim path — commit the decision.** `next_snapshot` -> `ensure_table_witnessed`
+/// -> `reconcile_stream_mode` -> COMMIT. `ensure_table_witnessed`'s unique-index race
+/// is what serializes two first-landers: the loser resolves to the winner's
+/// `table_id` with `created == false`, so its `pre_existing` witness is honest and
+/// the conversion guard fires. This deliberately takes **no** explicit advisory lock:
+/// `reconcile_stream_mode` already takes `lock_key(table)` inside its first-declare
+/// arm, AFTER the mirror-row ensure, so this transaction reproduces
+/// `iceberg_inline::inline_append`'s insert-then-lock ordering exactly and keeps the
+/// first-declare-vs-`define_transform` serialization intact. Taking the lock HERE
+/// (before the ensure) would make this lock-then-insert against `inline_append`'s
+/// insert-then-lock, which deadlocks (40P01) under precisely the concurrency this
+/// function exists to fix.
+///
+/// ACCEPTED RESIDUE, stated plainly because it is wider than the stream case: the
+/// claim commits even if the write that follows fails, and it does so on EVERY first
+/// Parquet land, batch included. A failed first land therefore now leaves a live but
+/// column-less `iceberg_mirror.table` row — visible to
+/// [`crate::iceberg_catalog::IcebergCatalog::live_tables`] and so to dataset
+/// listings — where it previously left nothing. The row's `begin_snapshot` also now
+/// precedes its own columns and files, so a read as of the claim snapshot sees the
+/// table live and empty. This is accepted as strictly better than the divergence it
+/// replaces — an empty table is inert, a framing-schema'd table under a batch mirror
+/// row is not — and a consumed snapshot id is not a scarce resource. But it is a
+/// real, observable change, not a no-op: every other `ensure_table` call site runs
+/// in the same transaction as the write it accompanies, so this is the first place
+/// loom commits a mirror row that a later failure will not roll back.
+async fn claim_stream_mode(
+    pool: &PgPool,
+    table: &TableRef,
+    decl: &StreamDecl,
+) -> Result<Option<i32>> {
+    {
+        let mut conn = pool.acquire().await.map_err(backend)?;
+        if let Some(tid) = live_table_id(&mut conn, &table.schema, &table.name).await? {
+            let recorded = crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?;
+            // Permanent, so answerable without a claim — unless this is a declaration
+            // against an undeclared table, which is the conversion attempt the claim
+            // path exists to refuse.
+            if recorded.is_some() || matches!(decl, StreamDecl::None) {
+                return Ok(recorded);
+            }
+        }
+    }
+
+    let mut tx = pool.begin().await.map_err(backend)?;
+    let at = next_snapshot(&mut tx, None).await?;
+    let (tid, created) = ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
+    // A rejected conversion (`Validation`) or bucket mismatch (`Conflict`) is
+    // terminal — roll back and surface it, before any Iceberg table is created.
+    let effective =
+        match crate::stream::reconcile_stream_mode(&mut tx, tid, decl, !created, table, at).await {
+            Ok(e) => e,
+            Err(e) => {
+                drop(tx.rollback().await);
+                return Err(e);
+            }
+        };
+    tx.commit().await.map_err(backend)?;
+    Ok(effective)
+}
+
 /// The Parquet branch: ensure the namespace + table exist, then append real
 /// Parquet with an atomic lineage emit, and read the resulting mirror snapshot id
 /// back. Idempotent on namespace/table (create-if-absent).
 ///
-/// Routes by stream mode. A BATCH write (`decl` is `StreamDecl::None` on a table
-/// that is not already a declared stream table) takes the unchanged
-/// [`append_parquet_snapshot`] path (`include_framing = false`, byte-identical). A
-/// STREAM write (the table is already a declared stream table, or this request
-/// declares one — log or cdc) takes [`land_parquet_stream`], which stamps gapless
-/// per-bucket offsets into the written Parquet atomically with the snapshot commit.
+/// Routes by stream mode, which [`claim_stream_mode`] establishes as **committed**
+/// state before this function does any physical work — so the Iceberg table's
+/// physical schema (created with framing on the stream path, without it on the batch
+/// path) can never encode a decision a concurrent racer disagrees with. (`land_cdc`
+/// creates the CDC changelog table's metadata before calling here; see the note
+/// there.) A BATCH write takes the
+/// unchanged [`append_parquet_snapshot`] path (`include_framing = false`); a STREAM
+/// write takes [`land_parquet_stream`], which stamps gapless per-bucket offsets into
+/// the written Parquet atomically with the snapshot commit.
 #[expect(
     clippy::too_many_arguments,
     reason = "the landing params (pool, catalog, table, columns, batches, lineage, stream decl) \
@@ -869,26 +965,13 @@ async fn land_parquet(
     decl: &StreamDecl,
     jobs: &[control_plane_core::NewJob],
 ) -> Result<SnapshotId> {
-    // Read-only probe (no snapshot): is this table ALREADY a declared stream table?
-    // That decides which write path we take. Deliberately does NOT witness
-    // `pre_existing` for the conversion guard — this probe runs on a separate pooled
-    // connection before the transaction, so it cannot see a concurrent creator, and
-    // `ensure_table` inside the tx resolves a lost create race to the winner's row.
-    // The honest witness comes from `ensure_table_witnessed` there.
-    let existing_stream = {
-        let mut conn = pool.acquire().await.map_err(backend)?;
-        match live_table_id(&mut conn, &table.schema, &table.name).await? {
-            Some(tid) => crate::stream::pg_stream_bucket_count(&mut *conn, tid).await?,
-            None => None,
-        }
-    };
+    // Phase 1: commit the mode claim before any physical work.
+    let effective = claim_stream_mode(pool, table, decl).await?;
 
-    // A STREAM write iff the table is already a declared stream table OR this
-    // request declares stream mode (log or cdc). (A stream-declaring request
-    // against an existing BATCH table takes the stream branch too — only to be
-    // rejected with `Validation` by `reconcile_stream_mode` there, exactly as
-    // `inline_append` does.)
-    if existing_stream.is_some() || !matches!(decl, StreamDecl::None) {
+    // Phases 2 and 3 both derive from that committed answer: each branch's first act
+    // is `ensure_iceberg_table` with the matching `include_framing`, so the Iceberg
+    // schema now encodes a decision that is already durable.
+    if effective.is_some() {
         return land_parquet_stream(pool, catalog, table, columns, batches, lineage, decl, jobs)
             .await;
     }
@@ -950,9 +1033,12 @@ async fn land_parquet_stream(
     // The Iceberg table, created WITH framing so its physical schema (and thus the
     // mirror, via `columns_of` on the commit) carries loom_change_kind/bucket/offset.
     // Idempotent + outside the tx (a rolled-back retry leaves the created table for
-    // the next attempt, exactly as the batch path leaves it). A pre-existing table's
-    // schema is untouched, so a batch table asked to convert stays framing-free and
-    // is rejected by `reconcile_stream_mode` below.
+    // the next attempt, exactly as the batch path leaves it). `include_framing = true`
+    // is safe here because `claim_stream_mode` has already COMMITTED this table's
+    // stream mode — a concurrent creator reads the same decision, so the create
+    // converges instead of diverging (#623). A batch table asked to convert never
+    // reaches this line: the claim refuses it first. The `reconcile_stream_mode` call
+    // below is now the idempotent redeclare arm.
     ensure_iceberg_table(catalog, table, columns, true).await?;
     let ns = NamespaceIdent::new(table.schema.clone());
     let ident = TableIdent::new(ns, table.name.clone());
@@ -971,7 +1057,11 @@ async fn land_parquet_stream(
         // ONE snapshot for the whole write: allocated up front (offset allocation keys off
         // the mirror row it seeds), then REUSEd by the commit (`CommitExtras.reuse_snapshot`).
         let at = next_snapshot(&mut tx, None).await?;
-        // `pre_existing` = `!created`: only the ensure INSIDE this tx can witness it.
+        // `pre_existing` = `!created`. After `claim_stream_mode` this is normally
+        // `true` (the claim committed the row), so a declaration lands on
+        // `reconcile_stream_mode`'s idempotent redeclare arm rather than a
+        // first-declare. The witness is kept honest here regardless, so this tx does
+        // not depend on the claim having run.
         let (tid, created) =
             ensure_table_witnessed(&mut tx, &table.schema, &table.name, at).await?;
 
@@ -998,55 +1088,7 @@ async fn land_parquet_stream(
             ));
         };
 
-        // Per-row bucket = row_index % bc (bc >= 1 by reconcile, so the modulo is
-        // panic-free). Count rows per bucket, reserve a contiguous offset run per
-        // touched bucket on THIS tx, then hand out sequential offsets from each
-        // bucket's cursor — the exact scheme `inline_append` uses.
-        let bc_usize = usize::try_from(bc).map_err(|e| {
-            ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
-        })?;
-        let mut counts = vec![0i64; bc_usize];
-        for row in 0..n {
-            let b = row % bc_usize;
-            let c = counts
-                .get_mut(b)
-                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
-            *c += 1;
-        }
-        let mut cursor = vec![0i64; bc_usize];
-        for (b, count) in counts.iter().enumerate() {
-            if *count > 0 {
-                let b_i32 = i32::try_from(b).map_err(|e| {
-                    ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
-                })?;
-                let first = crate::stream::pg_allocate_offset(&mut *tx, tid, b_i32, *count).await?;
-                let slot = cursor.get_mut(b).ok_or_else(|| {
-                    ControlPlaneError::Backend("bucket index out of range".into())
-                })?;
-                *slot = first;
-            }
-        }
-
-        // Build the framing arrays aligned to the concatenated batch, in row order:
-        // the k-th row of bucket b gets `first_b + k`.
-        let mut buckets: Vec<i32> = Vec::with_capacity(n);
-        let mut offsets: Vec<i64> = Vec::with_capacity(n);
-        for row in 0..n {
-            let b = row % bc_usize;
-            let off = *cursor
-                .get(b)
-                .ok_or_else(|| ControlPlaneError::Backend("bucket index out of range".into()))?;
-            {
-                let slot = cursor.get_mut(b).ok_or_else(|| {
-                    ControlPlaneError::Backend("bucket index out of range".into())
-                })?;
-                *slot += 1;
-            }
-            buckets.push(i32::try_from(b).map_err(|e| {
-                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
-            })?);
-            offsets.push(off);
-        }
+        let (buckets, offsets) = allocate_row_framing(&mut tx, tid, bc, n).await?;
 
         // Stamp framing + rewrap under the table's field-id schema (which carries the
         // framing fields), exactly like the batch path's `coerce_batch_to_ice`.
@@ -1096,6 +1138,73 @@ async fn land_parquet_stream(
             }
         }
     }
+}
+
+/// Assign every row of a stream write its `(bucket, offset)` framing pair, reserving
+/// the offset runs on the caller's transaction.
+///
+/// Per-row bucket is `row_index % bc` (`bc >= 1` by `reconcile_stream_mode`, so the
+/// modulo is panic-free). Rows are counted per bucket, a contiguous offset run is
+/// reserved for each TOUCHED bucket on `tx` — so the allocation commits iff the
+/// caller's snapshot does — and each row then takes the next offset from its bucket's
+/// cursor. The k-th row of bucket b gets `first_b + k`. This is the exact scheme
+/// `iceberg_inline::inline_append` uses, so the inline and direct-write paths cannot
+/// drift on offset semantics.
+///
+/// Returns `(buckets, offsets)`, both aligned to the concatenated batch in row order
+/// and both of length `n` — the shape [`stamp_framing`] requires.
+///
+/// Extracted from [`land_parquet_stream`]'s attempt loop, which was over the
+/// complexity register's MI threshold; the arithmetic and the allocation order are
+/// unchanged.
+async fn allocate_row_framing(
+    tx: &mut sqlx::PgConnection,
+    tid: i64,
+    bc: i32,
+    n: usize,
+) -> Result<(Vec<i32>, Vec<i64>)> {
+    let oor = || ControlPlaneError::Backend("bucket index out of range".into());
+    let bc_usize = usize::try_from(bc).map_err(|e| {
+        ControlPlaneError::Backend(format!("invalid stream bucket count {bc}: {e}").into())
+    })?;
+
+    // Rows are handed to buckets round-robin (`row % bc`), so the count per bucket is
+    // closed-form: bucket b takes `n / bc` rows, plus one more iff `b < n % bc`. (The
+    // previous counting loop computed exactly this.) `bc_usize >= 1`, so no div-by-zero.
+    #[expect(
+        clippy::integer_division,
+        reason = "truncation is the point: the floor is each bucket's guaranteed share, \
+                  and `remainder` below hands the dropped rows to the first buckets"
+    )]
+    let per_bucket = n / bc_usize;
+    let remainder = n % bc_usize;
+
+    let mut cursor = vec![0i64; bc_usize];
+    for (b, slot) in cursor.iter_mut().enumerate() {
+        let count = i64::try_from(per_bucket + usize::from(b < remainder)).map_err(|e| {
+            ControlPlaneError::Backend(format!("bucket row count overflowed i64: {e}").into())
+        })?;
+        if count > 0 {
+            let b_i32 = i32::try_from(b).map_err(|e| {
+                ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+            })?;
+            *slot = crate::stream::pg_allocate_offset(&mut *tx, tid, b_i32, count).await?;
+        }
+    }
+
+    let mut buckets: Vec<i32> = Vec::with_capacity(n);
+    let mut offsets: Vec<i64> = Vec::with_capacity(n);
+    for row in 0..n {
+        let b = row % bc_usize;
+        let slot = cursor.get_mut(b).ok_or_else(oor)?;
+        let off = *slot;
+        *slot += 1;
+        buckets.push(i32::try_from(b).map_err(|e| {
+            ControlPlaneError::Backend(format!("bucket index overflowed i32: {e}").into())
+        })?);
+        offsets.push(off);
+    }
+    Ok((buckets, offsets))
 }
 
 /// Append the three log-framing columns to `batch` in fixed order —

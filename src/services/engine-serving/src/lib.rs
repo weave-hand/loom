@@ -13,6 +13,7 @@ pub mod mv_enrich;
 pub mod not_null;
 pub mod provider;
 pub mod serving;
+pub mod sql_limits;
 pub mod vector_search;
 
 pub use action_writer::{IcebergActionWriter, StepWrite};
@@ -29,4 +30,5 @@ pub use serving::{
     build_serving_provider, execute_query, execute_query_stream, prune_files,
     register_iceberg_table,
 };
+pub use sql_limits::{DeadlineStream, GovernedSqlLimits, governed_stream_error};
 pub use vector_search::{VectorQuery, merge_topk, vector_search};
