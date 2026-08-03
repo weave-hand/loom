@@ -1,4 +1,4 @@
-# STPA Control Analysis: weave-hand/loom @ 239087b
+# STPA Control Analysis: weave-hand/loom @ 4d8f969
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
@@ -10,14 +10,14 @@ _Auto-generated STPA safety model: the unsafe states this system can reach and t
 Read top-down: **Losses** are outcomes we must never cause; **Hazards** are system states that lead to a loss; the **control-structure diagram** shows who commands whom (solid arrows = control actions, dashed = feedback, a node tagged `(designed)` is in the architecture but **not yet built**); the **Unsafe Control Actions** table is the core, and **Unsafe Feedback** covers the dashed arrows: data channels whose absence, staleness, corruption, or spoofing drives a controller into a hazard. Every claim cites `path:line`; unbuilt elements are marked. Semantic, stable IDs mean regenerating changes only the findings that changed.
 </details>
 
-**Scope.** All three service pillars (Ingest, Transform workers, Query API) are live; the engine service, Postgres control plane, and Iceberg store are built; external SQL wire and distributed DataFusion are deferred.
+**Scope.** All three service pillars (Ingest, Transform workers, Query API) are live; the engine service, Postgres control plane, and Iceberg store are built; the external Flight SQL wire now ships opt-in, and distributed DataFusion is deferred.
 
 <details>
 <summary>Maturity detail</summary>
 
-- **Built:** queue, catalog, ontology, ACL, lineage, ingest (snapshot-commit, landing materializer, dataset→model binding, multi-file write), query-api (governed object reads, typed-object serialization, link traversal, graph queries, typed-insert/update/delete actions, catalog views, vector search, subscribe feed, lineage filter, Flight SQL export, ad-hoc SQL console, governed dataset preview, ACL-gated dataset list, per-dataset run history), engine (DataFusion serving, flush, GC, compaction, COW consolidate, stream MV, inline shadow writes), transform (physical SQL, typed), auth (JWT, admin), scheduler, stream/CDC declaration
-- **Designed-only:** external SQL wire (TCP listener + auth), distributed DataFusion / Ballista, ontology migration, multi-writer ingest
-- **Note:** Client-supplied arbitrary SQL is now served over HTTP (POST /sql) even though the external Flight SQL wire stays deferred; the engine itself listens only on a Unix socket with no in-band authentication.
+- **Built:** queue, catalog, ontology, ACL, lineage, ingest (snapshot-commit, landing materializer, dataset→model binding, multi-file write, committed stream-mode claim), query-api (governed object reads, typed-object serialization, link traversal, graph queries, typed-insert/update/delete actions, catalog views, vector search, subscribe feed, lineage filter, Flight SQL export, ad-hoc SQL console, execution-free SQL validate, governed dataset preview, ACL-gated dataset list, per-dataset run history, opt-in external Flight SQL wire), engine (DataFusion serving, per-statement memory/wall-clock budgets, flush, GC, compaction, COW consolidate, stream MV, inline shadow writes), transform (physical SQL, typed), auth (JWT, admin, type-level credential redaction), scheduler, stream/CDC declaration, bounded SIGTERM drain
+- **Designed-only:** distributed DataFusion / Ballista, ontology migration, multi-writer ingest
+- **Note:** Code contradicts the docs on the external SQL wire: CLAUDE.md and README still call it deferred, but query-api binds a real Flight SQL TCP listener behind LOOM_SQL_WIRE_BIND_ADDR (serve.rs:186) with JWT auth at the wire; the engine itself still listens only on a Unix socket with no in-band authentication.
 </details>
 
 ## Control structure
@@ -70,6 +70,8 @@ flowchart TD
   worker -- "queue.fail" --> queue
   scheduler -- "scheduler.tick" --> queue
   query-api -- "sql.console" --> engine
+  query-api -- "sql.validate" --> engine
+  ingest -- "stream.claim-mode" --> catalog
   ingest -- "stream.declare" --> catalog
   query-api -- "subscribe.feed" --> engine
   transform -- "transform.conform" --> ontology
@@ -110,6 +112,8 @@ flowchart TD
 | `mv-watermark-stale` | The MV watermark advances past events that were never processed, silently dropping source rows from the materialized view. | L.silent-incorrectness, L.integrity-loss | built |
 | `orphan-parquet` | Parquet files written by a crashed/abandoned commit are never cleaned up, leaking storage indefinitely. | L.liveness-loss | built |
 | `partial-atomic-unit` | A multi-file landing commits only a subset of its files, leaving the table in a state that violates the all-or-nothing contract. | L.integrity-loss | built |
+| `phantom-empty-table` | A mirror row committed ahead of the write it gates survives that write's failure, so the catalog lists a live table that holds no data and was never successfully landed. | L.silent-incorrectness, L.integrity-loss | built |
+| `plan-only-executes` | A surface contracted as plan-only executes the client's statement instead, spending engine work the caller never asked for and reporting a faulting statement as valid. | L.liveness-loss, L.silent-incorrectness | built |
 | `schema-drift` | A landed dataset's inferred schema silently diverges from its ontology type's declared properties, causing downstream query failures or wrong casts. | L.integrity-loss, L.silent-incorrectness | built |
 | `stale-policy` | ACL policy is cached or captured at a point in time; a subsequent policy change is not reflected until re-read, creating a window where the old policy governs queries. | L.unauthorized-access | built |
 | `subscribe-policy-drift` | The subscribe change feed captures governance at connect time; policy changes mid-stream are not applied until the client reconnects. | L.unauthorized-access | built |
@@ -124,8 +128,8 @@ flowchart TD
 | `auth.protect` | JWT auth gate on every request | `auth` → `query-api` | built | runtime/src/auth.rs:135 |
 | `catalog.snapshot-intact` | Guard GC-vs-read overlap | `engine` → `catalog` | built | postgres/src/iceberg_catalog.rs:484 |
 | `consolidate.fold` | Fold inline rows into Parquet base snapshot | `consolidate-worker` → `engine` | built | engine-serving/src/consolidate.rs:454 |
-| `dataset.preview` | Serve a governed sample of a physical dataset | `query-api` → `engine` | built | query-api/src/http.rs:588 |
-| `engine.execute` | Execute governed SQL query | `query-api` → `engine` | built | engine-serving/src/serving.rs:1038 |
+| `dataset.preview` | Serve a governed sample of a physical dataset | `query-api` → `engine` | built | query-api/src/http.rs:589 |
+| `engine.execute` | Execute governed SQL query | `query-api` → `engine` | built | engine-serving/src/serving.rs:1031 |
 | `engine.sql-wire` | Flight SQL do_get with governed catalog | `query-api` → `engine` | built | query-api/src/flight_sql.rs:175 |
 | `engine.write` | Write governed object (insert/update/delete) | `query-api` → `engine` | built | engine-serving/src/action_writer.rs:74 |
 | `flush.land` | Flush inline rows to Parquet files | `flush-worker` → `iceberg` | built | postgres/src/iceberg_landing.rs:109 |
@@ -139,9 +143,11 @@ flowchart TD
 | `queue.enqueue` | Enqueue a job | `scheduler` → `queue` | built | postgres/src/queue.rs:73 |
 | `queue.fail` | Fail/retry a job | `worker` → `queue` | built | postgres/src/queue.rs:116 |
 | `scheduler.tick` | Periodic maintenance + enqueue | `scheduler` → `queue` | built | engine/src/scheduler.rs:17 |
-| `sql.console` | Run client ad-hoc SQL under the subject's governed catalog | `query-api` → `engine` | built | query-api/src/sql_console.rs:59 |
+| `sql.console` | Run client ad-hoc SQL under the subject's governed catalog | `query-api` → `engine` | built | query-api/src/sql_console.rs:62 |
+| `sql.validate` | Plan client SQL under the governed catalog, execution-free | `query-api` → `engine` | built | query-api/src/sql_validate.rs:294 |
+| `stream.claim-mode` | Commit this write's stream-vs-batch mode before any physical work | `ingest` → `catalog` | built | postgres/src/iceberg_landing.rs:905 |
 | `stream.declare` | Declare stream/CDC table | `ingest` → `catalog` | built | postgres/src/stream.rs:498 |
-| `subscribe.feed` | SSE change feed to client | `query-api` → `engine` | built | query-api/src/http.rs:854 |
+| `subscribe.feed` | SSE change feed to client | `query-api` → `engine` | built | query-api/src/http.rs:855 |
 | `transform.conform` | Conformance-gate typed output | `transform` → `ontology` | built | worker/src/transform.rs:305 |
 | `transform.define` | Define/upsert a transform or micro-batch MV registration | `query-api` → `transform` | built | postgres/src/transforms.rs:533 |
 | `tx.commit` | Commit transactional snapshot | `ingest` → `postgres` | built | postgres/src/transaction.rs:24 |
@@ -153,12 +159,12 @@ flowchart TD
 | ID | Control action | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
 | `acl.check.not-providing` | `acl.check` | not-providing | ACL check is skipped or bypassed for a code path, allowing ungoverned data access. | high | acl-bypass-row, acl-bypass-column | query-api/src/governed.rs:103 |
-| `acl.check.wrong-timing` | `acl.check` | wrong-timing | ACL is evaluated before the catalog resolves the final table set, so a late-bound table (join, link) escapes the check. | high | acl-bypass-row, acl-bypass-column | engine-serving/src/governed.rs:176 |
+| `acl.check.wrong-timing` | `acl.check` | wrong-timing | ACL is evaluated before the catalog resolves the final table set, so a late-bound table (join, link) escapes the check. | high | acl-bypass-row, acl-bypass-column | engine-serving/src/governed.rs:181 |
 | `auth.protect.not-providing` | `auth.protect` | not-providing | A route is added outside the auth middleware layer, serving data without any authentication. | high | acl-bypass-row, acl-bypass-column | runtime/src/auth.rs:135 |
 | `consolidate.fold.wrong-timing` | `consolidate.fold` | wrong-timing | The fold reads inline rows and commits a new base snapshot; a concurrent flush appends new inline rows between the fold's read and its commit, and the fold's InlineEndCap retires only the rows it actually read — but a crash between the fold's read and commit could leave stale fold-flag state requiring self-healing on next tick. | medium | consolidate-lost-write | engine-serving/src/consolidate.rs:454 |
-| `dataset.preview.providing` | `dataset.preview` | providing | A direct Table-target Read Allow serves a raw `SELECT *` sample, so the row filters and column masks of every ontology type backed by that table do not apply to the preview. | medium | acl-bypass-row, acl-bypass-column | query-api/src/http.rs:646 |
-| `engine.execute.wrong-timing` | `engine.execute` | wrong-timing | Engine registers live_tables snapshot, then GC reclaims a file referenced by that snapshot before the query completes. | high | gc-reclaim-live | engine-serving/src/serving.rs:1045 |
-| `engine.sql-wire.providing` | `engine.sql-wire` | providing | Flight SQL do_get resolves a governed catalog for the subject but a bug in catalog construction includes tables/columns the subject should not see. | high | acl-bypass-row, acl-bypass-column | query-api/src/flight_sql.rs:192 |
+| `dataset.preview.providing` | `dataset.preview` | providing | A direct Table-target Read Allow serves a raw `SELECT *` sample, so the row filters and column masks of every ontology type backed by that table do not apply to the preview. | medium | acl-bypass-row, acl-bypass-column | query-api/src/http.rs:645 |
+| `engine.execute.wrong-timing` | `engine.execute` | wrong-timing | Engine registers live_tables snapshot, then GC reclaims a file referenced by that snapshot before the query completes. | high | gc-reclaim-live | engine-serving/src/serving.rs:1056 |
+| `engine.sql-wire.providing` | `engine.sql-wire` | providing | Flight SQL do_get resolves a governed catalog for the subject but a bug in catalog construction includes tables/columns the subject should not see. | high | acl-bypass-row, acl-bypass-column | query-api/src/flight_sql.rs:251 |
 | `engine.write.providing` | `engine.write` | providing | A governed write (insert/update/delete) bypasses the fine-grained ACL check on the affected rows, allowing mutation of data the subject cannot read. | high | acl-bypass-row | engine-serving/src/action_writer.rs:74 |
 | `flush.land.wrong-timing` | `flush.land` | wrong-timing | Flush writes Parquet files to object store but crashes before committing the snapshot pointer, orphaning the files. | low | orphan-parquet | postgres/src/iceberg_landing.rs:109 |
 | `gc.reclaim.wrong-timing` | `gc.reclaim` | wrong-timing | GC reclaims a file whose age exceeds the retention window but is still referenced by an in-progress query's snapshot. | high | gc-reclaim-live | postgres/src/iceberg_gc.rs:103 |
@@ -169,8 +175,10 @@ flowchart TD
 | `ontology.resolve.wrong-timing` | `ontology.resolve` | wrong-timing | Ontology type is resolved to a table, then the type definition is updated (properties added/removed) before the query executes, causing a schema mismatch. | medium | schema-drift | postgres/src/ontology.rs:315 |
 | `queue.dequeue.wrong-timing` | `queue.dequeue` | wrong-timing | Worker dequeues a job whose preconditions (e.g. source table existence, snapshot validity) are no longer met by the time it executes. | medium | job-poison | postgres/src/queue.rs:78 |
 | `queue.fail.not-providing` | `queue.fail` | not-providing | A job handler panics or the worker crashes without calling fail(), leaving the job invisibly locked until its lease expires. | medium | job-poison | postgres/src/queue.rs:116 |
-| `sql.console.providing` | `sql.console` | providing | Client-shaped arbitrary SQL is planned over the governed session, so any relation reachable in the plan that is not wrapped in a GovernedTableProvider — a future registration path, a table function, a folded view's ungoverned inner base — discloses rows past policy. | high | acl-bypass-row, acl-bypass-column | engine-serving/src/governed.rs:292 |
-| `subscribe.feed.providing` | `subscribe.feed` | providing | The change feed captures ACL policy at connect time and never re-evaluates; a policy tightening mid-stream continues serving rows the subject should no longer see. | high | subscribe-policy-drift | query-api/src/http.rs:947 |
+| `sql.console.providing` | `sql.console` | providing | Client-shaped arbitrary SQL is planned over the governed session, so any relation reachable in the plan that is not wrapped in a GovernedTableProvider — a future registration path, a table function, a folded view's ungoverned inner base — discloses rows past policy. | high | acl-bypass-row, acl-bypass-column | engine-serving/src/governed.rs:303 |
+| `sql.validate.providing` | `sql.validate` | providing | The execution-free contract rests on a hand-rolled lexical EXPLAIN/ANALYZE scan whose comment and whitespace rules must agree with sqlparser's; any divergence admits an EXPLAIN ANALYZE, which DataFusion executes, and the one-batch row cap then swallows the resulting late fault into a false clean verdict. | medium | plan-only-executes | query-api/src/sql_validate.rs:175 |
+| `stream.claim-mode.wrong-timing` | `stream.claim-mode` | wrong-timing | The claim commits its mirror row in its own transaction ahead of the land it gates, so a failed first Parquet land leaves a live column-less table whose begin_snapshot precedes its own columns, visible to live_tables and to dataset listings with nothing to reclaim it. | medium | phantom-empty-table | postgres/src/iceberg_landing.rs:905 |
+| `subscribe.feed.providing` | `subscribe.feed` | providing | The change feed captures ACL policy at connect time and never re-evaluates; a policy tightening mid-stream continues serving rows the subject should no longer see. | high | subscribe-policy-drift | query-api/src/http.rs:948 |
 | `transform.conform.not-providing` | `transform.conform` | not-providing | A physical (non-typed) SQL transform bypasses the conformance gate entirely, writing output whose schema drifts from the target type. | medium | schema-drift | worker/src/transform.rs:305 |
 | `tx.commit.not-providing` | `tx.commit` | not-providing | A code path writes data outside the transactional snapshot-commit boundary, making the write invisible to the catalog but present on object store. | medium | partial-atomic-unit, orphan-parquet | postgres/src/transaction.rs:24 |
 
@@ -180,14 +188,14 @@ flowchart TD
 
 | ID | Channel | Guideword | Unsafe condition | Severity | → Hazards | Evidence |
 |----|----|----|----|----|----|----|
-| `catalog-snapshot.stale` | `catalog` → `engine`: live_tables snapshot used for query registration | stale | Engine registers tables from a catalog snapshot; concurrent landing adds a new snapshot after registration but before query execution, so the query reads stale data (bounded by query lifetime). | medium | stale-policy | engine-serving/src/serving.rs:1045 |
-| `governed-catalog-ticket.unauthorized-source` | `query-api` → `engine`: GovernedStatementQuery ticket carrying the caller-resolved GovernedCatalog | unauthorized-source | The engine applies no in-band authentication and trusts the ticket's embedded GovernedCatalog verbatim, so the only trust boundary is filesystem access to the engine's Unix socket — any co-located process that can open it may present a catalog of its own choosing. | high | acl-bypass-row, acl-bypass-column | engine/src/flight.rs:126 |
+| `catalog-snapshot.stale` | `catalog` → `engine`: live_tables snapshot used for query registration | stale | Engine registers tables from a catalog snapshot; concurrent landing adds a new snapshot after registration but before query execution, so the query reads stale data (bounded by query lifetime). | medium | stale-policy | engine-serving/src/serving.rs:1056 |
+| `governed-catalog-ticket.unauthorized-source` | `query-api` → `engine`: GovernedStatementQuery ticket carrying the caller-resolved GovernedCatalog | unauthorized-source | The engine applies no in-band authentication and trusts the ticket's embedded GovernedCatalog verbatim, so the only trust boundary is filesystem access to the engine's Unix socket — any co-located process that can open it may present a catalog of its own choosing. | high | acl-bypass-row, acl-bypass-column | engine/src/flight.rs:137 |
 | `mv-source.corrupted` | `engine` → `stream-mv`: Source CDC events consumed by MV micro-batch | corrupted | If the source CDC stream contains duplicate or out-of-order events (e.g. from a replayed ingest), the MV processor may produce duplicate or misordered output rows in the materialized view. | medium | mv-watermark-stale, mv-ghost-rows | engine/src/service.rs:591 |
 | `policy-fetch.stale` | `acl` → `query-api`: Policy rows for subject+target | stale | Query-api loads ACL policy once per request; a policy change committed between load and query execution is invisible, governing the query under the old policy. | medium | stale-policy | query-api/src/governed.rs:103 |
-| `subscribe-policy.stale` | `acl` → `query-api`: ChangeFeedPolicy captured at SSE connect | stale | The subscribe change feed captures row filters, denied columns, and masked columns at connect time (http.rs:947); policy changes are not applied until the client disconnects and reconnects. | high | subscribe-policy-drift, stale-policy | query-api/src/http.rs:947 |
+| `subscribe-policy.stale` | `acl` → `query-api`: ChangeFeedPolicy captured at SSE connect | stale | The subscribe change feed captures row filters, denied columns, and masked columns at connect time (http.rs:948); policy changes are not applied until the client disconnects and reconnects. | high | subscribe-policy-drift, stale-policy | query-api/src/http.rs:948 |
 
 <details>
-<summary><b>Not UCAs</b>: 56 examined and rejected</summary>
+<summary><b>Not UCAs</b>: 64 examined and rejected</summary>
 
 - **NOTIFY missed by worker**: Bounded by 5s poll fallback (worker poll interval); the NOTIFY is a hint, not the mechanism.
 - **acl.check.providing (over-deny)**: A false-deny is a liveness nuisance, not a safety violation; the caller gets a clear 403.
@@ -201,9 +209,11 @@ flowchart TD
 - **catalog.snapshot-intact.providing (false positive)**: False positive means GC reclaims — but this IS the gc.reclaim.wrong-timing UCA, already captured.
 - **consolidate.fold.not-providing**: Fold not running means inline rows accumulate (read amplification), not data loss; bounded by the next scheduler tick.
 - **consolidate.fold.wrong-duration (held too long)**: The fold holds the per-table consolidation lock; other folds queue behind it. Bounded by the fold's own runtime, not unbounded.
-- **dataset list sort/filter widening disclosure**: Sort/filter is applied to the already ACL-gated summary set (http.rs:333), so ordering and predicates can only reorder or narrow what the gate admitted.
-- **dataset.preview.not-providing**: An unreadable or unknown dataset returns the canonical dataset 404 (http.rs:641) — the route is not an existence oracle.
-- **duplicate table binding in the governed catalog (first entry wins)**: Where two types back one table, the first ALLOWED type's policy governs (governed.rs:144); each candidate's own Read grant already discloses that table's rows, so first-wins can only under-disclose.
+- **credential secrets rendered by a derived Debug**: Redacted<T> renders the literal `<redacted>` and implements neither Display nor Deref, so a #[derive(Debug)] struct that gains a secret field cannot silently start printing it (core/src/secret.rs:46).
+- **dataset list sort/filter widening disclosure**: Sort/filter is applied to the already ACL-gated summary set (http.rs:358), so ordering and predicates can only reorder or narrow what the gate admitted.
+- **dataset.preview.not-providing**: An unreadable or unknown dataset returns the canonical dataset 404 (http.rs:642) — the route is not an existence oracle.
+- **duplicate table binding in the governed catalog (first entry wins)**: Where two types back one table, the first ALLOWED type's policy governs (governed.rs:148); each candidate's own Read grant already discloses that table's rows, so first-wins can only under-disclose.
+- **engine background loops surviving a failed serve**: The scheduler and reconcile loops share one CancellationToken and are stopped together by BackgroundLoops::stop (engine/src/scheduler.rs:164), so serve exiting with an error can no longer leave one running.
 - **engine.execute.not-providing**: Query not executing returns a clear error to the caller.
 - **engine.sql-wire.not-providing (refuse valid query)**: A refused query returns a Flight error; the caller retries or reports the error.
 - **engine.write.not-providing**: A refused write returns a clear error; data is unchanged.
@@ -214,7 +224,7 @@ flowchart TD
 - **ingest.land.not-providing**: A refused landing returns a clear error; data is unchanged.
 - **ingest.land.providing (land wrong data)**: The ingest path writes the exact bytes the caller sent; schema inference validates column types against any bound ontology type.
 - **ingest.land.wrong-duration**: A long-running landing holds its tx; bounded by Postgres statement_timeout if configured. Not a safety violation — just latency.
-- **lineage run events leaked via a run_id discovered from a readable dataset**: Run events are redacted per event by LineageVisibility::redact_events (http.rs:1773), so a run that also touched a denied dataset discloses nothing about it.
+- **lineage run events leaked via a run_id discovered from a readable dataset**: Run events are redacted per event by LineageVisibility::redact_events (http.rs:1792), so a run that also touched a denied dataset discloses nothing about it.
 - **lineage.emit.providing (extra event)**: A spurious lineage event is a provenance nuisance, not a safety violation — queries do not depend on lineage for correctness.
 - **lineage.emit.wrong-timing**: Lineage emit is in the same tx as the data commit; it cannot fire before or after the data is visible.
 - **lineage.filter.providing (over-filter)**: Over-filtering hides provenance the subject could read — a liveness nuisance, not a leak.
@@ -223,6 +233,7 @@ flowchart TD
 - **mv.commit.providing (commit wrong result)**: The MV query is DataFusion SQL; its result is deterministic from the input batch. A wrong query is a config error, not a control-action failure.
 - **ontology.resolve.not-providing**: Resolution failure returns 404; the caller gets a clear error.
 - **ontology.resolve.providing (resolve to wrong table)**: Resolution is a deterministic lookup by type name; a wrong result requires a corrupted ontology table.
+- **orphan changelog table left by a refused CDC declare**: The `<table>__changelog` metadata create precedes the mode claim, but it carries no mirror row for a schema to disagree with and a later legitimate CDC declare finds it already correct (iceberg_landing.rs:185).
 - **per-dataset run history as a dataset-existence oracle**: The seed is gated by DatasetVisibility::is_readable and a denied or unknown dataset returns an empty page, never a 404 (http.rs:1822).
 - **queue.dequeue.not-providing**: No dequeue means jobs accumulate; bounded by poll interval and lease expiry.
 - **queue.dequeue.wrong-duration (held too long)**: Job lease has a fixed expiry; an overrun job is reclaimed by the queue after lease timeout.
@@ -231,9 +242,14 @@ flowchart TD
 - **queue.fail.wrong-timing (too late)**: Lease expiry is the backstop; a late fail() after lease expiry is a no-op (Postgres row lock).
 - **scheduler.tick.not-providing**: A missed tick delays enqueue; bounded by the next tick interval.
 - **scheduler.tick.wrong-timing (too early/late)**: Scheduler is idempotent; early/late ticks are harmless — they just check and enqueue if needed.
-- **sql.console DDL/DML/COPY-TO write escape**: The ad-hoc path plans with SQLOptions denying ddl, dml, and statements (engine-serving/src/governed.rs:358), so only Query nodes plan; certified by copy_to_write_is_rejected.
-- **sql.console over an ungranted table**: Closed-world registration: a live table with no GovernedCatalog entry is never registered (governed.rs:304), so it is indistinguishable from nonexistent and the plan fails as a client 400.
+- **shutdown drain severing an in-flight write**: The drain bound defaults to 20s, under Kubernetes' 30s grace, and a severed write is a Postgres transaction that rolls back on disconnect; uncommitted Parquet is already covered by orphan-parquet (lifecycle/src/shutdown.rs:57).
+- **sql.console DDL/DML/COPY-TO write escape**: The ad-hoc path plans with SQLOptions denying ddl, dml, and statements (engine-serving/src/governed.rs:356), so only Query nodes plan; certified by copy_to_write_is_rejected.
+- **sql.console over an ungranted table**: Closed-world registration: a live table with no GovernedCatalog entry is never registered (governed.rs:379), so it is indistinguishable from nonexistent and the plan fails as a client 400.
 - **sql.console.not-providing**: A rejected or failed console query returns a 400/500 and no rows; nothing is disclosed.
+- **sql.console/sql.validate unbounded resource consumption**: Both surfaces reach the single choke point execute_governed_sql_stream (governed.rs:303), which applies a per-statement GovernedSqlLimits memory pool and wall-clock deadline covering registration, planning, and every batch (sql_limits.rs:32).
+- **sql.validate echoing the engine's plan-error text verbatim**: The message is entirely in the caller's own SQL vocabulary over a closed-world governed catalog, so an ungranted relation reads as not-found exactly as a nonexistent one; the physical plan text is discarded (sql_validate.rs:233).
+- **sql.validate.not-providing**: A failed validation returns the shared query_error_response status; the editor loses diagnostics, not governance.
+- **stream.claim-mode.not-providing (fast path skips the claim tx)**: The claim is skipped only when a live mirror row already makes the mode permanent — reconcile_stream_mode refuses a batch→stream conversion and a declared stream table is never undeclared (iceberg_landing.rs:905).
 - **stream.declare over existing data**: Blocked by pg_refuse_declare_over_data (stream.rs:458); returns a validation error.
 - **stream.declare.not-providing**: Declaration failure returns a clear error to the caller.
 - **stream.declare.wrong-timing (concurrent with MV register)**: Serialized via pg_advisory_xact_lock on the same per-table key as define_transform (stream.rs:302).
@@ -249,13 +265,15 @@ flowchart TD
 
 ## Open questions
 
-- ACL pushdown completeness: the GovernedTableProvider wraps individual table scans, but a query that references a table via a subquery or CTE may bypass the governed provider registration — now load-bearing for client-shaped SQL (POST /sql), so a systematic audit of the DataFusion plan visitor is more urgent than when only server-composed SQL reached the engine.
-- Engine socket trust: the engine binds LOOM_ENGINE_SOCKET with no explicit chmod (engine/src/main.rs:15), so who may present a GovernedStatementQuery is decided by the process umask and container filesystem layout — that boundary is undocumented and untested.
-- External SQL wire (deferred): the internal Flight SQL surface still has no TCP listener or external auth, but arbitrary client SQL now reaches the governed catalog over HTTP, so the governed catalog construction is already on a client-controlled path and must be audited as such.
+- ACL pushdown completeness: the GovernedTableProvider wraps individual table scans, but a query that references a table via a subquery or CTE may bypass the governed provider registration — now load-bearing for client-shaped SQL on both POST /sql and POST /sql/validate, so a systematic audit of the DataFusion plan visitor is more urgent than when only server-composed SQL reached the engine.
+- Engine socket trust: the engine binds LOOM_ENGINE_SOCKET with no explicit chmod (engine/src/main.rs:28), so who may present a GovernedStatementQuery is decided by the process umask and container filesystem layout — that boundary is undocumented and untested.
+- External SQL wire: query-api now binds a real Flight SQL TCP listener opt-in via LOOM_SQL_WIRE_BIND_ADDR (serve.rs:186) with JWT auth at the wire, even though CLAUDE.md and README still describe it as deferred — the governed catalog it constructs is on a fully external client-controlled path and must be audited as such.
 - GC retention vs. long queries: snapshot_intact guards against reclaiming files referenced by a known snapshot, but a very long-running query that outlives the retention window may see its files reclaimed if the query's snapshot is not registered with the GC — the current guard is age-based, not query-registration-based.
 - MV watermark CAS: the watermark advance is now CAS-guarded on the def still naming the key (engine/src/service.rs:640), closing the ghost-row path for renamed/dropped MVs; a crash between watermark advance and run-mark could still leave a gap if the next run does not re-scan from the prior committed watermark.
 - Multi-writer ingest: concurrent landings to the same table are serialized by Iceberg snapshot CAS, but the retry loop is in the landing code — a high-contention hot table could see repeated retries and elevated latency; no silent data loss, but liveness under contention is uncharacterized.
 - Ontology migration: changing a type's properties after data has been landed is not yet supported; the conformance gate and query path assume the type definition is stable.
+- Plan-only refusal by lexical scan: sql.validate keeps EXPLAIN ANALYZE off the engine with a hand-rolled scanner that reimplements sqlparser's comment and whitespace rules (sql_validate.rs:112); the divergence risk is documented in the source but not differentially tested against the parser.
+- Stream-mode claim residue: a failed first Parquet land now commits a live, column-less iceberg_mirror.table row (iceberg_landing.rs:905) whose begin_snapshot precedes its own columns — accepted as inert, but nothing reclaims it and dataset listings show it.
 - Stream/CDC declare-register race (one direction closed): first-declare is serialized against concurrent MV registration via pg_advisory_xact_lock (stream.rs:302), but the reverse direction (MV registration racing a concurrent first-declare that adds a second source) relies on the same lock — verify the lock is symmetric.
 - Table-target Read grants: a direct Table Allow serves raw physical rows in the dataset preview, bypassing every backing type's row filters and column masks — whether Table-target grants are intended to be admin-only is neither documented nor enforced.
 - Typed-transform identity vs. non-identity: typed transforms conformance-gate the output, but the identity-column requirement for update/delete actions is enforced only at the query-api layer, not in the transform commit path — a transform that writes to an identity-bearing type without preserving the identity column would silently succeed.
