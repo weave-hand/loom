@@ -1,4 +1,4 @@
-# STPA Control Analysis: weave-hand/loom @ 4d8f969
+# STPA Control Analysis: weave-hand/loom @ e6ca13c
 
 _Auto-generated STPA safety model: the unsafe states this system can reach and the control actions that get it there._
 
