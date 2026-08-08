@@ -176,6 +176,7 @@ rust_test(
         ":engine",
         "//src/services/engine-serving:engine-serving",
         "//src/services/runtime:runtime",
+        "//third-party:tokio",
     ],
 )
 

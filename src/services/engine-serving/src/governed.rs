@@ -295,11 +295,11 @@ impl TableProvider for GovernedTableProvider {
 /// client SQL is arbitrary — it can never observe a denied column, an unmasked value,
 /// or a filter-excluded row.
 ///
-/// THE single choke point for arbitrary client SQL: both surfaces (`POST /sql` and the
-/// external Flight SQL wire) reach it through `do_get_governed_sql`, so bounding here
-/// means neither can be forgotten and a future third caller inherits the bound by
-/// construction. `limits` applies a per-statement memory pool and a wall-clock deadline
-/// covering the whole query lifetime — registration, planning, and every batch. See #664.
+/// Both client surfaces (`POST /sql` and the external Flight SQL wire) reach this
+/// execution path through `do_get_governed_sql`. `limits` applies a per-statement
+/// memory pool and a wall-clock deadline covering the whole query lifetime —
+/// registration, planning, and every batch. Engine-wide admission is enforced by
+/// the Flight handler before this function is called. See #664 and #678.
 pub async fn execute_governed_sql_stream(
     catalog: &IcebergCatalog,
     sql: &str,

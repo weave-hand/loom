@@ -142,6 +142,7 @@ impl EngineTuning {
             )?,
         };
         validate_compact_trigger_files(tuning.compact_trigger_files)?;
+        validate_sql_max_concurrent(tuning.sql_max_concurrent)?;
         if tuning.compact_small_file_bytes <= 0 {
             return Err(service_runtime::invalid(
                 "LOOM_COMPACT_THRESHOLD_BYTES",
@@ -181,6 +182,19 @@ fn validate_compact_trigger_files(n: i64) -> Result<(), service_runtime::ConfigE
         return Err(service_runtime::invalid(
             "LOOM_COMPACT_TRIGGER_FILES",
             "must be 0 or >= 2",
+        ));
+    }
+    Ok(())
+}
+
+/// Tokio's semaphore reserves a few high bits for internal state. Reject a
+/// larger value as configuration error instead of allowing `Semaphore::new`
+/// to panic during startup.
+fn validate_sql_max_concurrent(n: usize) -> Result<(), service_runtime::ConfigError> {
+    if n > tokio::sync::Semaphore::MAX_PERMITS {
+        return Err(service_runtime::invalid(
+            "LOOM_SQL_MAX_CONCURRENT",
+            "must not exceed Tokio's semaphore maximum",
         ));
     }
     Ok(())

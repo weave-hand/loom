@@ -29,8 +29,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 use tonic::{Request, Response, Status, Streaming};
 
-const ADMISSION_TIMEOUT_MESSAGE: &str =
-    "engine at capacity: no governed-SQL slot within LOOM_SQL_ADMISSION_WAIT_SECS (see LOOM_SQL_MAX_CONCURRENT)";
+const ADMISSION_TIMEOUT_MESSAGE: &str = "engine at capacity: no governed-SQL slot within LOOM_SQL_ADMISSION_WAIT_SECS (see LOOM_SQL_MAX_CONCURRENT)";
 
 /// Engine-wide admission control for arbitrary governed SQL. A permit is
 /// intentionally returned to the caller so it can be held by the response

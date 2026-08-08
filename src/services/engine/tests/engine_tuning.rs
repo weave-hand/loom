@@ -162,6 +162,19 @@ fn malformed_sql_admission_limit_is_startup_error_naming_key() {
 }
 
 #[test]
+fn sql_admission_limit_rejects_values_above_tokio_maximum() {
+    let max = tokio::sync::Semaphore::MAX_PERMITS;
+    assert!(EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", &max.to_string())])).is_ok());
+    let too_large = max + 1;
+    let err = EngineTuning::from_map(&map(&[(
+        "LOOM_SQL_MAX_CONCURRENT",
+        &too_large.to_string(),
+    )]))
+    .unwrap_err();
+    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT"));
+}
+
+#[test]
 fn zero_is_the_documented_unbounded_escape_hatch() {
     let t = EngineTuning::from_map(&map(&[
         ("LOOM_SQL_MEMORY_LIMIT_BYTES", "0"),

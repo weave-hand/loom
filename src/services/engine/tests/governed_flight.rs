@@ -37,6 +37,78 @@ async fn governed_sql_admission_times_out_and_releases_permits() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn governed_sql_admission_is_held_by_the_flight_stream() {
+    let fx = PgFixture::shared();
+    let (cp, db) = fx.fresh_db().await;
+    let pool = fx.pool_for(&db).await;
+    let dsn = fx.pg_dsn(&db);
+    let wh = tempfile::tempdir().expect("warehouse");
+    let cols = vec![("id".to_string(), "long".to_string(), false)];
+    IcebergWriter::new(pool.clone(), dsn.clone())
+        .seed("s", "orders", &cols, &[5])
+        .await;
+
+    let svc = FlightDataService {
+        catalog: Arc::new(local_sql_catalog(dsn, &wh.path().display().to_string()).await),
+        serving_catalog: IcebergCatalog::new(pool.clone()),
+        serving_store: None,
+        pool,
+        cp,
+        sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
+        sql_admission: engine::flight::GovernedSqlAdmission::new(
+            1,
+            std::time::Duration::from_millis(20),
+        ),
+    };
+    let cat = GovernedCatalog {
+        tables: vec![GovernedTable {
+            table: TableRef {
+                schema: "s".into(),
+                name: "orders".into(),
+            },
+            row_filters: vec![],
+            denied: vec![],
+            masked: vec![],
+        }],
+    };
+    let encoded = GovernedStatementQuery {
+        sql: r#"SELECT "id" FROM "s"."orders""#.to_string(),
+        catalog: cat,
+    }
+    .encode();
+    let request = || Request::new(Ticket {
+        ticket: encoded.clone().into(),
+    });
+
+    // Returning the response must not release the permit: the stream is still
+    // capable of doing work and remains the owner of admission.
+    let first = svc.do_get(request()).await.expect("first governed stream");
+    let err = svc.do_get(request()).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+
+    // Fully consuming the stream releases the permit.
+    let stream = first
+        .into_inner()
+        .map_err(arrow_flight::error::FlightError::from);
+    arrow_flight::decode::FlightRecordBatchStream::new_from_flight_data(stream)
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("consume first governed stream");
+    let consumed = svc
+        .do_get(request())
+        .await
+        .expect("admit after stream consumption");
+    drop(consumed);
+
+    // Dropping a stream before consumption must also release the permit.
+    let dropped = svc.do_get(request()).await.expect("stream to drop");
+    drop(dropped);
+    svc.do_get(request())
+        .await
+        .expect("admit after stream drop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn do_get_governed_applies_policy() {
     let fx = PgFixture::shared();
     let (cp, db) = fx.fresh_db().await;
