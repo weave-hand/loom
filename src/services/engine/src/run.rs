@@ -71,6 +71,12 @@ pub struct EngineTuning {
     /// (`LOOM_SQL_TIMEOUT_SECS`, default 60). `0` disables the bound. Covers the
     /// whole query lifetime — planning through the last batch.
     pub sql_timeout_secs: u64,
+    /// Maximum number of concurrent arbitrary-SQL governed streams
+    /// (`LOOM_SQL_MAX_CONCURRENT`, default 16). `0` disables admission control.
+    pub sql_max_concurrent: usize,
+    /// Maximum time an arbitrary-SQL governed request waits for a slot
+    /// (`LOOM_SQL_ADMISSION_WAIT_SECS`, default 5).
+    pub sql_admission_wait_secs: u64,
 }
 
 impl EngineTuning {
@@ -124,6 +130,16 @@ impl EngineTuning {
                 1024 * 1024 * 1024_usize,
             )?,
             sql_timeout_secs: service_runtime::parse_var(vars, "LOOM_SQL_TIMEOUT_SECS", 60_u64)?,
+            sql_max_concurrent: service_runtime::parse_var(
+                vars,
+                "LOOM_SQL_MAX_CONCURRENT",
+                16_usize,
+            )?,
+            sql_admission_wait_secs: service_runtime::parse_var(
+                vars,
+                "LOOM_SQL_ADMISSION_WAIT_SECS",
+                5_u64,
+            )?,
         };
         validate_compact_trigger_files(tuning.compact_trigger_files)?;
         if tuning.compact_small_file_bytes <= 0 {
@@ -144,6 +160,15 @@ impl EngineTuning {
             deadline: (self.sql_timeout_secs > 0)
                 .then(|| Duration::from_secs(self.sql_timeout_secs)),
         }
+    }
+
+    /// The engine-wide admission budget for arbitrary governed SQL.
+    #[must_use]
+    pub fn governed_sql_admission(&self) -> crate::flight::GovernedSqlAdmission {
+        crate::flight::GovernedSqlAdmission::new(
+            self.sql_max_concurrent,
+            Duration::from_secs(self.sql_admission_wait_secs),
+        )
     }
 }
 
@@ -224,6 +249,7 @@ pub async fn run(
         pool,
         cp,
         sql_limits: tuning.governed_sql_limits(),
+        sql_admission: tuning.governed_sql_admission(),
     };
 
     // Signal readiness: the caller binds `listener` before spawning us, so the

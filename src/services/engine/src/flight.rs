@@ -21,11 +21,57 @@ use control_plane_postgres::iceberg_catalog::IcebergCatalog;
 use control_plane_postgres::iceberg_sql_catalog::SqlCatalog;
 use control_plane_postgres::read_files_as_batches;
 use engine_wire::flight::EngineTicket;
-use futures::TryStreamExt; // for `.map_err` on the FlightDataEncoder stream
+use futures::{StreamExt, TryStreamExt}; // for stream adapters and `.map_err`
 use prost::Message;
 use service_runtime::ServingStore;
 use sqlx::PgPool;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::timeout;
 use tonic::{Request, Response, Status, Streaming};
+
+const ADMISSION_TIMEOUT_MESSAGE: &str =
+    "engine at capacity: no governed-SQL slot within LOOM_SQL_ADMISSION_WAIT_SECS (see LOOM_SQL_MAX_CONCURRENT)";
+
+/// Engine-wide admission control for arbitrary governed SQL. A permit is
+/// intentionally returned to the caller so it can be held by the response
+/// stream, rather than only for the duration of the handler.
+#[derive(Debug)]
+pub struct GovernedSqlAdmission {
+    semaphore: Option<Arc<Semaphore>>,
+    wait: std::time::Duration,
+}
+
+impl GovernedSqlAdmission {
+    #[must_use]
+    pub fn new(max_concurrent: usize, wait: std::time::Duration) -> Self {
+        Self {
+            semaphore: (max_concurrent > 0).then(|| Arc::new(Semaphore::new(max_concurrent))),
+            wait,
+        }
+    }
+
+    pub async fn acquire(&self) -> Result<Option<OwnedSemaphorePermit>, Status> {
+        let Some(semaphore) = &self.semaphore else {
+            return Ok(None);
+        };
+        if self.wait.is_zero() {
+            return match Arc::clone(semaphore).try_acquire_owned() {
+                Ok(permit) => Ok(Some(permit)),
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    Err(Status::resource_exhausted(ADMISSION_TIMEOUT_MESSAGE))
+                }
+                Err(tokio::sync::TryAcquireError::Closed) => {
+                    Err(Status::internal("governed-SQL admission control closed"))
+                }
+            };
+        }
+        match timeout(self.wait, Arc::clone(semaphore).acquire_owned()).await {
+            Ok(Ok(permit)) => Ok(Some(permit)),
+            Ok(Err(_)) => Err(Status::internal("governed-SQL admission control closed")),
+            Err(_) => Err(Status::resource_exhausted(ADMISSION_TIMEOUT_MESSAGE)),
+        }
+    }
+}
 
 /// The one total `EngineServingError` -> gRPC `Status` mapping for the engine,
 /// shared by the Flight data/SQL plane (this module) and the `EngineControl`
@@ -64,6 +110,8 @@ pub struct FlightDataService {
     /// Per-statement resource budget applied to the arbitrary-SQL governed plane
     /// (`do_get_governed_sql`). From `EngineTuning::governed_sql_limits`.
     pub sql_limits: engine_serving::GovernedSqlLimits,
+    /// Engine-wide admission budget for arbitrary governed SQL.
+    pub sql_admission: GovernedSqlAdmission,
 }
 
 impl FlightDataService {
@@ -138,6 +186,7 @@ impl FlightDataService {
         &self,
         q: engine_wire::flight::GovernedStatementQuery,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let permit = self.sql_admission.acquire().await?;
         let stream = engine_serving::execute_governed_sql_stream(
             &self.serving_catalog,
             &q.sql,
@@ -151,6 +200,12 @@ impl FlightDataService {
         // budget breach raised mid-plan (the usual case — a sort reserves on first
         // poll, not at `execute_stream`) reaches the caller as `resource_exhausted`
         // rather than an opaque `internal`.
+        // Keep the permit captured in the stream. This covers execution until
+        // completion and releases it on errors or client disconnects too.
+        let stream = stream.map(move |item| {
+            let _permit = &permit;
+            item
+        });
         Ok(Self::encode_response(stream.map_err(|e| {
             FlightError::Tonic(Box::new(serving_status(
                 engine_serving::governed_stream_error(&e),

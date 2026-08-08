@@ -114,6 +114,8 @@ fn sql_limit_defaults_are_1_gib_and_60_secs() {
     let l = t.governed_sql_limits();
     assert_eq!(l.memory_bytes, Some(1024 * 1024 * 1024));
     assert_eq!(l.deadline, Some(Duration::from_secs(60)));
+    assert_eq!(t.sql_max_concurrent, 16);
+    assert_eq!(t.sql_admission_wait_secs, 5);
 }
 
 #[test]
@@ -128,6 +130,35 @@ fn sql_limit_overrides_parse() {
     let l = t.governed_sql_limits();
     assert_eq!(l.memory_bytes, Some(4096));
     assert_eq!(l.deadline, Some(Duration::from_secs(7)));
+}
+
+#[test]
+fn sql_admission_overrides_parse() {
+    let t = EngineTuning::from_map(&map(&[
+        ("LOOM_SQL_MAX_CONCURRENT", "3"),
+        ("LOOM_SQL_ADMISSION_WAIT_SECS", "9"),
+    ]))
+    .unwrap();
+    assert_eq!(t.sql_max_concurrent, 3);
+    assert_eq!(t.sql_admission_wait_secs, 9);
+}
+
+#[test]
+fn sql_admission_zero_disables_the_cap() {
+    let t = EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", "0")])).unwrap();
+    assert_eq!(t.sql_max_concurrent, 0);
+}
+
+#[test]
+fn zero_admission_wait_parses_as_immediate_rejection() {
+    let t = EngineTuning::from_map(&map(&[("LOOM_SQL_ADMISSION_WAIT_SECS", "0")])).unwrap();
+    assert_eq!(t.sql_admission_wait_secs, 0);
+}
+
+#[test]
+fn malformed_sql_admission_limit_is_startup_error_naming_key() {
+    let err = EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", "many")])).unwrap_err();
+    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT"));
 }
 
 #[test]

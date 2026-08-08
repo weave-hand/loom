@@ -19,6 +19,23 @@ use loom_test_flight::spawn_flight_uds;
 use loom_test_seed::local_sql_catalog;
 use tonic::Request;
 
+#[tokio::test]
+async fn governed_sql_admission_times_out_and_releases_permits() {
+    let admission = engine::flight::GovernedSqlAdmission::new(
+        1,
+        std::time::Duration::from_millis(10),
+    );
+    let first = admission.acquire().await.unwrap();
+    assert!(first.is_some());
+
+    let err = admission.acquire().await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+    assert!(err.message().contains("LOOM_SQL_ADMISSION_WAIT_SECS"));
+
+    drop(first);
+    assert!(admission.acquire().await.unwrap().is_some());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn do_get_governed_applies_policy() {
     let fx = PgFixture::shared();
@@ -42,6 +59,10 @@ async fn do_get_governed_applies_policy() {
         pool,
         cp,
         sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
+        sql_admission: engine::flight::GovernedSqlAdmission::new(
+            16,
+            std::time::Duration::from_secs(5),
+        ),
     };
 
     // Policy: only rows with id >= 2 are visible on `s.orders`.
@@ -210,6 +231,10 @@ async fn budget_breach_reaches_the_wire_as_resource_exhausted() {
             memory_bytes: Some(1),
             deadline: None,
         },
+        sql_admission: engine::flight::GovernedSqlAdmission::new(
+            16,
+            std::time::Duration::from_secs(5),
+        ),
     };
 
     let cat = GovernedCatalog {

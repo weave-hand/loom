@@ -426,9 +426,12 @@ Two governed egress surfaces exist beyond the internal read path:
   those plans are server-built and shape-bounded. The existing row caps
   (`LOOM_SQL_WIRE_MAX_ROWS`, the console's `limit`) are unchanged and bound a
   different thing — the output *pulled*, not the compute performed before the
-  first batch. Out of scope: an engine-wide concurrent-query budget (N
-  statements can still sum to N × the limit), spill-to-disk, and per-subject
-  quotas.
+  first batch. An engine-wide admission cap now bounds the aggregate governed-SQL
+  concurrency: `LOOM_SQL_MAX_CONCURRENT` defaults to 16, and callers wait up to
+  `LOOM_SQL_ADMISSION_WAIT_SECS` (default 5) for a slot before receiving
+  `resource_exhausted`/HTTP 429. `0` disables the cap. The permit is held for the
+  returned stream's lifetime, including client disconnects. Spill-to-disk and
+  per-subject quotas remain out of scope.
 - **Governed Arrow Flight export** (#204): query-api hosts a TCP Flight
   server whose ticket carries a loom export *command* (typed object + slice
   filters), never SQL. `do_get` re-derives the ACL'd SQL per call for the

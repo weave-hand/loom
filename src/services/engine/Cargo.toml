@@ -14,7 +14,7 @@ engine-serving = { path = "../engine-serving" }
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
 tonic = "0.14"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 uuid = { version = "1", features = ["v4"] }
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }
