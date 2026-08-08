@@ -146,10 +146,7 @@ pub async fn spawn_engine_uds(
             pool,
             cp,
             sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
-            sql_admission: engine::flight::GovernedSqlAdmission::new(
-                16,
-                Duration::from_secs(5),
-            ),
+            sql_admission: engine::flight::GovernedSqlAdmission::new(16, Duration::from_secs(5)),
         })
     });
 

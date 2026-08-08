@@ -158,21 +158,23 @@ fn zero_admission_wait_parses_as_immediate_rejection() {
 #[test]
 fn malformed_sql_admission_limit_is_startup_error_naming_key() {
     let err = EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", "many")])).unwrap_err();
-    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT"));
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT")
+    );
 }
 
 #[test]
 fn sql_admission_limit_rejects_values_above_tokio_maximum() {
     let max = tokio::sync::Semaphore::MAX_PERMITS;
     let max_value = max.to_string();
-    assert!(
-        EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", &max_value)])).is_ok()
-    );
+    assert!(EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", &max_value)])).is_ok());
     let too_large = max + 1;
     let too_large_value = too_large.to_string();
-    let err = EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", &too_large_value)]))
-        .unwrap_err();
-    assert!(matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT"));
+    let err =
+        EngineTuning::from_map(&map(&[("LOOM_SQL_MAX_CONCURRENT", &too_large_value)])).unwrap_err();
+    assert!(
+        matches!(err, service_runtime::ConfigError::Invalid { ref var, .. } if var == "LOOM_SQL_MAX_CONCURRENT")
+    );
 }
 
 #[test]

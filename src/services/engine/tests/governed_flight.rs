@@ -21,10 +21,8 @@ use tonic::Request;
 
 #[tokio::test]
 async fn governed_sql_admission_times_out_and_releases_permits() {
-    let admission = engine::flight::GovernedSqlAdmission::new(
-        1,
-        std::time::Duration::from_millis(10),
-    );
+    let admission =
+        engine::flight::GovernedSqlAdmission::new(1, std::time::Duration::from_millis(10));
     let first = admission.acquire().await.unwrap();
     assert!(first.is_some());
 
@@ -76,9 +74,11 @@ async fn governed_sql_admission_is_held_by_the_flight_stream() {
         catalog: cat,
     }
     .encode();
-    let request = || Request::new(Ticket {
-        ticket: encoded.clone().into(),
-    });
+    let request = || {
+        Request::new(Ticket {
+            ticket: encoded.clone().into(),
+        })
+    };
 
     // Returning the response must not release the permit: the stream is still
     // capable of doing work and remains the owner of admission.

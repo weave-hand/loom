@@ -125,10 +125,7 @@ async fn spawn_server(fx: &PgFixture, db: &str) -> (tempfile::TempDir, String) {
         pool,
         cp,
         sql_limits: engine_serving::GovernedSqlLimits::unbounded(),
-        sql_admission: engine::flight::GovernedSqlAdmission::new(
-            16,
-            Duration::from_secs(5),
-        ),
+        sql_admission: engine::flight::GovernedSqlAdmission::new(16, Duration::from_secs(5)),
     };
     let listener = tokio::net::UnixListener::bind(&sock_path).expect("bind uds");
     let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
