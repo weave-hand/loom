@@ -114,6 +114,13 @@ async fn governed_sql_admission_is_held_by_the_flight_stream() {
         .await
         .expect("stream schema message")
         .expect("schema");
+
+    let err = match svc.do_get(request()).await {
+        Ok(_) => panic!("partially consumed stream must retain its admission permit"),
+        Err(err) => err,
+    };
+    assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+
     drop(dropped);
     svc.do_get(request())
         .await
