@@ -103,8 +103,17 @@ async fn governed_sql_admission_is_held_by_the_flight_stream() {
         .expect("admit after stream consumption");
     drop(consumed);
 
-    // Dropping a stream before consumption must also release the permit.
-    let dropped = svc.do_get(request()).await.expect("stream to drop");
+    // Dropping a partially consumed stream must also release the permit.
+    let mut dropped = svc
+        .do_get(request())
+        .await
+        .expect("stream to partially consume")
+        .into_inner();
+    dropped
+        .next()
+        .await
+        .expect("stream schema message")
+        .expect("schema");
     drop(dropped);
     svc.do_get(request())
         .await
