@@ -83,7 +83,10 @@ async fn governed_sql_admission_is_held_by_the_flight_stream() {
     // Returning the response must not release the permit: the stream is still
     // capable of doing work and remains the owner of admission.
     let first = svc.do_get(request()).await.expect("first governed stream");
-    let err = svc.do_get(request()).await.unwrap_err();
+    let err = match svc.do_get(request()).await {
+        Ok(_) => panic!("second governed stream should be rejected while the first is held"),
+        Err(err) => err,
+    };
     assert_eq!(err.code(), tonic::Code::ResourceExhausted);
 
     // Fully consuming the stream releases the permit.
