@@ -161,6 +161,9 @@ objectStore:
 # external.existingSecret.
 postgres:
   enabled: true
+  # Optional per-process connection pool cap, also applied for external Postgres.
+  # Unset preserves the runtime default.
+  maxConnections: null
   instances: 1
   imageName: ""              # "" -> CNPG operator default
   database: loom
