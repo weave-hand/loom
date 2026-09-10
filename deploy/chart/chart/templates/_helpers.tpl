@@ -104,6 +104,10 @@ postgres.external.keys.
     secretKeyRef:
       name: {{ $secret }}
       key: {{ $k.dbname }}
+{{- with .Values.postgres.maxConnections }}
+- name: LOOM_DB_MAX_CONNECTIONS
+  value: {{ . | quote }}
+{{- end }}
 {{- end -}}
 
 {{/*
