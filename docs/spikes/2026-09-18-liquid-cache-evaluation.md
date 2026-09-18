@@ -15,7 +15,7 @@
 | **Does it fit loom's architecture?** | Yes — no `TableProvider` changes at all |
 | **What did it cost?** | arrow 58→59, DataFusion 54→55, iceberg pin moved, 3 git deps |
 | **Is it on?** | **No.** `LOOM_LIQUID_CACHE_DIR` unset ⇒ serving is byte-identical to before |
-| **What is still open?** | Resource budgeting, ACL pushdown, and one wire-order regression |
+| **What is still open?** | Resource budgeting and ACL pushdown on the governed path |
 
 ## What LiquidCache is
 
@@ -124,41 +124,52 @@ New reindeer fixups were needed for the build scripts this pulled in: `blake3`, 
 `datafusion-functions`/`datafusion-sql` — they are the DataFusion 55 bump's cost, not
 liquid-cache's.
 
-## Known regression: `ingest:wire-violation`
+## `serde_json/preserve_order` became graph-wide (and what it did NOT break)
 
-`//src/services/ingest:wire-violation` fails on this branch. It is **not** caused by
-liquid-cache, and it is a real behaviour change, so it is recorded here rather than
-papered over.
+`datafusion-physical-plan` 55.1.0 enables **`serde_json/preserve_order`**, which under
+reindeer's feature unification applies graph-wide: `serde_json` gains an `indexmap`
+dependency and `Value`'s map becomes insertion-ordered instead of key-sorted. This comes
+from the DataFusion 54→55 bump, not from liquid-cache. Omitting it via a fixup is not an
+option — `datafusion-physical-plan` genuinely requires it.
 
-`datafusion-physical-plan` 55.1.0 enables **`serde_json/preserve_order`**, which is
-graph-wide under reindeer's feature unification: `serde_json` gains an `indexmap`
-dependency and its `Map` becomes insertion-ordered rather than sorted. The test asserts
-the ingest violations body is *byte-identical* to a hand-rolled `json!` reference, and the
-two sides now order keys differently.
+It surfaced as a failure in `//src/services/ingest:wire-violation`, and the first read of
+that failure was wrong, so it is worth recording precisely:
 
-Nothing here is wrong on the wire — same fields, same values, different key order, and
-JSON object key order is not part of the contract. But the assertion was deliberate, so
-the fix is a decision, not a cleanup:
+- `WireViolation` declares its fields **alphabetically**, so the DTO — the actual 422 wire
+  body — serializes in alphabetical key order. That did **not** change.
+- The test's *oracle* is a hand-rolled `serde_json::json!` literal. It was written in
+  declaration order and relied on `Value` sorting keys for it. The test said so in its own
+  module doc: *"loom's serde_json has no `preserve_order`, so `Value` objects sort their
+  keys — the reference below is therefore key-sorted."*
+- With `preserve_order` on, `json!` stopped sorting, so the oracle drifted while the
+  product stayed put.
 
-- **Compare `serde_json::Value` instead of strings.** `IndexMap`'s `PartialEq` is
-  order-independent, so this still asserts exact shape and content and drops only key
-  order. Weakens "byte-identical" to "shape-identical".
-- **Reorder the reference** so both sides agree, keeping byte-identity.
+**The wire is unchanged.** The fix was to write the reference's keys in alphabetical order
+(only the `TypeMismatch` arm needed it) and correct the now-false module doc. That restores
+the original byte-identity assertion in full rather than weakening it — this was never a
+question about loom's wire contract.
 
-Omitting the feature via a reindeer fixup is **not** an option: `datafusion-physical-plan`
-genuinely requires it.
+The general lesson is the one CLAUDE.md already gives about `reindeer update`: a shared-dep
+feature can be unioned into the graph by a crate your diff never mentions, and the failure
+lands in a crate your diff never touched. Anywhere a `json!` literal is compared for byte
+identity, key order is now load-bearing.
 
 ## Verification status
 
 - `buck2 build -M none //src/...` — **clean**, zero errors, zero warnings.
 - `./tools/clippy-all.sh` — **clean** across every first-party Rust target.
-- `buck2 test //src/...` — **478 pass, 1 real fail** (`ingest:wire-violation`, above).
-  `query-api:expr-typecheck` also reported failed, but on a BuildBuddy RE 503, not a
-  code fault.
+- `buck2 test //src/...` — **478 pass / 2 fail** on a healthy RE, both since resolved:
+  `ingest:wire-violation` (fixed, above) and `query-api:expr-typecheck` (a BuildBuddy RE
+  503, not a code fault). Later sweeps in the same session returned 175–229 failures that
+  were **all** the identical `Remote Execution Error on get_digests_ttl` (503, then
+  transient DNS), with zero test-body failures — BuildBuddy RE was degraded throughout,
+  which also accounts for the `dev-image` and `affected` CI failures on this branch.
 - **Blocked:** `control-plane/postgres:minio-{amd64,arm64}.bin` cannot build — `dl.min.io`
   returns **410 Gone** for every path, including `latest`. This is **pre-existing on
   `main`** and unrelated to this branch: MinIO decommissioned that distribution host. It
-  needs its own fix; until then the S3-backed fixtures cannot be built anywhere in the repo.
+  needs its own fix; until then the S3-backed fixtures cannot be built anywhere in the repo,
+  so the full fixture sweep CLAUDE.md requires after an iceberg pin bump is only partly
+  satisfied here.
 
 ## Pointers
 

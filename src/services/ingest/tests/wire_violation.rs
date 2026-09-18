@@ -1,9 +1,15 @@
 //! The wire-violation DTO (`WireViolation`/`ViolationsBody`) must serialize
 //! byte-identically to the hand-rolled `serde_json::json!` shape it replaced, so
-//! the 422 body on the wire is unchanged. Pure: no router/Postgres. loom's
-//! serde_json has no `preserve_order`, so `Value` objects sort their keys — the
-//! reference below is therefore key-sorted, matching `WireViolation`'s
-//! alphabetically-declared fields.
+//! the 422 body on the wire is unchanged. Pure: no router/Postgres.
+//!
+//! `WireViolation` declares its fields alphabetically, so the DTO serializes in
+//! alphabetical key order. The reference below must therefore be written in
+//! alphabetical key order too. It did not used to have to be: loom's serde_json had
+//! no `preserve_order`, so `Value` sorted keys itself and the literal order here was
+//! irrelevant. DataFusion 55 (`datafusion-physical-plan`) turns `preserve_order` on
+//! graph-wide via reindeer feature unification, so `json!` now preserves the order
+//! written here — making key order load-bearing in this file. The DTO's own output,
+//! and hence the wire, is unchanged either way.
 
 use ingest::openapi::{ViolationsBody, WireViolation};
 use ingest::{Violation, ViolationReason};
@@ -17,11 +23,13 @@ fn reference_json(violations: &[Violation]) -> serde_json::Value {
             ViolationReason::MissingRequired => {
                 serde_json::json!({ "column": v.column, "reason": "missing_required" })
             }
+            // Keys alphabetical (column, expected, found, reason) to match the DTO's
+            // alphabetical field declaration — see the module note on `preserve_order`.
             ViolationReason::TypeMismatch { expected, found } => serde_json::json!({
                 "column": v.column,
-                "reason": "type_mismatch",
                 "expected": expected,
                 "found": found,
+                "reason": "type_mismatch",
             }),
             ViolationReason::Unsupported => {
                 serde_json::json!({ "column": v.column, "reason": "unsupported" })
