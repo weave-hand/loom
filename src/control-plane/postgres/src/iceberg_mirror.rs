@@ -591,8 +591,15 @@ pub async fn added_files_of(table: &Table) -> Result<Vec<ProjectedFile>> {
     let names: Vec<String> = columns_of(table)?.into_iter().map(|c| c.name).collect();
     let mut files = Vec::new();
     for manifest_file in manifest_list.entries() {
-        let manifest = manifest_file
-            .load_manifest(table.file_io())
+        // iceberg 0.10 removed `ManifestFile::load_manifest` in favour of a
+        // `ManifestReader` obtained from the table. Going through the table's reader
+        // (rather than parsing the avro ourselves via the still-public
+        // `Manifest::parse_avro`) is what keeps `entry.inherit_data(manifest_file)`
+        // applied — without it inherited entries carry no snapshot id and the
+        // `entry.snapshot_id() == current` filter below would silently drop them.
+        let manifest = table
+            .manifest_reader()
+            .read(manifest_file)
             .await
             .map_err(backend)?;
         for entry in manifest.entries() {

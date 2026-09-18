@@ -1,0 +1,4 @@
+# New with the DataFusion 55 / arrow 59 bump. Build script emits cfgs only — no
+# native library to link.
+[buildscript]
+run = true

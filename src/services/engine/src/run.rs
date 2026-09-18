@@ -29,7 +29,10 @@ type BoxErr = Box<dyn std::error::Error + Send + Sync>;
 /// Engine write-path byte thresholds, parsed once from the caller's env snapshot
 /// (the engine main / the standalone composite) — `run` itself never reads the
 /// live environment (one-env-snapshot-per-main).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Not `Copy`: `liquid_cache_dir` is a `String`. `Clone` is retained; the one caller that
+// relied on the implicit copy (the standalone composite, which reads `tuning.engine` and
+// then borrows `tuning` again) clones explicitly.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineTuning {
     /// Row payloads at/below this size commit as inline PG rows
     /// (`LOOM_INLINE_BYTE_LIMIT`, default 16 MiB).
@@ -71,6 +74,20 @@ pub struct EngineTuning {
     /// (`LOOM_SQL_TIMEOUT_SECS`, default 60). `0` disables the bound. Covers the
     /// whole query lifetime — planning through the last batch.
     pub sql_timeout_secs: u64,
+    /// Directory backing the optional LiquidCache tier under the serving path
+    /// (`LOOM_LIQUID_CACHE_DIR`, default empty). Empty — the default — leaves the
+    /// cache OFF and serving byte-identical to before it existed. Set it to
+    /// node-local scratch to enable: the cache mounts a `t4` store there and uses
+    /// direct I/O, so a network filesystem is the wrong answer. Deliberately
+    /// opt-in; see `engine_serving::liquid_cache` for the two open questions
+    /// (resource budgeting, ACL pushdown) that keep it off by default.
+    pub liquid_cache_dir: String,
+    /// Ceiling on the LiquidCache in-memory tier, in bytes
+    /// (`LOOM_LIQUID_CACHE_MEMORY_BYTES`, default 1 GiB). Ignored when
+    /// `liquid_cache_dir` is empty. Accounted SEPARATELY from
+    /// `sql_memory_limit_bytes` — this is the cache's own budget, outside
+    /// DataFusion's `MemoryPool`, so the two sum rather than bound each other.
+    pub liquid_cache_memory_bytes: usize,
 }
 
 impl EngineTuning {
@@ -124,6 +141,16 @@ impl EngineTuning {
                 1024 * 1024 * 1024_usize,
             )?,
             sql_timeout_secs: service_runtime::parse_var(vars, "LOOM_SQL_TIMEOUT_SECS", 60_u64)?,
+            liquid_cache_dir: service_runtime::parse_var(
+                vars,
+                "LOOM_LIQUID_CACHE_DIR",
+                String::new(),
+            )?,
+            liquid_cache_memory_bytes: service_runtime::parse_var(
+                vars,
+                "LOOM_LIQUID_CACHE_MEMORY_BYTES",
+                1024 * 1024 * 1024_usize,
+            )?,
         };
         validate_compact_trigger_files(tuning.compact_trigger_files)?;
         if tuning.compact_small_file_bytes <= 0 {
@@ -144,6 +171,16 @@ impl EngineTuning {
             deadline: (self.sql_timeout_secs > 0)
                 .then(|| Duration::from_secs(self.sql_timeout_secs)),
         }
+    }
+
+    /// The serving-path cache configuration, or `None` when `LOOM_LIQUID_CACHE_DIR`
+    /// is unset/empty — the default, which leaves serving uncached.
+    #[must_use]
+    pub fn liquid_cache_config(&self) -> Option<engine_serving::LiquidCacheConfig> {
+        (!self.liquid_cache_dir.is_empty()).then(|| engine_serving::LiquidCacheConfig {
+            cache_dir: std::path::PathBuf::from(&self.liquid_cache_dir),
+            max_memory_bytes: self.liquid_cache_memory_bytes,
+        })
     }
 }
 
@@ -183,6 +220,17 @@ pub async fn run(
         SQL_CATALOG_PROP_WAREHOUSE.to_string(),
         cfg.object_store.warehouse_uri.clone(),
     );
+    // Mount the serving-path cache before anything serves, so the first query either
+    // sees a working cache or startup has already failed naming the directory. A
+    // no-op unless LOOM_LIQUID_CACHE_DIR is set.
+    if let Some(lc) = tuning.liquid_cache_config() {
+        engine_serving::liquid_cache::configure(&lc).await?;
+        tracing::info!(
+            cache_dir = %lc.cache_dir.display(),
+            max_memory_bytes = lc.max_memory_bytes,
+            "liquid cache enabled for the serving path"
+        );
+    }
     let catalog = SqlCatalogBuilder::default()
         .with_storage_factory(service_runtime::build_storage_factory(&cfg.object_store)?)
         .load("loom", props)

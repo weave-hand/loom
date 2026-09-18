@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use iceberg::encryption::kms::KmsClientFactory;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg::spec::{TableMetadata, TableMetadataBuilder};
 use iceberg::table::Table;
@@ -70,6 +71,11 @@ pub struct SqlCatalogBuilder {
     storage_factory: Option<Arc<dyn StorageFactory>>,
     runtime: Option<iceberg::Runtime>,
     compact_trigger: Option<crate::iceberg_compact::CompactTriggerCfg>,
+    /// Set by iceberg 0.10's `CatalogBuilder::with_kms_client_factory`. loom does not
+    /// use Iceberg table encryption, so nothing reads this today — it is stored rather
+    /// than dropped so a caller that does set one is not silently ignored if/when the
+    /// encryption paths are wired up.
+    kms_client_factory: Option<Arc<dyn KmsClientFactory>>,
 }
 
 impl Default for SqlCatalogBuilder {
@@ -84,6 +90,7 @@ impl Default for SqlCatalogBuilder {
             storage_factory: None,
             runtime: None,
             compact_trigger: None,
+            kms_client_factory: None,
         }
     }
 }
@@ -153,6 +160,14 @@ impl CatalogBuilder for SqlCatalogBuilder {
     /// behaviour is unchanged from pre-`main`.
     fn with_runtime(mut self, runtime: iceberg::Runtime) -> Self {
         self.runtime = Some(runtime);
+        self
+    }
+
+    /// iceberg 0.10 added table encryption and made this a required `CatalogBuilder`
+    /// method. loom does not encrypt Iceberg tables, so the factory is stored and
+    /// never consulted; see the field's note on why it is kept rather than dropped.
+    fn with_kms_client_factory(mut self, kms_client_factory: Arc<dyn KmsClientFactory>) -> Self {
+        self.kms_client_factory = Some(kms_client_factory);
         self
     }
 
@@ -895,7 +910,11 @@ impl Catalog for SqlCatalog {
             return table_already_exists_err(&tbl_ident);
         }
 
-        let (tbl_creation, location) = match creation.location.clone() {
+        // `_location` is bound but unused since iceberg 0.10 derives the metadata
+        // location from the table metadata (see `try_new_with_metadata` below); the
+        // tuple shape is kept so the fallback arm still computes and installs it on
+        // `TableCreation.location`.
+        let (tbl_creation, _location) = match creation.location.clone() {
             Some(location) => (creation, location),
             None => {
                 // fall back to namespace-specific location
@@ -927,11 +946,13 @@ impl Catalog for SqlCatalog {
         let tbl_metadata = TableMetadataBuilder::from_table_creation(tbl_creation)?
             .build()?
             .metadata;
-        // iceberg main's `write_to` takes a typed `&MetadataLocation`, and
-        // `new_with_table_location` is deprecated in favour of `new_with_metadata`
-        // (which derives the compression codec from table properties). Build it once;
+        // iceberg 0.10's `write_to` takes a typed `&MetadataLocation`, and
+        // `new_with_metadata` became the fallible `try_new_with_metadata`, which now
+        // derives BOTH the metadata directory and the compression codec from the table
+        // metadata — so the explicit location argument is gone (it is already carried
+        // by `tbl_creation.location`, which flows into `tbl_metadata`). Build it once;
         // the string form is reused for the SQL insert + the Table builder below.
-        let tbl_ml = MetadataLocation::new_with_metadata(location.clone(), &tbl_metadata);
+        let tbl_ml = MetadataLocation::try_new_with_metadata(&tbl_metadata)?;
         let tbl_metadata_location = tbl_ml.to_string();
 
         tbl_metadata.write_to(&self.fileio, &tbl_ml).await?;

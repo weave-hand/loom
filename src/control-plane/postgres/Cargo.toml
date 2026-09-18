@@ -35,16 +35,16 @@ proptest = "1"
 # vendored SQL catalog (src/iceberg_sql_catalog/, ported from iceberg-catalog-sql to sqlx 0.9).
 # Pinned to iceberg-rust `main` (carrying the arrow/parquet 58 migration) ahead of the
 # post-0.9.1 crates.io release — see CLAUDE.md (Third-party Rust deps) for the bump/exit path.
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "492234eb43b1aceee1b9379d5c676e4635b5d4d7" }
 # Writer chain (slice 2 write path). iceberg `main` is on arrow/parquet 58, matching
 # DataFusion 54 / DuckDB / ingest — one arrow major across the whole tree — so these are
 # plain 58 deps with no rename trick (there is no second public major to disambiguate).
-arrow-array = "58"
-arrow-schema = "58"
-parquet = { version = "58", default-features = false, features = ["arrow"] }
+arrow-array = "59"
+arrow-schema = "59"
+parquet = { version = "59", default-features = false, features = ["arrow"] }
 # arrow-ipc (IPC decode) + arrow-select (multi-batch concat) for iceberg_landing.
-arrow-ipc = { version = "58", default-features = false }
-arrow-select = { version = "58", default-features = false }
+arrow-ipc = { version = "59", default-features = false }
+arrow-select = { version = "59", default-features = false }
 # iceberg's InputFile::read() yields `bytes::Bytes`, which is also a parquet
 # `ChunkReader` — the write path reads file bytes and feeds them straight to the
 # footer-stats reader (src/iceberg_stats.rs). Same `bytes` 1.x the rest of the

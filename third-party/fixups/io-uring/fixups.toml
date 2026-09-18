@@ -1,0 +1,4 @@
+# New via t4 (liquid-cache's direct-I/O disk store). Build script probes the
+# target and emits cfgs only — no native library to link.
+[buildscript]
+run = true

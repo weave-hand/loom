@@ -17,6 +17,7 @@ rust_library(
         "//third-party:datafusion",
         "//third-party:futures",
         "//third-party:iceberg",
+        "//third-party:liquid-cache-datafusion-local",
         "//third-party:object_store",
         "//third-party:serde_json",
         "//third-party:sqlx",

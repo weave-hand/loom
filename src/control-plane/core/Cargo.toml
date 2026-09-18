@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 # Arrow physical mapping for BaseType (arrow_data_type). Schema types only — no
 # arrays, no IPC, no I/O; the whole tree is on a single arrow major (58).
-arrow-schema = "58"
+arrow-schema = "59"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"

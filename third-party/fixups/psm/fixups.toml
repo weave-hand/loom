@@ -1,0 +1,7 @@
+# Native-lib crate (new via datafusion-sql -> recursive -> stacker on the
+# DataFusion 55 bump): its build script assembles per-arch stack-switching
+# routines with `cc` and emits the link flags for them. Same shape as ring /
+# zstd-sys. (The table form of `run` implies run = true.)
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

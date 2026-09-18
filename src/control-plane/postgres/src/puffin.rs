@@ -63,7 +63,9 @@ pub struct LoadedBlob {
 /// Errors if the file has no such blob.
 pub async fn read_index_blob(file_io: &FileIO, path: &str) -> Result<LoadedBlob> {
     let input = file_io.new_input(path).map_err(backend)?;
-    let reader = PuffinReader::new(input);
+    // iceberg 0.10 made `PuffinReader::new` async — it now reads the file length and
+    // opens the reader up front rather than lazily on first access.
+    let reader = PuffinReader::new(input).await.map_err(backend)?;
     let meta = reader.file_metadata().await.map_err(backend)?;
     let bm = meta
         .blobs()

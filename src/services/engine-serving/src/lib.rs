@@ -8,6 +8,7 @@ pub mod action_writer;
 pub mod consolidate;
 pub mod feed;
 pub mod governed;
+pub mod liquid_cache;
 pub mod mv_delta;
 pub mod mv_enrich;
 pub mod not_null;
@@ -22,6 +23,7 @@ pub use feed::{FeedPins, changelog_feed_scan, changelog_feed_scan_at, log_feed_s
 pub use governed::{
     GovernedTableProvider, TablePolicy, execute_governed_sql_stream, policy_for, row_filter_to_expr,
 };
+pub use liquid_cache::{LiquidCacheConfig, new_session};
 pub use mv_delta::mv_delta_scan;
 pub use mv_enrich::mv_enrich_scan;
 pub use provider::PgTableProvider;

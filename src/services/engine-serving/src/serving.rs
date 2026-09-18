@@ -21,9 +21,10 @@ use datafusion::datasource::physical_plan::{FileScanConfigBuilder, ParquetSource
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::context::{ExecutionProps, SessionContext};
 use datafusion::execution::object_store::ObjectStoreUrl;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
 use datafusion::physical_expr::create_physical_expr;
-use datafusion::physical_optimizer::pruning::{PruningPredicate, PruningStatistics};
+use datafusion::physical_optimizer::pruning::{PruningPredicateBuilder, PruningStatistics};
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use datafusion::scalar::ScalarValue;
 use datafusion_io::object_store_url_for;
@@ -936,10 +937,24 @@ pub fn prune_files<'a>(
         return keep_all();
     };
     let props = ExecutionProps::new();
-    let Ok(phys) = create_physical_expr(&predicate, &df_schema, &props) else {
+    // DataFusion 55: `create_physical_expr` gained a 4th `&PhysicalPlanningContext`
+    // argument. Pruning predicates are built outside physical planning, which upstream
+    // documents as the `::default()` case; any construction failure still keeps all files.
+    let Ok(phys) = create_physical_expr(
+        &predicate,
+        &df_schema,
+        &props,
+        &PhysicalPlanningContext::default(),
+    ) else {
         return keep_all();
     };
-    let Ok(pruner) = PruningPredicate::try_new(phys, schema.clone()) else {
+    // DataFusion 55 deprecated `PruningPredicate::try_new` in favour of the builder.
+    // `try_build` is the direct replacement: it surfaces the construction error rather
+    // than folding it into a metric counter, preserving this path's keep-all fallback.
+    let Ok(pruner) = PruningPredicateBuilder::new()
+        .with_file_schema(schema.clone())
+        .try_build(phys)
+    else {
         return keep_all();
     };
     let stats = FileSetStatistics {
@@ -1052,7 +1067,10 @@ pub async fn execute_query_stream(
     serving_store: Option<&ServingStore>,
     at: Option<SnapshotId>,
 ) -> Result<SendableRecordBatchStream, EngineServingError> {
-    let ctx = SessionContext::new();
+    // Cache-backed when `liquid_cache::configure` ran at startup, a plain context
+    // otherwise. Sharing one `SessionState` across queries is what makes the cache
+    // survive past a single statement — see `crate::liquid_cache`.
+    let ctx = crate::liquid_cache::new_session();
     for table in catalog.live_tables().await.map_err(to_serving)? {
         register_iceberg_table(&ctx, catalog, &table, serving_store, at).await?;
     }

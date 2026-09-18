@@ -109,7 +109,9 @@ async fn serve_composite(
     // `StandaloneTuning` is no longer `Copy` (it carries a `WriteConfig`), so take
     // the engine's tuning out before the spawn below moves `tuning`.
     // `engine::EngineTuning` IS `Copy`, so this is a copy.
-    let engine_tuning = tuning.engine;
+    // Cloned, not moved: `EngineTuning` stopped being `Copy` when it gained the
+    // `String` liquid-cache dir, and `tuning` is still borrowed below for the worker.
+    let engine_tuning = tuning.engine.clone();
 
     // One shutdown source fanned out to all three servers via a watch channel.
     // The sender stays in this frame so BOTH an external shutdown signal AND the

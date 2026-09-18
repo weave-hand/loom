@@ -1,0 +1,4 @@
+# New via bitvec. Build script detects the target's atomic support and emits
+# cfgs only — no native library to link.
+[buildscript]
+run = true

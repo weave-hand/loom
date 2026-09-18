@@ -1,0 +1,5 @@
+# Native-lib crate (new via datafusion-sql -> recursive on the DataFusion 55
+# bump): build script compiles the psm glue with `cc` and emits its link flags.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

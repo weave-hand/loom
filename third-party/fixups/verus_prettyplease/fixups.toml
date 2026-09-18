@@ -1,0 +1,4 @@
+# New via the Verus toolchain pulled in by t4. Same shape as the upstream
+# prettyplease fixup: build script emits cfgs only.
+[buildscript]
+run = true
