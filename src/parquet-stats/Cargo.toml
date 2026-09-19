@@ -9,4 +9,4 @@ control-plane-core = { path = "../control-plane/core" }
 # The only place in the tree that matches on parquet's `Statistics` enum. Same
 # version/features as the two consumers declare, so cargo and reindeer resolve one
 # `parquet` for the whole graph.
-parquet = { version = "58", default-features = false, features = ["arrow"] }
+parquet = { version = "59", default-features = false, features = ["arrow"] }

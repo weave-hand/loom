@@ -6,9 +6,14 @@ edition = "2024"
 [dependencies]
 control-plane-core = { path = "../../control-plane/core" }
 control-plane-postgres = { path = "../../control-plane/postgres" }
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }
-arrow = "58"
-datafusion = { version = "54", default-features = false, features = ["parquet", "sql"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "492234eb43b1aceee1b9379d5c676e4635b5d4d7" }
+arrow = "59"
+datafusion = { version = "55", default-features = false, features = ["parquet", "sql"] }
+# Pinned to a `main` rev, not a release: the published 0.1.13 is datafusion 53 /
+# arrow 58, while `main` carries the datafusion 55 + arrow 59 migration that the
+# rest of this tree is on. Exit to `version = "0.2"` (or whatever lands first on
+# datafusion 55) the day liquid-cache publishes it.
+liquid-cache-datafusion-local = { git = "https://github.com/XiangpengHao/liquid-cache", rev = "328e17643bea0e44548e908c22f9601559dfc6f1" }
 object_store = "0.13"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
 serde_json = "1"

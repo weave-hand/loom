@@ -11,7 +11,7 @@ use arrow::array::RecordBatch;
 use arrow::datatypes::Schema;
 use bytes::Bytes;
 use control_plane_core::{ColumnStat, DataFile, FileFormat};
-use datafusion::common::config::TableParquetOptions;
+use datafusion::common::config::{ConfigNonZeroUsize, TableParquetOptions};
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::MemTable;
 use datafusion::execution::context::{SessionConfig, SessionContext};
@@ -148,7 +148,11 @@ pub async fn write_dataset(
     // `partitions` (and leaving the high soft row cap) makes small results a single file
     // while still letting size-targeted large results split. See tests/single_file_write.rs.
     let mut config = SessionConfig::new();
-    config.options_mut().execution.minimum_parallel_output_files = partitions;
+    // DataFusion 55 retyped this option from `usize` to `ConfigNonZeroUsize`.
+    // `estimate_partitions` clamps to `1..=max_files.max(1)`, so the conversion cannot
+    // fail in practice; the `?` carries a DataFusionError if that invariant ever breaks.
+    config.options_mut().execution.minimum_parallel_output_files =
+        ConfigNonZeroUsize::try_new(partitions)?;
     let ctx = SessionContext::new_with_config(config);
     let url = ObjectStoreUrl::parse(LOOM_STORE_URL)?;
     ctx.register_object_store(url.as_ref(), store.clone());

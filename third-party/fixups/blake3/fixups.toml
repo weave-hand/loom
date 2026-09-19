@@ -1,0 +1,10 @@
+# Native-lib crate (new with the vortex tree pulled in by liquid-cache): its build
+# script compiles the SIMD assembly/C backends with `cc` AND emits the
+# `cargo:rustc-cfg=blake3_{sse2,sse41,avx2}_ffi` gates that `platform.rs` dispatches
+# on. Without running it those modules are configured out while platform.rs still
+# calls them, so the crate fails with E0433 `cannot find sse2 in crate`. Same
+# native-lib shape as ring/zstd-sys: forward the link flags so the final link
+# resolves the compiled objects. (The table form of `run` implies run = true.)
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

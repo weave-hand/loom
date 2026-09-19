@@ -17,11 +17,11 @@ tonic = "0.14"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 uuid = { version = "1", features = ["v4"] }
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "148afc50ee950b2cd8d99c0243242ef45f3948c5" }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "492234eb43b1aceee1b9379d5c676e4635b5d4d7" }
 object_store = "0.13"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
 async-trait = "0.1"
-arrow-flight = { version = "58", features = ["flight-sql"] }
+arrow-flight = { version = "59", features = ["flight-sql"] }
 prost = "0.14"
 tracing = "0.1"
 # Match control-plane-worker: CancellationToken needs no extra tokio-util feature.
@@ -33,5 +33,5 @@ time = "=0.3.47"
 [dev-dependencies]
 tempfile = "3"
 serde_json = "1"
-arrow-array = "58"
-arrow-schema = "58"
+arrow-array = "59"
+arrow-schema = "59"

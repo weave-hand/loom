@@ -1,0 +1,5 @@
+# Native-lib crate: build script compiles the bundled liblzma C sources and emits
+# cargo:rustc-link-lib / cargo:rustc-link-search for them.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

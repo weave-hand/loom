@@ -20,6 +20,7 @@ use datafusion::execution::context::{ExecutionProps, SQLOptions, SessionConfig, 
 use datafusion::execution::disk_manager::{DiskManagerBuilder, DiskManagerMode};
 use datafusion::execution::memory_pool::GreedyMemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{TableProviderFilterPushDown, TableType, not};
 use datafusion::physical_expr::{
     PhysicalExpr, create_physical_expr,
@@ -250,7 +251,17 @@ impl TableProvider for GovernedTableProvider {
             .map_err(|e| DataFusionError::Plan(e.to_string()))?
         {
             let df_schema = DFSchema::try_from(inner_schema.clone())?;
-            let phys = create_physical_expr(&expr, &df_schema, &ExecutionProps::new())?;
+            // DataFusion 55 added a 4th `&PhysicalPlanningContext` argument, used to
+            // resolve `Expr::ScalarSubquery` / `Expr::LambdaVariable`. Row filters are
+            // built outside physical planning, which upstream documents as the
+            // `::default()` case; a scalar subquery in a row filter then surfaces as a
+            // planning error, which this path already fails closed on.
+            let phys = create_physical_expr(
+                &expr,
+                &df_schema,
+                &ExecutionProps::new(),
+                &PhysicalPlanningContext::default(),
+            )?;
             plan = Arc::new(FilterExec::try_new(phys, plan)?);
         }
 

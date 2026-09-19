@@ -260,6 +260,22 @@ loom_fixture_test(
 )
 
 loom_fixture_test(
+    name = "liquid-cache-acl-e2e",
+    crate = "liquid_cache_acl_e2e",
+    srcs = ["tests/liquid_cache_acl_e2e.rs"],
+    crate_root = "tests/liquid_cache_acl_e2e.rs",
+    deps = [
+        ":query-api",
+        ":e2e-support",
+        "//src/control-plane/core:core",
+        "//src/control-plane/postgres:postgres",
+        "//src/services/engine-serving:engine-serving",
+        "//third-party:tempfile",
+        "//third-party:tokio",
+    ],
+)
+
+loom_fixture_test(
     name = "ontology-types-e2e",
     crate = "ontology_types_e2e",
     srcs = ["tests/ontology_types_e2e.rs"],

@@ -1,0 +1,5 @@
+# New via t4 (liquid-cache's disk store is Verus-verified, so the Verus standard
+# library enters the graph). Build script emits cfgs only; loom builds vstd as an
+# ordinary Rust crate and does not run Verus verification.
+[buildscript]
+run = true
