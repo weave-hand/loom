@@ -71,11 +71,21 @@ genrule(
 # Pinned MinIO server binary (raw static ELF, per-arch). Used by the round-trip
 # test (Task 9) to boot a real S3-compatible object store. The binary is published
 # as a plain file (no archive), so the genrule is a bare cp+chmod — same pattern
-# as jq in tools/BUCK. To bump: update MINIO_RELEASE and refresh both sha256s from
-# the matching archive URLs at dl.min.io.
+# as jq in tools/BUCK.
+#
+# Sourced from the GitHub release assets, NOT from dl.min.io: MinIO decommissioned
+# its community binary CDN in September 2026 and every dl.min.io path (versioned,
+# unversioned, and the archive index) now answers 410 Gone, which hard-fails this
+# `http_file` and every target that depends on the fixture. The GitHub release
+# assets for the same tag are byte-identical to what dl.min.io served — both
+# sha256s below are unchanged by this repoint, which is the proof — so this is a
+# URL swap only, not a version move. Asset naming there is
+# `minio.linux-<arch>.<RELEASE tag>` (the tag is repeated in the filename).
+# To bump: update MINIO_RELEASE and refresh both sha256s by hashing the matching
+# release assets (`sha256sum` the downloaded file; there are no .sha256 sidecars).
 MINIO_RELEASE = "RELEASE.2025-04-22T22-12-26Z"
 
-_MINIO_URL = "https://dl.min.io/server/minio/release/linux-{arch}/archive/minio.{rel}"
+_MINIO_URL = "https://github.com/minio/minio/releases/download/{rel}/minio.linux-{arch}.{rel}"
 
 http_file(
     name = "minio-amd64.bin",

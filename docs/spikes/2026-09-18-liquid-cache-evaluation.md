@@ -163,13 +163,23 @@ identity, key order is now load-bearing.
   503, not a code fault). Later sweeps in the same session returned 175–229 failures that
   were **all** the identical `Remote Execution Error on get_digests_ttl` (503, then
   transient DNS), with zero test-body failures — BuildBuddy RE was degraded throughout,
-  which also accounts for the `dev-image` and `affected` CI failures on this branch.
-- **Blocked:** `control-plane/postgres:minio-{amd64,arm64}.bin` cannot build — `dl.min.io`
-  returns **410 Gone** for every path, including `latest`. This is **pre-existing on
-  `main`** and unrelated to this branch: MinIO decommissioned that distribution host. It
-  needs its own fix; until then the S3-backed fixtures cannot be built anywhere in the repo,
-  so the full fixture sweep CLAUDE.md requires after an iceberg pin bump is only partly
-  satisfied here.
+  which accounts for the `dev-image` CI failures on this branch. It did **not** account for
+  `affected`, which is a separate, concrete break — see below. (I asserted the RE-outage
+  explanation for `affected` before reading its log; that was wrong, and the log shows every
+  other action in the invocation succeeded.)
+- **Fixed here (pre-existing, not caused by this branch):** `control-plane/postgres:minio-`
+  `{amd64,arm64}.bin` could not build — MinIO decommissioned its community binary CDN in
+  September 2026, and every `dl.min.io` path (versioned, unversioned, and the archive index)
+  answers **410 Gone**. That hard-fails the `http_file` and therefore every S3-backed
+  fixture, on this branch and on `main` alike. The two URLs are repointed at the GitHub
+  release assets for the *same* tag; both committed `sha256`s are unchanged, which is the
+  proof the bytes are identical and this is a source swap rather than a version move. It is
+  strictly speaking outside this PR's scope, but it is what stands between `affected` and
+  green, no fix for it existed to port, and it is two lines — so it rides here rather than
+  leaving the branch red on someone else's break. Verified end-to-end, not just as a
+  download: `buck2 test //src/control-plane/postgres:iceberg-s3-roundtrip :s3-storage` —
+  **2 pass**, i.e. the repointed binary boots a real object store and the iceberg pin bump
+  is now exercised against the S3 path too, which it could not be while the fetch was dead.
 
 ## Pointers
 
