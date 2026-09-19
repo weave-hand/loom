@@ -10,31 +10,52 @@
 //! the cache applies to loom's hand-written provider with no provider changes at all, and
 //! composes with (rather than replacing) the mirror-stat file pruning that runs first.
 //!
+//! # What is cached, precisely
+//!
+//! Only the *arbitrary-SQL* governed plane — [`crate::governed::execute_governed_sql_stream`],
+//! which query-api uses for its SQL console and `EXPLAIN` validation — stays uncached. It
+//! builds its own session ([`crate::governed::build_session`]) and never comes through here.
+//!
+//! **Every other read does come through here, ACL-bearing reads included.** query-api's
+//! `read_object` resolves the subject's policy, compiles the row filter and column
+//! projection into SQL *text*, and ships it as a plain `CommandStatementQuery`; the engine
+//! runs that through [`crate::serving::execute_query_stream`], i.e. through the context
+//! this module hands out. So "governed" and "cached" are not opposites, and any reasoning
+//! here has to hold for ACL-filtered SQL. `//src/services/query-api:liquid-cache-acl-e2e`
+//! is the standing assertion that it does: two subjects with disjoint row filters read the
+//! same table over one warm cache and each keeps seeing only its own rows.
+//!
+//! The reason that is sound rather than lucky: LiquidCache keys cache entries by *file and
+//! column*, and caches scanned data, not query results. Two subjects sharing an entry share
+//! no more than they already share by reading the same Parquet file; each query's predicate
+//! — including the one compiled from its ACL policy — is still evaluated per query, and the
+//! forced `execution.parquet.pushdown_filters = true` changes where that evaluation happens,
+//! not whether it happens.
+//!
 //! # Why this is opt-in
 //!
-//! Two unresolved questions keep this off unless an operator asks for it:
+//! Two things keep it off unless an operator asks for it:
 //!
-//! 1. **Resource budgeting.** [`crate::governed::build_session`] deliberately pairs a
-//!    `GreedyMemoryPool` with `DiskManagerMode::Disabled` so a statement's memory budget
-//!    actually binds and cannot be traded for an unbounded-`/tmp` disk DoS. LiquidCache
-//!    introduces its own memory budget *and* its own on-disk cache, both outside
-//!    DataFusion's `MemoryPool` and outside the disabled `DiskManager`. Until that
-//!    reasoning is redone, the **governed** path (arbitrary client SQL under ACL) is
-//!    deliberately NOT cached — only the server-built serving path is.
-//! 2. **ACL interaction.** `LiquidCacheLocalBuilder` forces
-//!    `execution.parquet.pushdown_filters = true`, which makes predicates — including
-//!    row filters from [`crate::governed::GovernedTableProvider`] — candidates for
-//!    evaluation *inside* the cache layer, over transcoded data keyed per file and shared
-//!    across subjects. That is very likely sound, but "very likely" is not the standard
-//!    for the governance boundary, and it is the second reason the governed path is
-//!    excluded here.
+//! 1. **Resource budgeting.** LiquidCache carries its own memory budget *and* its own
+//!    on-disk cache, both outside DataFusion's `MemoryPool` and outside the `DiskManager`
+//!    that [`crate::governed::build_session`] deliberately disables so a statement's memory
+//!    budget cannot be traded for an unbounded-`/tmp` disk DoS. The serving path has no
+//!    such budget to breach, but an operator turning this on is adding an accounting
+//!    channel nothing else in loom bounds.
+//! 2. **`io_uring` is a hard prerequisite.** The cache's `t4` store mounts with the
+//!    `io-uring` feature on by default, so [`configure`] fails with `ENOSYS` wherever the
+//!    syscall is unavailable — notably under the container seccomp profiles common in
+//!    Kubernetes, which is loom's own deploy target. Being opt-in is what keeps that a
+//!    startup choice rather than a surprise.
 //!
 //! See `docs/spikes/2026-09-18-liquid-cache-evaluation.md` for the full evaluation.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
+use datafusion::catalog::MemoryCatalogProviderList;
 use datafusion::execution::context::{SessionConfig, SessionContext};
-use datafusion::execution::session_state::SessionState;
+use datafusion::execution::session_state::{SessionState, SessionStateBuilder};
 use liquid_cache_datafusion_local::LiquidCacheLocalBuilder;
 use tokio::sync::OnceCell;
 
@@ -54,14 +75,13 @@ pub struct LiquidCacheConfig {
     pub max_memory_bytes: usize,
 }
 
-/// The process-lifetime cache. A `SessionState` (not a `SessionContext`) so each query can
-/// still get a fresh context for its own table registrations while sharing one cache and
-/// one `LocalModeOptimizer`: `SessionState` is `Clone`, and the clone carries the `Arc`'d
-/// rule, so the cache itself is shared rather than rebuilt.
+/// The process-lifetime cache, held as a **template** `SessionState` that [`new_session`]
+/// derives each query's state from. Not handed out directly, and not cloned as-is — see
+/// [`new_session`] for why the catalog registry must not be shared.
 ///
-/// Without this, the cache would be pointless: [`crate::serving::execute_query_stream`]
-/// builds a `SessionContext` per query, so a per-context cache would never survive to a
-/// second query and would never hit.
+/// Something process-lifetime is required for the cache to do anything at all:
+/// [`crate::serving::execute_query_stream`] builds a context per query, so a per-context
+/// cache would never survive to a second query and would never hit.
 static SHARED: OnceCell<SessionState> = OnceCell::const_new();
 
 /// Build the shared cache-backed `SessionState` once, for the life of the process.
@@ -106,10 +126,48 @@ pub async fn configure(cfg: &LiquidCacheConfig) -> Result<(), EngineServingError
 /// Returns a context sharing the process-wide cache when [`configure`] has run, and a plain
 /// `SessionContext::new()` otherwise — so the uncached path is byte-identical to what
 /// serving did before this module existed.
+///
+/// # The catalog registry is deliberately NOT shared
+///
+/// `SessionState` is `Clone`, but its clone is shallow: `catalog_list` is an `Arc`, so a
+/// bare `state.clone()` hands every query the *same* table registry. That is wrong here in
+/// two escalating ways, and the first one hides the second:
+///
+/// 1. [`crate::serving::execute_query_stream`] registers the statement's tables by name
+///    into the context it is given. With a shared registry the second query to mention a
+///    table dies on `The table <name> already exists` — so the cached path breaks on the
+///    second query, which is to say on every real workload.
+/// 2. Worse, had registration been overwrite-rather-than-error, a shared registry would
+///    mean one query's registration could serve another's scan. Registration binds a
+///    snapshot (`execute_query_stream`'s `at`) and a concrete file list, and the SQL that
+///    arrives here already has the caller's ACL row filter and column projection compiled
+///    into it by query-api — so a stale binding is a correctness and a governance fault,
+///    not just a stale read.
+///
+/// So each query gets a fresh [`MemoryCatalogProviderList`] while inheriting everything the
+/// cache actually needs from the template: the `SessionConfig` (`build` sets
+/// `pushdown_filters` and friends), the physical-optimizer rules — including the
+/// `LocalModeOptimizer` whose `Arc` *is* the shared cache — and the registered UDFs.
+/// `create_default_catalog_and_schema` is re-asserted because
+/// `SessionStateBuilder::new_from_existing` clears it when the state it copies already has
+/// a default catalog, which would otherwise leave the fresh registry with nothing to
+/// register into.
+///
+/// Asserted end-to-end by `//src/services/query-api:liquid-cache-acl-e2e`.
 #[must_use]
 pub fn new_session() -> SessionContext {
     match SHARED.get() {
-        Some(state) => SessionContext::new_with_state(state.clone()),
+        Some(state) => {
+            let config = state
+                .config()
+                .clone()
+                .with_create_default_catalog_and_schema(true);
+            let fresh = SessionStateBuilder::new_from_existing(state.clone())
+                .with_config(config)
+                .with_catalog_list(Arc::new(MemoryCatalogProviderList::new()))
+                .build();
+            SessionContext::new_with_state(fresh)
+        }
         None => SessionContext::new(),
     }
 }

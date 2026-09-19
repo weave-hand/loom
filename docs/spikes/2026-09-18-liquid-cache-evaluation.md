@@ -6,7 +6,9 @@
 > "10x lower latency for cloud-native DataFusion".
 > **Outcome:** **built, opt-in, off by default.** The integration shape turned out to be
 > unusually clean; the cost is a DataFusion 54→55 + arrow 58→59 bump and three new git
-> dependencies. Two governance/resource questions keep it off unless an operator asks.
+> dependencies. It stays off unless an operator asks, for one resource-budgeting question
+> and one hard `io_uring` prerequisite — see the two sections after *What was built*, which
+> also correct a wrong claim in this document's first draft and the bug it concealed.
 
 ## TL;DR
 
@@ -15,7 +17,8 @@
 | **Does it fit loom's architecture?** | Yes — no `TableProvider` changes at all |
 | **What did it cost?** | arrow 58→59, DataFusion 54→55, iceberg pin moved, 3 git deps |
 | **Is it on?** | **No.** `LOOM_LIQUID_CACHE_DIR` unset ⇒ serving is byte-identical to before |
-| **What is still open?** | Resource budgeting and ACL pushdown on the governed path |
+| **Is ACL enforcement affected?** | No — and it is now asserted, not argued: `//src/services/query-api:liquid-cache-acl-e2e` |
+| **What is still open?** | Resource budgeting on the arbitrary-SQL plane; `io_uring` availability wherever this would be turned on |
 
 ## What LiquidCache is
 
@@ -60,12 +63,13 @@ files, the cache then serves the survivors.
 
 ## What was built
 
-- **`engine-serving/src/liquid_cache.rs`** — a process-lifetime cache behind a shared
+- **`engine-serving/src/liquid_cache.rs`** — a process-lifetime cache held as a template
   `SessionState`. This is the load-bearing part: `execute_query_stream` built a
   `SessionContext::new()` *per query*, so a per-context cache would never survive to a
-  second query and would never hit. Storing a `SessionState` (which is `Clone`, and whose
-  clone carries the `Arc`'d optimizer rule) lets each query still get a fresh context for
-  its own table registrations while sharing one cache.
+  second query and would never hit. Each query now derives its own state from that
+  template — inheriting the config and the optimizer rule that carries the `Arc`'d cache,
+  but getting a **fresh catalog registry**, which the next section explains is not
+  optional.
 - **`serving.rs`** now calls `liquid_cache::new_session()` instead of
   `SessionContext::new()`. With the cache unconfigured this returns a plain
   `SessionContext::new()`, so the uncached path is unchanged.
@@ -74,23 +78,71 @@ files, the cache then serves the survivors.
   typed config, matching how `GovernedSqlLimits` is threaded. The cache is mounted before
   anything serves, so startup fails naming the directory rather than failing the first query.
 
-### Deliberately NOT cached: the governed path
+### Correction: "the governed path is not cached" was wrong, and it hid a bug
 
-`execute_governed_sql_stream` (arbitrary client SQL under ACL) still builds its own
-context and is **not** cache-backed. Two reasons, both unresolved:
+The first draft of this document, of `liquid_cache.rs`'s module doc, and of the PR all
+claimed the cache was confined to ungoverned queries, so ACL reasoning did not apply to it.
+That framing was wrong, and it was load-bearing — it is why the integration shipped without
+an ACL test, and why a real defect went unnoticed. The trigger for re-checking was a single
+question: *ACLs have to be enforced, right?*
 
-1. **Resource budgeting.** `governed.rs::build_session` deliberately pairs a
-   `GreedyMemoryPool` with `DiskManagerMode::Disabled` so a statement's memory budget
-   actually binds and cannot be traded for an unbounded-`/tmp` disk DoS. LiquidCache adds
-   its own memory budget *and* its own on-disk cache, both outside DataFusion's
-   `MemoryPool` and outside the disabled `DiskManager`. That reasoning has to be redone,
-   not just re-pointed.
-2. **ACL interaction.** `LiquidCacheLocalBuilder::build` forces
-   `execution.parquet.pushdown_filters = true`, which makes predicates — including row
-   filters from `GovernedTableProvider` — candidates for evaluation *inside* the cache
-   layer, over transcoded data keyed per file and shared across subjects. Very likely
-   sound; "very likely" is not the standard for the governance boundary. Wants an
-   explicit answer and an STPA entry before the governed path is cached.
+**What is actually cached.** Only `execute_governed_sql_stream` — the arbitrary-SQL plane
+behind query-api's SQL console and `EXPLAIN` validation — builds its own session and stays
+uncached. The primary governed read does not: `read_object` resolves the subject's policy,
+compiles the row filter and column projection into SQL *text* in query-api, and ships it as
+a plain `CommandStatementQuery`; the engine runs that through `execute_query_stream`, which
+is exactly the cached context. The chain is
+`handler.rs::read_object` → `fetch_rows` → `FlightSqlClient::execute` →
+`EngineTicket::Sql` → `flight.rs::do_get_sql` → `execute_query_stream` → `new_session()`.
+So ACL-bearing SQL was on the cached path from the first commit.
+
+**The defect that hid behind it.** `SessionState` is `Clone`, but the clone is shallow:
+`catalog_list` is an `Arc`. Handing every query `SHARED.clone()` therefore handed every
+query the *same* table registry, and `execute_query_stream` registers its tables by name.
+The second query to touch a table died on `Execution error: The table orders already
+exists`. Every existing test passed anyway, because the cache is off by default and no test
+turned it on — the integration was only ever exercised one query deep.
+
+Had registration overwritten instead of erroring, the same sharing would have been quietly
+worse: registration binds a snapshot (`execute_query_stream`'s `at`) and a concrete file
+list, so one request's binding could have served another's scan, across subjects whose ACL
+filters are already baked into the SQL.
+
+**The fix.** `new_session` now derives a fresh `SessionState` per query via
+`SessionStateBuilder::new_from_existing(...).with_catalog_list(MemoryCatalogProviderList::new())`,
+so each query gets its own registry while inheriting the config, the physical-optimizer
+rules (the `LocalModeOptimizer` whose `Arc` *is* the cache) and the UDFs.
+`create_default_catalog_and_schema` is re-asserted because `new_from_existing` clears it
+when the state being copied already has a default catalog.
+
+**Why cross-subject sharing is nonetheless sound.** LiquidCache keys entries by file and
+column and caches *scanned data*, not query results. Two subjects sharing an entry share no
+more than they already share by reading the same Parquet file; each query's predicate is
+still evaluated per query, and the forced `pushdown_filters = true` moves where that
+evaluation happens, not whether it happens. That is now asserted rather than argued —
+see `//src/services/query-api:liquid-cache-acl-e2e`.
+
+**Still deliberately uncached:** the arbitrary-SQL governed plane, because
+`governed.rs::build_session` pairs a `GreedyMemoryPool` with `DiskManagerMode::Disabled` so
+a statement's memory budget binds and cannot be traded for an unbounded-`/tmp` disk DoS,
+and LiquidCache's budget and on-disk tier sit outside both. That wants an explicit answer
+and an STPA entry before it changes.
+
+### `io_uring` is a hard prerequisite
+
+LiquidCache's `t4` store enables its `io-uring` feature by default and `t4::mount` is
+unconditional, so `configure` fails with `ENOSYS` ("Function not implemented", os error 38)
+wherever the syscall is blocked. There is no memory-only mode to fall back to, and the
+feature cannot be turned off from loom: Cargo feature resolution is a union, so nothing
+loom declares can remove a default feature liquid-cache requests. Turning it off means
+patching upstream.
+
+Measured, not assumed: the BuildBuddy RE workers `buck2 test` routes fixture runs to from a
+root host return `ENOSYS`; this session's own host (ext4, io_uring enabled) mounts fine.
+The same block is common in hardened container runtimes, **including the Kubernetes
+deployments loom's own Helm chart targets**. This does not affect anything today — the
+cache is opt-in and off by default — but it is a hard gate on ever turning it on, and it
+belongs in the operator docs before it is.
 
 ## Dependency cost (measured, not estimated)
 
